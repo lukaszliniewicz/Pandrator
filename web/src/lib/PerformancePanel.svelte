@@ -1,25 +1,32 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
+  import { beforeNavigate, goto } from '$app/navigation';
   import { apiJson } from './api';
   import { sessionApi } from './domain-api';
   import type { SettingsPayload } from './api-models';
   import { errorMessage } from './errors';
-
+  import { modalFocus } from './modal-focus';
+  import { invalidationBus, invalidates } from './invalidation';
+  import GenerationCastPanel from './GenerationCastPanel.svelte';
+  import type { Character } from './generation-controls';
+  import {
+    controlFields,
+    markupControls,
+    setMarkupControl,
+    clearMarkupDirections,
+    markupSummary,
+    markSpokenRange,
+    readMarkup,
+    type ControlField
+  } from './speech-markup-editor';
   type Annotation = {
-    schema?: string;
     decision: 'none' | 'steer';
-    delivery?: {
-      instruction?: string;
-      emotion?: string;
-      pace?: string;
-      cadence?: string;
-      emphasis?: string;
-    };
+    delivery?: Partial<Record<ControlField, string>>;
     spans?: unknown[];
     events?: unknown[];
     reason?: string;
-    confidence?: string;
     locked?: boolean;
+    [key: string]: unknown;
   };
   type Unit = {
     id: string;
@@ -27,6 +34,7 @@
     text: string;
     spoken_text: string;
     annotation: Annotation | null;
+    speech_xml?: string | null;
   };
   type Plan = {
     id: string;
@@ -34,6 +42,7 @@
     status: string;
     version: number;
     total: number;
+    filtered_total?: number;
     analysed_count: number;
     steered_count: number;
     locked_count: number;
@@ -41,16 +50,20 @@
     job_id?: string;
     job_status?: string;
     items?: Unit[];
-    settings: { workflow_kind?: string; mode?: string; instructions?: string };
+    settings: {
+      workflow_kind?: string;
+      mode?: string;
+      instructions?: string;
+      annotation_format?: string;
+      context_before?: number;
+      context_after?: number;
+    };
   };
   type Capability = {
     model: string;
-    dialect: string;
-    status: string;
     instructions: string;
     semantic_context: string;
-    notes?: string[];
-    event_tags?: Record<string, string>;
+    status: string;
   };
   type Preview = {
     transcript: string;
@@ -59,8 +72,25 @@
     request_options?: Record<string, unknown>;
     report: { status: string; control: string; message: string }[];
     capabilities: Capability;
+    parts?: {
+      text: string;
+      voice?: string;
+      voice_source?: string;
+      fallback?: boolean;
+      input?: string;
+      report?: { status: string; control: string; message: string }[];
+    }[];
   };
-
+  const voiceSourceLabels: Record<string, string> = {
+    span: 'Explicit span voice',
+    character: 'Character cast',
+    source_speaker: 'Source speaker cast',
+    category: 'Category default',
+    narrator: 'Narrator',
+    inherited: 'Session voice',
+    base: 'Session voice',
+    mixed: 'Combined assignments'
+  };
   let {
     sessionId,
     revisionId,
@@ -72,41 +102,120 @@
     busy?: boolean;
     onchanged?: () => void;
   } = $props();
-  let opened = $state(false);
-  let pending = $state(false);
-  let error = $state('');
-  let message = $state('');
-  let history = $state<Plan[]>([]);
-  let selected = $state<Plan | null>(null);
-  let capability = $state<Capability | null>(null);
+  let pending = $state(false),
+    error = $state(''),
+    message = $state('');
+  let history = $state<Plan[]>([]),
+    selected = $state<Plan | null>(null),
+    capability = $state<Capability | null>(null);
   let stored = $state<SettingsPayload | null>(null);
-  let general = $state('');
-  let contextMode = $state('off');
-  let before = $state(2);
-  let after = $state(1);
-  let maxChars = $state(4000);
-  let enabled = $state(false);
-  let vocalizations = $state(false);
-  let planningInstructions = $state('');
-  let modelName = $state('');
-  let offset = $state(0);
-  let unitId = $state('');
-  let direction = $state('');
-  let locked = $state(true);
-  let unlock = $state(false);
-  let advanced = $state(false);
-  let annotationJson = $state('');
-  let preview = $state<Preview | null>(null);
-  let alive = true;
-  let serial = 0;
+  let general = $state(''),
+    contextMode = $state('off'),
+    before = $state(2),
+    after = $state(1),
+    maxChars = $state(4000);
+  let enabled = $state(false),
+    casting = $state(false),
+    vocalizations = $state(false),
+    settingsBaseline = $state('');
+  let planningInstructions = $state(''),
+    modelName = $state(''),
+    offset = $state(0),
+    filter = $state('all');
+  let unitId = $state(''),
+    draft = $state<Annotation>({ decision: 'none' }),
+    xml = $state(''),
+    xmlMode = $state(false),
+    locked = $state(true),
+    unlock = $state(false);
+  let advanced = $state(false),
+    jsonBuffer = $state(''),
+    parseError = $state(''),
+    editorBaseline = $state('');
+  let preview = $state<Preview | null>(null),
+    previewKey = $state('');
+  let opened = $state(false),
+    externalRevision = $state(0);
+  let characters = $state<Character[]>([]),
+    speaker = $state(''),
+    category = $state('unspecified');
+  let textArea = $state<HTMLTextAreaElement>(),
+    selectionStart = $state(0),
+    selectionEnd = $state(0);
+  let navigation = $state<(() => void | Promise<void>) | null>(null),
+    acceptMissing = $state(false);
+  let routeNavigation = $state(false);
+  let allowRouteNavigation = false;
+  let castPanel = $state<{
+    draftState: () => { dirty: boolean; blocked: boolean; valid: boolean };
+    saveChanges: () => Promise<boolean>;
+    discardChanges: () => void;
+  }>();
+  const castDraft = $derived(castPanel?.draftState());
+  let alive = true,
+    serial = 0,
+    previewSerial = 0;
   const base = $derived(
     `/sessions/${encodeURIComponent(sessionId)}/performance-plans`
   );
   const currentUnit = $derived(
-    selected?.items?.find((unit) => unit.id === unitId)
+    selected?.items?.find((item) => item.id === unitId)
   );
   const editable = $derived(selected?.status === 'draft' && !selected.stale);
   const blocked = $derived(pending || busy);
+  const settingsKey = $derived(
+    JSON.stringify({
+      general,
+      contextMode,
+      before,
+      after,
+      maxChars,
+      enabled,
+      casting,
+      vocalizations
+    })
+  );
+  const settingsDirty = $derived(
+    Boolean(stored) && settingsKey !== settingsBaseline
+  );
+  const editorKey = $derived(
+    JSON.stringify({
+      content: xmlMode ? xml : draft,
+      locked,
+      invalid: parseError ? jsonBuffer : ''
+    })
+  );
+  const editorDirty = $derived(
+    Boolean(currentUnit) && editorKey !== editorBaseline
+  );
+  const requestKey = $derived(
+    JSON.stringify({
+      editorKey,
+      settingsKey,
+      unitId,
+      plan: selected?.id,
+      model: capability?.model,
+      storedRevision: stored?.revision,
+      externalRevision
+    })
+  );
+  const previewStale = $derived(Boolean(preview) && previewKey !== requestKey);
+  const controls = $derived(
+    xmlMode ? markupControls(xml) : (draft.delivery ?? {})
+  );
+  const summaries = $derived(
+    xmlMode
+      ? markupSummary(xml)
+      : [
+          ...(draft.spans ?? []).map(
+            (item) => `Phrase: ${JSON.stringify(item)}`
+          ),
+          ...(draft.events ?? []).map(
+            (item) => `Event: ${JSON.stringify(item)}`
+          )
+        ]
+  );
+  const total = $derived(selected?.filtered_total ?? selected?.total ?? 0);
   const validWindows = $derived(
     [before, after, maxChars].every(Number.isInteger) &&
       before >= 0 &&
@@ -116,73 +225,164 @@
       maxChars >= 0 &&
       maxChars <= 16000
   );
+  const service = $derived(
+    String(stored?.effective.service ?? stored?.effective.tts_service ?? '')
+  );
+  const model = $derived(
+    String(
+      stored?.effective.model ??
+        stored?.effective.tts_model ??
+        stored?.effective.xtts_model ??
+        ''
+    )
+  );
+  beforeNavigate((event) => {
+    if (
+      allowRouteNavigation ||
+      event.willUnload ||
+      !(editorDirty || settingsDirty || castDraft?.dirty)
+    )
+      return;
+    const target = event.to?.url;
+    if (
+      !target ||
+      (target.pathname === event.from?.url.pathname &&
+        target.search === event.from?.url.search)
+    )
+      return;
+    event.cancel();
+    routeNavigation = true;
+    navigation = async () => {
+      allowRouteNavigation = true;
+      try {
+        await goto(target, { replaceState: event.type === 'popstate' });
+      } finally {
+        allowRouteNavigation = false;
+      }
+    };
+  });
+  onMount(() =>
+    invalidationBus.subscribe((change) => {
+      if (
+        invalidates(change, 'generation', sessionId) ||
+        invalidates(change, 'workflow', sessionId) ||
+        invalidates(change, 'voices') ||
+        invalidates(change, 'capabilities')
+      ) {
+        externalRevision++;
+        if (opened && !pending) void load();
+      }
+    })
+  );
   onDestroy(() => {
     alive = false;
-    serial += 1;
+    serial++;
+    previewSerial++;
   });
 
-  function chooseUnit(id: string) {
+  function selectUnit(id: string) {
     unitId = id;
     const unit = selected?.items?.find((item) => item.id === id);
-    direction = unit?.annotation?.delivery?.instruction ?? '';
+    draft = $state.snapshot(unit?.annotation ?? { decision: 'none' });
+    xml = unit?.speech_xml ?? '';
+    xmlMode = Boolean(xml);
     locked = unit?.annotation?.locked ?? true;
     unlock = false;
-    advanced = false;
-    annotationJson = JSON.stringify(
-      unit?.annotation ?? { decision: 'none', locked: true },
-      null,
-      2
-    );
+    parseError = '';
+    jsonBuffer = JSON.stringify(draft, null, 2);
+    editorBaseline = JSON.stringify({
+      content: xmlMode ? xml : draft,
+      locked,
+      invalid: ''
+    });
     preview = null;
+    advanced = false;
+    selectionStart = 0;
+    selectionEnd = 0;
   }
-
-  async function load(planId?: string, newOffset = 0) {
-    const requestId = ++serial;
-    error = '';
+  function navigate(next: () => void | Promise<void>) {
+    routeNavigation = false;
+    if (editorDirty) navigation = next;
+    else void next();
+  }
+  function applySettings(settings: SettingsPayload) {
+    general = String(settings.effective.generation_prompt ?? '');
+    contextMode = String(settings.effective.tts_context_mode ?? 'off');
+    before = Number(settings.effective.performance_context_before ?? 2);
+    after = Number(settings.effective.performance_context_after ?? 1);
+    maxChars = Number(settings.effective.performance_context_max_chars ?? 4000);
+    enabled = Boolean(settings.effective.performance_enabled);
+    casting = Boolean(settings.effective.casting_enabled);
+    vocalizations = Boolean(settings.effective.performance_allow_vocalizations);
+    settingsBaseline = JSON.stringify({
+      general,
+      contextMode,
+      before,
+      after,
+      maxChars,
+      enabled,
+      casting,
+      vocalizations
+    });
+  }
+  async function load(planId?: string, newOffset = offset, preserve = true) {
+    const request = ++serial;
     pending = true;
+    error = '';
+    const oldUnit = unitId,
+      oldPlan = selected?.id,
+      keepEditor = preserve && editorDirty,
+      keepSettings = settingsDirty;
     try {
-      const [listing, settings] = await Promise.all([
+      const [listing, settings, dictionary] = await Promise.all([
         apiJson<{ items: Plan[]; capabilities: Capability }>(
           `${base}?limit=100&plan_revision_id=${encodeURIComponent(revisionId)}`
         ),
-        sessionApi.settings(sessionId, 'tts')
+        sessionApi.settings(sessionId, 'tts'),
+        apiJson<{ characters: Character[] }>(
+          `/sessions/${encodeURIComponent(sessionId)}/generation-controls`
+        )
       ]);
-      if (!alive || requestId !== serial) return;
-      history = listing.items.filter(
-        (plan) => plan.plan_revision_id === revisionId
-      );
+      if (!alive || request !== serial) return;
+      history = listing.items;
       capability = listing.capabilities;
-      stored = settings;
-      general = String(settings.effective.generation_prompt ?? '');
-      contextMode = String(settings.effective.tts_context_mode ?? 'off');
-      before = Number(settings.effective.performance_context_before ?? 2);
-      after = Number(settings.effective.performance_context_after ?? 1);
-      maxChars = Number(
-        settings.effective.performance_context_max_chars ?? 4000
-      );
-      enabled = Boolean(settings.effective.performance_enabled);
-      vocalizations = Boolean(
-        settings.effective.performance_allow_vocalizations
-      );
-      const id = planId ?? history[0]?.id;
+      characters = dictionary.characters;
+      if (!keepSettings) applySettings(settings);
+      // A draft based on an old revision must conflict instead of overwriting another client's settings.
+      if (!keepSettings || !stored) stored = settings;
+      const id = planId ?? selected?.id ?? history[0]?.id;
       if (id) {
         const result = await apiJson<Plan>(
-          `${base}/${encodeURIComponent(id)}?offset=${newOffset}&limit=20`
+          `${base}/${encodeURIComponent(id)}?offset=${newOffset}&limit=20&filter=${filter}`
         );
-        if (!alive || requestId !== serial) return;
+        if (!alive || request !== serial) return;
+        const oldVersion = selected?.version;
         selected = result;
         offset = newOffset;
-        chooseUnit(result.items?.[0]?.id ?? '');
-      } else {
-        selected = null;
-      }
+        if (
+          keepEditor &&
+          oldPlan === result.id &&
+          result.items?.some((unit) => unit.id === oldUnit)
+        ) {
+          // Keep the revision the draft was based on; save must surface a conflict after concurrent changes.
+          if (oldVersion !== result.version) {
+            selected = { ...result, version: oldVersion ?? result.version };
+            message =
+              'The saved version changed. Your editor draft is preserved; save will check for conflicts.';
+          }
+        } else
+          selectUnit(
+            result.items?.some((unit) => unit.id === oldUnit)
+              ? oldUnit
+              : (result.items?.[0]?.id ?? '')
+          );
+      } else selected = null;
     } catch (caught) {
-      if (alive && requestId === serial) error = errorMessage(caught);
+      if (alive && request === serial) error = errorMessage(caught);
     } finally {
-      if (alive && requestId === serial) pending = false;
+      if (alive && request === serial) pending = false;
     }
   }
-
   async function action<T>(
     path: string,
     body: unknown,
@@ -194,36 +394,115 @@
       body: JSON.stringify(body)
     });
   }
-
   async function saveSettings() {
-    if (!stored || !validWindows) return;
+    if (!stored || !validWindows) return false;
     pending = true;
     error = '';
-    message = '';
     try {
-      await sessionApi.saveSettings(sessionId, 'tts', stored.revision, {
-        ...stored.override,
-        generation_prompt: general,
-        tts_context_mode: contextMode,
-        performance_context_before: before,
-        performance_context_after: after,
-        performance_context_max_chars: maxChars,
-        performance_enabled: enabled,
-        performance_allow_vocalizations: vocalizations
-      });
-      await load(selected?.id, offset);
+      const result = await sessionApi.saveSettings(
+        sessionId,
+        'tts',
+        stored.revision,
+        {
+          ...stored.override,
+          generation_prompt: general,
+          tts_context_mode: contextMode,
+          performance_context_before: before,
+          performance_context_after: after,
+          performance_context_max_chars: maxChars,
+          performance_enabled: enabled,
+          casting_enabled: casting,
+          performance_allow_vocalizations: vocalizations
+        }
+      );
+      stored = result;
+      applySettings(result);
       message =
-        'Speech direction and context settings saved. New requests use these settings; running requests keep their snapshot.';
+        'Generation defaults saved. Running requests retain their snapshot.';
       onchanged?.();
+      return true;
     } catch (caught) {
       error = errorMessage(caught);
+      return false;
     } finally {
       pending = false;
     }
   }
-
-  async function create(mode: 'manual' | 'llm', copy = false) {
+  function setControl(field: ControlField, value: string) {
+    try {
+      if (xmlMode) xml = setMarkupControl(xml, field, value);
+      else {
+        const delivery = { ...draft.delivery, [field]: value };
+        draft = {
+          ...draft,
+          delivery,
+          decision:
+            Object.values(delivery).some(Boolean) ||
+            draft.spans?.length ||
+            draft.events?.length
+              ? 'steer'
+              : 'none'
+        };
+        jsonBuffer = JSON.stringify(draft, null, 2);
+      }
+      parseError = '';
+    } catch (caught) {
+      parseError = errorMessage(caught);
+    }
+  }
+  function editAdvanced(value: string) {
+    try {
+      if (xmlMode) {
+        xml = value;
+        readMarkup(xml);
+      } else {
+        jsonBuffer = value;
+        const parsed = JSON.parse(value);
+        if (!parsed || !['none', 'steer'].includes(parsed.decision))
+          throw new Error('Annotation needs decision none or steer.');
+        draft = parsed;
+        locked = Boolean(parsed.locked);
+      }
+      parseError = '';
+    } catch (caught) {
+      parseError = errorMessage(caught);
+    }
+  }
+  function itemPayload() {
+    if (parseError) throw new Error(parseError);
+    return xmlMode
+      ? { speech_xml: xml, locked, reason: draft.reason ?? '' }
+      : { annotation: { ...draft, locked } };
+  }
+  async function saveAnnotation() {
+    if (!selected || !currentUnit || !editable) return false;
+    pending = true;
+    error = '';
+    message = '';
+    try {
+      await action(
+        `/${selected.id}`,
+        {
+          expected_version: selected.version,
+          unlock_locked: unlock,
+          items: [{ segment_id: currentUnit.id, ...itemPayload() }]
+        },
+        'PATCH'
+      );
+      await load(selected.id, offset, false);
+      message =
+        'Block directions and speaker assignments saved. Spoken words are unchanged.';
+      return true;
+    } catch (caught) {
+      error = errorMessage(caught);
+      return false;
+    } finally {
+      pending = false;
+    }
+  }
+  async function create(mode: 'manual' | 'passive' | 'llm', copy = false) {
     if (!validWindows) return;
+    if (settingsDirty && !(await saveSettings())) return;
     pending = true;
     error = '';
     message = '';
@@ -231,6 +510,9 @@
       const result = await action<Plan>('', {
         expected_plan_revision_id: revisionId,
         mode,
+        annotation_format: copy
+          ? (selected?.settings.annotation_format ?? 'pssml')
+          : 'xml',
         model_name: modelName,
         instructions: planningInstructions,
         context_before: before,
@@ -239,124 +521,64 @@
         allow_vocalizations: vocalizations,
         ...(copy && selected ? { copy_from_id: selected.id } : {})
       });
-      await load(result.id);
+      filter = 'all';
+      await load(result.id, 0, false);
       message =
         mode === 'llm'
-          ? 'Analysis queued in Jobs. Refresh to review its completed batches; nothing is adopted automatically.'
-          : 'Editable performance draft created. Accepted speech text and block boundaries are unchanged.';
+          ? 'Delivery analysis queued. Review the result before adopting it.'
+          : mode === 'passive'
+            ? 'Passive analysis is ready for an MCP worker to claim. No model or speech service was started.'
+            : 'Editable speech-direction draft created.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
       pending = false;
     }
   }
-
-  function editedAnnotation(): Annotation {
-    if (advanced) return JSON.parse(annotationJson) as Annotation;
-    const original = currentUnit?.annotation;
-    const delivery = { ...original?.delivery, instruction: direction.trim() };
-    const hasControls =
-      Object.values(delivery).some(Boolean) ||
-      Boolean(original?.spans?.length || original?.events?.length);
-    return {
-      ...original,
-      decision: hasControls ? 'steer' : 'none',
-      delivery: hasControls ? delivery : {},
-      locked
-    };
-  }
-
-  async function saveAnnotation() {
-    if (!selected || !currentUnit || !editable) return;
-    const id = selected.id;
-    pending = true;
-    error = '';
-    message = '';
-    try {
-      await action(
-        `/${id}`,
-        {
-          expected_version: selected.version,
-          unlock_locked: unlock,
-          items: [
-            { segment_id: currentUnit.id, annotation: editedAnnotation() }
-          ]
-        },
-        'PATCH'
-      );
-      await load(id, offset);
-      message = 'Performance annotation saved without changing the transcript.';
-    } catch (caught) {
-      error = errorMessage(caught);
-    } finally {
-      pending = false;
-    }
-  }
-
   async function compilePreview() {
     if (!selected || !currentUnit) return;
+    const key = requestKey,
+      request = ++previewSerial;
     pending = true;
     error = '';
     try {
-      preview = await action<Preview>(`/${selected.id}/preview`, {
+      const payload = itemPayload();
+      const result = await action<Preview>(`/${selected.id}/preview`, {
         segment_id: currentUnit.id,
-        annotation: editedAnnotation(),
+        ...(xmlMode ? { speech_xml: xml } : payload),
         generation_prompt: general,
         context_mode: contextMode,
-        allow_vocalizations: vocalizations
+        context_before: before,
+        context_after: after,
+        context_max_chars: maxChars,
+        allow_vocalizations: vocalizations,
+        casting_enabled: casting,
+        performance_enabled: enabled
       });
+      if (alive && request === previewSerial && key === requestKey) {
+        preview = result;
+        previewKey = key;
+      }
     } catch (caught) {
-      error = errorMessage(caught);
+      if (alive && request === previewSerial) error = errorMessage(caught);
     } finally {
-      pending = false;
+      if (alive && request === previewSerial) pending = false;
     }
   }
-
-  async function resumeAnalysis() {
-    if (!selected) return;
-    pending = true;
-    error = '';
-    message = '';
-    try {
-      await action(`/${selected.id}/analyse`, {});
-      await load(selected.id, offset);
-      message =
-        'Analysis queued for unfinished batches. Completed results and protected manual annotations are retained.';
-    } catch (caught) {
-      error = errorMessage(caught);
-    } finally {
-      pending = false;
-    }
-  }
-
   async function adopt() {
     if (!selected) return;
-    const missing = selected.total - selected.analysed_count;
-    if (
-      missing > 0 &&
-      !window.confirm(
-        `Keep ${missing} unanalysed blocks unchanged and adopt the saved directions?`
-      )
-    )
-      return;
-    if (
-      !window.confirm(
-        'Adopt the saved performance plan and enable it for future generation? Unsaved editor changes are not included.'
-      )
-    )
-      return;
+    if (editorDirty && !(await saveAnnotation())) return;
+    if (settingsDirty && !(await saveSettings())) return;
     pending = true;
     error = '';
-    message = '';
     try {
       await action(`/${selected.id}/adopt`, {
         expected_version: selected.version,
-        accept_unanalysed: missing > 0,
+        accept_unanalysed: acceptMissing,
         enable: true
       });
-      await load(selected.id, offset);
-      message =
-        'Performance adopted. Future generation uses these directions; existing takes and running requests are not overwritten.';
+      await load(selected.id, offset, false);
+      message = 'Speech directions adopted for future generation.';
       onchanged?.();
     } catch (caught) {
       error = errorMessage(caught);
@@ -364,63 +586,108 @@
       pending = false;
     }
   }
+  async function resumeAnalysis() {
+    if (!selected) return;
+    pending = true;
+    error = '';
+    try {
+      await action(`/${selected.id}/analyse`, {});
+      await load(selected.id);
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      pending = false;
+    }
+  }
+  function clearDirections() {
+    if (xmlMode) xml = clearMarkupDirections(xml);
+    else {
+      draft = { decision: 'none', locked };
+      jsonBuffer = JSON.stringify(draft, null, 2);
+    }
+    parseError = '';
+  }
+  function markSelection() {
+    try {
+      xml = markSpokenRange(
+        xml,
+        selectionStart,
+        selectionEnd,
+        speaker,
+        category
+      );
+      parseError = '';
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
 </script>
 
+<svelte:window
+  onbeforeunload={(event) => {
+    if (editorDirty || settingsDirty || castDraft?.dirty)
+      event.preventDefault();
+  }}
+/>
 <details
-  class="mt-4 rounded-2xl border border-[var(--line)] p-4"
-  bind:open={opened}
+  class="speech-controls mt-5 border-t border-[var(--line)] pt-5 sm:rounded-2xl sm:border sm:p-4"
   ontoggle={(event) => {
-    // The event fires before Svelte updates the bound open value.
+    opened = event.currentTarget.open;
     if (event.currentTarget.open && !stored && !pending) void load();
   }}
 >
   <summary class="cursor-pointer font-semibold"
-    >Context and performance <span class="muted text-xs">Optional · pSSML</span
+    >Speech direction <span class="muted ml-2 text-xs"
+      >Context · dialogue · cast</span
     ></summary
   >
-  <div class="mt-4 space-y-4">
+  <div class="mt-4 space-y-5">
     <p class="muted text-sm">
-      Direct short utterances using surrounding meaning, without reading the
-      context or changing speech blocks. Audiobooks use the same optional pass
-      with paragraph and scene context. No preceding generated audio is used.
+      Keep accepted wording and segment boundaries while directing delivery and
+      assigning voices. {selected?.settings.workflow_kind === 'voiceover'
+        ? 'Voiceover parts share their segment’s timing window; fit is assessed after assembly.'
+        : 'For long-form narration, dialogue turns can flow without paragraph-length pauses.'}
     </p>
     {#if error}<p class="text-sm text-red-700" role="alert">{error}</p>{/if}
     {#if message}<p class="muted text-sm" role="status">{message}</p>{/if}
-    {#if capability}<p class="muted text-xs">
-        Selected model: {capability.model || 'not selected'} · Directions: {capability.instructions}
-        · Semantic context: {capability.semantic_context}. Capabilities are {capability.status},
-        not a guarantee of acoustic compliance.
-      </p>{/if}
+    <GenerationCastPanel
+      bind:this={castPanel}
+      {sessionId}
+      {service}
+      {model}
+      {busy}
+      onchanged={(items) => {
+        characters = items;
+        preview = null;
+        onchanged?.();
+      }}
+    />
     <fieldset disabled={blocked} class="space-y-3">
-      <legend class="mb-2 font-medium"
-        >General direction and synthesis context</legend
-      >
+      <legend class="mb-2 font-semibold">Generation defaults</legend>
       <label class="block text-sm"
-        >General direction / stable narrator description
-        <textarea
+        >General speech direction<textarea
           class="input mt-1 w-full"
-          rows="3"
+          rows="2"
           maxlength="4000"
           bind:value={general}
-          placeholder="Natural, restrained explanatory narration."
-          aria-label="General speech direction"></textarea>
-      </label>
+          placeholder="Natural, restrained narration."></textarea></label
+      >
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="text-sm"
-          >Context sent directly to TTS
-          <select class="input mt-1 w-full" bind:value={contextMode}>
-            <option value="off">Off</option><option value="before"
+          >Context sent to speech model<select
+            class="input mt-1 w-full"
+            bind:value={contextMode}
+            ><option value="off">Off</option><option value="before"
               >Preceding text</option
-            ><option value="both">Preceding and following text</option>
-          </select>
-        </label>
-        <p class="muted text-xs">
-          Gemini can use prompt-separated semantic context. For other models,
-          run the performance pass to turn context into supported directions.
-          Separation is prompt-mediated, not an enforced hidden channel.
+            ><option value="both">Preceding and following text</option></select
+          ></label
+        >
+        <p class="muted text-xs self-center">
+          Only supporting models receive semantic context. Preview shows what
+          the selected model can encode or approximate.
         </p>
       </div>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid gap-3 sm:grid-cols-3">
         <label class="text-sm"
           >Before (blocks)<input
             class="input mt-1 w-full"
@@ -429,8 +696,7 @@
             max="20"
             bind:value={before}
           /></label
-        >
-        <label class="text-sm"
+        ><label class="text-sm"
           >After (blocks)<input
             class="input mt-1 w-full"
             type="number"
@@ -438,8 +704,7 @@
             max="20"
             bind:value={after}
           /></label
-        >
-        <label class="text-sm"
+        ><label class="text-sm"
           >Context character limit<input
             class="input mt-1 w-full"
             type="number"
@@ -450,231 +715,466 @@
         >
       </div>
       <label class="flex items-center gap-2 text-sm"
-        ><input type="checkbox" bind:checked={enabled} />Use the adopted
-        performance plan for generation</label
+        ><input type="checkbox" bind:checked={enabled} />Use adopted speech
+        directions</label
+      >
+      <label class="flex items-center gap-2 text-sm"
+        ><input type="checkbox" bind:checked={casting} />Use character and
+        dialogue voices</label
       >
       <label class="flex items-center gap-2 text-sm"
         ><input type="checkbox" bind:checked={vocalizations} />Allow explicitly
-        requested vocalizations, such as a sigh or laugh</label
+        requested vocalizations</label
       >
-      <button
-        class="btn"
-        disabled={!stored || !validWindows}
-        onclick={() => void saveSettings()}>Save speech settings</button
-      >
-    </fieldset>
-    <fieldset
-      disabled={blocked || !validWindows}
-      class="space-y-3 border-t border-[var(--line)] pt-4"
-    >
-      <legend class="font-medium">Optional contextual performance pass</legend>
-      <label class="block text-sm"
-        >Planning guidance (not spoken)
-        <textarea
-          class="input mt-1 w-full"
-          rows="2"
-          maxlength="6000"
-          bind:value={planningInstructions}
-          placeholder="Steer only where the isolated utterance loses an important rhetorical cue."
-        ></textarea>
-      </label>
-      <label class="block text-sm"
-        >Analysis model <span class="muted text-xs"
-          >Blank uses your configured default LLM</span
-        >
-        <input
-          class="input mt-1 w-full"
-          bind:value={modelName}
-          maxlength="255"
-        />
-      </label>
-      <p class="muted text-xs">
-        Save changes to the general narrator direction before analysing.
-        Analysis can incur your configured LLM’s usage charges. It never starts
-        TTS or changes accepted wording.
-      </p>
-      <div class="flex flex-wrap gap-2">
-        <button class="btn btn-primary" onclick={() => void create('llm')}
-          >Analyse performance</button
-        >
-        <button class="btn" onclick={() => void create('manual')}
-          >Create manual draft</button
-        >
-        {#if selected && !selected.stale}<button
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          class="btn"
+          disabled={!stored || !validWindows || !settingsDirty}
+          onclick={() => void saveSettings()}>Save generation defaults</button
+        >{#if settingsDirty}<span class="text-xs text-amber-700"
+            >Unsaved settings</span
+          ><button
             class="btn"
-            onclick={() => void create('manual', true)}>Copy for editing</button
+            onclick={() => {
+              if (stored) applySettings(stored);
+            }}>Discard settings changes</button
           >{/if}
       </div>
     </fieldset>
+    <details class="rounded-xl border border-[var(--line)] p-3">
+      <summary class="cursor-pointer font-semibold"
+        >Delivery analysis <span class="muted ml-2 text-xs">Optional</span
+        ></summary
+      >
+      <fieldset disabled={blocked || !validWindows} class="mt-3 space-y-3">
+        <label class="block text-sm"
+          >Analysis guidance<textarea
+            class="input mt-1 w-full"
+            rows="2"
+            maxlength="6000"
+            bind:value={planningInstructions}
+            placeholder="Direct only where context changes how a line should be spoken."
+          ></textarea></label
+        >
+        <label class="block text-sm"
+          >Analysis model <span class="muted text-xs"
+            >Blank uses the configured default</span
+          ><input
+            class="input mt-1 w-full"
+            bind:value={modelName}
+            maxlength="255"
+          /></label
+        >
+        <p class="muted text-xs">
+          Analyse delivery uses the configured LLM. Passive analysis lets an MCP
+          client claim and submit work without starting a model. Both produce a
+          draft for review and leave the words unchanged.
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <button
+            class="btn btn-primary"
+            onclick={() => navigate(() => create('llm'))}
+            >Analyse delivery</button
+          ><button class="btn" onclick={() => navigate(() => create('passive'))}
+            >Prepare passive analysis</button
+          >
+        </div>
+      </fieldset>
+    </details>
     <div
       class="flex flex-wrap items-end gap-2 border-t border-[var(--line)] pt-4"
     >
-      <label class="min-w-48 flex-1 text-sm"
-        >Performance version
-        <select
-          class="input mt-1 w-full"
-          disabled={blocked || !history.length}
-          value={selected?.id ?? ''}
-          onchange={(event) => void load(event.currentTarget.value)}
-        >
-          {#each history as plan}<option value={plan.id}
-              >{plan.status} · {plan.steered_count} directed / {plan.total} blocks{plan.stale
-                ? ' · stale'
-                : ''}</option
-            >{/each}
-        </select>
-      </label>
+      <h4 class="mr-auto font-semibold">Speech direction review</h4>
       <button
         class="btn"
         disabled={blocked}
-        onclick={() => void load(selected?.id, offset)}>Refresh</button
+        onclick={() => navigate(() => create('manual'))}
+        >Create manual draft</button
+      >{#if selected && !selected.stale}<button
+          class="btn"
+          disabled={blocked}
+          onclick={() => navigate(() => create('manual', true))}
+          >Copy for editing</button
+        >{/if}<button class="btn" disabled={blocked} onclick={() => void load()}
+        >Refresh</button
       >
     </div>
+    {#if capability}<p class="muted text-xs">
+        Model: {capability.model || 'not selected'} · Directions: {capability.instructions}
+        · Context: {capability.semantic_context}. Encoded controls still need an
+        audio listening check.
+      </p>{/if}
+    {#if history.length}<label class="block text-sm"
+        >Direction version<select
+          class="input mt-1 w-full"
+          disabled={blocked}
+          value={selected?.id ?? ''}
+          onchange={(event) => {
+            const id = event.currentTarget.value;
+            navigate(() => load(id, 0, false));
+          }}
+          >{#each history as plan}<option value={plan.id}
+              >{plan.status} · {plan.steered_count} directed / {plan.total} blocks{plan.stale
+                ? ' · stale'
+                : ''}</option
+            >{/each}</select
+        ></label
+      >{/if}
     {#if selected}
       <p class="muted text-sm">
         {selected.analysed_count} of {selected.total} analysed · {selected.locked_count}
-        locked. {selected.job_id ? `Analysis job: ${selected.job_id}.` : ''}
+        protected{selected.job_status
+          ? ` · Analysis ${selected.job_status}`
+          : ''}.
       </p>
+      {#if selected.job_id}<a class="text-sm underline" href="/activity"
+          >Open analysis job</a
+        >{/if}
+      <details class="text-xs muted">
+        <summary class="cursor-pointer">Saved analysis configuration</summary>
+        <p class="mt-2 whitespace-pre-wrap">
+          {selected.settings.mode ?? 'manual'} · {selected.settings
+            .context_before ?? 2} before / {selected.settings.context_after ??
+            1} after. {selected.settings.instructions ||
+            'No extra analysis guidance.'}
+        </p>
+      </details>
       {#if selected.stale}<p role="status" class="text-sm text-amber-700">
-          The speech plan changed. Create a new performance plan; these
-          directions cannot be adopted.
+          Accepted speech changed. Create a new matching draft before adopting
+          directions.
         </p>{/if}
       <label class="block text-sm"
-        >Speech block
-        <select
+        >Show blocks<select
           class="input mt-1 w-full"
-          value={unitId}
           disabled={blocked}
-          onchange={(event) => chooseUnit(event.currentTarget.value)}
-        >
-          {#each selected.items ?? [] as unit}<option value={unit.id}
-              >#{unit.ordinal + 1} · {unit.annotation?.decision ?? 'unanalysed'} ·
-              {unit.text.slice(0, 80)}</option
-            >{/each}
-        </select>
-      </label>
-      <div class="flex items-center gap-3 text-sm">
+          value={filter}
+          onchange={(event) => {
+            const value = event.currentTarget.value;
+            navigate(() => {
+              filter = value;
+              return load(selected?.id, 0, false);
+            });
+          }}
+          ><option value="all">All blocks</option><option value="directed"
+            >Directed</option
+          ><option value="unreviewed">Unanalysed</option><option value="locked"
+            >Protected</option
+          ><option value="dialogue">Dialogue</option><option value="unresolved"
+            >Unresolved speakers</option
+          ></select
+        ></label
+      >
+      <nav
+        aria-label="Speech blocks"
+        class="max-h-48 overflow-auto rounded-xl border border-[var(--line)] divide-y divide-[var(--line)]"
+      >
+        {#each selected.items ?? [] as unit}<button
+            class="block w-full p-3 text-left text-sm hover:bg-[var(--accent-soft)]"
+            class:bg-[var(--accent-soft)]={unitId === unit.id}
+            aria-current={unitId === unit.id ? 'true' : undefined}
+            disabled={blocked}
+            onclick={() => navigate(() => selectUnit(unit.id))}
+            ><span class="font-medium">#{unit.ordinal + 1}</span> · {unit
+              .annotation?.decision === 'steer'
+              ? 'Directed'
+              : unit.annotation
+                ? 'Reviewed'
+                : 'Unanalysed'}{unit.annotation?.locked
+              ? ' · Protected'
+              : ''}<span class="block truncate">{unit.spoken_text}</span
+            ></button
+          >{/each}
+      </nav>
+      <div class="flex flex-wrap items-center gap-2 text-xs">
         <button
           class="btn"
-          disabled={blocked || offset === 0}
-          onclick={() => void load(selected?.id, Math.max(0, offset - 20))}
+          disabled={blocked || !offset}
+          onclick={() =>
+            navigate(() => load(selected?.id, Math.max(0, offset - 20), false))}
           >Previous blocks</button
-        >
-        <span
-          >{offset + 1}–{Math.min(offset + 20, selected.total)} of {selected.total}</span
-        >
-        <button
+        ><span
+          >{total ? offset + 1 : 0}–{Math.min(offset + 20, total)} of {total}</span
+        ><button
           class="btn"
-          disabled={blocked || offset + 20 >= selected.total}
-          onclick={() => void load(selected?.id, offset + 20)}
+          disabled={blocked || offset + 20 >= total}
+          onclick={() => navigate(() => load(selected?.id, offset + 20, false))}
           >Next blocks</button
         >
       </div>
       {#if currentUnit}
-        <blockquote
-          class="rounded-xl bg-[var(--accent-soft)] p-3 text-sm whitespace-pre-wrap"
+        <label class="block text-sm font-medium"
+          >Accepted spoken text <span class="muted text-xs font-normal"
+            >Select words below to mark dialogue</span
+          ><textarea
+            class="input mt-1 w-full whitespace-pre-wrap"
+            rows="4"
+            readonly
+            value={currentUnit.spoken_text}
+            bind:this={textArea}
+            onselect={() => {
+              selectionStart = textArea?.selectionStart ?? 0;
+              selectionEnd = textArea?.selectionEnd ?? 0;
+            }}></textarea></label
         >
-          {currentUnit.spoken_text}
-        </blockquote>
-        {#if currentUnit.annotation?.reason}<p class="muted text-xs">
-            Rationale: {currentUnit.annotation.reason}
+        {#if draft.reason}<p class="muted text-xs">
+            Rationale: {draft.reason}
           </p>{/if}
-        <fieldset disabled={blocked || !editable} class="space-y-3">
-          <label class="block text-sm"
-            >Block delivery direction
-            <textarea
+        {#if xmlMode && editable}<fieldset
+            disabled={blocked}
+            class="flex flex-wrap items-end gap-2"
+          >
+            <label class="min-w-40 flex-1 text-sm"
+              >Selected words belong to<select
+                class="input mt-1 w-full"
+                bind:value={speaker}
+                ><option value="">Unnamed dialogue</option><option
+                  value="__narrator">Narrator</option
+                >{#each characters as character}<option value={character.id}
+                    >{character.display_name}</option
+                  >{/each}</select
+              ></label
+            >{#if !speaker}<label class="text-sm"
+                >Voice category<select
+                  class="input mt-1 w-full"
+                  bind:value={category}
+                  ><option value="unspecified">Unknown</option><option
+                    value="male">Male</option
+                  ><option value="female">Female</option><option
+                    value="androgynous">Androgynous</option
+                  ></select
+                ></label
+              >{/if}<button
+              class="btn"
+              disabled={selectionEnd <= selectionStart}
+              onclick={markSelection}>Mark selected text</button
+            >
+          </fieldset>{/if}
+        <fieldset
+          disabled={blocked || !editable || Boolean(parseError)}
+          class="grid gap-3 sm:grid-cols-2"
+        >
+          <label class="block text-sm sm:col-span-2"
+            >Block delivery direction<textarea
               class="input mt-1 w-full"
               rows="2"
               maxlength="1200"
-              bind:value={direction}
-              placeholder="Leave blank for normal delivery."></textarea>
-          </label>
-          <label class="flex items-center gap-2 text-sm"
-            ><input type="checkbox" bind:checked={locked} />Protect this manual
-            annotation from reanalysis</label
+              value={controls.instruction ?? ''}
+              oninput={(event) =>
+                setControl('instruction', event.currentTarget.value)}
+              placeholder="Add a local direction; other controls remain active."
+            ></textarea></label
           >
-          {#if currentUnit.annotation?.locked}<label
-              class="flex items-center gap-2 text-sm"
-              ><input type="checkbox" bind:checked={unlock} />Explicitly unlock
-              the saved annotation to change it</label
-            >{/if}
-          <label class="flex items-center gap-2 text-sm"
-            ><input type="checkbox" bind:checked={advanced} />Edit pSSML JSON
-            for phrase controls and events</label
-          >
-          {#if advanced}<textarea
-              class="input w-full font-mono text-xs"
-              rows="12"
-              bind:value={annotationJson}
-              aria-label="pSSML annotation JSON"></textarea>
-            <p class="muted text-xs">
-              Advanced JSON is authoritative, including its locked field. Phrase
-              anchors must match the spoken text exactly; repeated phrases
-              require an occurrence number.
-            </p>{/if}
-          <button
-            class="btn"
-            disabled={Boolean(currentUnit.annotation?.locked && !unlock)}
-            onclick={() => void saveAnnotation()}>Save annotation</button
-          >
-        </fieldset>
-        <button
-          class="btn"
-          disabled={blocked || selected.stale}
-          onclick={() => void compilePreview()}
-          >Preview compiled request (no audio)</button
-        >
-      {/if}
-      {#if preview}
-        <div class="space-y-2 rounded-xl border border-[var(--line)] p-3">
-          <h4 class="font-medium">Compiled for {preview.capabilities.model}</h4>
-          {#each preview.report as item}<p class="text-xs">
-              <strong>{item.status} · {item.control}:</strong>
-              {item.message}
-            </p>{/each}
-          <details>
-            <summary class="cursor-pointer text-sm"
-              >Provider request and clean transcript</summary
+          {#each controlFields.filter((field) => field !== 'instruction') as field}<label
+              class="block text-sm"
+              >{field[0].toUpperCase() +
+                field.slice(1)}{#if field === 'emotion'}<input
+                  class="input mt-1 w-full"
+                  maxlength="120"
+                  value={controls[field] ?? ''}
+                  oninput={(event) =>
+                    setControl(field, event.currentTarget.value)}
+                  placeholder="No local emotion"
+                />{:else}<select
+                  class="input mt-1 w-full"
+                  value={controls[field] ?? ''}
+                  onchange={(event) =>
+                    setControl(field, event.currentTarget.value)}
+                  ><option value="">No local override</option
+                  >{#each field === 'pace' ? ['natural', 'slower', 'brisk'] : field === 'cadence' ? ['continuing', 'concluding', 'questioning', 'contrast'] : ['light', 'moderate', 'strong'] as option}<option
+                      value={option}>{option}</option
+                    >{/each}</select
+                >{/if}</label
+            >{/each}
+          <div class="sm:col-span-2 flex flex-wrap gap-3 items-center">
+            <label class="flex items-center gap-2 text-sm"
+              ><input type="checkbox" bind:checked={locked} />Protect this block
+              from analysis</label
+            ><button class="btn" onclick={clearDirections}
+              >Clear block directions</button
             >
-            <pre
-              class="mt-2 max-h-80 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(
-                {
-                  input: preview.input,
-                  instructions: preview.instructions,
-                  request_options: preview.request_options,
-                  transcript: preview.transcript
-                },
-                null,
-                2
-              )}</pre>
-          </details>
-        </div>
-      {/if}
-      {#if editable}
-        <div class="flex flex-wrap gap-2">
-          <button
-            class="btn btn-primary"
-            disabled={blocked}
-            onclick={() => void adopt()}>Adopt saved performance plan</button
+          </div>
+        </fieldset>
+        <p class="muted text-xs">
+          Clearing local directions keeps speaker assignments and the general
+          narration guidance.
+        </p>
+        {#if summaries.length}<ul
+            class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs space-y-1"
+            aria-label="Active phrase, dialogue and event controls"
           >
-          {#if selected.analysed_count < selected.total}<button
-              class="btn"
+            {#each summaries as summary}<li class="break-words">
+                {summary}
+              </li>{/each}
+          </ul>{/if}
+        <details bind:open={advanced} class="text-sm">
+          <summary class="cursor-pointer"
+            >{xmlMode ? 'XML annotation' : 'Advanced pSSML JSON'}
+            {editable ? '' : '· read only'}</summary
+          ><textarea
+            class="input mt-2 w-full font-mono text-xs"
+            aria-label={xmlMode ? 'XML annotation' : 'Annotation JSON'}
+            rows="10"
+            readonly={!editable}
+            disabled={blocked}
+            value={xmlMode ? xml : jsonBuffer}
+            oninput={(event) => editAdvanced(event.currentTarget.value)}
+            spellcheck="false"></textarea>
+          <p class="muted mt-1 text-xs">
+            {xmlMode
+              ? '<ins> and <em> contain directions, never spoken words. Keep the segment ID and extracted transcript unchanged.'
+              : 'This legacy annotation shares its state with the controls above.'}
+          </p>
+        </details>
+        {#if parseError}<p role="alert" class="text-sm text-red-700">
+            {parseError}
+          </p>{/if}
+        {#if currentUnit.annotation?.locked && editable}<label
+            class="flex items-center gap-2 text-sm"
+            ><input type="checkbox" bind:checked={unlock} />Authorize changing
+            this protected annotation</label
+          >{/if}
+        <div class="flex flex-wrap items-center gap-2">
+          {#if editable}<button
+              class="btn btn-primary"
               disabled={blocked ||
-                ['queued', 'running', 'retrying', 'cancelling'].includes(
-                  selected.job_status ?? ''
-                )}
-              onclick={() => void resumeAnalysis()}
-              >Analyse remaining blocks</button
+                Boolean(parseError) ||
+                (Boolean(currentUnit.annotation?.locked) && !unlock)}
+              onclick={() => void saveAnnotation()}
+              >Save block directions</button
+            >{/if}<button
+            class="btn"
+            disabled={blocked || !validWindows || Boolean(parseError)}
+            onclick={() => void compilePreview()}>Preview model request</button
+          >{#if editorDirty}<span class="text-xs text-amber-700"
+              >Unsaved block changes</span
             >{/if}
         </div>
+        {#if preview}<section
+            aria-label="Compiled model request"
+            class="rounded-xl border border-[var(--line)] p-3 space-y-3"
+          >
+            <p class="font-medium text-sm">
+              {previewStale
+                ? 'Preview is out of date — compile it again.'
+                : 'Preview of these editor settings · no audio generated'}
+            </p>
+            {#if !previewStale}{#each preview.report ?? [] as item}<p
+                  class="text-xs"
+                >
+                  <strong>{item.status}</strong> · {item.message}
+                </p>{/each}{#each preview.parts ?? [] as part, index}<div
+                  class="text-xs rounded-lg bg-[var(--accent-soft)] p-2"
+                >
+                  <strong
+                    >Part {index + 1}: {part.voice || 'session voice'}</strong
+                  >
+                  · {voiceSourceLabels[part.voice_source ?? 'base'] ??
+                    part.voice_source}{part.fallback ? ' · fallback' : ''}
+                  <p class="mt-1 whitespace-pre-wrap">{part.text}</p>
+                </div>{/each}
+              <details>
+                <summary class="cursor-pointer text-xs"
+                  >Exact provider input</summary
+                >
+                <pre
+                  class="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{preview.instructions
+                    ? preview.instructions + '\n\n'
+                    : ''}{preview.input}</pre>
+              </details>{/if}
+          </section>{/if}
       {/if}
-      <p class="muted text-xs">
-        Adopted performance is immutable. Copy it to edit. Unsupported controls
-        are reported rather than spoken; timing and expression remain
-        model-dependent. Automatic split/regroup passes are disabled while
-        performance or semantic context is enabled; explicit block changes
-        require a fresh review.
-      </p>
-    {/if}
+      {#if editable}<div class="border-t border-[var(--line)] pt-4 space-y-3">
+          {#if selected.analysed_count < selected.total}<label
+              class="flex items-center gap-2 text-sm"
+              ><input type="checkbox" bind:checked={acceptMissing} />Accept {selected.total -
+                selected.analysed_count} unanalysed blocks without directions</label
+            >{/if}
+          <div class="flex flex-wrap gap-2">
+            <button
+              class="btn btn-primary"
+              disabled={blocked ||
+                Boolean(parseError) ||
+                (selected.analysed_count < selected.total && !acceptMissing)}
+              onclick={() => void adopt()}
+              >{editorDirty || settingsDirty
+                ? 'Save changes and adopt'
+                : 'Adopt speech directions'}</button
+            >{#if selected.settings.mode === 'llm'}<button
+                class="btn"
+                disabled={blocked}
+                onclick={() => void resumeAnalysis()}
+                >Resume delivery analysis</button
+              >{/if}
+          </div>
+        </div>{/if}
+    {:else}<p class="muted text-sm">
+        Create a manual draft, run delivery analysis, or prepare work for a
+        passive MCP client.
+      </p>{/if}
   </div>
 </details>
+{#if navigation}<div
+    class="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"
+  >
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="speech-draft-title"
+      tabindex="-1"
+      use:modalFocus={{ onclose: () => (navigation = null) }}
+      class="compact-confirmation w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-lg space-y-4"
+    >
+      <h3 id="speech-draft-title" class="font-semibold">
+        {routeNavigation
+          ? 'Save your changes before leaving?'
+          : 'Save this block before leaving?'}
+      </h3>
+      <p class="muted text-sm">
+        {routeNavigation
+          ? 'You have unsaved speech directions, generation defaults, or character assignments. Save them or discard the changes before switching sections.'
+          : 'The block has unsaved directions or speaker assignments. Generation-default changes stay in their own draft.'}
+      </p>
+      <div class="flex flex-wrap gap-2">
+        <button
+          class="btn btn-primary"
+          disabled={blocked ||
+            Boolean(parseError) ||
+            (routeNavigation &&
+              (!validWindows ||
+                castDraft?.blocked ||
+                castDraft?.valid === false))}
+          onclick={async () => {
+            const next = navigation;
+            if (
+              routeNavigation &&
+              castDraft?.dirty &&
+              !(await castPanel?.saveChanges())
+            )
+              return;
+            if (editorDirty && !(await saveAnnotation())) return;
+            if (routeNavigation && settingsDirty && !(await saveSettings()))
+              return;
+            navigation = null;
+            await next?.();
+          }}>Save and continue</button
+        ><button
+          class="btn"
+          disabled={blocked}
+          onclick={() => {
+            const next = navigation;
+            selectUnit(unitId);
+            if (routeNavigation) {
+              if (stored) applySettings(stored);
+              castPanel?.discardChanges();
+            }
+            navigation = null;
+            void next?.();
+          }}>Discard and continue</button
+        ><button
+          class="btn"
+          disabled={blocked}
+          onclick={() => (navigation = null)}>Stay here</button
+        >
+      </div>
+    </div>
+  </div>{/if}

@@ -154,6 +154,8 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "tts_optimization_model": "Selects the LLM used for speech optimization; blank uses the configured default model.",
         "llm_concurrent_calls": "Limits speech-optimization model requests that may run concurrently.",
         "speech_optimization_mode": "Selects guarded planning, which preserves source wording, or flexible planning, which permits bounded rewriting subject to the retention threshold.",
+        "llm_tts_annotation_mode": "Preserves speech markup or recognizes dialogue and named characters in a reviewable document-level optimization pass.",
+        "llm_tts_annotation_only": "Annotates dialogue and speakers while preserving every spoken word exactly.",
         "speech_plan_min_retention": "Sets the minimum fraction of source wording that flexible speech optimization must retain before a proposal is accepted.",
         "speech_plan_save_proposals": "Stores rejected or alternate speech-plan proposals for later inspection instead of retaining only the accepted result.",
         "llm_multi_stage": "Runs the non-empty first, second, and third speech-optimization prompts in sequence instead of using the combined prompt.",
@@ -311,6 +313,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "openai_audio_instructions": "Provides optional provider instructions for OpenAI-compatible, Gemini-compatible, or custom audio adapters; the active adapter determines whether and how they affect synthesis.",
         "generation_prompt": "Provides general narrator or delivery directions separately from the spoken transcript. Expressive capabilities determine how the selected model receives them; voice design remains model-specific.",
         "performance_enabled": "Applies an adopted, reviewed performance sidecar to the selected speech plan without rewriting its words or changing its segment boundaries. Analysis is a separate optional action.",
+        "casting_enabled": "Uses reviewed character and dialogue voice assignments within each integral speech segment. Independent of emotional directions.",
         "performance_allow_vocalizations": "Allows explicitly requested vocal events such as a laugh or sigh in performance annotations. Off by default; unsupported events are reported, not added to transcript text.",
         "tts_context_mode": "Supplies read-only preceding or preceding-and-following target-language text to context-capable TTS prompts. Only the current utterance is synthesized; this does not enable acoustic continuation.",
         "performance_context_before": "Maximum preceding accepted segments used as semantic context, bounded by speaker and section boundaries. Zero disables preceding context.",
@@ -429,6 +432,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         },
         "llm_concurrent_calls": {"minimum": 1, "maximum": 16},
         "speech_optimization_mode": {"choices": ["guarded", "flexible"]},
+        "llm_tts_annotation_mode": {"choices": ["off", "dialogue", "speakers"]},
         "speech_plan_min_retention": {
             "minimum": 0.5,
             "maximum": 1,
@@ -802,6 +806,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "applicability": "Adopted speech plans for audiobook narration and subtitle-timed voiceovers.",
             "caveat": "Does not run an LLM automatically or alter accepted text. Adopt a performance plan first."
         },
+        "casting_enabled": {"applicability": "Named characters, source speakers and dialogue category defaults on one selected speech backend/model."},
         "performance_allow_vocalizations": {
             "applicability": "Explicit non-lexical performance events on supporting model variants.",
             "caveat": "Off by default; inferred emotions never authorize invented vocalizations."

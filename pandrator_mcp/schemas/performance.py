@@ -1,10 +1,10 @@
-"""Portable MCP contracts. The target supplies the authoritative pSSML schema."""
+"""Portable MCP contracts for XML and legacy pSSML speech directions."""
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .common import ToolInput
 
@@ -26,6 +26,9 @@ class PerformancePlanInput(PerformanceSessionInput):
 class GetPerformancePlanInput(PerformancePlanInput):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=25, ge=1, le=100)
+    filter: Literal[
+        "all", "directed", "unreviewed", "locked", "dialogue", "unresolved"
+    ] = "all"
 
 
 class PerformanceWriteInput(PerformancePlanInput):
@@ -37,6 +40,7 @@ class PerformanceWriteInput(PerformancePlanInput):
 class CreatePerformancePlanInput(PerformanceSessionInput):
     expected_plan_revision_id: str = Field(min_length=1, max_length=80)
     mode: Literal["manual", "passive", "llm"] = "passive"
+    annotation_format: Literal["pssml", "xml"] = "pssml"
     model_name: str = Field(default="", max_length=255)
     instructions: str = Field(default="", max_length=6000)
     context_before: int = Field(default=2, ge=0, le=20)
@@ -52,9 +56,19 @@ class CreatePerformancePlanInput(PerformanceSessionInput):
 
 class PerformanceItemInput(ToolInput):
     segment_id: str = Field(min_length=1, max_length=80)
-    annotation: dict[str, Any] = Field(
+    annotation: dict[str, Any] | None = Field(
+        default=None,
         description="pandrator.performance/v1 annotation; use the exact annotation_schema returned by claim. Never include transcript edits or provider markup."
     )
+    speech_xml: str | None = Field(default=None, max_length=256 * 1024)
+    locked: bool = False
+    reason: str = Field(default="", max_length=1600)
+
+    @model_validator(mode="after")
+    def exactly_one_format(self):
+        if (self.annotation is None) == (self.speech_xml is None):
+            raise ValueError("Supply exactly one of annotation or speech_xml.")
+        return self
 
 
 class EditPerformancePlanInput(PerformanceWriteInput):
@@ -72,11 +86,23 @@ class AdoptPerformancePlanInput(PerformanceWriteInput):
 class PreviewPerformancePlanInput(PerformancePlanInput):
     segment_id: str = Field(min_length=1, max_length=80)
     annotation: dict[str, Any] | None = None
+    speech_xml: str | None = Field(default=None, max_length=256 * 1024)
     service: str | None = Field(default=None, max_length=160)
     model: str | None = Field(default=None, max_length=255)
     generation_prompt: str | None = Field(default=None, max_length=4000)
     context_mode: Literal["off", "before", "both"] | None = None
+    context_before: int | None = Field(default=None, ge=0, le=20)
+    context_after: int | None = Field(default=None, ge=0, le=20)
+    context_max_chars: int | None = Field(default=None, ge=0, le=16000)
+    casting_enabled: bool | None = None
+    performance_enabled: bool | None = None
     allow_vocalizations: bool | None = None
+
+    @model_validator(mode="after")
+    def at_most_one_format(self):
+        if self.annotation is not None and self.speech_xml is not None:
+            raise ValueError("Supply annotation or speech_xml, not both.")
+        return self
 
 
 class AnalysePerformancePlanInput(PerformanceWriteInput):

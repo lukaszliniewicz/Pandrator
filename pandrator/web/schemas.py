@@ -421,12 +421,16 @@ class VoiceCreate(StrictModel):
     name: str = Field(min_length=1, max_length=255)
     language: str | None = Field(default=None, max_length=40)
     description: str | None = None
+    voice_category: Literal["male", "female", "androgynous", "unspecified"] = (
+        "unspecified"
+    )
 
 
 class VoiceUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     language: str | None = Field(default=None, max_length=40)
     description: str | None = None
+    voice_category: Literal["male", "female", "androgynous", "unspecified"] | None = None
 
 
 class VoiceTranscriptReview(StrictModel):
@@ -1285,11 +1289,14 @@ class SpeechOptimizationDispatchRunCreateRequest(DispatchExecutionMixin):
     context_before: int = Field(default=4, ge=0, le=20)
     context_after: int = Field(default=2, ge=0, le=20)
     include_timing: bool = True
+    annotation_mode: Literal["off", "dialogue", "speakers"] = "off"
+    annotation_only: bool = False
 
 
 class SpeechOptimizationDispatchItem(StrictModel):
     unit_id: int = Field(ge=1)
-    text: str = Field(min_length=1, max_length=4 * 1024 * 1024)
+    text: str | None = Field(default=None, min_length=1, max_length=4 * 1024 * 1024)
+    speech_xml: str | None = Field(default=None, max_length=256 * 1024)
 
 
 class SpeechOptimizationDispatchResult(StrictModel):
@@ -1304,6 +1311,10 @@ class SpeechOptimizationDispatchBatchSubmitRequest(StrictModel):
     lease_token: str = Field(min_length=1, max_length=160)
     result: SpeechOptimizationDispatchResult
     context_delta: DispatchContextDelta = Field(default_factory=DispatchContextDelta)
+    character_proposals: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
 
 class SpeechOptimizationDispatchUnitTiming(StrictModel):
@@ -1318,12 +1329,14 @@ class SpeechOptimizationDispatchUnit(StrictModel):
     language: str
     speaker: str | None = None
     timing: SpeechOptimizationDispatchUnitTiming | None = None
+    speech_xml: str | None = Field(default=None, max_length=256 * 1024)
 
 
 class SpeechOptimizationDispatchBoundaryUnit(StrictModel):
     text: str
     language: str
     speaker: str | None = None
+    speech_xml: str | None = Field(default=None, max_length=256 * 1024)
 
 
 class SpeechOptimizationDispatchContext(StrictModel):
@@ -1348,6 +1361,8 @@ class SpeechOptimizationDispatchTaskContract(StrictModel):
     tts_service: str | None = None
     instructions: str
     result_contract: dict[str, Any]
+    annotation_mode: Literal["off", "dialogue", "speakers"] = "off"
+    annotation_only: bool = False
 
 
 class SpeechOptimizationDispatchBatchClaimResponse(StrictModel):
@@ -1360,6 +1375,7 @@ class SpeechOptimizationDispatchBatchClaimResponse(StrictModel):
     batch_status: str
     task: SpeechOptimizationDispatchTaskContract
     batch: SpeechOptimizationDispatchClaimedBatch
+    character_dictionary: dict[str, Any] = Field(default_factory=dict)
     delegation: DispatchDelegationContext
     lease_token: str
     lease_expires_at: str | None

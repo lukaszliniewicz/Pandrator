@@ -37,6 +37,8 @@ _RUN_KEYS = (
     "context_before",
     "context_after",
     "include_timing",
+    "annotation_mode",
+    "annotation_only",
     "execution_mode",
     "max_parallel_batches",
     "status",
@@ -89,15 +91,17 @@ _TASK_KEYS = (
     "tts_service",
     "instructions",
     "result_contract",
+    "annotation_mode",
+    "annotation_only",
 )
 _CLAIMED_BATCH_KEYS = (
     "id_namespace",
     "unit_count",
     "valid_unit_ids",
 )
-_UNIT_KEYS = ("unit_id", "text", "language", "speaker")
+_UNIT_KEYS = ("unit_id", "text", "language", "speaker", "speech_xml")
 _TIMING_KEYS = ("start_ms", "end_ms", "duration_ms")
-_BOUNDARY_KEYS = ("text", "language", "speaker")
+_BOUNDARY_KEYS = ("text", "language", "speaker", "speech_xml")
 _DELEGATION_KEYS = (
     "execution_mode",
     "max_parallel_batches",
@@ -151,6 +155,17 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
     task = payload.get("task")
     if isinstance(task, dict):
         result["task"] = _fields(task, _TASK_KEYS)
+    dictionary = payload.get("character_dictionary")
+    if isinstance(dictionary, dict):
+        entries = dictionary.get("entries")
+        result["character_dictionary"] = {
+            "revision": dictionary.get("revision", 0),
+            "entries": [
+                item
+                for item in (entries[:2000] if isinstance(entries, list) else [])
+                if isinstance(item, dict)
+            ],
+        }
     batch = payload.get("batch")
     if isinstance(batch, dict):
         projected_batch = _fields(batch, _CLAIMED_BATCH_KEYS)
@@ -259,6 +274,8 @@ def create_speech_optimization_dispatch_run(
         context_before=arguments.context_before,
         context_after=arguments.context_after,
         include_timing=arguments.include_timing,
+        annotation_mode=arguments.annotation_mode,
+        annotation_only=arguments.annotation_only,
         execution_mode=arguments.execution_mode,
         max_parallel_batches=arguments.max_parallel_batches,
         context_capsule=arguments.context_capsule.model_dump(mode="json"),
@@ -355,6 +372,7 @@ def submit_speech_optimization_dispatch_batch(
         lease_token=arguments.lease_token,
         result=arguments.result.model_dump(mode="json"),
         context_delta=arguments.context_delta.model_dump(mode="json"),
+        character_proposals=arguments.character_proposals,
         idempotency_key=arguments.idempotency_key,
     )
     projected = {"schema_version": "1", **_fields(result, _SUBMIT_KEYS)}

@@ -776,6 +776,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .performance_routes import register_performance_routes
 
     register_performance_routes(app, context)
+    from .generation_control_routes import register_generation_control_routes
+
+    register_generation_control_routes(app, context)
     register_quick_transcription_routes(app, context)
 
     @app.get("/api/v1/health")
@@ -6116,6 +6119,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 name=name,
                 language=str(payload.language or "").strip() or None,
                 description=str(payload.description or "").strip() or None,
+                metadata_json={"voice_category": payload.voice_category},
             )
             db_session.add(voice)
             db_session.flush()
@@ -6176,6 +6180,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 voice.language = str(changes["language"] or "").strip() or None
             if "description" in changes:
                 voice.description = str(changes["description"] or "").strip() or None
+            if "voice_category" in changes:
+                metadata = dict(voice.metadata_json or {})
+                metadata["voice_category"] = changes["voice_category"] or "unspecified"
+                voice.metadata_json = metadata
             if changes:
                 voice.revision += 1
                 voice.updated_at = utcnow()

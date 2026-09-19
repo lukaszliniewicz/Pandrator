@@ -26,6 +26,11 @@ from pandrator_mcp.schemas.generation import (
     SelectTakeInput,
     UpdateGenerationSegmentInput,
 )
+from pandrator_mcp.schemas.generation_controls import (
+    GetGenerationControlsInput,
+    UpdateGenerationControlsInput,
+)
+from pandrator_mcp.schemas.voice_metadata import UpdateVoiceMetadataInput
 from pandrator_mcp.server import build_server
 from pandrator_mcp.settings import McpSettings
 
@@ -92,6 +97,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_execute_workflow_plan",
                         "pandrator_explain_system",
                         "pandrator_generate_speech_plan",
+                        "pandrator_get_generation_controls",
                         "pandrator_get_capabilities",
                         "pandrator_get_dispatch_run",
                         "pandrator_get_media_edit",
@@ -167,9 +173,11 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_transcription_get",
                         "pandrator_transcription_result",
                         "pandrator_update_generation_segment",
+                        "pandrator_update_generation_controls",
                         "pandrator_update_media_edit",
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
+                        "pandrator_update_voice_metadata",
                     ]),
                     names,
                 )
@@ -573,6 +581,25 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "language",
                     ),
                 ),
+                "pandrator_get_generation_controls": (
+                    GetGenerationControlsInput,
+                    ("session_id",),
+                ),
+                "pandrator_update_generation_controls": (
+                    UpdateGenerationControlsInput,
+                    (
+                        "session_id",
+                        "expected_revision",
+                        "characters",
+                        "cast",
+                        "unlock_ids",
+                        "idempotency_key",
+                    ),
+                ),
+                "pandrator_update_voice_metadata": (
+                    UpdateVoiceMetadataInput,
+                    ("voice_id", "expected_revision", "changes"),
+                ),
                 "pandrator_select_take": (
                     SelectTakeInput,
                     ("segment_id", "take_id", "expected_revision", "idempotency_key"),
@@ -608,11 +635,20 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     expected = model_schema["properties"][field_name]
                     type_name = expected.get("type")
                     if type_name is None:
-                        type_name = next(
-                            branch["type"]
+                        if "anyOf" not in expected:
+                            # A required nested portable model is advertised
+                            # directly as a JSON-schema reference.
+                            continue
+                        branch = next(
+                            branch
                             for branch in expected["anyOf"]
                             if branch.get("type") != "null"
                         )
+                        type_name = branch.get("type")
+                        if type_name is None:
+                            # Nested portable models are represented by a $ref;
+                            # property-set equality above covers their presence.
+                            continue
                     expected = typed_branch(expected, type_name)
                     actual = typed_branch(
                         advertised["properties"][field_name], type_name

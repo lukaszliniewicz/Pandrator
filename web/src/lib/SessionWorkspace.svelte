@@ -401,6 +401,8 @@
   let optimizationBatchSize = $state(3);
   let documentOptimizationBatchSize = $state(8);
   let speechOptimizationMode = $state<'guarded' | 'flexible'>('guarded');
+  let speechAnnotationMode = $state<'off' | 'dialogue' | 'speakers'>('off');
+  let speechAnnotationOnly = $state(false);
   let optimizationMultiStage = $state(false);
   let optimizationFirstPrompt = $state('');
   let optimizationSecondPrompt = $state('');
@@ -1261,6 +1263,12 @@
       String(saved.speech_optimization_mode ?? 'guarded') === 'flexible'
         ? 'flexible'
         : 'guarded';
+    speechAnnotationMode = ['dialogue', 'speakers'].includes(
+      String(saved.llm_tts_annotation_mode)
+    )
+      ? (saved.llm_tts_annotation_mode as 'dialogue' | 'speakers')
+      : 'off';
+    speechAnnotationOnly = Boolean(saved.llm_tts_annotation_only);
     optimizationMultiStage = Boolean(saved.llm_multi_stage ?? false);
     optimizationFirstPrompt = String(saved.first_prompt ?? '');
     optimizationSecondPrompt = String(saved.second_prompt ?? '');
@@ -2495,6 +2503,8 @@
             llm_tts_document_optimization: documentOptimizationEnabled,
             tts_optimization_model: model === 'default' ? '' : model,
             speech_optimization_mode: speechOptimizationMode,
+            llm_tts_annotation_mode: speechAnnotationMode,
+            llm_tts_annotation_only: speechAnnotationOnly,
             llm_tts_batch_size: optimizationBatchSize,
             llm_tts_document_batch_size: documentOptimizationBatchSize,
             llm_concurrent_calls: optimizationConcurrent,
@@ -2514,6 +2524,8 @@
             llm_tts_document_optimization: documentOptimizationEnabled,
             tts_optimization_model: model === 'default' ? '' : model,
             speech_optimization_mode: speechOptimizationMode,
+            llm_tts_annotation_mode: speechAnnotationMode,
+            llm_tts_annotation_only: speechAnnotationOnly,
             llm_tts_document_batch_size: documentOptimizationBatchSize,
             llm_concurrent_calls: optimizationConcurrent,
             llm_multi_stage: optimizationMultiStage,
@@ -2639,6 +2651,7 @@
       };
     else if (key === 'optimize_tts') {
       const enabled = Boolean(stage.enabled);
+      if (speechAnnotationMode !== 'off') optimizationTiming = 'document';
       optimizationEnabled = enabled && optimizationTiming === 'generation';
       documentOptimizationEnabled =
         enabled && optimizationTiming === 'document';
@@ -2647,6 +2660,8 @@
         llm_tts_optimization: optimizationEnabled,
         llm_tts_document_optimization: documentOptimizationEnabled,
         speech_optimization_mode: speechOptimizationMode,
+        llm_tts_annotation_mode: speechAnnotationMode,
+        llm_tts_annotation_only: speechAnnotationOnly,
         llm_tts_batch_size:
           optimizationTiming === 'document'
             ? documentOptimizationBatchSize
@@ -2664,6 +2679,8 @@
         ...common,
         llm_tts_document_optimization: documentOptimizationEnabled,
         speech_optimization_mode: speechOptimizationMode,
+        llm_tts_annotation_mode: speechAnnotationMode,
+        llm_tts_annotation_only: speechAnnotationOnly,
         llm_tts_document_batch_size: documentOptimizationBatchSize,
         llm_tts_batch_size: documentOptimizationBatchSize,
         combined_prompt: optimizationPrompt,
@@ -4843,6 +4860,7 @@
                     type="radio"
                     bind:group={optimizationTiming}
                     value="generation"
+                    disabled={speechAnnotationMode !== 'off'}
                     class="mt-1 accent-[var(--accent)]"
                   /><span
                     ><strong class="block"
@@ -4854,6 +4872,45 @@
                   ></label
                 >
               </div>
+            </fieldset>
+            <fieldset
+              class="speech-controls rounded-xl border border-[var(--line)] p-4 space-y-3"
+            >
+              <legend class="px-1 text-sm font-semibold"
+                >Dialogue and character recognition</legend
+              >
+              <label class="block text-sm"
+                >Annotation level
+                <select
+                  class="input mt-1 w-full"
+                  bind:value={speechAnnotationMode}
+                  onchange={() => {
+                    if (speechAnnotationMode !== 'off')
+                      optimizationTiming = 'document';
+                  }}
+                >
+                  <option value="off">Preserve supplied markup</option>
+                  <option value="dialogue"
+                    >Recognize dialogue and turn boundaries</option
+                  >
+                  <option value="speakers"
+                    >Recognize dialogue and identify characters</option
+                  >
+                </select>
+              </label>
+              {#if speechAnnotationMode !== 'off'}<label
+                  class="flex items-start gap-2 text-sm"
+                  ><input
+                    type="checkbox"
+                    bind:checked={speechAnnotationOnly}
+                  />Annotate only — keep every spoken word unchanged</label
+                >{/if}
+              <p class="muted text-xs">
+                Dialogue annotations preserve integral segments and avoid
+                treating each dialogue line as a long paragraph pause. Character
+                proposals use the session dictionary. Review structure and
+                casting before generation; emotional directions remain optional.
+              </p>
             </fieldset>
             <label class="text-sm font-semibold"
               >Speech-planning policy<select

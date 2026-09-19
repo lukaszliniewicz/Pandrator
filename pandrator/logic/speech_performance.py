@@ -17,7 +17,7 @@ import regex
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA = "pandrator.performance/v1"
-COMPILER_VERSION = "pssml-1.0"
+COMPILER_VERSION = "pssml-1.1"
 CAPABILITY_VERSION = "2026-09-19.1"
 
 
@@ -468,6 +468,85 @@ class CompiledPerformance:
         }
 
 
+def _truncate_graphemes(value: str, limit: int, *, from_end: bool) -> str:
+    if limit <= 0:
+        return ""
+    graphemes = [match.group(0) for match in regex.finditer(r"\X", value)]
+    if from_end:
+        selected: list[str] = []
+        size = 0
+        for item in reversed(graphemes):
+            if size + len(item) > limit:
+                break
+            selected.append(item)
+            size += len(item)
+        return "".join(reversed(selected))
+    selected = []
+    size = 0
+    for item in graphemes:
+        if size + len(item) > limit:
+            break
+        selected.append(item)
+        size += len(item)
+    return "".join(selected)
+
+
+def _trim_context_unit(value: str, limit: int, *, from_end: bool) -> str:
+    prefix = "[Other speaker: "
+    marker = ""
+    if value.startswith(prefix):
+        marker_end = value.find("] ", len(prefix))
+        if marker_end >= 0:
+            marker_end += 2
+            marker, value = value[:marker_end], value[marker_end:]
+    if not marker:
+        return _truncate_graphemes(value, limit, from_end=from_end)
+    if len(marker) > limit:
+        return ""
+    return marker + _truncate_graphemes(
+        value, limit - len(marker), from_end=from_end
+    )
+
+
+def _trim_context(value: str, limit: int, *, from_end: bool) -> str:
+    """Trim joined context units while retaining the nearest units and labels."""
+    if not value or limit <= 0:
+        return ""
+    units = value.split("\n")
+    selected: list[str] = []
+    remaining = limit
+    candidates = list(reversed(units)) if from_end else units
+    for unit in candidates:
+        separator = 1 if selected else 0
+        allowance = remaining - separator
+        if allowance <= 0:
+            break
+        if len(unit) <= allowance:
+            selected.append(unit)
+            remaining -= separator + len(unit)
+            continue
+        shortened = _trim_context_unit(unit, allowance, from_end=from_end)
+        if shortened:
+            selected.append(shortened)
+        break
+    if from_end:
+        selected.reverse()
+    return "\n".join(selected)
+
+
+def _fit_context_char_budget(
+    before: str, after: str, limit: int
+) -> tuple[str, str]:
+    """Fit joined semantic context to a character budget, near text first."""
+    before_budget = min(len(before), limit // 2)
+    after_budget = min(len(after), limit - before_budget)
+    before_budget = min(len(before), limit - after_budget)
+    return (
+        _trim_context(before, before_budget, from_end=True),
+        _trim_context(after, after_budget, from_end=False),
+    )
+
+
 def compile_performance(
     text: str, settings: dict[str, Any], endpoint: dict[str, Any] | None = None
 ) -> CompiledPerformance:
@@ -636,11 +715,72 @@ def compile_performance(
                 "semantic_context",
                 "Read-only text context is prompt-separated, not an enforced hidden channel.",
             )
-    if dialect == "gemini" and (instructions or before or after):
-        provider_input = guided_speech_prompt(
-            provider_input, instructions, before=before, after=after
-        )
-        instructions = ""
+    base_input, base_instructions = provider_input, instructions
+
+    def render_request(context_before: str, context_after: str) -> tuple[str, str]:
+        if dialect == "gemini" and (
+            base_instructions or context_before or context_after
+        ):
+            return (
+                guided_speech_prompt(
+                    base_input,
+                    base_instructions,
+                    before=context_before,
+                    after=context_after,
+                ),
+                "",
+            )
+        return base_input, base_instructions
+
+    provider_input, instructions = render_request(before, after)
+    route = re.sub(r"[^a-z0-9]+", "_", str(capability.get("backend") or "").casefold()).strip("_")
+    if route in {"vertex_ai", "google_vertex_ai"}:
+        vertex_limit = 8000
+
+        def request_bytes(input_text: str, instruction_text: str) -> int:
+            return len(input_text.encode("utf-8")) + len(
+                instruction_text.encode("utf-8")
+            )
+
+        required_input, required_instructions = render_request("", "")
+        required_bytes = request_bytes(required_input, required_instructions)
+        if required_bytes > vertex_limit:
+            raise ValueError(
+                "Vertex TTS request requires "
+                f"{required_bytes} UTF-8 bytes before optional semantic context; "
+                f"the maximum is {vertex_limit} bytes."
+            )
+        full_bytes = request_bytes(provider_input, instructions)
+        if full_bytes > vertex_limit and (before or after):
+            low, high = 0, len(before) + len(after)
+            best_context = ("", "")
+            while low <= high:
+                candidate_budget = (low + high) // 2
+                candidate_context = _fit_context_char_budget(
+                    before, after, candidate_budget
+                )
+                candidate_input, candidate_instructions = render_request(
+                    *candidate_context
+                )
+                if request_bytes(candidate_input, candidate_instructions) <= vertex_limit:
+                    best_context = candidate_context
+                    low = candidate_budget + 1
+                else:
+                    high = candidate_budget - 1
+            before, after = best_context
+            provider_input, instructions = render_request(before, after)
+            reduced_bytes = request_bytes(provider_input, instructions)
+            note(
+                "approximated",
+                "semantic_context",
+                "Reduced optional semantic context deterministically from "
+                f"{full_bytes} to {reduced_bytes} UTF-8 bytes to fit the "
+                f"Vertex request limit of {vertex_limit} bytes.",
+            )
+        if request_bytes(provider_input, instructions) > vertex_limit:
+            raise ValueError(
+                f"Vertex TTS request exceeds the {vertex_limit}-byte UTF-8 limit."
+            )
     request_options: dict[str, Any] = {}
     if dialect == "fish_s2" and capability["backend"] == "audio_cpp" and inserts:
         # Word-budget/Japanese splitting must not cut generated bracket controls

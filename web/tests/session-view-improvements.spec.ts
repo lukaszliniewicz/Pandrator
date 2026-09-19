@@ -67,69 +67,22 @@ test('session tabs sit above the title and stay sticky', async ({ page }) => {
 
   await page.setViewportSize({ width: 390, height: 800 });
   await page.reload();
-  await expect(nav).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: 'Open navigation' })
-  ).toBeVisible();
-  const narrowOrder = await page.evaluate(() => {
-    const navEl = document.querySelector('nav[aria-label="Session sections"]');
-    const title = document.querySelector('.session-shell h1');
-    return {
-      navTop: navEl?.getBoundingClientRect().top ?? -1,
-      titleTop: title?.getBoundingClientRect().top ?? -1
-    };
-  });
-  expect(narrowOrder.navTop).toBeLessThan(narrowOrder.titleTop);
-  const mobileTop = await page.evaluate(() => {
-    const navEl = document.querySelector('nav[aria-label="Session sections"]');
-    return navEl ? getComputedStyle(navEl).top : '';
-  });
-  expect(mobileTop).toBe('64px');
+  await expect(nav).toBeHidden();
+  const header = page.locator('.mobile-app-header');
+  await expect(header).toBeVisible();
+  const section = header.getByRole('combobox', { name: 'Session section' });
+  await expect(section).toHaveValue(`/sessions/${session.id}`);
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  // Push the tabs to their maximum horizontal scroll: no tab may end up
-  // under the floating global hamburger at any scroll position.
-  await nav.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
-  await page.waitForTimeout(150);
-  const overlap = await page.evaluate(() => {
-    const navEl = document.querySelector(
-      'nav[aria-label="Session sections"]'
-    ) as HTMLElement | null;
-    const button = document
-      .querySelector('button[aria-label="Open navigation"]')
-      ?.getBoundingClientRect();
-    if (!navEl || !button) return null;
-    const links = [...navEl.querySelectorAll('a')].map((link) => ({
-      label: link.textContent?.trim() ?? '',
-      box: link.getBoundingClientRect().toJSON()
-    }));
-    const overlapping = links
-      .filter(
-        ({ box }) =>
-          !(
-            box.left >= button.right - 1 ||
-            box.top >= button.bottom - 1 ||
-            box.right <= button.left + 1 ||
-            box.bottom <= button.top + 1
-          )
-      )
-      .map(({ label }) => label);
-    return {
-      navTop: navEl.getBoundingClientRect().top,
-      overlapping,
-      pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
-      navScrollable: navEl.scrollWidth,
-      navClient: navEl.clientWidth
-    };
-  });
-  expect(overlap).not.toBeNull();
-  expect(overlap!.navTop).toBeGreaterThanOrEqual(63);
-  expect(overlap!.navTop).toBeLessThanOrEqual(65);
-  expect(overlap!.overlapping).toEqual([]);
-  expect(overlap!.pageOverflow).toBeLessThanOrEqual(1);
-  expect(overlap!.navScrollable).toBeGreaterThanOrEqual(overlap!.navClient);
-  const sourcesTab = nav.getByRole('link', { name: 'Sources' });
-  await sourcesTab.scrollIntoViewIfNeeded();
-  await expect(sourcesTab).toBeVisible();
+  const geometry = await header.evaluate((el) => ({
+    top: el.getBoundingClientRect().top,
+    height: el.getBoundingClientRect().height,
+    overflow: document.documentElement.scrollWidth - window.innerWidth
+  }));
+  expect(geometry.top).toBe(0);
+  expect(geometry.height).toBe(64);
+  expect(geometry.overflow).toBeLessThanOrEqual(1);
+  await section.selectOption(`/sessions/${session.id}/sources`);
+  await expect(page).toHaveURL(`/sessions/${session.id}/sources`);
 });
 
 test('sources tab exposes copyable filesystem paths', async ({ page }) => {

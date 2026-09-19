@@ -10,6 +10,8 @@ For task-oriented pronunciation guidance, see
 [pronunciation and speech text](../guides/pronunciation-and-speech.md). For a
 model already running in an MCP host, see
 [passive dispatch](../guides/passive-dispatch.md).
+For dialogue recognition, stable character identities, compact XML, and voice
+casting, see [generation controls](generation-controls.md).
 
 ## Three execution paths
 
@@ -75,6 +77,8 @@ context-sensitive prose, then raise units per request before concurrency.
 | --- | --- | --- |
 | `llm_tts_document_optimization` | `false` | Enables the separate, reviewable stage before generation. |
 | `llm_tts_optimization` | `false` | Enables optimization of final speech units during generation. |
+| `llm_tts_annotation_mode` | `off` | `dialogue` recognizes exchanges; `speakers` also identifies characters. Requires the reviewable document stage. |
+| `llm_tts_annotation_only` | `false` | Annotates structure without rewriting spoken words. |
 | `speech_optimization_mode` | `guarded` | Selects `guarded` or `flexible`. |
 | `llm_tts_document_batch_size` | `8` | Units per standalone provider request. Use `1` for a model that handles one case more reliably. |
 | `llm_tts_batch_size` | `3` | Units per generation-time provider request. Use `1` for strict single-unit calls. |
@@ -131,8 +135,9 @@ transcribed.
 
 The claim contains the only actionable `batch.units`, their stable `unit_id`
 values, a required identity/order contract, and read-only boundary context.
-Submit `kind: speech_optimization` and exactly one non-empty `text` result for
-every `unit_id` in the supplied order. A validation failure keeps an unexpired
+Submit `kind: speech_optimization` and exactly one non-empty `text` or
+`speech_xml` result for every `unit_id` in the supplied order. XML-only items
+avoid repeating the transcript. A validation failure keeps an unexpired
 lease usable for repair. Accepted batches are sequential; the last one
 materializes the artifact only if the pinned source, relevant stage selections,
 and previous optimization output head are unchanged.

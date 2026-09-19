@@ -174,38 +174,38 @@ test('contextual performance opens lazily, saves a draft and previews without sy
     .filter({
       has: page
         .locator('summary')
-        .filter({ hasText: 'Context and performance' })
+        .filter({ hasText: 'Speech direction' })
     })
     .first();
   expect(reads).toBe(0);
   await panel.locator('summary').first().click();
   await expect(
-    panel.getByText('Selected model:', { exact: false })
+    panel.getByText('Model:', { exact: false })
   ).toContainText('fish_audio_s2_pro_q8_0');
   await panel
     .getByRole('button', { name: 'Create manual draft', exact: true })
     .click();
   await expect(
-    panel.getByText('Editable performance draft created.', { exact: false })
+    panel.getByText('Editable speech-direction draft created.', { exact: false })
   ).toBeVisible();
   await panel
     .getByLabel('Block delivery direction')
     .fill('Introduce a restrained contrast.');
   await panel
-    .getByRole('button', { name: 'Save annotation', exact: true })
+    .getByRole('button', { name: 'Save block directions', exact: true })
     .click();
   await expect(
-    panel.getByText('Performance annotation saved', { exact: false })
+    panel.getByText('Block directions and speaker assignments saved', { exact: false })
   ).toBeVisible();
   expect(writes).toBe(1);
   await panel
     .getByRole('button', {
-      name: 'Preview compiled request (no audio)',
+      name: 'Preview model request',
       exact: true
     })
     .click();
   await expect(
-    panel.getByRole('heading', { name: 'Compiled for fish_audio_s2_pro_q8_0' })
+    panel.getByRole('region', { name: 'Compiled model request' })
   ).toBeVisible();
   await expect(
     panel.getByText('Compiled as an inline Fish direction.')

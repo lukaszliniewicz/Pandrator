@@ -108,7 +108,10 @@ body::-webkit-scrollbar-thumb:hover,
   background-clip: padding-box;
 }
 @media (width < 48rem) {
-  :root :is(dialog:modal, [role='dialog'][aria-modal='true'], .modal-panel) {
+  :root
+    :is(dialog:modal, [role='dialog'][aria-modal='true'], .modal-panel):not(
+      .compact-confirmation
+    ):not(.app-sidebar) {
     position: fixed;
     inset: 0;
     width: 100%;
@@ -250,6 +253,26 @@ body::-webkit-scrollbar-thumb:hover,
 }
 .muted {
   color: var(--muted);
+}
+
+/* Shared speech-control fields, including the character and cast editor. */
+.speech-controls .input {
+  min-width: 0;
+  min-height: 2.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--paper-strong);
+  padding: 0.6rem 0.75rem;
+  color: var(--ink);
+  font-size: 1rem;
+}
+.speech-controls textarea.input {
+  line-height: 1.5;
+}
+@media (min-width: 768px) {
+  .speech-controls .input {
+    font-size: 0.875rem;
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {

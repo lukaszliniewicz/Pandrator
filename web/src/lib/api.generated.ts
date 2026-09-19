@@ -1526,6 +1526,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/generation-controls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read character dictionary and cast
+         * @description Session-scoped stable character identities and compatible voice bindings. Does not start analysis or synthesis. Writes require the current revision and explicit unlock IDs for protected identity changes.
+         */
+        get: operations["getGenerationControls"];
+        /**
+         * Save character dictionary and cast
+         * @description Session-scoped stable character identities and compatible voice bindings. Does not start analysis or synthesis. Writes require the current revision and explicit unlock IDs for protected identity changes.
+         */
+        put: operations["updateGenerationControls"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/generation-plan": {
         parameters: {
             query?: never;
@@ -3565,6 +3589,68 @@ export interface components {
             /** Source Artifact Id */
             source_artifact_id: string;
         };
+        /**
+         * CastSettings
+         * @description Narrator, category, character, and source-speaker voice bindings.
+         */
+        CastSettings: {
+            /** Categories */
+            categories?: {
+                [key: string]: components["schemas"]["VoiceBinding"];
+            };
+            /** Characters */
+            characters?: {
+                [key: string]: components["schemas"]["VoiceBinding"];
+            };
+            /** @default null */
+            narrator?: components["schemas"]["VoiceBinding"] | null;
+            /** Source Speakers */
+            source_speakers?: {
+                [key: string]: components["schemas"]["VoiceBinding"];
+            };
+        };
+        /**
+         * CharacterEntry
+         * @description One stable character identity in a session's character dictionary.
+         */
+        CharacterEntry: {
+            /** Aliases */
+            aliases?: string[];
+            /** Display Name */
+            display_name: string;
+            /**
+             * Id
+             * @default
+             */
+            id?: string;
+            /**
+             * Locked
+             * @default false
+             */
+            locked?: boolean;
+            /**
+             * Notes
+             * @default
+             */
+            notes?: string;
+            /**
+             * Origin
+             * @default manual
+             */
+            origin?: string;
+            /**
+             * Status
+             * @default accepted
+             * @enum {string}
+             */
+            status?: "proposed" | "accepted";
+            /**
+             * Voice Category
+             * @default unspecified
+             * @enum {string}
+             */
+            voice_category?: "male" | "female" | "androgynous" | "unspecified";
+        };
         /** ChunkUploadInitialize */
         ChunkUploadInitialize: {
             /**
@@ -4177,6 +4263,23 @@ export interface components {
              * @constant
              */
             schema_version?: "1";
+        };
+        /**
+         * GenerationControlsUpdateRequest
+         * @description Revision-checked replacement of one or both generation-control sections.
+         */
+        GenerationControlsUpdateRequest: {
+            /** @default null */
+            cast?: components["schemas"]["CastSettings"] | null;
+            /**
+             * Characters
+             * @default null
+             */
+            characters?: components["schemas"]["CharacterEntry"][] | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Unlock Ids */
+            unlock_ids?: string[];
         };
         /** GenerationPlanBatchRequest */
         GenerationPlanBatchRequest: {
@@ -5248,9 +5351,25 @@ export interface components {
         };
         /** PerformanceItem */
         PerformanceItem: {
-            annotation: components["schemas"]["PerformanceAnnotation"];
+            /** @default null */
+            annotation?: components["schemas"]["PerformanceAnnotation"] | null;
+            /**
+             * Locked
+             * @default false
+             */
+            locked?: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason?: string;
             /** Segment Id */
             segment_id: string;
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
         };
         /** PerformanceLeaseRequest */
         PerformanceLeaseRequest: {
@@ -5267,6 +5386,12 @@ export interface components {
              * @default false
              */
             allow_vocalizations?: boolean;
+            /**
+             * Annotation Format
+             * @default pssml
+             * @enum {string}
+             */
+            annotation_format?: "pssml" | "xml";
             /**
              * Batch Size
              * @default 12
@@ -5321,6 +5446,26 @@ export interface components {
             /** @default null */
             annotation?: components["schemas"]["PerformanceAnnotation"] | null;
             /**
+             * Casting Enabled
+             * @default null
+             */
+            casting_enabled?: boolean | null;
+            /**
+             * Context After
+             * @default null
+             */
+            context_after?: number | null;
+            /**
+             * Context Before
+             * @default null
+             */
+            context_before?: number | null;
+            /**
+             * Context Max Chars
+             * @default null
+             */
+            context_max_chars?: number | null;
+            /**
              * Context Mode
              * @default null
              */
@@ -5335,6 +5480,11 @@ export interface components {
              * @default null
              */
             model?: string | null;
+            /**
+             * Performance Enabled
+             * @default null
+             */
+            performance_enabled?: boolean | null;
             /** Segment Id */
             segment_id: string;
             /**
@@ -5342,6 +5492,11 @@ export interface components {
              * @default null
              */
             service?: string | null;
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
         };
         /** PerformanceRenewRequest */
         PerformanceRenewRequest: {
@@ -6086,6 +6241,10 @@ export interface components {
             batch_ordinal: number;
             /** Batch Status */
             batch_status: string;
+            /** Character Dictionary */
+            character_dictionary?: {
+                [key: string]: unknown;
+            };
             delegation: components["schemas"]["DispatchDelegationContext"];
             /** Lease Expires At */
             lease_expires_at: string | null;
@@ -6107,6 +6266,10 @@ export interface components {
         };
         /** SpeechOptimizationDispatchBatchSubmitRequest */
         SpeechOptimizationDispatchBatchSubmitRequest: {
+            /** Character Proposals */
+            character_proposals?: {
+                [key: string]: unknown;
+            }[];
             context_delta?: components["schemas"]["DispatchContextDelta"];
             /** Lease Token */
             lease_token: string;
@@ -6178,6 +6341,11 @@ export interface components {
              * @default null
              */
             speaker?: string | null;
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
             /** Text */
             text: string;
         };
@@ -6207,8 +6375,16 @@ export interface components {
         };
         /** SpeechOptimizationDispatchItem */
         SpeechOptimizationDispatchItem: {
-            /** Text */
-            text: string;
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
+            /**
+             * Text
+             * @default null
+             */
+            text?: string | null;
             /** Unit Id */
             unit_id: number;
         };
@@ -6224,6 +6400,17 @@ export interface components {
         };
         /** SpeechOptimizationDispatchRunCreateRequest */
         SpeechOptimizationDispatchRunCreateRequest: {
+            /**
+             * Annotation Mode
+             * @default off
+             * @enum {string}
+             */
+            annotation_mode?: "off" | "dialogue" | "speakers";
+            /**
+             * Annotation Only
+             * @default false
+             */
+            annotation_only?: boolean;
             /**
              * Char Limit
              * @description Target source characters per transport batch. A single source unit is never split and may exceed this value. This is not a model-token or iteration budget.
@@ -6299,6 +6486,17 @@ export interface components {
         });
         /** SpeechOptimizationDispatchTaskContract */
         SpeechOptimizationDispatchTaskContract: {
+            /**
+             * Annotation Mode
+             * @default off
+             * @enum {string}
+             */
+            annotation_mode?: "off" | "dialogue" | "speakers";
+            /**
+             * Annotation Only
+             * @default false
+             */
+            annotation_only?: boolean;
             /** Instructions */
             instructions: string;
             /**
@@ -6337,6 +6535,11 @@ export interface components {
              * @default null
              */
             speaker?: string | null;
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
             /** Text */
             text: string;
             /** @default null */
@@ -6708,6 +6911,37 @@ export interface components {
              */
             position?: "before" | "after";
         };
+        /**
+         * VoiceBinding
+         * @description A provider-neutral voice choice, optionally referencing a managed voice.
+         */
+        VoiceBinding: {
+            /**
+             * Model
+             * @default null
+             */
+            model?: string | null;
+            /**
+             * Service
+             * @default null
+             */
+            service?: string | null;
+            /**
+             * Voice
+             * @default
+             */
+            voice?: string;
+            /**
+             * Voice Description
+             * @default
+             */
+            voice_description?: string;
+            /**
+             * Voice Id
+             * @default null
+             */
+            voice_id?: string | null;
+        };
         /** VoiceCreate */
         VoiceCreate: {
             /**
@@ -6722,6 +6956,12 @@ export interface components {
             language?: string | null;
             /** Name */
             name: string;
+            /**
+             * Voice Category
+             * @default unspecified
+             * @enum {string}
+             */
+            voice_category?: "male" | "female" | "androgynous" | "unspecified";
         };
         /** VoiceDesignedSampleCreate */
         VoiceDesignedSampleCreate: {
@@ -6769,6 +7009,11 @@ export interface components {
              * @default null
              */
             name?: string | null;
+            /**
+             * Voice Category
+             * @default null
+             */
+            voice_category?: ("male" | "female" | "androgynous" | "unspecified") | null;
         };
         /** WorkError */
         WorkError: {
@@ -9448,6 +9693,144 @@ export interface operations {
                 content?: never;
             };
             /** @description Unsupported checkpoint */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getGenerationControls: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current characters, cast and revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Missing idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or protected identity conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid character or cast */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateGenerationControls: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationControlsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Current characters, cast and revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Missing idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or protected identity conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid character or cast */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import regex
 from sqlalchemy import select
 
 from . import models as m
@@ -190,6 +191,72 @@ def semantic_context_window(units: list[dict[str, Any]], settings: dict[str, Any
             return f"[Other speaker: {str(other['speaker'])[:160]}] {text}"
         return text
 
+    def trim_graphemes(value: str, limit: int, *, from_end: bool) -> str:
+        if limit <= 0:
+            return ""
+        graphemes = [match.group(0) for match in regex.finditer(r"\X", value)]
+        if from_end:
+            result = []
+            size = 0
+            for item in reversed(graphemes):
+                if size + len(item) > limit:
+                    break
+                result.append(item)
+                size += len(item)
+            return "".join(reversed(result))
+        result = []
+        size = 0
+        for item in graphemes:
+            if size + len(item) > limit:
+                break
+            result.append(item)
+            size += len(item)
+        return "".join(result)
+
+    def marker_and_text(value: str) -> tuple[str, str]:
+        prefix = "[Other speaker: "
+        if value.startswith(prefix):
+            marker_end = value.find("] ", len(prefix))
+            if marker_end >= 0:
+                marker_end += 2
+                return value[:marker_end], value[marker_end:]
+        return "", value
+
+    def trim_context(value: str, limit: int, *, from_end: bool) -> str:
+        marker, text = marker_and_text(value)
+        if not marker:
+            return trim_graphemes(value, limit, from_end=from_end)
+        if len(marker) > limit:
+            # Omitting the unit is preferable to exposing another speaker's
+            # words without the marker that makes their meaning safe.
+            return ""
+        return marker + trim_graphemes(
+            text, limit - len(marker), from_end=from_end
+        )
+
+    def fit_side(items: list[str], budget: int, *, nearest_is_last: bool) -> str:
+        selected: list[str] = []
+        remaining = budget
+        candidates = list(reversed(items)) if nearest_is_last else list(items)
+        for item in candidates:
+            separator = 1 if selected else 0
+            allowance = remaining - separator
+            if allowance <= 0:
+                break
+            if len(item) <= allowance:
+                selected.append(item)
+                remaining -= separator + len(item)
+                continue
+            shortened = trim_context(
+                item, allowance, from_end=nearest_is_last
+            )
+            if shortened:
+                selected.append(shortened)
+            break
+        if nearest_is_last:
+            selected.reverse()
+        return "\n".join(selected)
+
     result = {}
     for index, unit in enumerate(units):
         if target_ids is not None and str(unit["id"]) not in target_ids:
@@ -212,8 +279,10 @@ def semantic_context_window(units: list[dict[str, Any]], settings: dict[str, Any
             before_budget = min(len(previous_text), limit // 2)
             after_budget = min(len(following_text), limit - before_budget)
             before_budget = min(len(previous_text), limit - after_budget)
-            previous_text = previous_text[-before_budget:] if before_budget else ""
-            following_text = following_text[:after_budget] if after_budget else ""
+            previous_text = fit_side(
+                list(reversed(before)), before_budget, nearest_is_last=True
+            )
+            following_text = fit_side(after, after_budget, nearest_is_last=False)
         result[str(unit["id"])] = {"before": previous_text, "after": following_text}
     return result
 
@@ -239,10 +308,22 @@ def freeze_generation_performance_snapshot(session, revision_id: str, snapshot: 
         raise ValueError("tts_context_mode must be off, before, or both.")
     snapshot.pop("performance_snapshot", None)
     snapshot.pop("semantic_context_snapshot", None)
+    snapshot.pop("generation_control_snapshot", None)
     if settings.get("performance_enabled"):
         from .performance_plans import freeze_performance_snapshot
 
         freeze_performance_snapshot(session, revision_id, snapshot)
+    elif settings.get("casting_enabled"):
+        from .performance_plans import freeze_performance_snapshot
+        from .models import PerformancePlan
+        if session.scalar(select(PerformancePlan.id).where(
+            PerformancePlan.plan_revision_id == revision_id,
+            PerformancePlan.status == "adopted",
+        )):
+            freeze_performance_snapshot(session, revision_id, snapshot)
+    if settings.get("performance_enabled") or settings.get("casting_enabled"):
+        from .generation_cast_runtime import freeze_cast_snapshot
+        freeze_cast_snapshot(session, revision_id, snapshot, settings)
     if mode != "off":
         context_settings = {
             key: settings[key]
@@ -255,7 +336,7 @@ def freeze_generation_performance_snapshot(session, revision_id: str, snapshot: 
             "settings": context_settings,
             "units": semantic_context_units(session, revision_id),
         }
-    return bool(settings.get("performance_enabled")) or mode != "off"
+    return bool(settings.get("performance_enabled") or settings.get("casting_enabled")) or mode != "off"
 
 
 def segment_performance_settings(

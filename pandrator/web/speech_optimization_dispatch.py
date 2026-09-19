@@ -15,6 +15,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
+from pandrator.logic.speech_markup import (
+    assert_authored_markup_preserved,
+    parse_speech_markup,
+)
 
 from .artifact_selection import ROLE_TO_STAGE
 from .artifacts import ArtifactService, sha256_file
@@ -27,6 +31,12 @@ from .dispatch_context import (
     normalize_context_delta,
     store_context_delta,
     wave_bounds,
+)
+from .generation_cast_runtime import remap_markup
+from .generation_controls import (
+    RevisionConflict,
+    get_generation_controls,
+    merge_character_proposals,
 )
 from .models import (
     Artifact,
@@ -110,6 +120,22 @@ def _json_source_text(row: object) -> str:
     )
 
 
+def _json_speech_xml(row: object) -> str | None:
+    """Read supplied markup without discarding unrelated source JSON fields."""
+
+    if not isinstance(row, dict):
+        return None
+    direct = row.get("speech_xml")
+    if isinstance(direct, str) and direct:
+        return direct
+    plan = row.get("speech_plan")
+    if isinstance(plan, dict):
+        nested = plan.get("speech_xml")
+        if isinstance(nested, str) and nested:
+            return nested
+    return None
+
+
 def _partition_units(
     units: list[dict[str, Any]],
     *,
@@ -169,6 +195,8 @@ class SpeechOptimizationDispatchRunService:
             "context_before": int(settings.get("context_before") or 4),
             "context_after": int(settings.get("context_after") or 2),
             "include_timing": bool(settings.get("include_timing", True)),
+            "annotation_mode": str(settings.get("annotation_mode") or "off"),
+            "annotation_only": bool(settings.get("annotation_only", False)),
             "execution_mode": execution_mode,
             "max_parallel_batches": max_parallel_batches,
             "status": run.status,
@@ -451,18 +479,20 @@ class SpeechOptimizationDispatchRunService:
                         if isinstance(row, dict)
                         else ""
                     )
-                    units.append(
-                        {
-                            "unit_id": ordinal,
-                            "text": text,
-                            "language": row_language or language,
-                            "speaker": (
-                                _clean_text(row.get("speaker")) or None
-                                if isinstance(row, dict)
-                                else None
-                            ),
-                        }
-                    )
+                    unit: dict[str, Any] = {
+                        "unit_id": ordinal,
+                        "text": text,
+                        "language": row_language or language,
+                        "speaker": (
+                            _clean_text(row.get("speaker")) or None
+                            if isinstance(row, dict)
+                            else None
+                        ),
+                    }
+                    speech_xml = _json_speech_xml(row)
+                    if speech_xml is not None:
+                        unit["speech_xml"] = speech_xml
+                    units.append(unit)
                 return units
             text = path.read_text(encoding="utf-8-sig")
             return (
@@ -510,10 +540,19 @@ class SpeechOptimizationDispatchRunService:
         context_before: int,
         context_after: int,
         include_timing: bool,
+        annotation_mode: str = "off",
+        annotation_only: bool = False,
         execution_mode: str = "serial",
         max_parallel_batches: int = 1,
         context_capsule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        annotation_mode = str(annotation_mode or "off").strip().lower()
+        if annotation_mode not in {"off", "dialogue", "speakers"}:
+            raise DispatchError(
+                "invalid_annotation_mode",
+                "annotation_mode must be off, dialogue, or speakers.",
+                422,
+            )
         record = session.get(SessionRecord, session_id)
         if record is None or record.trashed_at is not None:
             raise DispatchError("not_found", "Session not found.", 404)
@@ -547,6 +586,34 @@ class SpeechOptimizationDispatchRunService:
             language=selected_language,
             include_timing=bool(include_timing),
         )
+        saved_markup = (source.metadata_json or {}).get("speech_markup") or {}
+        if not isinstance(saved_markup, dict):
+            saved_markup = {}
+        character_dictionary: list[dict[str, Any]] | None = None
+        if any(unit.get("speech_xml") or saved_markup.get(str(unit["unit_id"])) for unit in units):
+            character_dictionary = list(
+                get_generation_controls(session, session_id).get("characters") or []
+            )
+        for unit in units:
+            xml = saved_markup.get(str(unit["unit_id"]))
+            if xml and not unit.get("speech_xml"):
+                unit["speech_xml"] = xml
+            if isinstance(unit.get("speech_xml"), str):
+                try:
+                    unit["speech_xml"] = remap_markup(
+                        unit["speech_xml"],
+                        str(unit["unit_id"]),
+                        str(unit.get("text") or ""),
+                        character_dictionary or [],
+                    )
+                except (TypeError, ValueError) as error:
+                    raise DispatchError(
+                        "invalid_speech_markup",
+                        f"Source unit {unit['unit_id']} speech_xml does not match its clean text "
+                        f"or current character dictionary; revise the clean text before annotation "
+                        f"or use annotation_only: {error}",
+                        422,
+                    ) from error
         if not units:
             raise DispatchError(
                 "source_empty",
@@ -571,6 +638,8 @@ class SpeechOptimizationDispatchRunService:
             "context_before": int(context_before),
             "context_after": int(context_after),
             "include_timing": bool(include_timing),
+            "annotation_mode": str(annotation_mode or "off").strip().lower(),
+            "annotation_only": bool(annotation_only),
             "execution_mode": execution_mode,
             "max_parallel_batches": max_parallel_batches,
             "context_capsule": normalized_capsule,
@@ -638,19 +707,25 @@ class SpeechOptimizationDispatchRunService:
 
     @staticmethod
     def _boundary_unit(unit: dict[str, Any]) -> dict[str, Any]:
-        return {
+        result = {
             "text": str(unit.get("text") or ""),
             "language": str(unit.get("language") or "auto"),
             "speaker": unit.get("speaker") or None,
         }
+        if unit.get("speech_xml") is not None:
+            result["speech_xml"] = str(unit["speech_xml"])
+        return result
 
     def _claim_response(
         self,
         run: SpeechOptimizationDispatchRun,
         batch: SpeechOptimizationDispatchBatch,
         batches: list[SpeechOptimizationDispatchBatch],
+        generation_controls: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         settings = dict(run.settings_json or {})
+        annotation_mode = str(settings.get("annotation_mode") or "off")
+        annotation_only = bool(settings.get("annotation_only", False))
         execution_mode, max_parallel_batches = execution_policy(settings)
         wave_index, wave_start, wave_end = wave_bounds(batch.ordinal, settings)
         wave_batch_count = max(
@@ -688,6 +763,11 @@ class SpeechOptimizationDispatchRunService:
                         "text": str(item.get("text") or ""),
                         "language": str(item.get("language") or run.language),
                         "speaker": item.get("speaker") or None,
+                        **(
+                            {"speech_xml": str(item["speech_xml"])}
+                            if item.get("speech_xml") is not None
+                            else {}
+                        ),
                     }
                     for item in list(previous.normalized_output_json or [])[
                         -context_before:
@@ -714,6 +794,39 @@ class SpeechOptimizationDispatchRunService:
             "shared context. Return newly learned supported metadata only in the "
             "outer context_delta object, never inside result items."
         )
+        instructions += (
+            "\nPreserve supplied speech_xml markup when present; never put markup "
+            "into the spoken text field. "
+            f"annotation_mode={annotation_mode!r}; annotation_only={annotation_only!r}."
+        )
+        instructions += (
+            ' XML uses <segment id="UNIT_ID" boundary_after="dialogue_turn">'
+            '<dialogue><speaker ref="CHARACTER_ID">spoken words</speaker></dialogue></segment>.'
+            ' Optional boundaries: continuation, dialogue_turn, paragraph, scene, chapter.'
+            ' Narration remains outside dialogue or in <narrator>. Unnamed voices may use'
+            ' <speaker g="male|female|androgynous|unspecified">. Names and aliases resolve'
+            ' through the supplied character_dictionary; new characters are outer character_proposals'
+            ' with id, display_name, aliases, voice_category and notes. Do not assign locked/status.'
+            ' <ins>, <em>, <pace>, <cadence>, <emphasis> are nonspoken scope metadata;'
+            ' <span> scopes a phrase. Preserve existing authored controls. Do not indent mixed text,'
+            ' change quotation marks, or add formatting whitespace. Omit the duplicate text field'
+            ' when speech_xml already contains the complete transcript.'
+        )
+        if annotation_mode == "dialogue":
+            instructions += (
+                " Detect dialogue structure, but do not identify speakers without "
+                "explicit evidence."
+            )
+        elif annotation_mode == "speakers":
+            instructions += (
+                " Detect dialogue and identify speakers only when evidence supports "
+                "the reference. Never infer identity solely from sex or voice "
+                "category, and never merge namesakes."
+            )
+        else:
+            instructions += " Do not add new annotations."
+        if annotation_only:
+            instructions += " Annotation-only output text must equal source text exactly."
         if run.tts_service:
             instructions += f"\n\nTarget TTS service: {run.tts_service}."
         instructions += (
@@ -741,7 +854,7 @@ class SpeechOptimizationDispatchRunService:
                     "kind": "speech_optimization",
                     "items": {
                         "identity_field": "unit_id",
-                        "text_field": "text",
+                        "text_field": "text (omit when speech_xml supplies the transcript)",
                         "required_count": len(units),
                         "required_order": [int(item["unit_id"]) for item in units],
                     },
@@ -752,7 +865,14 @@ class SpeechOptimizationDispatchRunService:
                             "context fields in result items."
                         ),
                     },
+                    "speech_xml": {
+                        "required": annotation_mode != "off",
+                        "preserve_supplied": True,
+                        "annotation_only": annotation_only,
+                    },
                 },
+                "annotation_mode": annotation_mode,
+                "annotation_only": annotation_only,
             },
             "batch": {
                 "id_namespace": "speech_optimization_unit",
@@ -764,6 +884,11 @@ class SpeechOptimizationDispatchRunService:
                         "text": str(item.get("text") or ""),
                         "language": str(item.get("language") or run.language),
                         "speaker": item.get("speaker") or None,
+                        **(
+                            {"speech_xml": str(item["speech_xml"])}
+                            if item.get("speech_xml") is not None
+                            else {}
+                        ),
                         **(
                             {"timing": dict(item["timing"])}
                             if isinstance(item.get("timing"), dict)
@@ -777,6 +902,10 @@ class SpeechOptimizationDispatchRunService:
                     "previous_source": previous_source,
                     "following_source": following_source,
                 },
+            },
+            "character_dictionary": {
+                "revision": int((generation_controls or {}).get("revision") or 0),
+                "entries": list((generation_controls or {}).get("characters") or []),
             },
             "delegation": {
                 "execution_mode": execution_mode,
@@ -813,6 +942,10 @@ class SpeechOptimizationDispatchRunService:
                 .order_by(SpeechOptimizationDispatchBatch.ordinal)
             ).all()
         )
+        try:
+            generation_controls = get_generation_controls(session, run.session_id)
+        except KeyError as error:
+            raise DispatchError("not_found", "Session not found.", 404) from error
         replayed = next((item for item in batches if item.claim_key == claim_key), None)
         if replayed is not None and (
             replayed.status == "completed"
@@ -821,7 +954,7 @@ class SpeechOptimizationDispatchRunService:
                 and _active_lease(replayed.lease_expires_at, now)
             )
         ):
-            return self._claim_response(run, replayed, batches)
+            return self._claim_response(run, replayed, batches, generation_controls)
         if run.status == "finalizing":
             raise DispatchError(
                 "run_finalizing",
@@ -904,7 +1037,7 @@ class SpeechOptimizationDispatchRunService:
         run.status = "running"
         run.updated_at = now
         session.flush()
-        return self._claim_response(run, batch, batches)
+        return self._claim_response(run, batch, batches, generation_controls)
 
     def renew_in_session(
         self,
@@ -948,6 +1081,7 @@ class SpeechOptimizationDispatchRunService:
         batch = session.get(SpeechOptimizationDispatchBatch, batch_id)
         if batch is None:
             raise DispatchError("not_found", "Dispatch batch not found.", 404)
+        now = utcnow()
         if batch.lease_token != lease_token:
             raise DispatchError(
                 "lease_conflict", "The lease token is not current.", 409
@@ -956,11 +1090,22 @@ class SpeechOptimizationDispatchRunService:
             raise DispatchError(
                 "batch_completed", "The dispatch batch is already completed.", 409
             )
+        if batch.status != "leased":
+            raise DispatchError(
+                "lease_conflict", "The lease token is not current.", 409
+            )
+        if not _active_lease(batch.lease_expires_at, now):
+            raise DispatchError(
+                "lease_expired",
+                "The dispatch lease has expired.",
+                409,
+                retryable=True,
+            )
         batch.status = "ready"
         batch.lease_token = None
         batch.claim_key = None
         batch.lease_expires_at = None
-        batch.updated_at = utcnow()
+        batch.updated_at = now
         session.flush()
         return {"batch_id": batch.id, "status": "ready", "lease_expires_at": None}
 
@@ -968,6 +1113,10 @@ class SpeechOptimizationDispatchRunService:
     def _normalize_result(
         batch: SpeechOptimizationDispatchBatch,
         result: dict[str, Any],
+        *,
+        annotation_mode: str = "off",
+        annotation_only: bool = False,
+        characters: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if str(result.get("kind") or "") != "speech_optimization":
             raise DispatchError(
@@ -1003,13 +1152,6 @@ class SpeechOptimizationDispatchRunService:
                     "Every optimized item must retain its unit_id.",
                     422,
                 ) from error
-            text = str(row.get("text") or "").strip()
-            if not text:
-                raise DispatchError(
-                    "invalid_model_response",
-                    f"Speech-optimisation unit {unit_id} is empty.",
-                    422,
-                )
             source = next(
                 (item for item in source_units if int(item["unit_id"]) == unit_id),
                 None,
@@ -1021,15 +1163,124 @@ class SpeechOptimizationDispatchRunService:
                     422,
                     details={"valid_unit_ids": expected_ids},
                 )
-            returned_ids.append(unit_id)
-            normalized.append(
-                {
-                    "unit_id": unit_id,
-                    "text": text,
-                    "language": str(source.get("language") or "auto"),
-                    "speaker": source.get("speaker") or None,
-                }
+            source_text = str(source.get("text") or "")
+            source_xml = source.get("speech_xml")
+            source_parsed = None
+            if isinstance(source_xml, str) and source_xml:
+                try:
+                    source_xml = remap_markup(
+                        source_xml,
+                        str(unit_id),
+                        source_text,
+                        characters or [],
+                    )
+                    source_parsed = parse_speech_markup(
+                        source_xml,
+                        expected_segment_id=str(unit_id),
+                        expected_text=source_text,
+                        characters=characters or [],
+                    )
+                except (TypeError, ValueError) as error:
+                    raise DispatchError(
+                        "invalid_speech_markup",
+                        f"Source unit {unit_id} speech_xml does not match its clean text "
+                        f"or current character dictionary; revise the clean text before annotation "
+                        f"or use annotation_only: {error}",
+                        422,
+                    ) from error
+            raw_text = row.get("text")
+            if raw_text is None and isinstance(row.get("speech_xml"), str):
+                try:
+                    raw_text = parse_speech_markup(
+                        row["speech_xml"], expected_segment_id=str(unit_id), characters=characters or []
+                    ).transcript
+                except (TypeError, ValueError) as error:
+                    raise DispatchError("invalid_speech_markup", str(error), 422) from error
+            if annotation_only and not isinstance(raw_text, str):
+                raise DispatchError(
+                    "invalid_model_response",
+                    f"Speech-optimisation unit {unit_id} must return text as a string.",
+                    422,
+                )
+            text = (
+                raw_text
+                if annotation_only and isinstance(raw_text, str)
+                else str(raw_text or "").strip()
             )
+            if not text:
+                raise DispatchError(
+                    "invalid_model_response",
+                    f"Speech-optimisation unit {unit_id} is empty.",
+                    422,
+                )
+            if annotation_only and text != source_text:
+                raise DispatchError(
+                    "invalid_model_response",
+                    f"Annotation-only unit {unit_id} must preserve the source text exactly.",
+                    422,
+                )
+            supplied_xml = row.get("speech_xml")
+            if supplied_xml is not None and not isinstance(supplied_xml, str):
+                raise DispatchError(
+                    "invalid_model_response",
+                    f"Speech-optimisation unit {unit_id} speech_xml must be a string.",
+                    422,
+                )
+            xml = supplied_xml if supplied_xml else None
+            if xml is None and isinstance(source_xml, str) and text == source_text:
+                xml = source_xml
+            if xml is None and isinstance(source_xml, str):
+                raise DispatchError(
+                    "markup_dropped",
+                    f"Unit {unit_id} changed text without returning speech_xml; supplied markup would be lost. "
+                    "Revise the clean text before annotation or use annotation_only and return matching markup.",
+                    422,
+                )
+            if xml is None and annotation_mode != "off":
+                raise DispatchError(
+                    "speech_xml_required",
+                    f"annotation_mode={annotation_mode!r} requires speech_xml for unit {unit_id}.",
+                    422,
+                )
+            canonical_xml: str | None = None
+            if xml is not None:
+                try:
+                    parsed = parse_speech_markup(
+                        xml,
+                        expected_segment_id=str(unit_id),
+                        expected_text=text,
+                        characters=characters or [],
+                    )
+                    if source_parsed is not None:
+                        try:
+                            assert_authored_markup_preserved(source_parsed, parsed)
+                        except (TypeError, ValueError) as error:
+                            raise DispatchError(
+                                "markup_changed",
+                                f"Unit {unit_id} changed supplied authored speech markup; "
+                                "revise the clean text before annotation or use annotation_only: "
+                                f"{error}",
+                                422,
+                            ) from error
+                    canonical_xml = parsed.xml
+                except DispatchError:
+                    raise
+                except (TypeError, ValueError) as error:
+                    raise DispatchError(
+                        "invalid_speech_markup",
+                        f"Unit {unit_id} speech_xml is invalid: {error}",
+                        422,
+                    ) from error
+            returned_ids.append(unit_id)
+            item: dict[str, Any] = {
+                "unit_id": unit_id,
+                "text": text,
+                "language": str(source.get("language") or "auto"),
+                "speaker": source.get("speaker") or None,
+            }
+            if canonical_xml is not None:
+                item["speech_xml"] = canonical_xml
+            normalized.append(item)
         if returned_ids != expected_ids:
             raise DispatchError(
                 "invalid_model_response",
@@ -1077,6 +1328,7 @@ class SpeechOptimizationDispatchRunService:
         submission_key: str,
         result: dict[str, Any],
         context_delta: dict[str, Any] | None = None,
+        character_proposals: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], int]:
         batch = session.get(SpeechOptimizationDispatchBatch, batch_id)
         if batch is None:
@@ -1092,13 +1344,12 @@ class SpeechOptimizationDispatchRunService:
                 str(error),
                 422,
             ) from error
-        has_context_delta = any(
-            bool(normalized_delta[field]) for field in normalized_delta
-        )
         raw_hash = _response_hash(
-            {"result": result, "context_delta": normalized_delta}
-            if has_context_delta
-            else result
+            {
+                "result": result,
+                "context_delta": normalized_delta,
+                "character_proposals": character_proposals or [],
+            }
         )
         if batch.status == "completed":
             if batch.submission_key == submission_key and batch.output_hash == raw_hash:
@@ -1133,7 +1384,44 @@ class SpeechOptimizationDispatchRunService:
                 "Speech-optimisation response exceeds the 4 MiB limit.",
                 413,
             )
-        normalized = self._normalize_result(batch, result)
+        proposals = character_proposals or []
+        if not isinstance(proposals, list) or len(proposals) > 100:
+            raise DispatchError(
+                "invalid_character_proposals",
+                "character_proposals must be a list of at most 100 objects.",
+                422,
+            )
+        try:
+            with session.begin_nested():
+                controls = merge_character_proposals(
+                    session,
+                    run.session_id,
+                    proposals,
+                    origin=f"speech-optimization:{run.id}",
+                )
+                normalized = self._normalize_result(
+                    batch,
+                    result,
+                    annotation_mode=str(
+                        (run.settings_json or {}).get("annotation_mode") or "off"
+                    ),
+                    annotation_only=bool(
+                        (run.settings_json or {}).get("annotation_only", False)
+                    ),
+                    characters=list(controls.get("characters") or []),
+                )
+        except RevisionConflict as error:
+            raise DispatchError(
+                "character_ledger_conflict",
+                str(error),
+                409,
+            ) from error
+        except (TypeError, ValueError, KeyError) as error:
+            raise DispatchError(
+                "invalid_character_proposals",
+                str(error),
+                422,
+            ) from error
         try:
             settings = store_context_delta(
                 dict(run.settings_json or {}),
@@ -1290,6 +1578,7 @@ class SpeechOptimizationDispatchRunService:
         run: SpeechOptimizationDispatchRun,
         source: Artifact,
         segments,
+        speech_markup: dict[int, str] | None = None,
     ) -> tuple[Document, DocumentRevision]:
         document = Document(
             session_id=run.session_id,
@@ -1324,7 +1613,14 @@ class SpeechOptimizationDispatchRunService:
                 end_ms=int(item.end_ms),
                 text=str(item.text),
                 speaker=_clean_text(item.speaker) or None,
-                metadata_json={"speaker_source": "timing_inherited"},
+                metadata_json={
+                    "speaker_source": "timing_inherited",
+                    **(
+                        {"speech_xml": speech_markup[ordinal + 1]}
+                        if speech_markup and ordinal + 1 in speech_markup
+                        else {}
+                    ),
+                },
             )
             session.add(child)
             children.append(child)
@@ -1389,7 +1685,7 @@ class SpeechOptimizationDispatchRunService:
             for batch in batches
             for item in list(batch.normalized_output_json or [])
         ]
-        output_by_id = {int(item["unit_id"]): str(item["text"]) for item in outputs}
+        output_by_id = {int(item["unit_id"]): item for item in outputs}
         if len(output_by_id) != len(outputs):
             raise DispatchError(
                 "invalid_model_response",
@@ -1417,7 +1713,10 @@ class SpeechOptimizationDispatchRunService:
                     409,
                 )
             revised_segments = [
-                replace(item, text=output_by_id.get(index, item.text))
+                replace(
+                    item,
+                    text=str(output_by_id.get(index, {}).get("text") or item.text),
+                )
                 for index, item in enumerate(source_segments, start=1)
             ]
             destination.write_text(compose_srt(revised_segments), encoding="utf-8")
@@ -1426,6 +1725,11 @@ class SpeechOptimizationDispatchRunService:
                 run=run,
                 source=source,
                 segments=revised_segments,
+                speech_markup={
+                    unit_id: str(item["speech_xml"])
+                    for unit_id, item in output_by_id.items()
+                    if item.get("speech_xml") is not None
+                },
             )
             kind = "srt"
         elif run.source_format == "json":
@@ -1452,7 +1756,15 @@ class SpeechOptimizationDispatchRunService:
                     row = {"text": str(row)}
                     rows[index - 1] = row
                 row["source_text"] = _json_source_text(row)
-                row["tts_optimized_sentence"] = output_by_id[index]
+                row["tts_optimized_sentence"] = str(output_by_id[index]["text"])
+                speech_xml = output_by_id[index].get("speech_xml")
+                if speech_xml is not None:
+                    row["speech_xml"] = str(speech_xml)
+                    speech_plan = row.get("speech_plan")
+                    if not isinstance(speech_plan, dict):
+                        speech_plan = {}
+                        row["speech_plan"] = speech_plan
+                    speech_plan["speech_xml"] = str(speech_xml)
             destination.write_text(
                 json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -1464,7 +1776,7 @@ class SpeechOptimizationDispatchRunService:
                     "Plain-text optimisation requires exactly one output unit.",
                     409,
                 )
-            destination.write_text(output_by_id[1], encoding="utf-8")
+            destination.write_text(str(output_by_id[1]["text"]), encoding="utf-8")
             kind = "text"
         metadata = {
             "speech_optimization_dispatch_run_id": run.id,
@@ -1481,6 +1793,11 @@ class SpeechOptimizationDispatchRunService:
             "document_id": document.id if document is not None else None,
             "revision_id": revision.id if revision is not None else None,
             "stage": "tts_optimization" if revision is not None else None,
+            "speech_markup": {
+                str(unit_id): str(item["speech_xml"])
+                for unit_id, item in output_by_id.items()
+                if item.get("speech_xml") is not None
+            },
         }
         artifact = self.artifacts.register_in_session(
             session,

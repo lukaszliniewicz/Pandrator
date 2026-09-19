@@ -39,7 +39,7 @@
 </script>
 
 <section
-  class="surface rounded-3xl border border-[var(--line)] p-5 sm:p-6"
+  class="surface rounded-2xl border border-[var(--line)] p-4 sm:rounded-3xl sm:p-6"
   aria-label="Speech plan"
 >
   <header class="flex items-start gap-4">

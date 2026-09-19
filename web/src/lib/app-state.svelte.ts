@@ -46,6 +46,11 @@ class AppState {
   remoteAccess = $state(false);
   securityWarning = $state('');
   sidebarCollapsed = $state(false);
+  mobileSessionNavigation = $state<{
+    sessionId: string;
+    title: string;
+    items: { href: string; label: string }[];
+  } | null>(null);
   setupReturnVisible = $state(false);
   setupGuidance = $state('');
   private events?: EventSource;

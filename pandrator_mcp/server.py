@@ -368,6 +368,12 @@ def build_server(runtime: McpRuntime):
         idempotent_hint=True,
         open_world_hint=False,
     )
+    revisioned_write_action = ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    )
     execute_action = ToolAnnotations(
         read_only_hint=False,
         destructive_hint=True,
@@ -375,10 +381,25 @@ def build_server(runtime: McpRuntime):
         open_world_hint=False,
     )
 
+    from .tools.generation_controls import register_generation_controls_tools
     from .tools.performance import register_performance_tools
+    from .tools.voice_metadata import register_voice_metadata_tools
 
     register_performance_tools(server, runtime, _call_with_validated_input,
                                read_only=read_only, write_action=write_action)
+    register_generation_controls_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        read_only=read_only,
+        write_action=write_action,
+    )
+    register_voice_metadata_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        write_action=revisioned_write_action,
+    )
 
     @server.tool(
         name="pandrator_explain_system",
@@ -1951,6 +1972,8 @@ def build_server(runtime: McpRuntime):
         context_before: Annotated[int, Field(ge=0, le=20)] = 4,
         context_after: Annotated[int, Field(ge=0, le=20)] = 2,
         include_timing: bool = True,
+        annotation_mode: Literal["off", "dialogue", "speakers"] = "off",
+        annotation_only: bool = False,
         execution_mode: Literal["serial", "parallel"] = "serial",
         max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
         context_capsule: dict[str, Any] | None = None,
@@ -1972,6 +1995,8 @@ def build_server(runtime: McpRuntime):
                 context_before=context_before,
                 context_after=context_after,
                 include_timing=include_timing,
+                annotation_mode=annotation_mode,
+                annotation_only=annotation_only,
                 execution_mode=execution_mode,
                 max_parallel_batches=max_parallel_batches,
                 context_capsule=context_capsule or {},
@@ -2119,6 +2144,7 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
+        character_proposals: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Return every unit exactly once so Pandrator can materialize the revision."""
 
@@ -2129,6 +2155,7 @@ def build_server(runtime: McpRuntime):
                 batch_id=batch_id,
                 lease_token=lease_token,
                 result=result,
+                character_proposals=character_proposals or [],
                 idempotency_key=idempotency_key,
             ),
         )

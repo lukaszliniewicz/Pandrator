@@ -85,6 +85,7 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
             "selected_segment_override",
             "use_existing_speech_plans",
             "performance_enabled",
+            "casting_enabled",
             "performance_allow_vocalizations",
             "performance_context_before",
             "performance_context_after",
@@ -267,7 +268,7 @@ class AudioIdentityContext:
         compatible performance sidecar. Such audio is non-reusable; the actual
         generation boundary independently rejects the missing/stale snapshot.
         """
-        directed = settings.get("performance_enabled") or str(settings.get("tts_context_mode") or "off") != "off"
+        directed = settings.get("performance_enabled") or settings.get("casting_enabled") or str(settings.get("tts_context_mode") or "off") != "off"
         general = str(settings.get("generation_prompt") or settings.get("openai_audio_instructions") or "").strip()
         if not directed and not general:
             return identity
@@ -281,7 +282,7 @@ class AudioIdentityContext:
         try:
             if revision_id not in self.performance_states:
                 pinned = self.snapshot
-                frozen_revision = (pinned.get("performance_snapshot") or pinned.get("semantic_context_snapshot") or {}).get("plan_revision_id")
+                frozen_revision = (pinned.get("generation_control_snapshot") or pinned.get("performance_snapshot") or pinned.get("semantic_context_snapshot") or {}).get("plan_revision_id")
                 if not frozen_revision or frozen_revision != revision_id:
                     pinned = deepcopy(self.snapshot)
                     freeze_generation_performance_snapshot(self.session, revision_id, pinned)
@@ -291,6 +292,36 @@ class AudioIdentityContext:
                 raise ValueError(pinned["_performance_error"])
             text = segment.optimized_text or segment.text
             prepared = segment_performance_settings(settings, pinned, segment.id, text, contexts=contexts)
+            if settings.get("casting_enabled"):
+                from .generation_cast_runtime import segment_render_parts
+                parts = segment_render_parts(prepared, pinned, segment.id, text)
+                requests = []
+                for part in parts:
+                    part_settings = part["settings"]
+                    voice = str(part_settings.get("voice") or part_settings.get("speaker") or "")
+                    references = self.voices.get(_voice_key(voice), [])
+                    managed_id = part_settings.get("_cast_voice_id")
+                    if managed_id:
+                        references = [*references, *self.voices.get(_voice_key(managed_id), [])]
+                    requests.append({
+                        "range": [part["start"], part["end"]],
+                        "settings": _material_settings({"tts": part_settings}),
+                        "references": sorted({_hash(item) for item in references}),
+                        "request": compile_performance(part["text"], part_settings).fingerprint,
+                    })
+                # Base narrator settings/references are not audible when every
+                # part has a cast binding. Hash the actual resolved requests.
+                return {
+                    "schema_version": IDENTITY_VERSION,
+                    "settings_hash": _hash({
+                        "parts": [part["settings"] for part in requests],
+                        "rvc": self.selected_rvc if self.selected_rvc.get("enabled") else {},
+                    }),
+                    "voice_reference_hash": _hash([part["references"] for part in requests]),
+                    "performance_request_hash": _hash([
+                        {"range": part["range"], "request": part["request"]} for part in requests
+                    ]),
+                }
             compiled = compile_performance(text, prepared)
             baseline_settings = dict(settings)
             for key in ("_performance", "_semantic_context", "generation_prompt", "openai_audio_instructions"):

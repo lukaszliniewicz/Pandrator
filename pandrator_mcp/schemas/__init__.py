@@ -41,6 +41,21 @@ from .generation import (
     SpeechPlanStatusInput,
     UpdateGenerationSegmentInput,
 )
+from .generation_controls import (
+    GENERATION_CONTROLS_INPUT_MODELS,
+    Cast,
+    CastSettings,
+    Character,
+    CharacterEntry,
+    CharacterStatus,
+    GenerationControls,
+    GenerationControlsResponse,
+    GenerationControlsUpdateRequest,
+    GetGenerationControlsInput,
+    UpdateGenerationControlsInput,
+    VoiceBinding,
+    VoiceCategory,
+)
 from .guidance import GUIDE_TOPICS, ExplainSystemInput, GuideTopic
 from .inventory import ListArtifactsInput, ProviderStatusInput, VoiceCatalogInput
 from .manager import (
@@ -144,6 +159,11 @@ from .transcription import (
     TranscribeInput,
     TranscriptionSource,
 )
+from .voice_metadata import (
+    VOICE_METADATA_INPUT_MODELS,
+    UpdateVoiceMetadataInput,
+    VoiceMetadataChanges,
+)
 from .work import (
     CancelWorkInput,
     GetWorkInput,
@@ -160,6 +180,8 @@ from .workflow import (
 
 TOOL_INPUT_MODELS = (
     *PERFORMANCE_INPUT_MODELS,
+    *GENERATION_CONTROLS_INPUT_MODELS,
+    *VOICE_METADATA_INPUT_MODELS,
     ExplainSystemInput,
     RecommendNextStepsInput,
     TargetStatusInput,
@@ -324,6 +346,19 @@ __all__ = [
     "ReviseSpeechBlockPlanBatchInput",
     "GenerateSpeechPlanInput",
     "AdoptSubtitleSourceInput",
+    "Cast",
+    "CastSettings",
+    "Character",
+    "CharacterEntry",
+    "CharacterStatus",
+    "GenerationControls",
+    "GenerationControlsResponse",
+    "GenerationControlsUpdateRequest",
+    "GetGenerationControlsInput",
+    "UpdateGenerationControlsInput",
+    "VoiceBinding",
+    "VoiceCategory",
+    "GENERATION_CONTROLS_INPUT_MODELS",
 
     "ListDispatchRunsInput",
     "ListSourceCleaningDispatchRunsInput",
@@ -394,4 +429,7 @@ __all__ = [
     "UpdateSessionSettingsInput",
     "WorkReference",
     "VoiceCatalogInput",
+    "VOICE_METADATA_INPUT_MODELS",
+    "UpdateVoiceMetadataInput",
+    "VoiceMetadataChanges",
 ]

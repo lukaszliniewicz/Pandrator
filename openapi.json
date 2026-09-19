@@ -219,6 +219,114 @@
         "title": "BundleImportRequest",
         "type": "object"
       },
+      "CastSettings": {
+        "additionalProperties": false,
+        "description": "Narrator, category, character, and source-speaker voice bindings.",
+        "properties": {
+          "categories": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VoiceBinding"
+            },
+            "title": "Categories",
+            "type": "object"
+          },
+          "characters": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VoiceBinding"
+            },
+            "title": "Characters",
+            "type": "object"
+          },
+          "narrator": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "source_speakers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VoiceBinding"
+            },
+            "maxProperties": 500,
+            "title": "Source Speakers",
+            "type": "object"
+          }
+        },
+        "title": "CastSettings",
+        "type": "object"
+      },
+      "CharacterEntry": {
+        "additionalProperties": false,
+        "description": "One stable character identity in a session's character dictionary.",
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Aliases",
+            "type": "array"
+          },
+          "display_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "notes": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "origin": {
+            "default": "manual",
+            "maxLength": 160,
+            "title": "Origin",
+            "type": "string"
+          },
+          "status": {
+            "default": "accepted",
+            "enum": [
+              "proposed",
+              "accepted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "voice_category": {
+            "default": "unspecified",
+            "enum": [
+              "male",
+              "female",
+              "androgynous",
+              "unspecified"
+            ],
+            "title": "Voice Category",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "title": "CharacterEntry",
+        "type": "object"
+      },
       "ChunkUploadInitialize": {
         "additionalProperties": false,
         "properties": {
@@ -1732,6 +1840,57 @@
           "retained_after"
         ],
         "title": "EventBounds",
+        "type": "object"
+      },
+      "GenerationControlsUpdateRequest": {
+        "additionalProperties": false,
+        "description": "Revision-checked replacement of one or both generation-control sections.",
+        "properties": {
+          "cast": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CastSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "characters": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CharacterEntry"
+                },
+                "maxItems": 2000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Characters"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "unlock_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2000,
+            "title": "Unlock Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "GenerationControlsUpdateRequest",
         "type": "object"
       },
       "GenerationPlanBatchRequest": {
@@ -4423,18 +4582,49 @@
         "additionalProperties": false,
         "properties": {
           "annotation": {
-            "$ref": "#/components/schemas/PerformanceAnnotation"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceAnnotation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "reason": {
+            "default": "",
+            "maxLength": 1600,
+            "title": "Reason",
+            "type": "string"
           },
           "segment_id": {
             "maxLength": 80,
             "minLength": 1,
             "title": "Segment Id",
             "type": "string"
+          },
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
           }
         },
         "required": [
-          "segment_id",
-          "annotation"
+          "segment_id"
         ],
         "title": "PerformanceItem",
         "type": "object"
@@ -4460,6 +4650,15 @@
             "default": false,
             "title": "Allow Vocalizations",
             "type": "boolean"
+          },
+          "annotation_format": {
+            "default": "pssml",
+            "enum": [
+              "pssml",
+              "xml"
+            ],
+            "title": "Annotation Format",
+            "type": "string"
           },
           "batch_size": {
             "default": 12,
@@ -4564,6 +4763,60 @@
             ],
             "default": null
           },
+          "casting_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Casting Enabled"
+          },
+          "context_after": {
+            "anyOf": [
+              {
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context After"
+          },
+          "context_before": {
+            "anyOf": [
+              {
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Before"
+          },
+          "context_max_chars": {
+            "anyOf": [
+              {
+                "maximum": 16000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Max Chars"
+          },
           "context_mode": {
             "anyOf": [
               {
@@ -4607,6 +4860,18 @@
             "default": null,
             "title": "Model"
           },
+          "performance_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Performance Enabled"
+          },
           "segment_id": {
             "maxLength": 80,
             "minLength": 1,
@@ -4625,6 +4890,19 @@
             ],
             "default": null,
             "title": "Service"
+          },
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
           }
         },
         "required": [
@@ -6438,6 +6716,11 @@
             "title": "Batch Status",
             "type": "string"
           },
+          "character_dictionary": {
+            "additionalProperties": true,
+            "title": "Character Dictionary",
+            "type": "object"
+          },
           "delegation": {
             "$ref": "#/components/schemas/DispatchDelegationContext"
           },
@@ -6497,6 +6780,15 @@
       "SpeechOptimizationDispatchBatchSubmitRequest": {
         "additionalProperties": false,
         "properties": {
+          "character_proposals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Character Proposals",
+            "type": "array"
+          },
           "context_delta": {
             "$ref": "#/components/schemas/DispatchContextDelta"
           },
@@ -6676,6 +6968,19 @@
             "default": null,
             "title": "Speaker"
           },
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
+          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -6766,11 +7071,32 @@
       "SpeechOptimizationDispatchItem": {
         "additionalProperties": false,
         "properties": {
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
+          },
           "text": {
-            "maxLength": 4194304,
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 4194304,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
           },
           "unit_id": {
             "minimum": 1,
@@ -6779,8 +7105,7 @@
           }
         },
         "required": [
-          "unit_id",
-          "text"
+          "unit_id"
         ],
         "title": "SpeechOptimizationDispatchItem",
         "type": "object"
@@ -6840,6 +7165,21 @@
           }
         ],
         "properties": {
+          "annotation_mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "dialogue",
+              "speakers"
+            ],
+            "title": "Annotation Mode",
+            "type": "string"
+          },
+          "annotation_only": {
+            "default": false,
+            "title": "Annotation Only",
+            "type": "boolean"
+          },
           "char_limit": {
             "default": 20000,
             "description": "Target source characters per transport batch. A single source unit is never split and may exceed this value. This is not a model-token or iteration budget.",
@@ -6962,6 +7302,21 @@
       "SpeechOptimizationDispatchTaskContract": {
         "additionalProperties": false,
         "properties": {
+          "annotation_mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "dialogue",
+              "speakers"
+            ],
+            "title": "Annotation Mode",
+            "type": "string"
+          },
+          "annotation_only": {
+            "default": false,
+            "title": "Annotation Only",
+            "type": "boolean"
+          },
           "instructions": {
             "title": "Instructions",
             "type": "string"
@@ -7038,6 +7393,19 @@
             ],
             "default": null,
             "title": "Speaker"
+          },
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
           },
           "text": {
             "title": "Text",
@@ -8042,6 +8410,65 @@
         "title": "VocalEvent",
         "type": "object"
       },
+      "VoiceBinding": {
+        "additionalProperties": false,
+        "description": "A provider-neutral voice choice, optionally referencing a managed voice.",
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "service": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service"
+          },
+          "voice": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Voice",
+            "type": "string"
+          },
+          "voice_description": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Voice Description",
+            "type": "string"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Id"
+          }
+        },
+        "title": "VoiceBinding",
+        "type": "object"
+      },
       "VoiceCreate": {
         "additionalProperties": false,
         "properties": {
@@ -8074,6 +8501,17 @@
             "maxLength": 255,
             "minLength": 1,
             "title": "Name",
+            "type": "string"
+          },
+          "voice_category": {
+            "default": "unspecified",
+            "enum": [
+              "male",
+              "female",
+              "androgynous",
+              "unspecified"
+            ],
+            "title": "Voice Category",
             "type": "string"
           }
         },
@@ -8207,6 +8645,24 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "voice_category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "male",
+                  "female",
+                  "androgynous",
+                  "unspecified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Category"
           }
         },
         "title": "VoiceUpdate",
@@ -11726,6 +12182,146 @@
             ]
           }
         ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-controls": {
+      "get": {
+        "description": "Session-scoped stable character identities and compatible voice bindings. Does not start analysis or synthesis. Writes require the current revision and explicit unlock IDs for protected identity changes.",
+        "operationId": "getGenerationControls",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current characters, cast and revision"
+          },
+          "400": {
+            "description": "Missing idempotency key"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Session not found"
+          },
+          "409": {
+            "description": "Revision or protected identity conflict"
+          },
+          "422": {
+            "description": "Invalid character or cast"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Read character dictionary and cast"
+      },
+      "put": {
+        "description": "Session-scoped stable character identities and compatible voice bindings. Does not start analysis or synthesis. Writes require the current revision and explicit unlock IDs for protected identity changes.",
+        "operationId": "updateGenerationControls",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationControlsUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current characters, cast and revision"
+          },
+          "400": {
+            "description": "Missing idempotency key"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Session not found"
+          },
+          "409": {
+            "description": "Revision or protected identity conflict"
+          },
+          "422": {
+            "description": "Invalid character or cast"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Save character dictionary and cast"
       }
     },
     "/api/v1/sessions/{sessionId}/generation-plan": {

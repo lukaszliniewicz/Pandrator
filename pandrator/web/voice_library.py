@@ -184,6 +184,10 @@ def voice_payload(
         None,
     )
     metadata = deepcopy(voice.metadata_json or {})
+    voice_category = str(metadata.get("voice_category") or "").strip().casefold()
+    if voice_category not in {"male", "female", "androgynous", "unspecified"}:
+        voice_category = "unspecified"
+    metadata["voice_category"] = voice_category
     providers = dict(metadata.get("providers") or {})
     for service_id, raw in list(providers.items()):
         registration = dict(raw or {})
@@ -210,6 +214,7 @@ def voice_payload(
         "language": voice.language,
         "description": voice.description,
         "rvc_model_ref": voice.rvc_model_ref,
+        "voice_category": voice_category,
         "metadata_json": metadata,
         "revision": voice.revision,
         "bundled": is_bundled_voice(voice),

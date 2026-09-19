@@ -566,6 +566,13 @@ def _default_silence_after_ms(
         bool(record.get("paragraph_break_after"))
         or str(record.get("paragraph") or "").lower() == "yes"
     )
+    boundary = record.get("speech_boundary_after")
+    if boundary == "continuation":
+        return 0
+    if boundary == "dialogue_turn":
+        return sentence_silence
+    if boundary in {"scene", "chapter", "paragraph"}:
+        is_paragraph = True
     if is_paragraph:
         return max(
             0,
@@ -2013,11 +2020,13 @@ class WorkflowHandlers:
         source_path: Path,
         settings: dict[str, Any],
         language: str,
+        session_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None, Artifact]:
         """Build one speaker-safe partition for display and speech text."""
         from pandrator.logic.dubbing.speech_blocks import create_speech_blocks
-        from pandrator.logic.dubbing.srt_utils import parse_srt
+        from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
 
+        source_markup = (source_artifact.metadata_json or {}).get("speech_markup") or {}
         (
             min_chars,
             max_chars,
@@ -2081,7 +2090,7 @@ class WorkflowHandlers:
                                         row.get("speech_plan") or {}
                                     )
 
-        if source_artifact.role != "tts_optimized":
+        if source_artifact.role != "tts_optimized" and not source_markup:
             with self.database.immediate_session() as session:
                 managed = session.get(Artifact, source_artifact.id)
                 if (
@@ -2113,8 +2122,7 @@ class WorkflowHandlers:
         )
         if display_segments is None:
             display_segments = parse_srt(display_srt)
-        blocks = create_speech_blocks(
-            display_srt,
+        block_options = dict(
             preserve_source_boundaries=logical_rows is not None,
             target_language=language,
             min_chars=min_chars,
@@ -2123,17 +2131,45 @@ class WorkflowHandlers:
             continuation_threshold_ms=continuation_threshold,
             max_internal_gap_ms=max_internal_gap,
             generation_mode=_speech_block_generation_mode(settings),
-            speech_srt_content=(
-                source_path.read_text(encoding="utf-8-sig")
-                if speech_segments is not None
-                else None
-            ),
             **(
                 {"speaker_by_subtitle": speaker_by_subtitle}
                 if speaker_by_subtitle
                 else {}
             ),
         )
+        if source_markup:
+            # XML belongs to an accepted cue. Keep its timing envelope and
+            # wording integral; casting splits only internal synthesis calls.
+            spoken_by_index = {item.index: item for item in (speech_segments or display_segments)}
+            def one_cue_srt(cue):
+                # compose_srt numbers its export from 1; planning must retain
+                # the source cue IDs for annotation and timing provenance.
+                return f"{cue.index}\n{compose_srt([cue]).partition(chr(10))[2]}"
+            blocks = []
+            for cue in display_segments:
+                spoken = spoken_by_index[cue.index]
+                cue_blocks = create_speech_blocks(
+                    one_cue_srt(cue),
+                    **{**block_options, "preserve_source_boundaries": True,
+                       "generation_mode": "passage",
+                       "max_chars": max(max_chars, len(cue.text), len(spoken.text))},
+                    speech_srt_content=one_cue_srt(spoken) if speech_segments is not None else None,
+                )
+                for block in cue_blocks:
+                    block["number"] = str(len(blocks) + 1).zfill(4)
+                    block["alignment_group"] = f"a{len(blocks) + 1:04d}"
+                    if blocks:
+                        block["provenance"]["boundary_before"] = {
+                            "action": "keep_boundary", "reason": "annotated_cue_boundary",
+                            "message": "Accepted speech markup retains its source cue window.",
+                            "source_references": [cue.index],
+                        }
+                    blocks.append(block)
+        else:
+            blocks = create_speech_blocks(
+                display_srt, **block_options,
+                speech_srt_content=source_path.read_text(encoding="utf-8-sig") if speech_segments is not None else None,
+            )
         if not blocks:
             raise ValueError("No dubbing speech blocks were produced.")
 
@@ -2181,6 +2217,19 @@ class WorkflowHandlers:
                         "compiled_text": optimized_text,
                         "cue_plans": cue_plans,
                     }
+            if source_markup and any(str(position_by_index.get(cue, -1) + 1) in source_markup for cue in subtitle_ids):
+                from .generation_cast_runtime import combine_source_markup
+                from .generation_controls import get_generation_controls
+                with self.database.session() as db:
+                    characters = get_generation_controls(db, session_id or source_artifact.session_id)["characters"]
+                source_rows = {item.index: item for item in (speech_segments or display_segments)}
+                combined = combine_source_markup(
+                    [(source_rows[cue].text, source_markup.get(str(position_by_index[cue] + 1))) for cue in subtitle_ids],
+                    str(len(records) + 1),
+                    record.get("tts_optimized_sentence") or record.get("text") or record.get("original_sentence") or "",
+                    characters,
+                )
+                record["speech_plan"] = {**record.get("speech_plan", {}), "speech_xml": combined}
             records.append(record)
 
         source_revision_id = (
@@ -2228,6 +2277,7 @@ class WorkflowHandlers:
                 source_path,
                 settings,
                 language,
+                session_id=session_id,
             )
         )
         revision_id, _segment_ids = self._store_generation_plan(
@@ -2712,7 +2762,13 @@ class WorkflowHandlers:
             session.add(revision)
             session.flush()
             child_records: list[Segment] = []
+            speech_markup = (artifact.metadata_json or {}).get("speech_markup") or {}
+            if speech_markup:
+                from .generation_controls import get_generation_controls
+                from .generation_cast_runtime import remap_markup
+                characters = get_generation_controls(session, session_id)["characters"]
             for ordinal, item in enumerate(resolved_segments):
+                cue_markup = speech_markup.get(str(ordinal + 1))
                 child = Segment(
                     revision_id=revision.id,
                     ordinal=ordinal,
@@ -2722,6 +2778,7 @@ class WorkflowHandlers:
                     speaker=item.speaker or None,
                     metadata_json={
                         "speaker_source": speaker_sources[ordinal],
+                        **({"speech_xml": remap_markup(cue_markup, str(ordinal + 1), item.text, characters)} if cue_markup else {}),
                         **(
                             passage_review_metadata(
                                 [
@@ -5310,7 +5367,8 @@ class WorkflowHandlers:
             apply_reviewed_pronunciations,
             normalize_backend,
         )
-        from .tts_optimization import optimize_texts
+        from .speech_structure_analysis import annotate_speech_units
+        from .tts_optimization import OptimizationUsage, optimize_texts
 
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(
@@ -5359,6 +5417,21 @@ class WorkflowHandlers:
             str(settings.get("speech_optimization_mode") or "").strip().lower()
         )
         structured_mode = speech_mode in {"guarded", "flexible"}
+        annotation_mode = str(
+            settings.get("llm_tts_annotation_mode")
+            or settings.get("annotation_mode")
+            or "off"
+        ).strip().lower()
+        if annotation_mode not in {"off", "dialogue", "speakers"}:
+            raise ValueError(
+                "llm_tts_annotation_mode must be off, dialogue, or speakers"
+            )
+        annotation_only = bool(
+            settings.get(
+                "llm_tts_annotation_only",
+                settings.get("annotation_only", False),
+            )
+        )
         default_language = str(
             settings.get("language")
             or settings.get("target_language")
@@ -5382,6 +5455,12 @@ class WorkflowHandlers:
             settings.get("apply_reviewed_pronunciations", True) is not False
         )
         speech_plans: list[dict[str, Any]] = []
+        metadata_markup = (source_artifact.metadata_json or {}).get("speech_markup")
+        source_markup: dict[str, str] = {
+            str(key): value
+            for key, value in (metadata_markup.items() if isinstance(metadata_markup, dict) else [])
+            if isinstance(value, str)
+        }
 
         def optimize_units(
             source_texts: list[str],
@@ -5425,29 +5504,33 @@ class WorkflowHandlers:
                     speech_plans[index] = plan
 
             try:
-                optimized, usage = optimize_texts(
-                    source_texts,
-                    settings,
-                    llm_settings,
-                    model_name,
-                    cancel_event,
-                    _scaled_progress_callback(progress, 0.05, 0.9),
-                    on_plan_batch=keep_plans if structured_mode else None,
-                    known_pronunciation_resolver=resolve_known
-                    if structured_mode
-                    else None,
-                    languages=languages,
-                    voice_languages=[voice_language for _ in source_texts],
-                    completed_units=agent_run.completed_units,
-                    on_unit_completed=lambda key, output: persist_checkpoint(
-                        key,
-                        output,
-                        phase="tts_optimization",
-                        usage_stage="tts_optimization",
-                        usage_settings=settings,
-                    ),
-                )
-                if apply_reviewed and not structured_mode:
+                if annotation_only:
+                    optimized = list(source_texts)
+                    usage = OptimizationUsage()
+                else:
+                    optimized, usage = optimize_texts(
+                        source_texts,
+                        settings,
+                        llm_settings,
+                        model_name,
+                        cancel_event,
+                        _scaled_progress_callback(progress, 0.05, 0.9),
+                        on_plan_batch=keep_plans if structured_mode else None,
+                        known_pronunciation_resolver=resolve_known
+                        if structured_mode
+                        else None,
+                        languages=languages,
+                        voice_languages=[voice_language for _ in source_texts],
+                        completed_units=agent_run.completed_units,
+                        on_unit_completed=lambda key, output: persist_checkpoint(
+                            key,
+                            output,
+                            phase="tts_optimization",
+                            usage_stage="tts_optimization",
+                            usage_settings=settings,
+                        ),
+                    )
+                if apply_reviewed and not structured_mode and not annotation_only:
                     optimized = [
                         apply_reviewed_pronunciations(
                             revised,
@@ -5455,6 +5538,21 @@ class WorkflowHandlers:
                         )
                         for index, revised in enumerate(optimized)
                     ]
+                if annotation_mode != "off" or source_markup:
+                    markup = annotate_speech_units(
+                        self.database,
+                        session_id,
+                        optimized,
+                        mode=annotation_mode,
+                        llm_settings=llm_settings,
+                        model_name=model_name,
+                        cancel_event=cancel_event,
+                        source_markup=source_markup,
+                        on_usage=usage.add,
+                    )
+                    for index, xml in enumerate(markup):
+                        if xml:
+                            speech_plans[index]["speech_xml"] = xml
                 return optimized, usage
             except Exception as error:
                 run_store.fail(agent_run.id, error)
@@ -5504,6 +5602,17 @@ class WorkflowHandlers:
                 else default_language
                 for row in rows
             ]
+            for index, row in enumerate(rows, start=1):
+                if not isinstance(row, dict):
+                    continue
+                nested_plan = row.get("speech_plan")
+                row_markup = row.get("speech_xml") or (
+                    nested_plan.get("speech_xml")
+                    if isinstance(nested_plan, dict)
+                    else None
+                )
+                if isinstance(row_markup, str):
+                    source_markup[str(index)] = row_markup
             optimized, usage = optimize_units(source_texts, languages)
             if cancel_event.is_set():
                 return {}
@@ -5517,8 +5626,15 @@ class WorkflowHandlers:
                         or ""
                     )
                     row["tts_optimized_sentence"] = text
-                    if structured_mode:
-                        row["speech_plan"] = speech_plans[index]
+                    if speech_plans[index]:
+                        existing_plan = row.get("speech_plan")
+                        merged_plan = {
+                            **(existing_plan if isinstance(existing_plan, dict) else {}),
+                            **speech_plans[index],
+                        }
+                        row["speech_plan"] = merged_plan
+                        if merged_plan.get("speech_xml"):
+                            row["speech_xml"] = merged_plan["speech_xml"]
             destination = (
                 self._session_dir(session_id) / f"tts-optimized-{new_id()}.json"
             )
@@ -5538,7 +5654,7 @@ class WorkflowHandlers:
             kind = "text"
         progress(0.92, "Speech optimization complete; preparing preview artifact")
         speech_plan_artifact_id = ""
-        if structured_mode and any(speech_plans):
+        if any(speech_plans):
             plan_path = self._session_dir(session_id) / f"speech-plans-{new_id()}.json"
             plan_path.write_text(
                 json.dumps(
@@ -5569,6 +5685,12 @@ class WorkflowHandlers:
                     "model": model_name,
                     "mode": speech_mode,
                     "plan_count": len(speech_plans),
+                    "speech_markup": {
+                        str(index + 1): str(plan["speech_xml"])
+                        for index, plan in enumerate(speech_plans)
+                        if isinstance(plan, dict)
+                        and isinstance(plan.get("speech_xml"), str)
+                    },
                 },
             )
             speech_plan_artifact_id = plan_artifact.id
@@ -5590,6 +5712,11 @@ class WorkflowHandlers:
                 "speech_optimization_mode": speech_mode or "legacy",
                 "speech_plan_artifact_id": speech_plan_artifact_id or None,
                 "speech_plan_count": len([plan for plan in speech_plans if plan]),
+                "speech_markup": {
+                    str(index + 1): str(plan["speech_xml"])
+                    for index, plan in enumerate(speech_plans)
+                    if isinstance(plan, dict) and isinstance(plan.get("speech_xml"), str)
+                },
                 "batch_size": settings["llm_tts_batch_size"],
                 "requested_settings_hash": requested_settings_hash,
                 "agent_run_id": agent_run.id,
@@ -6802,55 +6929,69 @@ class WorkflowHandlers:
         source_language = str(record.source_language or "auto")
         text_defaults = BUILTIN_DEFAULTS["text"]
         progress(0.1, "Segmenting narration")
-        prepared = preprocess_text(
-            text,
-            {
-                "source_file": str(source_path),
-                "language": source_language,
-                # Segmentation is intentionally provider-independent.  This
-                # selects the shared multilingual sentence tokenizer only.
-                "tts_service": "XTTS",
-                "max_sentence_length": int(
-                    settings.get("max_sentence_length")
-                    or text_defaults["max_sentence_length"]
-                ),
-                "enable_sentence_splitting": bool(
-                    settings.get(
-                        "enable_sentence_splitting",
-                        text_defaults["enable_sentence_splitting"],
-                    )
-                ),
-                "enable_sentence_appending": bool(
-                    settings.get(
-                        "enable_sentence_appending",
-                        text_defaults["enable_sentence_appending"],
-                    )
-                ),
-                "enable_nemo_normalization": bool(
-                    settings.get(
-                        "enable_nemo_normalization",
-                        text_defaults["enable_nemo_normalization"],
-                    )
-                ),
-                "remove_diacritics": bool(
-                    settings.get(
-                        "remove_diacritics", text_defaults["remove_diacritics"]
-                    )
-                ),
-                "remove_quotation_marks": bool(
-                    settings.get(
-                        "remove_quotation_marks",
-                        text_defaults["remove_quotation_marks"],
-                    )
-                ),
-                "normalize_all_caps": bool(
-                    settings.get(
-                        "normalize_all_caps", text_defaults["normalize_all_caps"]
-                    )
-                ),
-            },
-            progress_callback=_scaled_progress_callback(progress, 0.1, 0.85),
-        )
+        supplied_markup = (source_artifact.metadata_json or {}).get("speech_markup") or {}
+        if supplied_markup:
+            from pandrator.logic.speech_markup import parse_speech_markup
+            from .generation_controls import get_generation_controls
+            with self.database.session() as db:
+                characters = get_generation_controls(db, session_id)["characters"]
+            structures = [parse_speech_markup(xml, expected_segment_id=str(key), characters=characters)
+                          for key, xml in sorted(supplied_markup.items(), key=lambda item: int(item[0]))]
+            if " ".join(text.split()) != " ".join(" ".join(item.transcript for item in structures).split()):
+                raise ValueError("Annotated text changed. Reannotate it before preparing narration.")
+            prepared = [{"original_sentence": item.transcript, "speech_plan": {"speech_xml": item.xml},
+                         "paragraph_break_after": item.boundary_after in {"paragraph", "scene", "chapter"},
+                         "speech_boundary_after": item.boundary_after} for item in structures]
+        else:
+            prepared = preprocess_text(
+                text,
+                {
+                    "source_file": str(source_path),
+                    "language": source_language,
+                    # Segmentation is intentionally provider-independent.  This
+                    # selects the shared multilingual sentence tokenizer only.
+                    "tts_service": "XTTS",
+                    "max_sentence_length": int(
+                        settings.get("max_sentence_length")
+                        or text_defaults["max_sentence_length"]
+                    ),
+                    "enable_sentence_splitting": bool(
+                        settings.get(
+                            "enable_sentence_splitting",
+                            text_defaults["enable_sentence_splitting"],
+                        )
+                    ),
+                    "enable_sentence_appending": bool(
+                        settings.get(
+                            "enable_sentence_appending",
+                            text_defaults["enable_sentence_appending"],
+                        )
+                    ),
+                    "enable_nemo_normalization": bool(
+                        settings.get(
+                            "enable_nemo_normalization",
+                            text_defaults["enable_nemo_normalization"],
+                        )
+                    ),
+                    "remove_diacritics": bool(
+                        settings.get(
+                            "remove_diacritics", text_defaults["remove_diacritics"]
+                        )
+                    ),
+                    "remove_quotation_marks": bool(
+                        settings.get(
+                            "remove_quotation_marks",
+                            text_defaults["remove_quotation_marks"],
+                        )
+                    ),
+                    "normalize_all_caps": bool(
+                        settings.get(
+                            "normalize_all_caps", text_defaults["normalize_all_caps"]
+                        )
+                    ),
+                },
+                progress_callback=_scaled_progress_callback(progress, 0.1, 0.85),
+            )
         if cancel_event.is_set():
             return {}
         progress(0.9, "Saving narration segments")
@@ -6960,7 +7101,22 @@ class WorkflowHandlers:
             session.add(revision)
             session.flush()
             segment_ids = []
+            from .generation_controls import get_generation_controls
+            from .generation_cast_runtime import remap_markup
+            from pandrator.logic.speech_markup import parse_speech_markup
+            characters = get_generation_controls(session, session_id)["characters"]
             for ordinal, record in enumerate(clean):
+                record = dict(record)
+                source_markup = record.get("speech_xml") or (record.get("speech_plan") or {}).get("speech_xml")
+                if source_markup:
+                    spoken = str(record.get("tts_optimized_sentence") or record.get("text") or record.get("original_sentence") or "").strip()
+                    normalized = remap_markup(source_markup, str(ordinal + 1), spoken, characters)
+                    structure = parse_speech_markup(normalized, expected_segment_id=str(ordinal + 1), expected_text=spoken, characters=characters)
+                    record["speech_boundary_after"] = structure.boundary_after or (
+                        "dialogue_turn" if structure.spans and structure.spans[-1].dialogue else None
+                    )
+                    if record["speech_boundary_after"] in {"continuation", "dialogue_turn"}:
+                        record["paragraph_break_after"] = False
                 is_subtitle = self._is_subtitle_generation_record(record)
                 explicit_language = (
                     self._usable_language(record.get("language")) or None
@@ -7041,6 +7197,11 @@ class WorkflowHandlers:
                 )
                 session.add(segment)
                 session.flush()
+                if source_markup:
+                    segment.speech_plan_json = {
+                        **(segment.speech_plan_json or {}),
+                        "speech_xml": remap_markup(source_markup, segment.id, segment.optimized_text or segment.text, characters),
+                    }
                 segment_ids.append(segment.id)
             plan.active_revision_id = revision.id
             plan.updated_at = utcnow()
@@ -7340,6 +7501,8 @@ class WorkflowHandlers:
             normalize_backend,
         )
 
+        if settings.get("llm_tts_annotation_mode", "off") != "off":
+            raise ValueError("Dialogue and character analysis creates a reviewable document revision. Run speech optimization before generation.")
         apply_reviewed = (
             settings.get("apply_reviewed_pronunciations", True) is not False
         )
@@ -7847,15 +8010,22 @@ class WorkflowHandlers:
         tts_urls = self._tts_urls(settings)
         batch_results = None
         batch_contexts: dict[str, dict[str, Any]] = {}
-        batch_capabilities = self.tts_providers.synthesis_capabilities(
-            settings,
-            **tts_urls,
-        )
-        effective_batch_size = self._negotiated_tts_batch_size(
-            settings,
-            tts_urls,
-            capabilities=batch_capabilities,
-        )
+        casting_enabled = bool(settings.get("casting_enabled"))
+        batch_capabilities = None
+        if casting_enabled:
+            # A logical segment owns all of its cast parts and publishes one
+            # take only after they have been rendered and concatenated.
+            effective_batch_size = 1
+        else:
+            batch_capabilities = self.tts_providers.synthesis_capabilities(
+                settings,
+                **tts_urls,
+            )
+            effective_batch_size = self._negotiated_tts_batch_size(
+                settings,
+                tts_urls,
+                capabilities=batch_capabilities,
+            )
         parallel_synthesis_batch = bool(
             effective_batch_size > 1 and batch_capabilities.parallel_synthesis
         )
@@ -7872,15 +8042,16 @@ class WorkflowHandlers:
                     language=self._usable_language(record.get("language")),
                     voice=str(record.get("voice") or "").strip() or None,
                 )
-                segment_tts_settings = self.prepare_audio_cpp_voice_reference(
-                    segment_tts_settings
-                )
-                self._ensure_qwen_cloned_voice(
-                    segment_tts_settings,
-                    base_url=tts_urls["kobold_qwen_base_url"],
-                    verified=verified_qwen_voices,
-                    cancel_event=cancel_event,
-                )
+                if not casting_enabled:
+                    segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                        segment_tts_settings
+                    )
+                    self._ensure_qwen_cloned_voice(
+                        segment_tts_settings,
+                        base_url=tts_urls["kobold_qwen_base_url"],
+                        verified=verified_qwen_voices,
+                        cancel_event=cancel_event,
+                    )
                 segment_tts_settings = segment_performance_settings(
                     segment_tts_settings, performance_snapshot, generation_segment_id,
                     synthesized_text, contexts=performance_contexts,
@@ -7941,20 +8112,49 @@ class WorkflowHandlers:
                     language=self._usable_language(record.get("language")),
                     voice=str(record.get("voice") or "").strip() or None,
                 )
-                segment_tts_settings = self.prepare_audio_cpp_voice_reference(
-                    segment_tts_settings
-                )
-                self._ensure_qwen_cloned_voice(
-                    segment_tts_settings,
-                    base_url=tts_urls["kobold_qwen_base_url"],
-                    verified=verified_qwen_voices,
-                    cancel_event=cancel_event,
-                )
+                if not casting_enabled:
+                    segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                        segment_tts_settings
+                    )
+                    self._ensure_qwen_cloned_voice(
+                        segment_tts_settings,
+                        base_url=tts_urls["kobold_qwen_base_url"],
+                        verified=verified_qwen_voices,
+                        cancel_event=cancel_event,
+                    )
 
             segment_tts_settings = segment_performance_settings(
                 segment_tts_settings, performance_snapshot, generation_segment_id,
                 synthesized_text, contexts=performance_contexts,
             )
+            render_manifest: list[dict[str, Any]] = []
+
+            def synthesize_request(
+                *,
+                text_to_synthesize: str = synthesized_text,
+                settings_for_segment: dict[str, Any] = segment_tts_settings,
+                segment_index: int = index,
+                synthesis_progress_share: float = synthesis_share,
+            ):
+                return self.tts_providers.synthesize(
+                    text_to_synthesize,
+                    settings_for_segment,
+                    max_attempts=int(settings_for_segment.get("max_attempts") or 5),
+                    cancel_event=cancel_event,
+                    retry_callback=lambda attempt, total, delay: progress(
+                        optimization_share
+                        + ((segment_index - 1) / len(records))
+                        * synthesis_progress_share,
+                        f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s",
+                    ),
+                    recovery_callback=lambda cycle, total, timeout: progress(
+                        optimization_share
+                        + ((segment_index - 1) / len(records))
+                        * synthesis_progress_share,
+                        f"Waiting for Qwen3 TTS before segment {segment_index} ({cycle}/{total}, up to {timeout:.0f}s)",
+                    ),
+                    **tts_urls,
+                )
 
             def synthesize_one(
                 *,
@@ -7963,6 +8163,59 @@ class WorkflowHandlers:
                 segment_index: int = index,
                 synthesis_progress_share: float = synthesis_share,
             ):
+                if casting_enabled:
+                    from .generation_cast_runtime import segment_render_parts
+                    from .generation_rendering import execute_render_parts
+
+                    parts = segment_render_parts(
+                        settings_for_segment,
+                        performance_snapshot,
+                        generation_segment_id,
+                        text_to_synthesize,
+                    )
+
+                    def render_part(
+                        part_text: str, part_settings: dict[str, Any]
+                    ):
+                        if cancel_event.is_set():
+                            raise MediaProcessCancelled(
+                                "Audio generation was canceled."
+                            )
+                        prepared = self.prepare_audio_cpp_voice_reference(
+                            part_settings
+                        )
+                        self._ensure_qwen_cloned_voice(
+                            prepared,
+                            base_url=tts_urls["kobold_qwen_base_url"],
+                            verified=verified_qwen_voices,
+                            cancel_event=cancel_event,
+                        )
+                        audio_part = synthesize_request(
+                            text_to_synthesize=part_text,
+                            settings_for_segment=prepared,
+                        )
+                        if cancel_event.is_set():
+                            raise MediaProcessCancelled(
+                                "Audio generation was canceled."
+                            )
+                        return audio_part
+
+                    try:
+                        assembled, manifest = execute_render_parts(
+                            parts,
+                            synthesize=render_part,
+                            cancelled=cancel_event.is_set,
+                        )
+                    except RuntimeError as error:
+                        if cancel_event.is_set():
+                            raise MediaProcessCancelled(
+                                "Audio generation was canceled."
+                            ) from error
+                        raise
+                    if cancel_event.is_set():
+                        raise MediaProcessCancelled("Audio generation was canceled.")
+                    render_manifest.extend(manifest)
+                    return assembled
                 return self.tts_providers.synthesize(
                     text_to_synthesize,
                     settings_for_segment,
@@ -8018,11 +8271,15 @@ class WorkflowHandlers:
                 audio = synthesize_one()
             if audio is None:
                 raise RuntimeError(f"Speech generation failed at segment {index}.")
+            if casting_enabled and cancel_event.is_set():
+                raise MediaProcessCancelled("Audio generation was canceled.")
             verification = self._verification_metadata(
                 audio,
                 synthesized_text,
                 segment_tts_settings,
             )
+            if casting_enabled and cancel_event.is_set():
+                raise MediaProcessCancelled("Audio generation was canceled.")
             take_dir = (
                 self._session_dir(session_id)
                 / "generation"
@@ -8033,6 +8290,9 @@ class WorkflowHandlers:
             sentence_path = take_dir / f"tts-{new_id()}.wav"
             exported = audio.export(sentence_path, format="wav")
             exported.close()
+            if casting_enabled and cancel_event.is_set():
+                sentence_path.unlink(missing_ok=True)
+                raise MediaProcessCancelled("Audio generation was canceled.")
             take_artifact = self.artifacts.register(
                 sentence_path,
                 kind="audio",
@@ -8047,6 +8307,11 @@ class WorkflowHandlers:
                     "synthesized_text": synthesized_text,
                     "llm_optimized": synthesized_text != text,
                     "llm_model": optimization_model or None,
+                    **(
+                        {"render_parts": render_manifest}
+                        if render_manifest
+                        else {}
+                    ),
                     **(
                         {"audio_verification": verification}
                         if verification is not None
@@ -8451,6 +8716,7 @@ class WorkflowHandlers:
         from pydub import AudioSegment
 
         from pandrator.logic import rvc_handler
+        from .media_process import MediaProcessCancelled
 
         run_id = str(payload.get("generation_run_id") or "")
         selected_ids = {
@@ -8795,6 +9061,10 @@ class WorkflowHandlers:
                     capabilities=batch_capabilities,
                 )
             )
+            # A composite segment owns its internal requests and publishes one
+            # take only after every voice part succeeds.
+            if (selected_tts_runtime or tts_settings).get("casting_enabled"):
+                effective_batch_size = 1
             if effective_batch_size > 1:
                 batch_items: list[tuple[str, str, dict[str, Any]]] = []
                 for segment_id in segment_ids:
@@ -8908,6 +9178,10 @@ class WorkflowHandlers:
             )
             take_path: Path | None = None
             take_committed = False
+            render_manifest: list[dict[str, Any]] = []
+            cast_render = operation != "rvc" and bool(
+                (selected_tts_runtime or tts_settings).get("casting_enabled")
+            )
             try:
                 synthesized_text = text
                 if operation == "rvc":
@@ -9002,18 +9276,19 @@ class WorkflowHandlers:
                             segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
                             contexts=performance_contexts,
                         )
-                        segment_tts_settings = self.prepare_audio_cpp_voice_reference(
-                            segment_tts_settings
-                        )
-                        self._ensure_qwen_cloned_voice(
-                            segment_tts_settings,
-                            base_url=tts_urls["kobold_qwen_base_url"],
-                            verified=verified_qwen_voices,
-                            cancel_event=cancel_event,
-                        )
+                        if not segment_tts_settings.get("casting_enabled"):
+                            segment_tts_settings = self.prepare_audio_cpp_voice_reference(
+                                segment_tts_settings
+                            )
+                            self._ensure_qwen_cloned_voice(
+                                segment_tts_settings,
+                                base_url=tts_urls["kobold_qwen_base_url"],
+                                verified=verified_qwen_voices,
+                                cancel_event=cancel_event,
+                            )
                         _assert_current_audio_identity(segment_id)
 
-                    def synthesize_one(
+                    def synthesize_request(
                         *,
                         text_to_synthesize: str = synthesized_text,
                         settings_for_segment: dict[str, Any] = segment_tts_settings,
@@ -9040,6 +9315,39 @@ class WorkflowHandlers:
                             ),
                             **tts_urls,
                         )
+
+                    def synthesize_one():
+                        nonlocal render_manifest
+                        if not segment_tts_settings.get("casting_enabled"):
+                            return synthesize_request()
+                        from .generation_cast_runtime import segment_render_parts
+                        from .generation_rendering import execute_render_parts
+
+                        parts = segment_render_parts(
+                            segment_tts_settings, settings_snapshot,
+                            segment_id, synthesized_text,
+                        )
+                        def render_part(part_text, part_settings):
+                            prepared = self.prepare_audio_cpp_voice_reference(part_settings)
+                            self._ensure_qwen_cloned_voice(
+                                prepared, base_url=tts_urls["kobold_qwen_base_url"],
+                                verified=verified_qwen_voices, cancel_event=cancel_event,
+                            )
+                            _assert_current_audio_identity(segment_id)
+                            return synthesize_request(
+                                text_to_synthesize=part_text, settings_for_segment=prepared,
+                            )
+                        def cancelled():
+                            if cancel_event.is_set():
+                                return True
+                            with self.database.session() as db:
+                                current_run = db.get(GenerationRun, run_id)
+                                return current_run is None or current_run.cancel_requested
+                        assembled, render_manifest = execute_render_parts(
+                            parts, synthesize=render_part, cancelled=cancelled,
+                        )
+                        _assert_current_audio_identity(segment_id)
+                        return assembled
 
                     if batch_results is not None and batch_context is not None:
                         try:
@@ -9100,6 +9408,8 @@ class WorkflowHandlers:
                     synthesized_text,
                     {**tts_settings, **take_settings},
                 )
+                if cast_render and cancel_event.is_set():
+                    raise MediaProcessCancelled("Audio generation was canceled.")
                 take_dir = (
                     self._session_dir(session_id)
                     / "generation"
@@ -9116,6 +9426,10 @@ class WorkflowHandlers:
                     settings=stored_take_settings,
                 )
                 with self.database.immediate_session() as session:
+                    if cast_render:
+                        current_run = session.get(GenerationRun, run_id)
+                        if cancel_event.is_set() or current_run is None or current_run.cancel_requested:
+                            raise MediaProcessCancelled("Audio generation was canceled.")
                     segment = session.get(GenerationSegment, segment_id)
                     artifact = self.artifacts.register_in_session(
                         session,
@@ -9138,6 +9452,7 @@ class WorkflowHandlers:
                             "speaker": segment_speaker,
                             "source_text": text,
                             "synthesized_text": synthesized_text,
+                            **({"render_parts": render_manifest} if render_manifest else {}),
                             "llm_optimized": (
                                 operation != "rvc" and synthesized_text != text
                             ),
@@ -9229,13 +9544,26 @@ class WorkflowHandlers:
                         )
                 with self.database.session() as session:
                     segment = session.get(GenerationSegment, segment_id)
-                    if segment is not None:
-                        segment.status = "failed"
-                        segment.updated_at = utcnow()
                     run = session.get(GenerationRun, run_id)
+                    canceled_cast = cast_render and (
+                        cancel_event.is_set() or run is None or run.cancel_requested
+                    )
+                    if segment is not None:
+                        if canceled_cast:
+                            has_active_take = session.scalar(select(AudioTake.id).where(
+                                AudioTake.generation_segment_id == segment_id,
+                                AudioTake.is_active.is_(True),
+                                AudioTake.status == "completed",
+                            ).limit(1))
+                            segment.status = "completed" if has_active_take else "ready"
+                        else:
+                            segment.status = "failed"
+                        segment.updated_at = utcnow()
                     if run is not None:
-                        run.status = "failed"
+                        run.status = "canceled" if canceled_cast else "failed"
                         run.updated_at = utcnow()
+                if canceled_cast:
+                    return {"generation_run_id": run_id, "status": "canceled", "generated": generated}
                 raise
 
         if parallel_wave_error is not None:

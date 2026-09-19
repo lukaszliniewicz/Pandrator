@@ -169,6 +169,21 @@
     suffix
       ? page.url.pathname.endsWith(suffix)
       : page.url.pathname === `/sessions/${page.params.id}`;
+  $effect(() => {
+    const sessionId = page.params.id ?? '';
+    appState.mobileSessionNavigation = {
+      sessionId,
+      title: contextState.session?.name ?? 'Session',
+      items: tabs.map((tab) => ({
+        href: `/sessions/${sessionId}${tab.href}`,
+        label: tab.label
+      }))
+    };
+    return () => {
+      if (appState.mobileSessionNavigation?.sessionId === sessionId)
+        appState.mobileSessionNavigation = null;
+    };
+  });
 </script>
 
 {#if contextState.loading}
@@ -298,17 +313,15 @@
 
 <style>
   .session-tabs {
+    display: none;
     position: sticky;
-    /* Below md the global hamburger (fixed left-4 top-4) floats above this
-       bar, so the stuck tabs sit one button-height lower and can never slide
-       underneath it, whatever the horizontal scroll position. */
-    top: 4rem;
+    top: 0;
     z-index: 30;
     background: var(--paper);
   }
   @media (min-width: 768px) {
     .session-tabs {
-      top: 0;
+      display: flex;
     }
   }
   .session-content {

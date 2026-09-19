@@ -1068,6 +1068,8 @@ class ApplicationClient:
         context_before: int,
         context_after: int,
         include_timing: bool,
+        annotation_mode: str = "off",
+        annotation_only: bool = False,
         execution_mode: str = "serial",
         max_parallel_batches: int = 1,
         context_capsule: dict[str, Any] | None = None,
@@ -1084,6 +1086,10 @@ class ApplicationClient:
             "max_parallel_batches": int(max_parallel_batches),
             "context_capsule": dict(context_capsule or {}),
         }
+        if annotation_mode != "off":
+            body["annotation_mode"] = annotation_mode
+        if annotation_only:
+            body["annotation_only"] = True
         optional = {
             "source_artifact_id": source_artifact_id,
             "language": language,
@@ -1125,6 +1131,86 @@ class ApplicationClient:
             return self._request_json(path, parameters={name: value for name, value in values.items() if value is not None})
         return self._request_json(path, method=methods[action], body=values,
                                   idempotency_key=key, maximum_body_bytes=512 * 1024)
+
+    def generation_controls_request(
+        self, action: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bounded character/cast API; no arbitrary paths or endpoints."""
+
+        methods = {"get": "GET", "update": "PUT"}
+        if action not in methods:
+            raise ValueError("Unknown generation-controls action.")
+
+        values = dict(arguments)
+        session_id = values.pop("session_id", None)
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("Generation-controls requests require a session ID.")
+        path = (
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-controls"
+        )
+
+        if action == "get":
+            if values:
+                raise ValueError("Getting generation controls accepts only a session ID.")
+            return self._request_json(path, method=methods[action])
+
+        key = values.pop("idempotency_key", None)
+        # Only strip optional top-level values. Nested nulls, especially
+        # cast.narrator=None, are meaningful clear operations for the API.
+        body = {name: value for name, value in values.items() if value is not None}
+        return self._request_json(
+            path,
+            method=methods[action],
+            body=body,
+            idempotency_key=key,
+            maximum_body_bytes=512 * 1024,
+        )
+
+    def voice_metadata_request(
+        self, action: str, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bounded managed-voice metadata API; no arbitrary paths or endpoints."""
+
+        if action != "update":
+            raise ValueError("Unknown voice-metadata action.")
+
+        values = dict(arguments)
+        voice_id = values.pop("voice_id", None)
+        expected_revision = values.pop("expected_revision", None)
+        changes = values.pop("changes", None)
+        if values:
+            raise ValueError("Voice metadata requests contain unsupported fields.")
+        if not isinstance(voice_id, str) or not voice_id:
+            raise ValueError("Voice metadata requests require a voice ID.")
+        if (
+            isinstance(expected_revision, bool)
+            or not isinstance(expected_revision, int)
+            or expected_revision < 1
+        ):
+            raise ValueError("Voice metadata requests require a positive revision.")
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("Voice metadata requests require at least one change.")
+        allowed_fields = {"name", "language", "description", "voice_category"}
+        if set(changes) - allowed_fields:
+            raise ValueError("Voice metadata requests contain unsupported changes.")
+        try:
+            encoded_changes = json.dumps(
+                changes,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise ValueError("Voice metadata changes must be finite JSON.") from error
+        if len(encoded_changes) > 32 * 1024:
+            raise ValueError("Voice metadata requests may not exceed 32 KiB.")
+        return self._request_json(
+            f"/api/v1/voices/{quote(voice_id, safe='')}",
+            method="PATCH",
+            body=dict(changes),
+            if_match_revision=expected_revision,
+            maximum_body_bytes=32 * 1024,
+        )
 
     def list_speech_optimization_dispatch_runs(
         self,
@@ -1195,16 +1281,20 @@ class ApplicationClient:
         lease_token: str,
         result: dict[str, Any],
         context_delta: dict[str, Any] | None = None,
+        character_proposals: list[dict[str, Any]] | None = None,
         idempotency_key: str,
     ) -> dict[str, Any]:
+        body = {
+            "lease_token": lease_token,
+            "result": result,
+            "context_delta": dict(context_delta or {}),
+        }
+        if character_proposals:
+            body["character_proposals"] = list(character_proposals)
         return self._request_json(
             f"/api/v1/speech-optimization-dispatch-batches/{quote(batch_id, safe='')}/submit",
             method="POST",
-            body={
-                "lease_token": lease_token,
-                "result": result,
-                "context_delta": dict(context_delta or {}),
-            },
+            body=body,
             idempotency_key=idempotency_key,
             maximum_body_bytes=4 * 1024 * 1024,
         )

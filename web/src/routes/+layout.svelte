@@ -2,6 +2,7 @@
   import { errorMessage } from '$lib/errors';
   import '../app.css';
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
   import {
@@ -28,6 +29,7 @@
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
   import ManagerOperationBanner from '$lib/ManagerOperationBanner.svelte';
+  import { modalFocus } from '$lib/modal-focus';
 
   let { children }: { children: Snippet } = $props();
   let password = $state('');
@@ -38,7 +40,12 @@
 
   const compactSidebar = $derived(appState.sidebarCollapsed || tabletRail);
   const renderSidebarLabels = $derived(
-    !appState.sidebarCollapsed || tabletRail
+    !appState.sidebarCollapsed || tabletRail || mobileOpen
+  );
+  const mobileSession = $derived(
+    appState.mobileSessionNavigation?.sessionId === page.params.id
+      ? appState.mobileSessionNavigation
+      : null
   );
   const applicationVersion = $derived(
     String(
@@ -82,6 +89,29 @@
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('pandrator-theme', theme);
   }
+  function sidebarFocus(node: HTMLElement, enabled: boolean) {
+    let focus: ReturnType<typeof modalFocus>;
+    const update = (open: boolean) => {
+      focus?.destroy?.();
+      focus = open
+        ? modalFocus(node, {
+            onclose: () => (mobileOpen = false),
+            initialFocus: '[aria-label="Close menu"]'
+          })
+        : undefined;
+    };
+    update(enabled);
+    return { update, destroy: () => focus?.destroy?.() };
+  }
+  $effect(() => {
+    if (mobileOpen) {
+      const previous = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = previous;
+      };
+    }
+  });
 
   onMount(() => {
     theme =
@@ -170,17 +200,57 @@
     class="app-shell min-h-screen md:grid"
     style={`grid-template-columns:${compactSidebar ? '5rem' : '17rem'} minmax(0,1fr);--sidebar-offset:${compactSidebar ? '5rem' : '17rem'}`}
   >
-    <button
-      onclick={() => (mobileOpen = true)}
-      class="fixed left-4 top-4 z-40 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-2.5 shadow md:hidden"
-      aria-label="Open navigation"><Menu size={20} /></button
+    <header
+      class="mobile-app-header fixed inset-x-0 top-0 z-40 flex h-16 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-strong)] px-3 md:hidden"
     >
+      <button
+        onclick={() => (mobileOpen = true)}
+        class="grid size-11 shrink-0 place-items-center rounded-xl hover:bg-[var(--accent-soft)]"
+        aria-label="Open navigation"
+        aria-expanded={mobileOpen}
+        aria-controls="app-navigation"><Menu size={22} /></button
+      >
+      {#if mobileSession}
+        <div class="min-w-0 flex-1">
+          <div class="muted truncate text-xs">{mobileSession.title}</div>
+          <select
+            aria-label="Session section"
+            class="block w-full min-w-0 bg-transparent py-1 text-base font-semibold"
+            value={page.url.pathname}
+            onchange={(event) => {
+              const destination = event.currentTarget.value;
+              event.currentTarget.value = page.url.pathname;
+              void goto(destination);
+            }}
+          >
+            {#each mobileSession.items as item}<option value={item.href}
+                >{item.label}</option
+              >{/each}
+          </select>
+        </div>
+      {:else}
+        <a href="/" class="flex min-h-11 items-center gap-2 font-semibold"
+          ><img
+            src="/pandrator-logo.webp"
+            alt=""
+            width="28"
+            height="28"
+            class="rounded-lg"
+          />Pandrator</a
+        >
+      {/if}
+    </header>
     {#if mobileOpen}<button
         class="fixed inset-0 z-40 bg-black/35 md:hidden"
         onclick={() => (mobileOpen = false)}
         aria-label="Close navigation"
       ></button>{/if}
     <aside
+      id="app-navigation"
+      use:sidebarFocus={mobileOpen}
+      role={mobileOpen ? 'dialog' : undefined}
+      aria-modal={mobileOpen ? 'true' : undefined}
+      aria-label={mobileOpen ? 'Main navigation' : undefined}
       class:collapsed={appState.sidebarCollapsed}
       class:tablet-rail={tabletRail}
       class:mobile-open={mobileOpen}
@@ -203,8 +273,10 @@
               >View on GitHub <ExternalLink size={11} /></a
             >
           </div>
-          <button onclick={() => (mobileOpen = false)} class="md:hidden"
-            ><X size={19} /></button
+          <button
+            onclick={() => (mobileOpen = false)}
+            class="grid size-11 shrink-0 place-items-center md:hidden"
+            aria-label="Close menu"><X size={19} /></button
           >{/if}
       </div>
       <nav class="sidebar-nav min-h-0 flex-1 space-y-1 overflow-y-auto">
@@ -251,7 +323,7 @@
       class="content-column flex min-h-screen min-w-0 flex-col md:col-start-2"
     >
       <main
-        class="min-w-0 flex-1 px-5 pb-12 pt-20 sm:px-8 md:px-6 md:pt-9 lg:px-10 xl:px-14"
+        class="min-w-0 flex-1 px-3 pb-12 pt-20 sm:px-8 md:px-6 md:pt-9 lg:px-10 xl:px-14"
       >
         {#if appState.securityWarning}<div
             role="alert"
@@ -304,12 +376,14 @@
 
 <style>
   .app-sidebar {
+    visibility: hidden;
     transform: translateX(-105%);
     transition:
       transform 0.18s ease,
       width 0.18s ease;
   }
   .app-sidebar.mobile-open {
+    visibility: visible;
     transform: translateX(0);
   }
   .nav-item {
@@ -338,6 +412,7 @@
   }
   @media (min-width: 768px) {
     .app-sidebar {
+      visibility: visible;
       transform: none;
     }
     .app-sidebar.collapsed {

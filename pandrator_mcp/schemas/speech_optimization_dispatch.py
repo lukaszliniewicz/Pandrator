@@ -32,6 +32,8 @@ class CreateSpeechOptimizationDispatchRunInput(DelegationExecutionMixin):
     context_before: int = Field(default=4, ge=0, le=20)
     context_after: int = Field(default=2, ge=0, le=20)
     include_timing: bool = True
+    annotation_mode: Literal["off", "dialogue", "speakers"] = "off"
+    annotation_only: bool = False
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,
@@ -81,7 +83,8 @@ class ReleaseSpeechOptimizationDispatchBatchInput(ToolInput):
 
 class SpeechOptimizationDispatchItemInput(ToolInput):
     unit_id: int = Field(ge=1)
-    text: str = Field(min_length=1, max_length=4 * 1024 * 1024)
+    text: str | None = Field(default=None, min_length=1, max_length=4 * 1024 * 1024)
+    speech_xml: str | None = Field(default=None, max_length=256 * 1024)
 
 
 class SpeechOptimizationDispatchResultInput(ToolInput):
@@ -97,6 +100,10 @@ class SubmitSpeechOptimizationDispatchBatchInput(ToolInput):
     lease_token: str = Field(min_length=1, max_length=160)
     result: SpeechOptimizationDispatchResultInput
     context_delta: DelegationContextDeltaInput = Field(default_factory=DelegationContextDeltaInput)
+    character_proposals: list[dict[str, object]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,

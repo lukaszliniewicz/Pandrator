@@ -6,7 +6,7 @@ PERFORMANCE_ACTIONS = (
     (
         "list",
         "pandrator_list_performance_plans",
-        "List contextual performance plans",
+        "List speech direction plans",
         "ListPerformancePlansInput",
         "read",
         "app.read",
@@ -17,7 +17,7 @@ PERFORMANCE_ACTIONS = (
     (
         "get",
         "pandrator_get_performance_plan",
-        "Inspect performance annotations",
+        "Inspect speech directions",
         "GetPerformancePlanInput",
         "read",
         "app.read",
@@ -28,7 +28,7 @@ PERFORMANCE_ACTIONS = (
     (
         "create",
         "pandrator_create_performance_plan",
-        "Create a contextual performance draft",
+        "Create a speech direction draft",
         "CreatePerformancePlanInput",
         "run",
         "app.run",
@@ -39,7 +39,7 @@ PERFORMANCE_ACTIONS = (
     (
         "edit",
         "pandrator_edit_performance_plan",
-        "Edit or lock pSSML annotations",
+        "Edit or lock speech directions",
         "EditPerformancePlanInput",
         "write",
         "app.write",
@@ -50,7 +50,7 @@ PERFORMANCE_ACTIONS = (
     (
         "adopt",
         "pandrator_adopt_performance_plan",
-        "Adopt reviewed performance directions",
+        "Adopt reviewed speech directions",
         "AdoptPerformancePlanInput",
         "write",
         "app.write",
@@ -72,7 +72,7 @@ PERFORMANCE_ACTIONS = (
     (
         "analyse",
         "pandrator_analyse_performance_plan",
-        "Resume performance analysis with the configured LLM",
+        "Resume delivery analysis with the configured LLM",
         "AnalysePerformancePlanInput",
         "run",
         "app.run",
@@ -83,7 +83,7 @@ PERFORMANCE_ACTIONS = (
     (
         "claim",
         "pandrator_claim_performance_batch",
-        "Claim bounded contextual performance work",
+        "Claim a speech direction batch",
         "ClaimPerformanceBatchInput",
         "run",
         "app.run",
@@ -94,7 +94,7 @@ PERFORMANCE_ACTIONS = (
     (
         "submit",
         "pandrator_submit_performance_batch",
-        "Submit validated performance annotations",
+        "Submit validated speech directions",
         "SubmitPerformanceBatchInput",
         "run",
         "app.run",
@@ -105,7 +105,7 @@ PERFORMANCE_ACTIONS = (
     (
         "renew",
         "pandrator_renew_performance_batch",
-        "Renew a performance batch lease",
+        "Renew a speech direction batch lease",
         "RenewPerformanceBatchInput",
         "run",
         "app.run",
@@ -116,7 +116,7 @@ PERFORMANCE_ACTIONS = (
     (
         "release",
         "pandrator_release_performance_batch",
-        "Release a performance batch lease",
+        "Release a speech direction batch lease",
         "ReleasePerformanceBatchInput",
         "run",
         "app.run",

@@ -24,7 +24,7 @@ def performance_action(runtime: McpRuntime, action: str, arguments) -> ToolOutco
             NextAction(
                 tool="pandrator_claim_performance_batch",
                 arguments={"session_id": arguments.session_id, "plan_id": plan_id},
-                reason="Claim a bounded batch. The target supplies the pSSML schema, read-only context and immutable actionable text.",
+                reason="Claim a bounded batch. The target supplies the selected XML or pSSML contract, read-only context and immutable actionable text.",
             )
         )
     elif action in {"create", "edit", "submit", "analyse"} and plan_id:

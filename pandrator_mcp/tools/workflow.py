@@ -328,6 +328,8 @@ def _resolved_passive_packet(
             "context_before": 4,
             "context_after": 2,
             "include_timing": True,
+            "annotation_mode": text_settings.get("llm_tts_annotation_mode", "off"),
+            "annotation_only": bool(text_settings.get("llm_tts_annotation_only", False)),
         }
         if isinstance(text_override, dict) and "source_artifact_id" in text_override:
             packet["source_artifact_id"] = text_override["source_artifact_id"]

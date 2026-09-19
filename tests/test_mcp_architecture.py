@@ -320,17 +320,21 @@ class McpArchitectureTests(unittest.TestCase):
         self.assertGreaterEqual(len(mutating), 5)
         self.assertEqual(
             {
+                "pandrator_adopt_performance_plan",
                 "pandrator_assemble_generation_run",
+                "pandrator_analyse_performance_plan",
                 "pandrator_attach_existing_source",
                 "pandrator_cancel_work",
                 "pandrator_claim_dispatch_batch",
                 "pandrator_claim_media_edit_dispatch_batch",
+                "pandrator_claim_performance_batch",
                 "pandrator_claim_source_cleaning_dispatch_batch",
                 "pandrator_claim_speech_optimization_dispatch_batch",
                 "pandrator_configure_tts",
                 "pandrator_control_runtime",
                 "pandrator_create_dispatch_run",
                 "pandrator_create_media_edit_dispatch_run",
+                "pandrator_create_performance_plan",
                 "pandrator_create_source_cleaning_dispatch_run",
                 "pandrator_create_speech_optimization_dispatch_run",
                 "pandrator_create_session",
@@ -338,6 +342,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_execute_component_plan",
                 "pandrator_execute_workflow_plan",
                 "pandrator_download_artifact",
+                "pandrator_edit_performance_plan",
                 "pandrator_import_local_source",
                 "pandrator_import_subtitles",
                 "pandrator_inspect_source_cleaning_dispatch_extraction",
@@ -350,11 +355,13 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_refine_media_edit_boundary",
                 "pandrator_release_dispatch_batch",
                 "pandrator_release_media_edit_dispatch_batch",
+                "pandrator_release_performance_batch",
                 "pandrator_release_source_cleaning_dispatch_batch",
                 "pandrator_release_speech_optimization_dispatch_batch",
                 "pandrator_request_subtitle_evidence",
                 "pandrator_renew_dispatch_batch",
                 "pandrator_renew_media_edit_dispatch_batch",
+                "pandrator_renew_performance_batch",
                 "pandrator_renew_source_cleaning_dispatch_batch",
                 "pandrator_renew_speech_optimization_dispatch_batch",
                 "pandrator_replace_subtitle_text",
@@ -367,12 +374,15 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_select_take",
                 "pandrator_submit_dispatch_batch",
                 "pandrator_submit_media_edit_dispatch_batch",
+                "pandrator_submit_performance_batch",
                 "pandrator_submit_source_cleaning_dispatch_batch",
                 "pandrator_submit_speech_optimization_dispatch_batch",
                 "pandrator_update_generation_segment",
+                "pandrator_update_generation_controls",
                 "pandrator_update_media_edit",
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
+                "pandrator_update_voice_metadata",
                 "pandrator_transcribe",
                 "pandrator_transcription_cancel",
                 "pandrator_transcription_delete",
@@ -387,6 +397,8 @@ class McpArchitectureTests(unittest.TestCase):
                     # These operations are naturally idempotent by resource ID.
                     "pandrator_transcription_cancel",
                     "pandrator_transcription_delete",
+                    # Revision-guarded voice metadata writes have no idempotency contract.
+                    "pandrator_update_voice_metadata",
                 }
                 for action in mutating
             )

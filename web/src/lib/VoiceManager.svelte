@@ -1,5 +1,6 @@
 <script lang="ts">
   import { LANGUAGE_OPTIONS } from './settings-fields';
+  import { voiceCategories, type VoiceCategory } from './generation-controls';
   import { sttLanguageProblem } from './stt-language-policy';
   import { selectableTtsServices } from './tts-provider-policy';
   import { errorMessage } from './errors';
@@ -125,6 +126,7 @@
   let editName = $state('');
   let editLanguage = $state('');
   let editDescription = $state('');
+  let editCategory = $state<VoiceCategory>('unspecified');
   let voiceDesignOpen = $state(false);
   let designInitialVoiceId = $state('');
 
@@ -264,6 +266,8 @@
     editName = voice.name;
     editLanguage = voice.language ?? '';
     editDescription = voice.description ?? '';
+    editCategory =
+      (voice.metadata_json?.voice_category as VoiceCategory) ?? 'unspecified';
     const result = await voiceApi.samples<Sample>(voice.id);
     samples = result.items;
     transcripts = Object.fromEntries(
@@ -336,7 +340,8 @@
         {
           name: editName.trim(),
           language: editLanguage.trim() || null,
-          description: editDescription.trim() || null
+          description: editDescription.trim() || null,
+          voice_category: editCategory
         }
       );
       notice = 'Voice details saved.';
@@ -1058,6 +1063,16 @@
                   class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
                 /></label
               ><label class="text-xs font-semibold sm:col-span-2"
+                >Voice category
+                <select
+                  class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                  bind:value={editCategory}
+                >
+                  {#each voiceCategories as category}<option value={category}
+                      >{category}</option
+                    >{/each}
+                </select>
+              </label><label class="text-xs font-semibold sm:col-span-2"
                 >Description<textarea
                   bind:value={editDescription}
                   rows="2"

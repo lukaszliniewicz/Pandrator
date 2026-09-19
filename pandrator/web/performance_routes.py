@@ -199,6 +199,7 @@ def register_performance_routes(app, context) -> None:
     def get(session_id, plan_id):
         try:
             offset, limit = paging()
+            filter_name = request.args.get("filter", "all")
             with services.database.session() as session:
                 return jsonify(
                     plans.describe_plan(
@@ -206,6 +207,7 @@ def register_performance_routes(app, context) -> None:
                         plans.get_plan(session, session_id, plan_id),
                         offset=offset,
                         limit=limit,
+                        filter=filter_name,
                     )
                 )
         except (ValueError, KeyError, RevisionConflict) as error:
@@ -293,6 +295,11 @@ def register_performance_routes(app, context) -> None:
                 for name, value in (
                     ("generation_prompt", payload.generation_prompt),
                     ("tts_context_mode", payload.context_mode),
+                    ("performance_context_before", payload.context_before),
+                    ("performance_context_after", payload.context_after),
+                    ("performance_context_max_chars", payload.context_max_chars),
+                    ("casting_enabled", payload.casting_enabled),
+                    ("_preview_performance_enabled", payload.performance_enabled),
                     ("performance_allow_vocalizations", payload.allow_vocalizations),
                 ):
                     if value is not None:
@@ -313,6 +320,7 @@ def register_performance_routes(app, context) -> None:
                         )
                         if payload.annotation is not None
                         else None,
+                        speech_xml=payload.speech_xml,
                     )
                 )
         except (ValueError, KeyError, RevisionConflict) as error:
