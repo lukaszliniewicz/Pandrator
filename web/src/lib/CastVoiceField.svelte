@@ -1,6 +1,11 @@
 <script lang="ts">
   import type { VoiceRecord } from './api-models';
   import type { VoiceBinding } from './generation-controls';
+  import type { Component } from 'svelte';
+  let VoiceLibraryModal = $state<Component<any> | null>(null);
+  import type { CatalogVoice } from './voice-library-api';
+  let libraryOpen = $state(false);
+  let selectedReference = $state<{ id: string; name: string } | null>(null);
   let {
     label,
     value,
@@ -21,6 +26,35 @@
     onchange: (value: VoiceBinding | null) => void;
   } = $props();
   const listId = $props.id();
+  const managedLabel = $derived(
+    value?.voice_id
+      ? voices.find((v) => v.id === value.voice_id)?.name ||
+          (selectedReference?.id === value.voice_id
+            ? selectedReference.name
+            : 'Saved reference voice')
+      : ''
+  );
+  function selectCatalogVoice(voice: CatalogVoice) {
+    const reference = voice.reference;
+    if (reference.kind === 'managed')
+      selectedReference = { id: reference.voice_id, name: voice.name };
+    onchange(
+      reference.kind === 'managed'
+        ? {
+            voice_id: reference.voice_id,
+            voice: '',
+            service: service || null,
+            model: model || null
+          }
+        : {
+            voice_id: null,
+            voice: reference.voice,
+            service: reference.service_id,
+            model: reference.model
+          }
+    );
+    libraryOpen = false;
+  }
   function update(key: keyof VoiceBinding, text: string) {
     const next = {
       ...value,
@@ -44,7 +78,7 @@
       {disabled}
       list={listId}
       value={value?.voice ?? ''}
-      placeholder="Use inherited voice"
+      placeholder={managedLabel || 'Use inherited voice'}
       oninput={(event) => update('voice', event.currentTarget.value)}
     />
   </label>
@@ -52,6 +86,18 @@
     >{#each suggestions as voice}<option value={voice}
       ></option>{/each}</datalist
   >
+  <button
+    type="button"
+    class="btn btn-sm"
+    {disabled}
+    onclick={async () => {
+      VoiceLibraryModal = (await import('./VoiceLibraryModal.svelte')).default;
+      libraryOpen = true;
+    }}>Browse voice library</button
+  >
+  {#if managedLabel}<p class="text-xs break-words">
+      Reference: <strong>{managedLabel}</strong>
+    </p>{/if}
   {#if value?.service || value?.model}<p class="muted text-xs break-words">
       Bound to {value.service || service} · {value.model ||
         model ||
@@ -97,3 +143,12 @@
     </div>
   </details>
 </div>
+
+{#if libraryOpen && VoiceLibraryModal}
+  <VoiceLibraryModal
+    initialService={service}
+    initialModel={model}
+    onselect={selectCatalogVoice}
+    onclose={() => (libraryOpen = false)}
+  />
+{/if}

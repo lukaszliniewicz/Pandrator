@@ -47,9 +47,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(250, len(rules))
+        self.assertEqual(270, len(rules))
         self.assertEqual(
-            243,
+            263,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertTrue({
@@ -61,8 +61,16 @@ class BackendArchitectureTests(unittest.TestCase):
             "/api/v1/sessions/<session_id>/generation-plan/history",
             "/api/v1/sessions/<session_id>/generation-plan/repair-batches/<batch_id>",
             "/api/v1/sessions/<session_id>/generation-plan/repair-batches/<batch_id>/undo",
+            "/api/v1/voice-catalog",
+            "/api/v1/voice-catalog/capabilities",
+            "/api/v1/voice-catalog/metadata",
+            "/api/v1/voice-collections",
+            "/api/v1/voice-collections/<collection_id>",
+            "/api/v1/voices/<voice_id>/samples/from-artifact",
         }.issubset({rule.rule for rule in rules}))
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
+        self.assertEqual("library", route_domain("/api/v1/voice-catalog"))
+        self.assertEqual("library", route_domain("/api/v1/voice-collections"))
         for rule in rules:
             if rule.endpoint == "static":
                 continue
@@ -103,7 +111,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(34, len(registry))
+        self.assertEqual(35, len(registry))
         self.assertEqual(
             {
                 "delivery",

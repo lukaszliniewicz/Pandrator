@@ -79,3 +79,10 @@ pass. Generation freezes the adopted annotations and context. Vocalizations are
 off by default; no previous generated audio is used as an implicit voice prompt.
 Explicit block changes require fresh performance review. Automatic split/regroup
 passes are disabled while performance or semantic context is enabled.
+
+## Multiple voices and audio drama
+
+Read `voice-casting` and `generation-controls` before preparing a cast audiobook.
+These guides cover voice discovery/design, persistent character identities,
+compact speech XML, and dialogue-only annotation that preserves accepted text.
+Speech directions are optional and independent of assigning multiple voices.

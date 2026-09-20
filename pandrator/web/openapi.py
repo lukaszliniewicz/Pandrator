@@ -12,6 +12,7 @@ from .quick_transcription_openapi import transcription_paths
 from .repair_batch_openapi import repair_batch_paths
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
 from .generation_control_openapi import GENERATION_CONTROL_SCHEMAS, generation_control_paths
+from .voice_catalog_openapi import VOICE_CATALOG_SCHEMAS, extend_voice_lifecycle_paths, voice_catalog_paths
 from .repair_batch_schemas import RepairBatchUndoRequest
 from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 
@@ -23,6 +24,7 @@ def build_openapi_document() -> dict:
         **FLOW_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
+        **VOICE_CATALOG_SCHEMAS,
         "ApplicationIdentityDocument": ApplicationIdentityDocument,
         "RepairBatchUndoRequest": RepairBatchUndoRequest,
         "EventBounds": EventBounds,
@@ -3189,6 +3191,8 @@ def build_openapi_document() -> dict:
     paths.update(session_flow_paths())
     paths.update(performance_paths())
     paths.update(generation_control_paths())
+    paths.update(voice_catalog_paths())
+    extend_voice_lifecycle_paths(paths)
     # Subtitle-first media and immutable speech-plan review operations.
     extra_operations = [
         ("/api/v1/sessions/{sessionId}/sources/subtitle-status", "get", "subtitleSourceStatus", None, "200"),

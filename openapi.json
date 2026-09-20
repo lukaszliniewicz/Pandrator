@@ -260,6 +260,92 @@
         "title": "CastSettings",
         "type": "object"
       },
+      "CatalogVoiceChanges": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "voice_category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "male",
+                  "female",
+                  "androgynous",
+                  "unspecified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Category"
+          }
+        },
+        "title": "CatalogVoiceChanges",
+        "type": "object"
+      },
+      "CatalogVoiceUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "$ref": "#/components/schemas/CatalogVoiceChanges"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "reference": {
+            "$ref": "#/components/schemas/VoiceReference"
+          }
+        },
+        "required": [
+          "reference",
+          "expected_revision",
+          "changes"
+        ],
+        "title": "CatalogVoiceUpdate",
+        "type": "object"
+      },
       "CharacterEntry": {
         "additionalProperties": false,
         "description": "One stable character identity in a session's character dictionary.",
@@ -7924,6 +8010,63 @@
         "title": "TrainingCreateRequest",
         "type": "object"
       },
+      "TraitEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Artifact Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          },
+          "source": {
+            "enum": [
+              "user",
+              "provider",
+              "design_request",
+              "audition_review"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "requested",
+              "described",
+              "reviewed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "status"
+        ],
+        "title": "TraitEvidence",
+        "type": "object"
+      },
       "TranscriptionCreate": {
         "additionalProperties": false,
         "properties": {
@@ -8469,6 +8612,228 @@
         "title": "VoiceBinding",
         "type": "object"
       },
+      "VoiceCatalogQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "accent": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Accent",
+            "type": "string"
+          },
+          "collection_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Collection Id",
+            "type": "string"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "managed",
+              "provider"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "language": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Language",
+            "type": "string"
+          },
+          "limit": {
+            "default": 30,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "model": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Model",
+            "type": "string"
+          },
+          "origin": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Origin",
+            "type": "string"
+          },
+          "pitch": {
+            "default": "",
+            "enum": [
+              "",
+              "low",
+              "mid",
+              "high"
+            ],
+            "title": "Pitch",
+            "type": "string"
+          },
+          "query": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Query",
+            "type": "string"
+          },
+          "ready_only": {
+            "default": false,
+            "title": "Ready Only",
+            "type": "boolean"
+          },
+          "reviewed_only": {
+            "default": false,
+            "title": "Reviewed Only",
+            "type": "boolean"
+          },
+          "service_id": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Service Id",
+            "type": "string"
+          },
+          "sort": {
+            "default": "relevance",
+            "enum": [
+              "relevance",
+              "name",
+              "recently_added",
+              "recently_updated"
+            ],
+            "title": "Sort",
+            "type": "string"
+          },
+          "texture": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Texture",
+            "type": "string"
+          },
+          "use_case": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Use Case",
+            "type": "string"
+          },
+          "voice_category": {
+            "default": "",
+            "enum": [
+              "",
+              "male",
+              "female",
+              "androgynous",
+              "unspecified"
+            ],
+            "title": "Voice Category",
+            "type": "string"
+          }
+        },
+        "title": "VoiceCatalogQuery",
+        "type": "object"
+      },
+      "VoiceCollectionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "VoiceCollectionCreate",
+        "type": "object"
+      },
+      "VoiceCollectionUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "add_members": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceReference"
+            },
+            "maxItems": 200,
+            "title": "Add Members",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "remove_members": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceReference"
+            },
+            "maxItems": 200,
+            "title": "Remove Members",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "VoiceCollectionUpdate",
+        "type": "object"
+      },
       "VoiceCreate": {
         "additionalProperties": false,
         "properties": {
@@ -8502,6 +8867,17 @@
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "voice_category": {
             "default": "unspecified",
@@ -8561,6 +8937,328 @@
           "expected_voice_revision"
         ],
         "title": "VoiceDesignedSampleCreate",
+        "type": "object"
+      },
+      "VoiceLanguage": {
+        "additionalProperties": false,
+        "properties": {
+          "accent": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accent"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Detail"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraitEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "language": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Language",
+            "type": "string"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Locale"
+          }
+        },
+        "required": [
+          "language"
+        ],
+        "title": "VoiceLanguage",
+        "type": "object"
+      },
+      "VoiceProfile": {
+        "additionalProperties": false,
+        "description": "Description and evidence metadata; this is never an audio classifier.",
+        "properties": {
+          "delivery_presets": {
+            "items": {
+              "enum": [
+                "neutral",
+                "conversational",
+                "formal",
+                "storytelling",
+                "dramatic"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Delivery Presets",
+            "type": "array"
+          },
+          "evidence": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TraitEvidence"
+            },
+            "maxProperties": 32,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "languages": {
+            "items": {
+              "$ref": "#/components/schemas/VoiceLanguage"
+            },
+            "maxItems": 30,
+            "title": "Languages",
+            "type": "array"
+          },
+          "perceived_age": {
+            "anyOf": [
+              {
+                "enum": [
+                  "childlike",
+                  "youthful",
+                  "adult",
+                  "older"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Perceived Age"
+          },
+          "pitch": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "mid",
+                  "high"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pitch"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 24,
+            "title": "Tags",
+            "type": "array"
+          },
+          "textures": {
+            "items": {
+              "enum": [
+                "warm",
+                "bright",
+                "dark",
+                "airy",
+                "breathy",
+                "raspy",
+                "gravelly",
+                "resonant",
+                "clear",
+                "nasal"
+              ],
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Textures",
+            "type": "array"
+          },
+          "use_cases": {
+            "items": {
+              "enum": [
+                "audiobook_narration",
+                "character_dialogue",
+                "voiceover",
+                "documentary",
+                "news",
+                "advertising",
+                "instructional"
+              ],
+              "type": "string"
+            },
+            "maxItems": 7,
+            "title": "Use Cases",
+            "type": "array"
+          }
+        },
+        "title": "VoiceProfile",
+        "type": "object"
+      },
+      "VoiceReference": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "managed",
+              "provider"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "service_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Id"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
+          },
+          "voice_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "VoiceReference",
+        "type": "object"
+      },
+      "VoiceReferenceImportRequest": {
+        "additionalProperties": false,
+        "description": "Import an existing managed audio artifact as a voice reference.",
+        "properties": {
+          "artifact_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "expected_voice_revision": {
+            "minimum": 1,
+            "title": "Expected Voice Revision",
+            "type": "integer"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transcript"
+          },
+          "transcript_reviewed": {
+            "default": false,
+            "title": "Transcript Reviewed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "expected_voice_revision"
+        ],
+        "title": "VoiceReferenceImportRequest",
         "type": "object"
       },
       "VoiceTranscriptReview": {
@@ -8645,6 +9343,17 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "voice_category": {
             "anyOf": [
@@ -11704,6 +12413,16 @@
         "operationId": "previewTtsVoice",
         "parameters": [
           {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "serviceId",
             "required": true,
@@ -11726,7 +12445,20 @@
           "202": {
             "description": "Voice preview queued"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/session-bundles/import": {
@@ -11752,6 +12484,16 @@
     "/api/v1/sessions": {
       "get": {
         "operationId": "listSessions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_trashed",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Sessions"
@@ -11845,7 +12587,20 @@
           "409": {
             "description": "Revision conflict"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       },
       "get": {
         "operationId": "getSession",
@@ -13933,7 +14688,20 @@
           "409": {
             "description": "Artifact is not a removable output"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/pdf/apply": {
@@ -14960,6 +15728,14 @@
         "operationId": "restoreSession",
         "parameters": [
           {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -14972,7 +15748,20 @@
           "200": {
             "description": "Session restored"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/settings/resolve": {
@@ -18323,6 +19112,464 @@
         ]
       }
     },
+    "/api/v1/voice-catalog": {
+      "get": {
+        "operationId": "queryVoiceCatalog",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "default": "",
+              "maxLength": 300,
+              "title": "Query",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "language",
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Language",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accent",
+            "schema": {
+              "default": "",
+              "maxLength": 80,
+              "title": "Accent",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "voice_category",
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "male",
+                "female",
+                "androgynous",
+                "unspecified"
+              ],
+              "title": "Voice Category",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pitch",
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "low",
+                "mid",
+                "high"
+              ],
+              "title": "Pitch",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "texture",
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Texture",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "use_case",
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Use Case",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "collection_id",
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "managed",
+                "provider"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "origin",
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Origin",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "service_id",
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "title": "Service Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "default": "",
+              "maxLength": 200,
+              "title": "Model",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ready_only",
+            "schema": {
+              "default": false,
+              "title": "Ready Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reviewed_only",
+            "schema": {
+              "default": false,
+              "title": "Reviewed Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "default": "relevance",
+              "enum": [
+                "relevance",
+                "name",
+                "recently_added",
+                "recently_updated"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 30,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice catalog result"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/voice-catalog/capabilities": {
+      "get": {
+        "operationId": "getVoiceCatalogCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice catalog result"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/voice-catalog/metadata": {
+      "patch": {
+        "operationId": "updateCatalogVoiceMetadata",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogVoiceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice catalog result"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/voice-collections": {
+      "get": {
+        "operationId": "listVoiceCollections",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice catalog result"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createVoiceCollection",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceCollectionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice catalog result"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/voice-collections/{collectionId}": {
+      "patch": {
+        "operationId": "updateVoiceCollection",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "collectionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceCollectionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice catalog result"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/voices": {
       "get": {
         "operationId": "listVoices",
@@ -18347,6 +19594,18 @@
       },
       "post": {
         "operationId": "createVoice",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -18361,7 +19620,20 @@
           "201": {
             "description": "Created"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/voices/{voiceId}": {
@@ -18431,7 +19703,20 @@
           "409": {
             "description": "Revision conflict"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/voices/{voiceId}/providers/{serviceId}": {
@@ -18487,6 +19772,16 @@
             }
           },
           {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "voiceId",
             "required": true,
@@ -18507,7 +19802,20 @@
           "202": {
             "description": "Provider upload queued"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/voices/{voiceId}/samples": {
@@ -18527,7 +19835,20 @@
           "200": {
             "description": "Samples"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       },
       "post": {
         "operationId": "uploadVoiceSample",
@@ -18559,10 +19880,81 @@
         }
       }
     },
+    "/api/v1/voices/{voiceId}/samples/from-artifact": {
+      "post": {
+        "operationId": "createVoiceSampleFromArtifact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voiceId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceReferenceImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Voice normalization job"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/voices/{voiceId}/samples/from-preview": {
       "post": {
         "operationId": "createVoiceSampleFromPreview",
         "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "voiceId",
@@ -18586,7 +19978,20 @@
           "202": {
             "description": "Managed Breeze preview promotion queued"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/voices/{voiceId}/samples/{sampleId}": {
@@ -18672,6 +20077,16 @@
         "operationId": "transcribeVoiceSample",
         "parameters": [
           {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "voiceId",
             "required": true,
@@ -18692,13 +20107,36 @@
           "202": {
             "description": "Transcription queued"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/voices/{voiceId}/samples/{sampleId}/transcript": {
       "patch": {
         "operationId": "reviewVoiceSampleTranscript",
         "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "voiceId",
@@ -18730,7 +20168,20 @@
           "200": {
             "description": "Transcript reviewed"
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/work": {

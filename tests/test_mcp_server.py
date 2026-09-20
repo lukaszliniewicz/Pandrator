@@ -63,6 +63,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 names = sorted(tool.name for tool in listed.tools)
                 self.assertEqual(
                     sorted([
+                        "pandrator_audition_voice",
                         "pandrator_adopt_performance_plan",
                         "pandrator_analyse_performance_plan",
                         "pandrator_claim_performance_batch",
@@ -85,9 +86,12 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_claim_speech_optimization_dispatch_batch",
                         "pandrator_configure_tts",
                         "pandrator_control_runtime",
+                        "pandrator_create_voice",
+                        "pandrator_create_voice_collection",
                         "pandrator_create_dispatch_run",
                         "pandrator_create_media_edit_dispatch_run",
                         "pandrator_create_session",
+                        "pandrator_delete_output",
                         "pandrator_create_source_cleaning_dispatch_run",
                         "pandrator_create_speech_optimization_dispatch_run",
                         "pandrator_create_text_source",
@@ -112,11 +116,14 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_system_status",
                         "pandrator_get_target_status",
                         "pandrator_get_tts_catalog",
+                        "pandrator_get_voice_capabilities",
                         "pandrator_get_voice_catalog",
+                        "pandrator_get_voice_samples",
                         "pandrator_get_work",
                         "pandrator_get_work_log",
                         "pandrator_get_workflow",
                         "pandrator_import_local_source",
+                        "pandrator_import_voice_reference",
                         "pandrator_import_subtitles",
                         "pandrator_inspect_media_edit_boundary",
                         "pandrator_inspect_source_cleaning_dispatch_extraction",
@@ -132,6 +139,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_list_speech_optimization_dispatch_runs",
                         "pandrator_list_speech_plan_revisions",
                         "pandrator_list_work",
+                        "pandrator_list_voice_collections",
                         "pandrator_manager_doctor",
                         "pandrator_manager_status",
                         "pandrator_patch_subtitle_cues",
@@ -142,6 +150,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_plan_workflow",
                         "pandrator_prepare_media_edit",
                         "pandrator_prepare_speech_plan",
+                        "pandrator_promote_voice_design",
                         "pandrator_preview_subtitles",
                         "pandrator_propose_media_edit",
                         "pandrator_recommend_next_steps",
@@ -152,6 +161,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_release_source_cleaning_dispatch_batch",
                         "pandrator_release_speech_optimization_dispatch_batch",
                         "pandrator_render_media_edit",
+                        "pandrator_restore_session",
                         "pandrator_renew_dispatch_batch",
                         "pandrator_renew_media_edit_dispatch_batch",
                         "pandrator_renew_source_cleaning_dispatch_batch",
@@ -163,20 +173,26 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_revise_speech_block_plan",
                         "pandrator_revise_speech_block_plan_batch",
                         "pandrator_select_take",
+                        "pandrator_publish_voice",
+                        "pandrator_review_voice_transcript",
                         "pandrator_submit_dispatch_batch",
                         "pandrator_submit_media_edit_dispatch_batch",
                         "pandrator_submit_source_cleaning_dispatch_batch",
                         "pandrator_submit_speech_optimization_dispatch_batch",
                         "pandrator_transcribe",
+                        "pandrator_transcribe_voice_sample",
                         "pandrator_transcription_cancel",
                         "pandrator_transcription_delete",
                         "pandrator_transcription_get",
                         "pandrator_transcription_result",
+                        "pandrator_trash_session",
                         "pandrator_update_generation_segment",
                         "pandrator_update_generation_controls",
+                        "pandrator_update_catalog_voice_metadata",
                         "pandrator_update_media_edit",
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
+                        "pandrator_update_voice_collection",
                         "pandrator_update_voice_metadata",
                     ]),
                     names,
@@ -187,24 +203,39 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 )
                 for tool in listed.tools:
                     properties = set(tool.input_schema.get("properties", {}))
-                    self.assertTrue(
-                        properties.isdisjoint(
-                            {
-                                "credential",
-                                "origin",
-                                "proxy",
-                                "target",
-                                "token",
-                                "url",
-                            }
-                        )
-                    )
+                    forbidden_properties = {
+                        "credential",
+                        "origin",
+                        "proxy",
+                        "target",
+                        "token",
+                        "url",
+                    }
+                    if tool.name == "pandrator_get_voice_catalog":
+                        forbidden_properties.remove("origin")
+                    self.assertTrue(properties.isdisjoint(forbidden_properties))
                     spec = ACTION_CATALOG.get(tool.name)
                     self.assertEqual(
                         spec.risk == RiskClass.READ,
                         tool.annotations.read_only_hint,
                     )
                 tools_by_name = {tool.name: tool for tool in listed.tools}
+                self.assertFalse(
+                    tools_by_name["pandrator_trash_session"].annotations.destructive_hint
+                )
+                self.assertFalse(
+                    tools_by_name["pandrator_restore_session"].annotations.destructive_hint
+                )
+                self.assertTrue(
+                    tools_by_name["pandrator_delete_output"].annotations.destructive_hint
+                )
+                self.assertFalse(
+                    tools_by_name["pandrator_delete_output"].annotations.idempotent_hint
+                )
+                self.assertIn(
+                    "include_trashed",
+                    tools_by_name["pandrator_list_sessions"].input_schema["properties"],
+                )
                 for source_tool in (
                     "pandrator_create_text_source",
                     "pandrator_import_local_source",
@@ -422,6 +453,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "artifacts-and-revisions",
                         "audiobooks",
                         "durable-work",
+                        "generation-controls",
                         "manager-and-recovery",
                         "overview",
                         "providers-and-voices",
@@ -429,6 +461,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "security-boundaries",
                         "subtitles",
                         "voiceover-and-dubbing",
+                        "voice-casting",
                         "workflows",
                     ],
                     explain_schema["properties"]["topic"]["enum"],

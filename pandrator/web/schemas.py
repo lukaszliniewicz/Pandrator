@@ -22,6 +22,7 @@ from .dispatch_context import (
     MAX_PARALLEL_BATCHES,
     validate_context_size,
 )
+from .voice_catalog_schemas import VoiceProfile
 
 CredentialBackend = Literal["database", "environment", "keyring", "file"]
 ApiScope = Literal[
@@ -424,6 +425,7 @@ class VoiceCreate(StrictModel):
     voice_category: Literal["male", "female", "androgynous", "unspecified"] = (
         "unspecified"
     )
+    profile: VoiceProfile | None = None
 
 
 class VoiceUpdate(StrictModel):
@@ -431,6 +433,7 @@ class VoiceUpdate(StrictModel):
     language: str | None = Field(default=None, max_length=40)
     description: str | None = None
     voice_category: Literal["male", "female", "androgynous", "unspecified"] | None = None
+    profile: VoiceProfile | None = None
 
 
 class VoiceTranscriptReview(StrictModel):

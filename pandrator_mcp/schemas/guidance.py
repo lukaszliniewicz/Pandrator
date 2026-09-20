@@ -12,6 +12,7 @@ GUIDE_TOPICS = (
     "artifacts-and-revisions",
     "audiobooks",
     "durable-work",
+    "generation-controls",
     "manager-and-recovery",
     "overview",
     "providers-and-voices",
@@ -19,6 +20,7 @@ GUIDE_TOPICS = (
     "security-boundaries",
     "subtitles",
     "voiceover-and-dubbing",
+    "voice-casting",
     "workflows",
 )
 

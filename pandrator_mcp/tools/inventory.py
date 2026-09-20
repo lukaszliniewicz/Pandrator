@@ -96,24 +96,9 @@ def voice_catalog(
     runtime: McpRuntime,
     arguments: VoiceCatalogInput,
 ) -> dict[str, Any]:
-    payload = runtime.require_application().list_voices()
-    source = payload.get("items")
-    items: list[dict[str, Any]] = []
-    if isinstance(source, list):
-        for item in source:
-            if not isinstance(item, dict):
-                continue
-            if arguments.language and item.get("language") != arguments.language:
-                continue
-            items.append(
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "language": item.get("language"),
-                    "has_rvc_model": bool(item.get("rvc_model_ref")),
-                    "revision": item.get("revision"),
-                }
-            )
-            if len(items) >= arguments.limit:
-                break
-    return {"schema_version": "1", "items": items}
+    # Kept as the historical import path; the normalized catalog implementation
+    # lives beside the lifecycle tools to keep the public tool contract in one
+    # place.
+    from .voice_lifecycle import voice_catalog as normalized_voice_catalog
+
+    return normalized_voice_catalog(runtime, arguments)

@@ -157,6 +157,31 @@ def voice_sample_payload(
     }
 
 
+def validate_profile_evidence(
+    session: Session, paths: DataPaths, profile: dict[str, Any] | None
+) -> None:
+    if not profile:
+        return
+    evidence = [
+        *(profile.get("evidence") or {}).values(),
+        *(lang.get("evidence") for lang in profile.get("languages", [])),
+    ]
+    for item in evidence:
+        if not item or not item.get("artifact_id"):
+            continue
+        artifact = session.get(Artifact, item["artifact_id"])
+        if artifact is None or artifact.state == "deleted" or artifact.kind != "audio":
+            raise ValueError(
+                "Voice trait evidence must reference an available audio artifact."
+            )
+        try:
+            exists = paths.managed_path(artifact.relative_path).is_file()
+        except (OSError, ValueError):
+            exists = False
+        if not exists:
+            raise ValueError("Voice trait evidence audio is unavailable.")
+
+
 def voice_payload(
     session: Session,
     paths: DataPaths,
@@ -208,19 +233,43 @@ def voice_payload(
             )
         providers[service_id] = registration
     metadata["providers"] = providers
+    from .voice_catalog import normalized_profile
+
+    preferred_artifact = next(
+        (sample.artifact_id for sample in samples if sample.id == newest_available),
+        None,
+    )
+    source = session.get(Artifact, preferred_artifact) if preferred_artifact else None
+    provenance = (
+        (source.metadata_json or {}).get("sample_provenance", {}) if source else {}
+    )
+    origin = (
+        "builtin"
+        if is_bundled_voice(voice)
+        else "designed"
+        if provenance.get("source_kind") == "generated_voice_design"
+        else "imported"
+        if samples
+        else "unknown"
+    )
     return {
+        "origin": origin,
         "id": voice.id,
         "name": voice.name,
         "language": voice.language,
         "description": voice.description,
         "rvc_model_ref": voice.rvc_model_ref,
         "voice_category": voice_category,
+        "profile": normalized_profile(metadata.get("profile")),
         "metadata_json": metadata,
         "revision": voice.revision,
         "bundled": is_bundled_voice(voice),
         "sample_count": len(samples),
         "available_sample_count": len(available_ids),
         "preferred_sample_id": newest_available,
+        "preview_artifact_id": preferred_artifact,
+        "created_at": voice.created_at.isoformat(),
+        "updated_at": voice.updated_at.isoformat(),
         "preferred_sample_transcript_reviewed": bool(
             newest_available
             and next(
@@ -397,9 +446,7 @@ def resolve_audio_cpp_voice_reference(
         str(endpoint.get("adapter") or "").strip().casefold().replace("-", "_")
         == "audio_cpp"
     ):
-        registration_ids.add(
-            _reference_registration_id(endpoint.get("name"))
-        )
+        registration_ids.add(_reference_registration_id(endpoint.get("name")))
 
     selected = str(settings.get("voice") or settings.get("speaker") or "").strip()
     if not selected:
@@ -410,16 +457,13 @@ def resolve_audio_cpp_voice_reference(
         providers = dict((voice.metadata_json or {}).get("providers") or {})
         registration = None
         for provider_id, raw_registration in providers.items():
-            normalized_provider = _reference_registration_id(
-                provider_id
-            )
+            normalized_provider = _reference_registration_id(provider_id)
             if normalized_provider not in registration_ids or not isinstance(
                 raw_registration, dict
             ):
                 continue
             if (
-                str(raw_registration.get("resource_kind") or "")
-                != "linked_reference"
+                str(raw_registration.get("resource_kind") or "") != "linked_reference"
                 or str(raw_registration.get("status") or "") != "ready"
             ):
                 continue
@@ -429,9 +473,7 @@ def resolve_audio_cpp_voice_reference(
                 str(raw_registration.get("provider_voice_id") or ""),
             }
             if selected_key not in {
-                name.strip().casefold()
-                for name in candidate_names
-                if name.strip()
+                name.strip().casefold() for name in candidate_names if name.strip()
             }:
                 continue
             registration = raw_registration
@@ -475,9 +517,7 @@ def resolve_audio_cpp_voice_reference(
                 "The audio.cpp linked voice sample could not be read."
             ) from error
         if size_bytes > 5 * 1024 * 1024:
-            raise ValueError(
-                "audio.cpp linked voice references must be at most 5 MiB."
-            )
+            raise ValueError("audio.cpp linked voice references must be at most 5 MiB.")
         content_hash = str(artifact.content_hash or "").strip()
         if not content_hash:
             digest = hashlib.sha256()

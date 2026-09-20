@@ -12,6 +12,7 @@ from ..results import ToolOutcome
 from ..schemas import (
     AttachExistingSourceInput,
     CreateSessionInput,
+    DeleteOutputInput,
     GetSessionInput,
     GetSessionSettingsInput,
     GetWorkflowInput,
@@ -21,6 +22,8 @@ from ..schemas import (
     PatchSubtitleCuesInput,
     PreviewSubtitlesInput,
     ReplaceSubtitleTextInput,
+    RestoreSessionInput,
+    TrashSessionInput,
     UpdateSessionInput,
     UpdateSessionSettingsInput,
 )
@@ -207,6 +210,7 @@ def list_sessions(
     payload = runtime.require_application().list_sessions(
         limit=arguments.limit,
         query=arguments.query,
+        include_trashed=arguments.include_trashed or arguments.state == "trashed",
     )
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
     query_term = arguments.query.strip().casefold() if arguments.query else None
@@ -232,6 +236,82 @@ def list_sessions(
         "schema_version": "1",
         "items": filtered[: arguments.limit],
     }
+
+
+def trash_session(
+    runtime: McpRuntime,
+    arguments: TrashSessionInput,
+) -> ToolOutcome:
+    """Move one session to recoverable trash using its current revision."""
+
+    result = runtime.require_application().trash_session(
+        arguments.session_id,
+        expected_revision=arguments.expected_revision,
+    )
+    return ToolOutcome(
+        result={
+            "schema_version": "1",
+            **_session_projection(result),
+        },
+        next_actions=[
+            NextAction(
+                tool="pandrator_list_sessions",
+                arguments={"include_trashed": True, "limit": 50},
+                reason="Inspect recoverable sessions in trash or restore the selected session.",
+            )
+        ],
+    )
+
+
+def restore_session(
+    runtime: McpRuntime,
+    arguments: RestoreSessionInput,
+) -> ToolOutcome:
+    """Restore one trashed session using its current revision."""
+
+    result = runtime.require_application().restore_session(
+        arguments.session_id,
+        expected_revision=arguments.expected_revision,
+    )
+    return ToolOutcome(
+        result={
+            "schema_version": "1",
+            **_session_projection(result),
+        },
+        next_actions=[
+            NextAction(
+                tool="pandrator_get_session",
+                arguments={"session_id": arguments.session_id},
+                reason="Confirm the restored session and its current revision.",
+            )
+        ],
+    )
+
+
+def delete_output(
+    runtime: McpRuntime,
+    arguments: DeleteOutputInput,
+) -> ToolOutcome:
+    """Permanently remove one explicitly requested session output file."""
+
+    result = runtime.require_application().delete_output(
+        arguments.session_id,
+        arguments.artifact_id,
+    )
+    return ToolOutcome(
+        result={
+            "schema_version": "1",
+            "artifact_id": result.get("artifact_id") or arguments.artifact_id,
+            "state": "deleted",
+        },
+        next_actions=[
+            NextAction(
+                tool="pandrator_list_artifacts",
+                arguments={"session_id": arguments.session_id, "limit": 50},
+                reason="Refresh the session artifact inventory after permanent output removal.",
+            )
+        ],
+    )
 
 
 def get_session(

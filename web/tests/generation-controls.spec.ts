@@ -300,12 +300,13 @@ test('recognition settings and managed voice categories are editable without gen
   expect(created.ok(), await created.text()).toBeTruthy();
   const voice = await created.json();
   await page.goto('/voices');
+  await page.getByLabel('Search voices').fill('Character reference');
   await page
     .getByRole('button', { name: 'Character reference', exact: true })
     .click();
-  await page.getByRole('button', { name: 'Edit voice', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit profile', exact: true }).click();
   await page
-    .getByRole('combobox', { name: 'Voice category', exact: true })
+    .getByRole('combobox', { name: 'Voice presentation', exact: true })
     .selectOption('androgynous');
   await page.screenshot({ path: '/tmp/pandrator-voice-category.png' });
   const saved = page.waitForResponse(
@@ -313,13 +314,59 @@ test('recognition settings and managed voice categories are editable without gen
       response.url().endsWith(`/api/v1/voices/${voice.id}`) &&
       response.request().method() === 'PATCH'
   );
-  await page.getByRole('button', { name: 'Save voice', exact: true }).click();
+  await page.getByRole('button', { name: 'Save profile', exact: true }).click();
   expect((await saved).ok()).toBeTruthy();
   const catalogue = await (await page.request.get('/api/v1/voices')).json();
   expect(
     catalogue.items.find((item: { id: string }) => item.id === voice.id)
       .voice_category
   ).toBe('androgynous');
+});
+
+test('catalog selection assigns a managed reference to a character', async ({
+  page
+}) => {
+  const { panel, sid, csrf } = await setup(page);
+  const name = `Cast reference ${crypto.randomUUID()}`;
+  const created = await page.request.post('/api/v1/voices', {
+    headers: { 'X-CSRF-Token': csrf },
+    data: { name, language: 'en' }
+  });
+  expect(created.ok()).toBeTruthy();
+  const voice = await created.json();
+  await panel
+    .locator('summary')
+    .filter({ hasText: /^Characters and cast/ })
+    .click();
+  await panel
+    .getByRole('button', { name: 'Add character', exact: true })
+    .click();
+  const character = panel.locator('article');
+  await character.getByLabel('Name', { exact: true }).fill('Scrooge');
+  await character
+    .getByRole('button', { name: 'Browse voice library', exact: true })
+    .click();
+  const library = page.getByRole('dialog', {
+    name: 'Voice Library',
+    exact: true
+  });
+  await library.getByLabel('Search voices').fill(name);
+  await expect(library.getByRole('button', { name, exact: true })).toBeVisible();
+  await library.getByRole('button', { name: 'Use voice', exact: true }).click();
+  await expect(library).toBeHidden();
+  await expect(
+    character.getByText(`Reference: ${name}`, { exact: true })
+  ).toBeVisible();
+  await panel
+    .getByRole('button', { name: 'Save characters and cast', exact: true })
+    .click();
+  await expect(
+    panel.getByText('Characters and cast saved.', { exact: false })
+  ).toBeVisible();
+  const saved = await (
+    await page.request.get(`/api/v1/sessions/${sid}/generation-controls`)
+  ).json();
+  expect(saved.cast.characters[saved.characters[0].id].voice_id).toBe(voice.id);
 });
 
 test('character dictionary and cast remain usable on mobile without synthesis', async ({

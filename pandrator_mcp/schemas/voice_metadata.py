@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from .common import ToolInput
 
@@ -24,10 +25,31 @@ class VoiceMetadataChanges(_StrictModel):
     language: str | None = Field(default=None, max_length=40)
     description: str | None = None
     voice_category: VoiceCategory | None = None
+    profile: dict[str, Any] | None = None
+
+    @field_validator("profile")
+    @classmethod
+    def validate_profile(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        try:
+            size = len(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("Voice profile must contain finite JSON values.") from error
+        if size > 64 * 1024:
+            raise ValueError("Voice profile may not exceed 64 KiB.")
+        return value
 
     @model_validator(mode="after")
     def require_explicit_change(self) -> "VoiceMetadataChanges":
-        fields = {"name", "language", "description", "voice_category"}
+        fields = {"name", "language", "description", "voice_category", "profile"}
         if not self.model_fields_set.intersection(fields):
             raise ValueError("At least one voice metadata field must be provided.")
         if "name" in self.model_fields_set and self.name is None:

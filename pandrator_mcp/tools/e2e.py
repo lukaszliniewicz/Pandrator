@@ -504,6 +504,7 @@ def _safe_tts_service(
     service: dict[str, Any],
     *,
     detail: str = "summary",
+    model_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     compact_keys = (
         "id",
@@ -526,6 +527,13 @@ def _safe_tts_service(
         "batch_synthesis",
     )
     result = {key: service.get(key) for key in compact_keys if key in service}
+    if model_ids is not None and isinstance(result.get("models"), list):
+        retained = {str(value).casefold() for value in model_ids}
+        result["models"] = [
+            value
+            for value in result["models"]
+            if str(value).casefold() in retained
+        ]
     if "catalogue_role" not in result:
         result["catalogue_role"] = "external"
     raw_voices = service.get("voices")
@@ -540,10 +548,33 @@ def _safe_tts_service(
             "default_voices",
             "default_voices_by_language",
             "voice_catalogues",
+            "defaults_by_model",
             "voice_metadata",
         ):
             if key in service:
-                result[key] = service.get(key)
+                value = service.get(key)
+                if model_ids is not None:
+                    retained = {str(item).casefold() for item in model_ids}
+                    if key == "model_catalog" and isinstance(value, list):
+                        value = [
+                            item
+                            for item in value
+                            if isinstance(item, dict)
+                            and str(item.get("id") or "").casefold() in retained
+                        ]
+                    elif key in {
+                        "expressive_capabilities",
+                        "model_voice_modes",
+                        "voice_catalogues",
+                        "defaults_by_model",
+                        "default_voices_by_language",
+                    } and isinstance(value, dict):
+                        value = {
+                            name: item
+                            for name, item in value.items()
+                            if str(name).casefold() in retained
+                        }
+                result[key] = value
     elif voices:
         result["voices_preview"] = voices[:20]
     return result
@@ -576,17 +607,33 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
         models = [str(value) for value in item.get("models") or []]
         if requested_model and not any(value.casefold() == requested_model for value in models):
             continue
+        retained_models = models
+        restrict_models = bool(requested_model)
         if query:
-            haystack = " ".join(
-                [
-                    str(item.get("id") or ""),
-                    str(item.get("name") or ""),
-                    *models,
-                ]
+            service_text = " ".join(
+                [str(item.get("id") or ""), str(item.get("name") or "")]
             ).casefold()
+            haystack = " ".join([service_text, *models]).casefold()
             if query not in haystack:
                 continue
-        services.append(_safe_tts_service(item, detail=arguments.detail))
+            if query not in service_text:
+                restrict_models = True
+                retained_models = [
+                    model_value for model_value in models if query in model_value.casefold()
+                ]
+        if requested_model:
+            retained_models = [
+                model_value
+                for model_value in retained_models
+                if model_value.casefold() == requested_model
+            ]
+        services.append(
+            _safe_tts_service(
+                item,
+                detail=arguments.detail,
+                model_ids=retained_models if restrict_models else None,
+            )
+        )
     voices = []
     raw_voices = application.list_voices().get("items")
     for item in raw_voices or []:

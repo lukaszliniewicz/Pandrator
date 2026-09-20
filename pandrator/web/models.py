@@ -2074,6 +2074,55 @@ class CapabilitySnapshot(Base):
     )
 
 
+class VoiceCollection(Base):
+    __tablename__ = "voice_collections"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class VoiceCollectionMember(Base):
+    __tablename__ = "voice_collection_members"
+
+    collection_id: Mapped[str] = mapped_column(
+        ForeignKey("voice_collections.id", ondelete="CASCADE"), primary_key=True
+    )
+    voice_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    voice_ref_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    managed_voice_id: Mapped[str | None] = mapped_column(
+        ForeignKey("voices.id", ondelete="CASCADE")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class VoiceCatalogOverride(Base):
+    __tablename__ = "voice_catalog_overrides"
+
+    voice_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    voice_ref_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    voice_category: Mapped[str | None] = mapped_column(String(20))
+    profile_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
 Index(
     "idx_segments_revision_timing",
     Segment.revision_id,

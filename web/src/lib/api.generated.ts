@@ -3250,6 +3250,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/voice-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["queryVoiceCatalog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voice-catalog/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getVoiceCatalogCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voice-catalog/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateCatalogVoiceMetadata"];
+        trace?: never;
+    };
+    "/api/v1/voice-collections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listVoiceCollections"];
+        put?: never;
+        post: operations["createVoiceCollection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voice-collections/{collectionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateVoiceCollection"];
+        trace?: never;
+    };
     "/api/v1/voices": {
         parameters: {
             query?: never;
@@ -3308,6 +3388,22 @@ export interface paths {
         get: operations["listVoiceSamples"];
         put?: never;
         post: operations["uploadVoiceSample"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices/{voiceId}/samples/from-artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createVoiceSampleFromArtifact"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3608,6 +3704,33 @@ export interface components {
             source_speakers?: {
                 [key: string]: components["schemas"]["VoiceBinding"];
             };
+        };
+        /** CatalogVoiceChanges */
+        CatalogVoiceChanges: {
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /** @default null */
+            profile?: components["schemas"]["VoiceProfile"] | null;
+            /**
+             * Voice Category
+             * @default null
+             */
+            voice_category?: ("male" | "female" | "androgynous" | "unspecified") | null;
+        };
+        /** CatalogVoiceUpdate */
+        CatalogVoiceUpdate: {
+            changes: components["schemas"]["CatalogVoiceChanges"];
+            /** Expected Revision */
+            expected_revision: number;
+            reference: components["schemas"]["VoiceReference"];
         };
         /**
          * CharacterEntry
@@ -6727,6 +6850,29 @@ export interface components {
              */
             voice_id?: string | null;
         };
+        /** TraitEvidence */
+        TraitEvidence: {
+            /**
+             * Artifact Id
+             * @default null
+             */
+            artifact_id?: string | null;
+            /**
+             * Note
+             * @default null
+             */
+            note?: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "user" | "provider" | "design_request" | "audition_review";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "requested" | "described" | "reviewed";
+        };
         /** TranscriptionCreate */
         TranscriptionCreate: {
             /**
@@ -6942,6 +7088,127 @@ export interface components {
              */
             voice_id?: string | null;
         };
+        /** VoiceCatalogQuery */
+        VoiceCatalogQuery: {
+            /**
+             * Accent
+             * @default
+             */
+            accent?: string;
+            /**
+             * Collection Id
+             * @default
+             */
+            collection_id?: string;
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor?: string | null;
+            /**
+             * Kind
+             * @default all
+             * @enum {string}
+             */
+            kind?: "all" | "managed" | "provider";
+            /**
+             * Language
+             * @default
+             */
+            language?: string;
+            /**
+             * Limit
+             * @default 30
+             */
+            limit?: number;
+            /**
+             * Model
+             * @default
+             */
+            model?: string;
+            /**
+             * Origin
+             * @default
+             */
+            origin?: string;
+            /**
+             * Pitch
+             * @default
+             * @enum {string}
+             */
+            pitch?: "" | "low" | "mid" | "high";
+            /**
+             * Query
+             * @default
+             */
+            query?: string;
+            /**
+             * Ready Only
+             * @default false
+             */
+            ready_only?: boolean;
+            /**
+             * Reviewed Only
+             * @default false
+             */
+            reviewed_only?: boolean;
+            /**
+             * Service Id
+             * @default
+             */
+            service_id?: string;
+            /**
+             * Sort
+             * @default relevance
+             * @enum {string}
+             */
+            sort?: "relevance" | "name" | "recently_added" | "recently_updated";
+            /**
+             * Texture
+             * @default
+             */
+            texture?: string;
+            /**
+             * Use Case
+             * @default
+             */
+            use_case?: string;
+            /**
+             * Voice Category
+             * @default
+             * @enum {string}
+             */
+            voice_category?: "" | "male" | "female" | "androgynous" | "unspecified";
+        };
+        /** VoiceCollectionCreate */
+        VoiceCollectionCreate: {
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /** Name */
+            name: string;
+        };
+        /** VoiceCollectionUpdate */
+        VoiceCollectionUpdate: {
+            /** Add Members */
+            add_members?: components["schemas"]["VoiceReference"][];
+            /**
+             * Description
+             * @default null
+             */
+            description?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /** Remove Members */
+            remove_members?: components["schemas"]["VoiceReference"][];
+        };
         /** VoiceCreate */
         VoiceCreate: {
             /**
@@ -6956,6 +7223,8 @@ export interface components {
             language?: string | null;
             /** Name */
             name: string;
+            /** @default null */
+            profile?: components["schemas"]["VoiceProfile"] | null;
             /**
              * Voice Category
              * @default unspecified
@@ -6976,6 +7245,117 @@ export interface components {
             language?: string | null;
             /** Transcript */
             transcript: string;
+        };
+        /** VoiceLanguage */
+        VoiceLanguage: {
+            /**
+             * Accent
+             * @default null
+             */
+            accent?: string | null;
+            /**
+             * Detail
+             * @default null
+             */
+            detail?: string | null;
+            /** @default null */
+            evidence?: components["schemas"]["TraitEvidence"] | null;
+            /** Language */
+            language: string;
+            /**
+             * Locale
+             * @default null
+             */
+            locale?: string | null;
+        };
+        /**
+         * VoiceProfile
+         * @description Description and evidence metadata; this is never an audio classifier.
+         */
+        VoiceProfile: {
+            /** Delivery Presets */
+            delivery_presets?: ("neutral" | "conversational" | "formal" | "storytelling" | "dramatic")[];
+            /** Evidence */
+            evidence?: {
+                [key: string]: components["schemas"]["TraitEvidence"];
+            };
+            /** Languages */
+            languages?: components["schemas"]["VoiceLanguage"][];
+            /**
+             * Perceived Age
+             * @default null
+             */
+            perceived_age?: ("childlike" | "youthful" | "adult" | "older") | null;
+            /**
+             * Pitch
+             * @default null
+             */
+            pitch?: ("low" | "mid" | "high") | null;
+            /**
+             * Schema Version
+             * @default 1
+             * @constant
+             */
+            schema_version?: 1;
+            /** Tags */
+            tags?: string[];
+            /** Textures */
+            textures?: ("warm" | "bright" | "dark" | "airy" | "breathy" | "raspy" | "gravelly" | "resonant" | "clear" | "nasal")[];
+            /** Use Cases */
+            use_cases?: ("audiobook_narration" | "character_dialogue" | "voiceover" | "documentary" | "news" | "advertising" | "instructional")[];
+        };
+        /** VoiceReference */
+        VoiceReference: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "managed" | "provider";
+            /**
+             * Model
+             * @default null
+             */
+            model?: string | null;
+            /**
+             * Service Id
+             * @default null
+             */
+            service_id?: string | null;
+            /**
+             * Voice
+             * @default null
+             */
+            voice?: string | null;
+            /**
+             * Voice Id
+             * @default null
+             */
+            voice_id?: string | null;
+        };
+        /**
+         * VoiceReferenceImportRequest
+         * @description Import an existing managed audio artifact as a voice reference.
+         */
+        VoiceReferenceImportRequest: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Expected Voice Revision */
+            expected_voice_revision: number;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Transcript
+             * @default null
+             */
+            transcript?: string | null;
+            /**
+             * Transcript Reviewed
+             * @default false
+             */
+            transcript_reviewed?: boolean;
         };
         /** VoiceTranscriptReview */
         VoiceTranscriptReview: {
@@ -7009,6 +7389,8 @@ export interface components {
              * @default null
              */
             name?: string | null;
+            /** @default null */
+            profile?: components["schemas"]["VoiceProfile"] | null;
             /**
              * Voice Category
              * @default null
@@ -9365,7 +9747,9 @@ export interface operations {
     previewTtsVoice: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path: {
                 serviceId: string;
             };
@@ -9410,7 +9794,9 @@ export interface operations {
     };
     listSessions: {
         parameters: {
-            query?: never;
+            query?: {
+                include_trashed?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -11662,7 +12048,9 @@ export interface operations {
     restoreSession: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "If-Match": string;
+            };
             path: {
                 sessionId: string;
             };
@@ -13828,6 +14216,176 @@ export interface operations {
             };
         };
     };
+    queryVoiceCatalog: {
+        parameters: {
+            query?: {
+                query?: string;
+                language?: string;
+                accent?: string;
+                voice_category?: "" | "male" | "female" | "androgynous" | "unspecified";
+                pitch?: "" | "low" | "mid" | "high";
+                texture?: string;
+                use_case?: string;
+                collection_id?: string;
+                kind?: "all" | "managed" | "provider";
+                origin?: string;
+                service_id?: string;
+                model?: string;
+                ready_only?: boolean;
+                reviewed_only?: boolean;
+                sort?: "relevance" | "name" | "recently_added" | "recently_updated";
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Voice catalog result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    getVoiceCatalogCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Voice catalog result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    updateCatalogVoiceMetadata: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogVoiceUpdate"];
+            };
+        };
+        responses: {
+            /** @description Voice catalog result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    listVoiceCollections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Voice catalog result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    createVoiceCollection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceCollectionCreate"];
+            };
+        };
+        responses: {
+            /** @description Voice catalog result */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    updateVoiceCollection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                collectionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceCollectionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Voice catalog result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     listVoices: {
         parameters: {
             query?: never;
@@ -13849,7 +14407,9 @@ export interface operations {
     createVoice: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -13935,6 +14495,7 @@ export interface operations {
             query?: never;
             header: {
                 "If-Match": string;
+                "Idempotency-Key"?: string;
             };
             path: {
                 voiceId: string;
@@ -14039,10 +14600,42 @@ export interface operations {
             };
         };
     };
+    createVoiceSampleFromArtifact: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                voiceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceReferenceImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Voice normalization job */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     createVoiceSampleFromPreview: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path: {
                 voiceId: string;
             };
@@ -14126,7 +14719,9 @@ export interface operations {
     transcribeVoiceSample: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path: {
                 voiceId: string;
                 sampleId: string;
@@ -14147,7 +14742,9 @@ export interface operations {
     reviewVoiceSampleTranscript: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path: {
                 voiceId: string;
                 sampleId: string;

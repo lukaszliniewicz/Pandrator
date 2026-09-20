@@ -38,8 +38,17 @@ class _FakeApplication:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
 
-    def list_sessions(self, limit=50, query=None):
-        self.calls.append(("list_sessions", {"limit": limit, "query": query}))
+    def list_sessions(self, limit=50, query=None, include_trashed=False):
+        self.calls.append(
+            (
+                "list_sessions",
+                {
+                    "limit": limit,
+                    "query": query,
+                    "include_trashed": include_trashed,
+                },
+            )
+        )
         return {
             "items": [
                 {

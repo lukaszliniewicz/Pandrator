@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import unicodedata
+import uuid
 from collections import OrderedDict
 from contextlib import nullcontext
 from copy import deepcopy
@@ -5822,6 +5823,7 @@ class WorkflowHandlers:
         expected_raw = payload.get("expected_voice_revision")
         expected_revision = int(expected_raw) if expected_raw is not None else None
         reviewed_transcript = str(payload.get("reviewed_transcript") or "").strip()
+        transcript = reviewed_transcript or str(payload.get("unreviewed_transcript") or "").strip()
         transcript_language = (
             str(payload.get("transcript_language") or "").strip() or None
         )
@@ -5861,7 +5863,7 @@ class WorkflowHandlers:
                     raise ValueError("Voice sample not found.")
         voice_dir = self.paths.voices / voice_id
         voice_dir.mkdir(parents=True, exist_ok=True)
-        destination = voice_dir / f"sample-{source_artifact.id}.wav"
+        destination = voice_dir / f"sample-{source_artifact.id}-{uuid.uuid4().hex}.wav"
         progress(0.1, "Normalizing recording")
         command = [
             str(payload.get("ffmpeg_executable") or "ffmpeg"),
@@ -5914,9 +5916,9 @@ class WorkflowHandlers:
                 if old_path is not None:
                     removable.append(old_path)
                 sample.artifact_id = artifact.id
-                sample.transcript = reviewed_transcript or None
+                sample.transcript = transcript or None
                 sample.transcript_language = (
-                    transcript_language if reviewed_transcript else None
+                    transcript_language if transcript else None
                 )
                 sample.transcript_reviewed = bool(reviewed_transcript)
                 sample.created_at = utcnow()
@@ -5924,9 +5926,9 @@ class WorkflowHandlers:
                 sample = VoiceSample(
                     voice_id=voice_id,
                     artifact_id=artifact.id,
-                    transcript=reviewed_transcript or None,
+                    transcript=transcript or None,
                     transcript_language=(
-                        transcript_language if reviewed_transcript else None
+                        transcript_language if transcript else None
                     ),
                     transcript_reviewed=bool(reviewed_transcript),
                 )

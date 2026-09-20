@@ -150,6 +150,9 @@ test('standalone voice library lets users choose a cloning provider', async ({
   );
 
   await page.goto('/voices');
+  await page
+    .getByRole('button', { name: 'Add reference', exact: true })
+    .click();
   const providerSelect = page.getByLabel('Voice cloning provider');
   await expect(providerSelect).toBeVisible();
   await expect(providerSelect.locator('option')).toHaveText([
@@ -164,6 +167,9 @@ test('standalone voice library lets users choose a cloning provider', async ({
   ).toBeVisible();
 
   await page.goto('/voices?service=kobold_qwen');
+  await page
+    .getByRole('button', { name: 'Add reference', exact: true })
+    .click();
   await expect(page.getByLabel('Voice cloning provider')).toHaveCount(0);
   await page.getByRole('button', { name: 'Managed voice' }).click();
   await expect(

@@ -77,3 +77,8 @@ context automatically.
 Credentials belong in Pandrator's credential store or an approved MCP
 credential backend. Never paste a provider key into a tool argument, target
 profile, prompt, log, or source artifact.
+
+For searchable profiles, collections, voice design, reference import and passive
+multi-voice casting, read the `voice-casting` guide. Start with
+`pandrator_get_voice_capabilities` and `pandrator_get_voice_catalog`; use
+`generation-controls` for the XML and character dictionary contract.

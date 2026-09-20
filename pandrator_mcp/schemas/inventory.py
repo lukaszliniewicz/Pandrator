@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .common import ToolInput
+from .voice_lifecycle import VoiceCatalogInput
 
 
 class ListArtifactsInput(ToolInput):
@@ -18,6 +19,4 @@ class ProviderStatusInput(ToolInput):
     include_disabled: bool = True
 
 
-class VoiceCatalogInput(ToolInput):
-    language: str | None = Field(default=None, max_length=40)
-    limit: int = Field(default=100, ge=1, le=200)
+__all__ = ["ListArtifactsInput", "ProviderStatusInput", "VoiceCatalogInput"]

@@ -9,6 +9,7 @@ API_CLIENTS = (
     API_CORE,
     WEB_SOURCE / "lib" / "domain-api.ts",
     WEB_SOURCE / "lib" / "admin-api.ts",
+    WEB_SOURCE / "lib" / "voice-library-api.ts",
 )
 SOURCE_SUFFIXES = {".svelte", ".ts"}
 
@@ -55,9 +56,14 @@ def test_api_core_assigns_idempotency_keys_to_mutations():
     assert "headers.has('Idempotency-Key')" in core
     assert "headers.set('Idempotency-Key', createIdempotencyKey())" in core
     assert "globalThis.crypto.randomUUID()" in core
+    # UUIDs also identify draft characters. Client adapters must leave key
+    # creation to the core, while explicit retry keys remain valid.
+    for path in frontend_sources():
+        if path != API_CORE:
+            assert "createIdempotencyKey(" not in source(path), path
     assert all(
         "randomUUID(" not in source(path)
-        for path in frontend_sources()
+        for path in API_CLIENTS
         if path != API_CORE
     )
 

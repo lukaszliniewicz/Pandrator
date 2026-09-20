@@ -116,6 +116,10 @@ def _guard_settings(
 
 class ListSessionsInput(ToolInput):
     limit: int = Field(default=50, ge=1, le=100)
+    include_trashed: bool = Field(
+        default=False,
+        description="Include sessions in recoverable trash in the bounded listing.",
+    )
     workflow_kind: (
         Literal[
             "audiobook",
@@ -135,6 +139,27 @@ class ListSessionsInput(ToolInput):
 
 class GetSessionInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+
+
+class TrashSessionInput(ToolInput):
+    """Move one session to recoverable trash using its current revision."""
+
+    session_id: str = Field(min_length=1, max_length=80)
+    expected_revision: int = Field(ge=0)
+
+
+class RestoreSessionInput(ToolInput):
+    """Restore one trashed session using its current revision."""
+
+    session_id: str = Field(min_length=1, max_length=80)
+    expected_revision: int = Field(ge=0)
+
+
+class DeleteOutputInput(ToolInput):
+    """Permanently remove one requested session output by durable artifact ID."""
+
+    session_id: str = Field(min_length=1, max_length=80)
+    artifact_id: str = Field(min_length=1, max_length=80)
 
 
 class GetWorkflowInput(ToolInput):

@@ -149,9 +149,15 @@ class McpArchitectureTests(unittest.TestCase):
             "workspace",
         }
         for model in TOOL_INPUT_MODELS:
+            allowed_catalog_origin = model.__name__ == "VoiceCatalogInput"
+            forbidden = (
+                forbidden_fields - {"origin"}
+                if allowed_catalog_origin
+                else forbidden_fields
+            )
             self.assertTrue(
-                forbidden_fields.isdisjoint(model.model_fields),
-                f"{model.__name__}: {set(model.model_fields) & forbidden_fields}",
+                forbidden.isdisjoint(model.model_fields),
+                f"{model.__name__}: {set(model.model_fields) & forbidden}",
             )
         with self.assertRaises(ValidationError):
             PlanWorkflowInput(
@@ -339,6 +345,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_create_speech_optimization_dispatch_run",
                 "pandrator_create_session",
                 "pandrator_create_text_source",
+                "pandrator_delete_output",
                 "pandrator_execute_component_plan",
                 "pandrator_execute_workflow_plan",
                 "pandrator_download_artifact",
@@ -352,6 +359,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_propose_media_edit",
                 "pandrator_regenerate_segments",
                 "pandrator_render_media_edit",
+                "pandrator_restore_session",
                 "pandrator_refine_media_edit_boundary",
                 "pandrator_release_dispatch_batch",
                 "pandrator_release_media_edit_dispatch_batch",
@@ -383,6 +391,17 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
                 "pandrator_update_voice_metadata",
+                "pandrator_create_voice",
+                "pandrator_promote_voice_design",
+                "pandrator_import_voice_reference",
+                "pandrator_transcribe_voice_sample",
+                "pandrator_review_voice_transcript",
+                "pandrator_publish_voice",
+                "pandrator_audition_voice",
+                "pandrator_create_voice_collection",
+                "pandrator_update_voice_collection",
+                "pandrator_update_catalog_voice_metadata",
+                "pandrator_trash_session",
                 "pandrator_transcribe",
                 "pandrator_transcription_cancel",
                 "pandrator_transcription_delete",
@@ -399,6 +418,12 @@ class McpArchitectureTests(unittest.TestCase):
                     "pandrator_transcription_delete",
                     # Revision-guarded voice metadata writes have no idempotency contract.
                     "pandrator_update_voice_metadata",
+                    # Session trash/restore and output removal have no backend
+                    # idempotency contract; resource IDs and revision guards
+                    # bound their retries.
+                    "pandrator_trash_session",
+                    "pandrator_restore_session",
+                    "pandrator_delete_output",
                 }
                 for action in mutating
             )

@@ -36,6 +36,7 @@ from .schemas import (
     CreateSpeechOptimizationDispatchRunInput,
     CreateTextSourceInput,
     CuePatchInput,
+    DeleteOutputInput,
     DescribeParametersInput,
     DispatchStructuredResultInput,
     DownloadArtifactInput,
@@ -101,6 +102,7 @@ from .schemas import (
     ReplaceSubtitleTextInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
+    RestoreSessionInput,
     ReviewSpeechPlanInput,
     ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
@@ -115,6 +117,7 @@ from .schemas import (
     SubtitleStage,
     SystemStatusInput,
     TargetStatusInput,
+    TrashSessionInput,
     TtsCatalogInput,
     UpdateGenerationSegmentInput,
     UpdateMediaEditArguments,
@@ -150,6 +153,7 @@ from .tools import (
     create_source_cleaning_dispatch_run,
     create_speech_optimization_dispatch_run,
     create_text_source,
+    delete_output,
     describe_parameters,
     download_artifact,
     execute_component_plan,
@@ -211,6 +215,7 @@ from .tools import (
     replace_subtitle_text,
     request_subtitle_evidence,
     resolve_subtitle_evidence,
+    restore_session,
     review_speech_plan,
     revise_speech_block_plan,
     revise_speech_block_plan_batch,
@@ -222,6 +227,7 @@ from .tools import (
     submit_speech_optimization_dispatch_batch,
     system_status,
     target_status,
+    trash_session,
     tts_catalog,
     update_generation_segment,
     update_media_edit,
@@ -380,9 +386,16 @@ def build_server(runtime: McpRuntime):
         idempotent_hint=True,
         open_world_hint=False,
     )
+    destructive_action = ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=False,
+    )
 
     from .tools.generation_controls import register_generation_controls_tools
     from .tools.performance import register_performance_tools
+    from .tools.voice_lifecycle import register_voice_lifecycle_tools
     from .tools.voice_metadata import register_voice_metadata_tools
 
     register_performance_tools(server, runtime, _call_with_validated_input,
@@ -399,6 +412,13 @@ def build_server(runtime: McpRuntime):
         runtime,
         _call_with_validated_input,
         write_action=revisioned_write_action,
+    )
+    register_voice_lifecycle_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        read_only=read_only,
+        write_action=write_action,
     )
 
     @server.tool(
@@ -529,6 +549,7 @@ def build_server(runtime: McpRuntime):
     def sessions_tool(
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
         workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
+        include_trashed: bool = False,
         state: str | None = None,
         query: str | None = None,
     ) -> dict[str, Any]:
@@ -540,6 +561,7 @@ def build_server(runtime: McpRuntime):
             ListSessionsInput(
                 limit=limit,
                 workflow_kind=workflow_kind,
+                include_trashed=include_trashed,
                 state=state,
                 query=query,
             ),
@@ -557,6 +579,46 @@ def build_server(runtime: McpRuntime):
             get_session,
             runtime,
             GetSessionInput(session_id=session_id),
+        )
+
+    @server.tool(
+        name="pandrator_trash_session",
+        title="Move a session to recoverable trash",
+        annotations=revisioned_write_action,
+    )
+    def session_trash_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        expected_revision: Annotated[int, Field(ge=0)],
+    ) -> dict[str, Any]:
+        """Move exactly one session to recoverable trash; it can be restored later."""
+
+        return _call(
+            trash_session,
+            runtime,
+            TrashSessionInput(
+                session_id=session_id,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_restore_session",
+        title="Restore a session from recoverable trash",
+        annotations=revisioned_write_action,
+    )
+    def session_restore_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        expected_revision: Annotated[int, Field(ge=0)],
+    ) -> dict[str, Any]:
+        """Restore exactly one trashed session using its current revision."""
+
+        return _call(
+            restore_session,
+            runtime,
+            RestoreSessionInput(
+                session_id=session_id,
+                expected_revision=expected_revision,
+            ),
         )
 
     @server.tool(
@@ -2523,6 +2585,26 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_delete_output",
+        title="Permanently delete one session output file",
+        annotations=destructive_action,
+    )
+    def output_delete_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        artifact_id: Annotated[str, Field(min_length=1, max_length=80)],
+    ) -> dict[str, Any]:
+        """Permanently remove only the requested output file by artifact ID."""
+
+        return _call(
+            delete_output,
+            runtime,
+            DeleteOutputInput(
+                session_id=session_id,
+                artifact_id=artifact_id,
+            ),
+        )
+
+    @server.tool(
         name="pandrator_plan_workflow",
         title="Preview an exact Pandrator workflow plan",
         annotations=read_only,
@@ -2814,15 +2896,48 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def voices_tool(
-        language: str | None = None,
-        limit: Annotated[int, Field(ge=1, le=200)] = 100,
+        query: Annotated[str, Field(max_length=300)] = "",
+        language: Annotated[str, Field(max_length=40)] = "",
+        accent: Annotated[str, Field(max_length=80)] = "",
+        voice_category: Literal["", "male", "female", "androgynous", "unspecified"] = "",
+        pitch: Literal["", "low", "mid", "high"] = "",
+        texture: Annotated[str, Field(max_length=40)] = "",
+        use_case: Annotated[str, Field(max_length=40)] = "",
+        collection_id: Annotated[str, Field(max_length=160)] = "",
+        kind: Literal["all", "managed", "provider"] = "all",
+        origin: Annotated[str, Field(max_length=40)] = "",
+        service_id: Annotated[str, Field(max_length=160)] = "",
+        model: Annotated[str, Field(max_length=200)] = "",
+        ready_only: bool = False,
+        reviewed_only: bool = False,
+        sort: Literal["relevance", "name", "recently_added", "recently_updated"] = "relevance",
+        limit: Annotated[int, Field(ge=1, le=200)] = 30,
+        cursor: Annotated[str | None, Field(max_length=1024)] = None,
     ) -> dict[str, Any]:
-        """Inspect bounded voice metadata without samples or content."""
+        """Inspect the normalized voice catalog with bounded filters and cursors."""
 
         return _call(
             voice_catalog,
             runtime,
-            VoiceCatalogInput(language=language, limit=limit),
+            VoiceCatalogInput(
+                query=query,
+                language=language,
+                accent=accent,
+                voice_category=voice_category,
+                pitch=pitch,
+                texture=texture,
+                use_case=use_case,
+                collection_id=collection_id,
+                kind=kind,
+                origin=origin,
+                service_id=service_id,
+                model=model,
+                ready_only=ready_only,
+                reviewed_only=reviewed_only,
+                sort=sort,
+                limit=limit,
+                cursor=cursor,
+            ),
         )
 
     @server.tool(

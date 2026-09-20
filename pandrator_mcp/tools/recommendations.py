@@ -14,6 +14,13 @@ def recommend_next_steps(
 ) -> dict[str, Any]:
     raw_goal = str(arguments.goal or "").strip()
     goal = raw_goal.casefold()
+    voice_steps = []
+    if any(term in goal for term in ("cast", "voice", "audio drama", "scottish")):
+        voice_steps = [
+            {"tool": "pandrator_get_voice_capabilities", "reason": "Discover available renderer modes, reference requirements, and markup support."},
+            {"tool": "pandrator_get_voice_catalog", "reason": "Search reusable voices and evidence before designing a new reference."},
+            {"tool": "pandrator_explain_system", "arguments": {"topic": "voice-casting"}, "reason": "Follow the passive discovery, audition, reference, and casting procedure."},
+        ]
     if not arguments.session_id:
         workflow_topic = (
             "workflows"
@@ -43,6 +50,7 @@ def recommend_next_steps(
             "goal": arguments.goal,
             "basis": "static_guidance",
             "steps": [
+                *voice_steps,
                 {
                     "tool": "pandrator_get_target_status",
                     "reason": (
@@ -88,6 +96,7 @@ def recommend_next_steps(
                 if key:
                     incomplete.append(key)
     steps: list[dict[str, Any]] = [
+        *voice_steps,
         {
             "tool": "pandrator_get_workflow",
             "arguments": {"session_id": arguments.session_id},

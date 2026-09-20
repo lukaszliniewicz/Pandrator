@@ -385,6 +385,43 @@ class ApplicationClientTests(unittest.TestCase):
         )
         self.assertEqual('"0"', settings["headers"]["If-Match"])
 
+    def test_session_trash_restore_and_output_delete_use_bounded_native_routes(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(200, {"items": []}),
+                FakeResponse(200, {"id": "session-1", "status": "trashed", "revision": 2}),
+                FakeResponse(200, {"id": "session-1", "status": "ready", "revision": 3}),
+                FakeResponse(200, {"artifact_id": "artifact-1", "state": "deleted"}),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.list_sessions(include_trashed=True)
+        client.trash_session("session-1", expected_revision=1)
+        client.restore_session("session-1", expected_revision=2)
+        client.delete_output("session-1", "artifact-1")
+
+        listing, trash, restore, output = session.calls
+        self.assertEqual("true", listing["params"]["include_trashed"])
+        self.assertEqual("DELETE", trash["method"])
+        self.assertEqual("/api/v1/sessions/session-1", trash["url"].split(origin)[-1])
+        self.assertEqual('"1"', trash["headers"]["If-Match"])
+        self.assertNotIn("Idempotency-Key", trash["headers"])
+        self.assertEqual("POST", restore["method"])
+        self.assertTrue(restore["url"].endswith("/api/v1/sessions/session-1/restore"))
+        self.assertEqual('"2"', restore["headers"]["If-Match"])
+        self.assertNotIn("Idempotency-Key", restore["headers"])
+        self.assertEqual("DELETE", output["method"])
+        self.assertTrue(output["url"].endswith("/api/v1/sessions/session-1/outputs/artifact-1"))
+        self.assertIsNone(output["data"])
+        self.assertNotIn("Idempotency-Key", output["headers"])
+
     def test_speech_block_topology_maps_revision_and_typed_operation(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(

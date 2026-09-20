@@ -60,6 +60,8 @@
     initialService = '',
     initialVoice = '',
     embedded = false,
+    detailOnly = false,
+    referencesOnly = false,
     onvoicepublished
   }: {
     onback: () => void;
@@ -67,6 +69,8 @@
     initialService?: string;
     initialVoice?: string;
     embedded?: boolean;
+    detailOnly?: boolean;
+    referencesOnly?: boolean;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
   let activeView = $state<'references' | 'prebuilt'>('references');
@@ -849,11 +853,12 @@
   }
 
   onMount(async () => {
-    activeView =
-      initialView ??
-      (page.url.searchParams.get('view') === 'prebuilt'
-        ? 'prebuilt'
-        : 'references');
+    activeView = referencesOnly
+      ? 'references'
+      : (initialView ??
+        (page.url.searchParams.get('view') === 'prebuilt'
+          ? 'prebuilt'
+          : 'references'));
     try {
       const [capabilityPayload, servicesPayload] = await Promise.all([
         diagnosticsApi.capabilities(),
@@ -892,7 +897,7 @@
   }}
 ></audio>
 
-<div class="voice-manager mx-auto flex w-full max-w-7xl flex-col">
+<div class="voice-manager mx-auto flex w-full min-w-0 max-w-7xl flex-col">
   {#if !embedded}<button
       onclick={onback}
       class="muted mb-6 flex shrink-0 items-center gap-2 self-start text-sm font-semibold"
@@ -921,22 +926,24 @@
         </div>{/if}
     </header>
   {/if}
-  <div class="mb-6 flex shrink-0 flex-wrap gap-2 border-b border-[var(--line)]">
-    <button
-      onclick={() => (activeView = 'references')}
-      class:active={activeView === 'references'}
-      class="library-tab"><Library size={16} /> Reference samples</button
-    ><button
-      onclick={() => (activeView = 'prebuilt')}
-      class:active={activeView === 'prebuilt'}
-      class="library-tab"><AudioLines size={16} /> Pre-built voices</button
+  {#if !detailOnly && !referencesOnly}<div
+      class="mb-6 flex shrink-0 flex-wrap gap-2 border-b border-[var(--line)]"
     >
-    {#if embedded && activeView === 'references'}<button
-        onclick={() => openVoiceDesigner()}
-        class="btn btn-sm btn-primary mb-2 ml-auto self-center"
-        ><WandSparkles size={15} /> Design voice</button
-      >{/if}
-  </div>
+      <button
+        onclick={() => (activeView = 'references')}
+        class:active={activeView === 'references'}
+        class="library-tab"><Library size={16} /> Reference samples</button
+      ><button
+        onclick={() => (activeView = 'prebuilt')}
+        class:active={activeView === 'prebuilt'}
+        class="library-tab"><AudioLines size={16} /> Pre-built voices</button
+      >
+      {#if embedded && activeView === 'references'}<button
+          onclick={() => openVoiceDesigner()}
+          class="btn btn-sm btn-primary mb-2 ml-auto self-center"
+          ><WandSparkles size={15} /> Design voice</button
+        >{/if}
+    </div>{/if}
   {#if activeView === 'references'}
     {#if error}<div
         role="alert"
@@ -953,11 +960,12 @@
 
     {#if !explicitService && cloningProviders.length}
       <div class="mb-5 flex justify-end">
-        <label class="text-xs font-semibold"
+        <label
+          class="flex w-full min-w-0 flex-col gap-2 text-xs font-semibold sm:w-auto sm:flex-row sm:items-center"
           >Voice cloning provider<select
             bind:value={selectedProviderService}
             disabled={publishing}
-            class="ml-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-40"
+            class="min-w-0 max-w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal disabled:opacity-40"
             ><option value="">Choose a provider</option
             >{#each cloningProviders as service}<option value={service.id}
                 >{service.name}{service.available === false
@@ -969,56 +977,65 @@
       </div>
     {/if}
 
-    <div class="grid items-start gap-5 lg:grid-cols-[20rem_1fr]">
-      <aside class="surface flex flex-col rounded-3xl p-4">
-        <form
-          class="relative flex gap-2"
-          onsubmit={(event) => {
-            event.preventDefault();
-            void createVoice();
-          }}
+    <div
+      class={`grid min-w-0 grid-cols-1 items-start gap-5 ${detailOnly ? '' : 'lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]'}`}
+    >
+      {#if !detailOnly}<aside
+          class="surface flex min-w-0 flex-col rounded-3xl p-4"
         >
-          <input
-            bind:this={newNameInput}
-            bind:value={newName}
-            oninput={() => (nameRequired = false)}
-            aria-label="New voice name"
-            aria-invalid={nameRequired}
-            aria-describedby={nameRequired ? 'voice-name-required' : undefined}
-            placeholder="New voice"
-            class:border-red-500={nameRequired}
-            class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
-          /><button
-            type="submit"
-            disabled={creatingVoice}
-            aria-label="Add voice"
-            title="Add voice"
-            class="btn btn-icon btn-primary"><Plus size={17} /></button
-          >{#if nameRequired}<div
-              id="voice-name-required"
-              role="tooltip"
-              class="absolute left-1 top-[calc(100%+.45rem)] z-10 rounded-lg bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-[var(--paper-strong)] shadow-lg"
-            >
-              Enter a voice name first.<span
-                class="absolute -top-1 left-4 size-2 rotate-45 bg-[var(--ink)]"
-              ></span>
-            </div>{/if}
-        </form>
-        <div class="mt-4 space-y-1">
-          {#each voices as voice}<button
-              onclick={() => choose(voice)}
-              class:active={selected?.id === voice.id}
-              class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left"
-              ><Library size={17} /><span
-                class="min-w-0 flex-1 truncate font-semibold">{voice.name}</span
-              ><span class="muted text-xs">{voice.language}</span></button
-            >{:else}<p class="muted p-5 text-center text-sm">
-              Create a voice to add samples.
-            </p>{/each}
-        </div>
-      </aside>
+          <form
+            class="relative flex gap-2"
+            onsubmit={(event) => {
+              event.preventDefault();
+              void createVoice();
+            }}
+          >
+            <input
+              bind:this={newNameInput}
+              bind:value={newName}
+              oninput={() => (nameRequired = false)}
+              aria-label="New voice name"
+              aria-invalid={nameRequired}
+              aria-describedby={nameRequired
+                ? 'voice-name-required'
+                : undefined}
+              placeholder="New voice"
+              class:border-red-500={nameRequired}
+              class="min-w-0 flex-1 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm"
+            /><button
+              type="submit"
+              disabled={creatingVoice}
+              aria-label="Add voice"
+              title="Add voice"
+              class="btn btn-icon btn-primary"><Plus size={17} /></button
+            >{#if nameRequired}<div
+                id="voice-name-required"
+                role="tooltip"
+                class="absolute left-1 top-[calc(100%+.45rem)] z-10 rounded-lg bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-[var(--paper-strong)] shadow-lg"
+              >
+                Enter a voice name first.<span
+                  class="absolute -top-1 left-4 size-2 rotate-45 bg-[var(--ink)]"
+                ></span>
+              </div>{/if}
+          </form>
+          <div class="mt-4 space-y-1">
+            {#each voices as voice}<button
+                onclick={() => choose(voice)}
+                class:active={selected?.id === voice.id}
+                class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left"
+                ><Library size={17} /><span
+                  class="min-w-0 flex-1 truncate font-semibold"
+                  >{voice.name}</span
+                ><span class="muted text-xs">{voice.language}</span></button
+              >{:else}<p class="muted p-5 text-center text-sm">
+                Create a voice to add samples.
+              </p>{/each}
+          </div>
+        </aside>{/if}
 
-      <main class="surface rounded-3xl p-5 sm:p-7">
+      <main
+        class="surface min-w-0 rounded-3xl p-5 [overflow-wrap:anywhere] sm:p-7"
+      >
         {#if selected}
           <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -1633,7 +1650,9 @@
             <div>
               <Library class="mx-auto text-[var(--accent)]" size={30} />
               <h2 class="mt-3 text-xl font-semibold">Select a voice</h2>
-              <p class="muted mt-1">Or create one in the left panel.</p>
+              <p class="muted mt-1">
+                Create a voice or select one from the list.
+              </p>
             </div>
           </div>
         {/if}

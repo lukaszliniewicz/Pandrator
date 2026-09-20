@@ -53,6 +53,8 @@ def route_domain(rule: str) -> str:
         (
             "/api/v1/pronunciations",
             "/api/v1/voices",
+            "/api/v1/voice-catalog",
+            "/api/v1/voice-collections",
             "/api/v1/rvc",
             "/api/v1/training",
         )

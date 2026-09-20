@@ -20,12 +20,20 @@
     services,
     voices,
     initialVoiceId = '',
+    initialPrompt = '',
+    initialAccent = '',
+    initialPitch = '',
+    initialCategory = '',
     onclose,
     onsaved
   }: {
     services: TtsService[];
     voices: VoiceRecord[];
     initialVoiceId?: string;
+    initialPrompt?: string;
+    initialAccent?: string;
+    initialPitch?: string;
+    initialCategory?: string;
     onclose: () => void;
     onsaved: (
       voiceId: string,
@@ -314,7 +322,33 @@
         target = await voiceApi.create<VoiceRecord>({
           name: requestedName,
           language: preview.language,
-          description: preview.prompt
+          description: preview.prompt,
+          voice_category:
+            initialCategory === 'male' ||
+            initialCategory === 'female' ||
+            initialCategory === 'androgynous'
+              ? initialCategory
+              : 'unspecified',
+          profile: {
+            schema_version: 1,
+            pitch:
+              initialPitch === 'low' ||
+              initialPitch === 'mid' ||
+              initialPitch === 'high'
+                ? initialPitch
+                : null,
+            languages: [
+              {
+                language: preview.language,
+                accent: initialAccent || null,
+                evidence: { source: 'design_request', status: 'requested' }
+              }
+            ],
+            evidence: {
+              pitch: { source: 'design_request', status: 'requested' },
+              voice_category: { source: 'design_request', status: 'requested' }
+            }
+          }
         });
         createdTarget = target;
       }
@@ -377,6 +411,7 @@
   }
 
   onMount(() => {
+    prompt = initialPrompt;
     void refreshCatalogue();
   });
 
