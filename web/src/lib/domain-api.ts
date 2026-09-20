@@ -842,6 +842,12 @@ export const jobApi = {
       'get',
       { path: { jobId }, signal }
     ),
+  decideVideoTail: (jobId: string, action: 'stop' | 'extend') =>
+    typedApiJson<'/api/v1/jobs/{jobId}/video-tail-decision', 'post', JobRecord>(
+      '/api/v1/jobs/{jobId}/video-tail-decision',
+      'post',
+      { path: { jobId }, body: { action } }
+    ),
   cancel: (jobId: string) => sessionApi.cancelJob(jobId),
   logs: (jobId: string, limit = 2000) =>
     typedApiJson<'/api/v1/jobs/{jobId}/logs', 'get', ItemPage<JobLogRecord>>(

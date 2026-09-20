@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -2075,6 +2076,59 @@ class WorkflowService:
             session_id=session_id,
             resource_keys=list(resolved.resource_keys),
         )
+
+    def decide_video_tail(self, job_id: str, action: str) -> Job:
+        """Stop, or continue the captured export after its duration warning.
+
+        The decision and continuation are committed together, so repeated clicks
+        cannot enqueue duplicate exports or pick up subsequently edited settings.
+        """
+        if action not in ("stop", "extend"):
+            raise ValueError("Choose stop or extend for the video duration warning.")
+        with self.database.immediate_session() as session:
+            previous = session.get(Job, job_id)
+            if previous is None:
+                raise KeyError(job_id)
+            if (
+                previous.kind not in {"export.create", "export.variant"}
+                or previous.status != "failed"
+                or previous.error_code != "VideoTailExtensionRequired"
+            ):
+                raise ValueError("This export is not waiting for a video duration decision.")
+            result = dict(previous.result_json or {})
+            decision = result.get("video_tail_decision")
+            if decision and decision != action:
+                raise ValueError("This video duration warning has already been handled.")
+            continued_id = result.get("continuation_job_id")
+            if continued_id:
+                continued = session.get(Job, continued_id)
+                if continued is None:
+                    raise ValueError("The continued export is no longer available.")
+                session.expunge(continued)
+                return continued
+            result["video_tail_decision"] = action
+            if action == "stop":
+                previous.result_json = result
+                session.flush()
+                session.expunge(previous)
+                return previous
+            payload = deepcopy(previous.payload_json or {})
+            payload.setdefault("settings", {})["video_tail_extension_policy"] = "extend"
+            snapshot = payload.get("resolved_settings_snapshot")
+            if isinstance(snapshot, dict):
+                snapshot.setdefault("output", {})["video_tail_extension_policy"] = "extend"
+            continued = self.jobs.enqueue_in_session(
+                session,
+                previous.kind,
+                payload,
+                session_id=previous.session_id,
+                resource_keys=list(previous.resource_keys_json or []),
+            )
+            result["continuation_job_id"] = continued.id
+            previous.result_json = result
+            session.flush()
+            session.expunge(continued)
+            return continued
 
     @staticmethod
     def _resource_keys(

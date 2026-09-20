@@ -1,10 +1,9 @@
-"""Small-overrun video tail freeze: frozen last frame, preserved audio tail.
+"""Video tail extension policy: ask before extending, or preserve all speech.
 
-Covers the 0.51 s class failure where generated speech exceeds the recording
-while 'Match recording timeline' is on: exports within
-output.video_tail_extension_max_ms freeze the last video frame instead of
-failing (or truncating via -shortest), larger overruns keep the actionable
-guard, and fitting timelines keep the copy fast path.
+Covers terminal speech overruns while 'Match recording timeline' is on:
+exports ask before freezing the last video frame by default, explicit extension
+preserves the complete speech tail without a legacy duration cap, and fitting
+timelines keep the copy fast path.
 """
 
 import math
@@ -22,8 +21,9 @@ from pandrator.logic.dubbing.video_muxing import (
     video_tail_extension_seconds,
 )
 from pandrator.web.soundtrack_export import (
+    VideoTailExtensionRequired,
     probe_soundtrack_media,
-    video_tail_extension_cap_ms,
+    resolve_video_tail_extension_ms,
 )
 from pandrator.web.workspace import validate_output_settings
 
@@ -137,27 +137,46 @@ class TailCommandTests(unittest.TestCase):
         )
         self.assertNotIn("-shortest", without)
 
-    def test_tail_cap_defaults_and_bounds(self):
-        self.assertEqual(video_tail_extension_cap_ms({}), 2000)
+    def test_default_policy_asks_and_extend_ignores_legacy_cap(self):
+        with self.assertRaises(VideoTailExtensionRequired):
+            resolve_video_tail_extension_ms(
+                reference_duration=3.0,
+                generated_duration=3.4,
+                fps=25.0,
+                settings={},
+            )
         self.assertEqual(
-            video_tail_extension_cap_ms({"video_tail_extension_max_ms": 0}), 0
+            resolve_video_tail_extension_ms(
+                reference_duration=3.0,
+                generated_duration=34.0,
+                fps=25.0,
+                settings={
+                    "video_tail_extension_policy": "extend",
+                    "video_tail_extension_max_ms": 2000,
+                },
+            ),
+            31040,
         )
-        self.assertEqual(
-            video_tail_extension_cap_ms({"video_tail_extension_max_ms": 30000}), 30000
-        )
-        for bad in (-1, 30001, True, False, "much", None, 2.5):
-            with self.subTest(value=bad):
-                with self.assertRaises(ValueError):
-                    video_tail_extension_cap_ms({"video_tail_extension_max_ms": bad})
+
+    def test_invalid_policy_is_rejected(self):
+        with self.assertRaisesRegex(
+            ValueError, r"video_tail_extension_policy must be ask or extend\."
+        ):
+            resolve_video_tail_extension_ms(
+                reference_duration=3.0,
+                generated_duration=3.0,
+                fps=25.0,
+                settings={"video_tail_extension_policy": "never"},
+            )
 
     def test_output_settings_validation(self):
         validate_output_settings({})
-        validate_output_settings({"video_tail_extension_max_ms": 2000})
-        validate_output_settings({"video_tail_extension_max_ms": 0})
-        for bad in (-1, 30001, True, "x"):
+        validate_output_settings({"video_tail_extension_policy": "ask"})
+        validate_output_settings({"video_tail_extension_policy": "extend"})
+        for bad in ("x", None, 0, True, [], {}):
             with self.subTest(value=bad):
                 with self.assertRaises(ValueError):
-                    validate_output_settings({"video_tail_extension_max_ms": bad})
+                    validate_output_settings({"video_tail_extension_policy": bad})
 
 
 @unittest.skipUnless(
@@ -279,6 +298,7 @@ class TailExportTests(unittest.TestCase):
             "burn_audio_codec": "copy",
             "burn_audio_bitrate": "192k",
             "audio_match_source_duration": True,
+            "video_tail_extension_policy": "extend",
         }
 
     def run_export(self, settings):
@@ -312,7 +332,7 @@ class TailExportTests(unittest.TestCase):
         self.assertLess(mean_abs_diff(source_last, output_last), 12.0)
         self.assertGreater(mean_abs_diff(output_early, output_last), 40.0)
 
-    def test_dubbed_overrun_within_cap_is_not_truncated(self):
+    def test_dubbed_overrun_within_policy_is_not_truncated(self):
         self.register_speech("speech-dubbed.wav", 3.4, 3.2)
         output, metadata = self.run_export(self.base_settings(audio_mode="dubbed"))
         self.assertEqual(metadata["tail_extension_ms"], 440)
@@ -327,27 +347,69 @@ class TailExportTests(unittest.TestCase):
         info = probe_soundtrack_media(output)
         self.assertAlmostEqual(info["duration"], 3.0, places=1)
 
-    def test_overrun_beyond_cap_is_rejected_with_limit(self):
+    def test_overrun_beyond_legacy_cap_is_extended(self):
         self.register_speech("speech-far.wav", 5.5, 5.3)
-        with self.assertRaisesRegex(ValueError, "Cover up to 2000 ms"):
-            self.handlers.export(
-                {"session_id": self.sid, "settings": self.base_settings()},
-                lambda *_: None,
-                threading.Event(),
-            )
+        output, metadata = self.run_export(
+            {
+                **self.base_settings(),
+                "video_tail_extension_max_ms": 2000,
+            }
+        )
+        self.assertGreater(metadata["tail_extension_ms"], 2000)
+        info = probe_soundtrack_media(output)
+        self.assertGreaterEqual(info["duration"], 5.5 - 0.05)
+        self.assertGreaterEqual(info["audio_duration"], 5.5 - 0.05)
+        self.assertGreater(
+            max(abs(value) for value in decode_audio_tail(output, seconds=0.75)),
+            0.001,
+        )
 
-    def test_strict_zero_cap_rejects_small_overrun(self):
+    def test_ask_policy_warns_before_final_artifact_even_with_legacy_cap(self):
         self.register_speech("speech-strict.wav", 3.4, 3.2)
         settings = {
             **self.base_settings(),
+            "video_tail_extension_policy": "ask",
             "video_tail_extension_max_ms": 0,
         }
-        with self.assertRaisesRegex(ValueError, "Cover up to 0 ms"):
+        with self.assertRaisesRegex(
+            VideoTailExtensionRequired,
+            "This requires reencoding the video",
+        ):
             self.handlers.export(
                 {"session_id": self.sid, "settings": settings},
                 lambda *_: None,
                 threading.Event(),
             )
+        with self.services.database.session() as session:
+            from pandrator.web.models import Artifact
+            from sqlalchemy import select
+
+            self.assertIsNone(
+                session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.session_id == self.sid,
+                        Artifact.role == "export",
+                        Artifact.state == "current",
+                    )
+                )
+            )
+
+    def test_over_30_second_extension_preserves_video_and_speech_tail(self):
+        generated_duration = 34.0
+        self.register_speech("speech-over-30.wav", generated_duration, 33.5)
+        output, metadata = self.run_export(
+            {
+                **self.base_settings(audio_mode="dubbed"),
+                "video_tail_extension_max_ms": 30000,
+            }
+        )
+        info = probe_soundtrack_media(output)
+        self.assertGreater(metadata["tail_extension_ms"], 30000)
+        self.assertGreaterEqual(info["duration"], generated_duration - 0.05)
+        self.assertGreaterEqual(info["audio_duration"], generated_duration - 0.05)
+        source_last, _, _ = decode_frame_rgb(self.source_path, 2.9)
+        output_last, _, _ = decode_frame_rgb(output, info["duration"] - 0.05)
+        self.assertLess(mean_abs_diff(source_last, output_last), 12.0)
 
     def test_resolve_reports_comparable_assembly_digest(self):
         from pandrator.web.workspace import output_assembly_settings_hash
@@ -373,17 +435,25 @@ class TailExportTests(unittest.TestCase):
         response = self.client.put(
             endpoint,
             json={
-                "value": {**current["override"], "video_tail_extension_max_ms": 1500}
+                "value": {
+                    **current["override"],
+                    "video_tail_extension_policy": "extend",
+                }
             },
             headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
         )
         self.assertEqual(response.status_code, 200, response.get_json())
         saved = self.client.get(endpoint).get_json()
-        self.assertEqual(saved["effective"]["video_tail_extension_max_ms"], 1500)
+        self.assertEqual(saved["effective"]["video_tail_extension_policy"], "extend")
         bad = self.client.get(endpoint).get_json()
         rejected = self.client.put(
             endpoint,
-            json={"value": {**bad["override"], "video_tail_extension_max_ms": 99999}},
+            json={
+                "value": {
+                    **bad["override"],
+                    "video_tail_extension_policy": "invalid",
+                }
+            },
             headers={**self.headers, "If-Match": f'"{bad["revision"]}"'},
         )
         self.assertEqual(rejected.status_code, 422, rejected.get_json())

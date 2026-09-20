@@ -119,7 +119,6 @@
     'audio_mode',
     'subtitle_mode',
     'video_transcode',
-    'video_tail_extension_max_ms',
     'burn_video_encoder',
     'burn_video_resolution',
     'burn_video_quality',
@@ -1127,25 +1126,11 @@
                   /></label
                 >{/if}
             </fieldset>
-            {#if audioMode !== 'preserve'}<label class="mt-4 block"
-                >Frozen-tail limit (ms)<input
-                  value={Number(value('video_tail_extension_max_ms', 2000))}
-                  oninput={(event) =>
-                    set(
-                      'video_tail_extension_max_ms',
-                      Number(event.currentTarget.value)
-                    )}
-                  type="number"
-                  min="0"
-                  max="30000"
-                  step="100"
-                  class="field"
-                /><span class="muted mt-1 block text-xs"
-                  >Small voiceover overruns freeze the last frame, which
-                  reencodes the video; larger ones are rejected. 0 keeps the
-                  strict timeline.</span
-                ></label
-              >{/if}
+            {#if audioMode !== 'preserve'}<p class="muted mt-4 text-xs">
+                If speech runs past the video, you can stop the export or freeze
+                the last frame for the full extra duration. Extending the video
+                requires reencoding.
+              </p>{/if}
           </details>
         {/if}
       </div>

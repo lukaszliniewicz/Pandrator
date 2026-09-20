@@ -4573,6 +4573,20 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         g.audit_resource_id = evidence_id
         return jsonify(result)
 
+    @app.post("/api/v1/jobs/<job_id>/video-tail-decision")
+    @require_auth
+    def job_video_tail_decision(job_id: str):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or body.get("action") not in ("stop", "extend"):
+            return error_response("validation_error", "Choose stop or extend.", 422)
+        try:
+            job = workflows.decide_video_tail(job_id, body["action"])
+        except KeyError:
+            return error_response("not_found", "Job not found.", 404)
+        except ValueError as error:
+            return error_response("export_conflict", str(error), 409)
+        return jsonify(_job_payload(job)), 200 if body["action"] == "stop" else 202
+
     @app.post("/api/v1/jobs/<job_id>/cancel")
     @require_auth
     def job_cancel(job_id: str):

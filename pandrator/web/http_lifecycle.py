@@ -250,6 +250,8 @@ class ApiGuards:
             or endpoint in {"job_cancel", "work_cancel", "training_cancel"}
         ):
             return "app.cancel"
+        if endpoint == "job_video_tail_decision":
+            return "app.run"
         if path == "/api/v1/jobs":
             return "app.admin"
         run_markers = (

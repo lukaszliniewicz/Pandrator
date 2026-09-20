@@ -436,7 +436,8 @@ test('Create export keeps the selected audio version when saved effective defaul
   expect(exportPayload).toEqual({
     output: {
       export_mode: 'media',
-      audio_mode: 'mixed'
+      audio_mode: 'mixed',
+      video_tail_extension_policy: 'ask'
     },
     generation_run_id: 'selected-completed-run'
   });
@@ -760,7 +761,8 @@ test('Create export submits ONE durable export request with the pinned run', asy
   expect(exportPayload).toEqual({
     output: {
       export_mode: 'media',
-      audio_mode: 'mixed'
+      audio_mode: 'mixed',
+      video_tail_extension_policy: 'ask'
     },
     generation_run_id: 'completed-run'
   });
@@ -929,7 +931,7 @@ test('Create export requires a completed audio version for a mixed media export'
   expect(assemblyCalls).toBe(0);
 });
 
-test('Frozen-tail limit is saved with the video output profile', async ({
+test('video output replaces the frozen-tail limit with a per-export choice', async ({
   page
 }) => {
   await signIn(page);
@@ -1013,7 +1015,10 @@ test('Frozen-tail limit is saved with the video output profile', async ({
   await page.goto(`/sessions/${session.id}/output`);
   await page.getByLabel('Audio result').selectOption('mixed');
   await page.getByText('Advanced video encoding').click();
-  await page.getByLabel('Frozen-tail limit (ms)').fill('1500');
+  await expect(page.getByLabel('Frozen-tail limit (ms)')).toHaveCount(0);
+  await expect(
+    page.getByText('If speech runs past the video, you can stop the export')
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(page.getByText(/Export tail-exp was submitted/)).toBeVisible({
     timeout: 10_000
@@ -1023,7 +1028,7 @@ test('Frozen-tail limit is saved with the video output profile', async ({
     `/api/v1/sessions/${session.id}/settings/output`
   );
   const savedSettings = await saved.json();
-  expect(savedSettings.override.video_tail_extension_max_ms).toBe(1500);
+  expect(savedSettings.override.video_tail_extension_max_ms).toBeUndefined();
   expect(tailAssemblyCalls).toBe(0);
   expect(tailExportCalls).toBe(1);
 });
@@ -1118,3 +1123,109 @@ test('Run 8 displays merged groups and preserves original/final audio choices', 
     history.getByRole('button', { name: 'Final audio', exact: true })
   ).toHaveAttribute('aria-pressed', 'true');
 });
+
+for (const action of ['stop', 'extend'] as const) {
+  test(`video duration warning can ${action} the export and survives reload`, async ({
+    page
+  }) => {
+    await signIn(page);
+    if (action === 'stop')
+      await page.setViewportSize({ width: 390, height: 844 });
+    const { session } = await createSession(page, 'voiceover');
+    const warning = {
+      id: 'duration-warning-job',
+      kind: 'export.variant',
+      session_id: session.id,
+      status: 'failed',
+      progress: 0.76,
+      created_at: new Date().toISOString(),
+      error_code: 'VideoTailExtensionRequired',
+      error_message:
+        'Generated speech is 35.00 seconds longer than the video. Freeze the last frame and extend the video by 35.04 seconds to keep all speech. This requires reencoding the video.',
+      result_json: {} as Record<string, unknown>
+    };
+    const continuation = {
+      id: 'continued-export-job',
+      kind: 'export.variant',
+      session_id: session.id,
+      status: 'queued',
+      progress: 0,
+      created_at: new Date().toISOString()
+    };
+    let jobs: object[] = [warning];
+    let decisions = 0;
+    let newExportRequests = 0;
+    await page.route('**/api/v1/jobs?limit=500', (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: jobs })
+      })
+    );
+    await page.route(
+      `**/api/v1/sessions/${session.id}/stages/export/run`,
+      (route) => {
+        newExportRequests += 1;
+        return route.abort();
+      }
+    );
+    await page.route(
+      '**/api/v1/jobs/duration-warning-job/video-tail-decision',
+      async (route) => {
+        decisions += 1;
+        expect(route.request().postDataJSON()).toEqual({ action });
+        warning.result_json = {
+          video_tail_decision: action,
+          ...(action === 'extend'
+            ? { continuation_job_id: continuation.id }
+            : {})
+        };
+        jobs = action === 'extend' ? [continuation, warning] : [warning];
+        await route.fulfill({
+          status: action === 'extend' ? 202 : 200,
+          contentType: 'application/json',
+          body: JSON.stringify(action === 'extend' ? continuation : warning)
+        });
+      }
+    );
+    await page.goto(`/sessions/${session.id}/output`);
+    const notice = page
+      .getByRole('alert')
+      .filter({ hasText: '35.00 seconds longer' });
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('35.04 seconds');
+    const stop = page.getByRole('button', { name: 'Stop export', exact: true });
+    const extend = page.getByRole('button', {
+      name: 'Freeze last frame and continue',
+      exact: true
+    });
+    await expect(stop).toBeVisible();
+    await expect(extend).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - innerWidth
+      )
+    ).toBeLessThanOrEqual(1);
+    await page.screenshot({
+      path: `/tmp/pandrator-tail-${action}.png`,
+      fullPage: true
+    });
+    await (action === 'stop' ? stop : extend).click();
+    await expect(
+      page.getByText(
+        action === 'stop'
+          ? 'Export stopped. The prepared speech is available for another export.'
+          : 'Export continuing with the last frame frozen for the full extra duration.'
+      )
+    ).toBeVisible();
+    await expect(stop).toHaveCount(0);
+    await expect(extend).toHaveCount(0);
+    await page.reload();
+    await expect(
+      page.getByText(action === 'stop' ? 'Stopped export' : 'Continued export')
+    ).toBeVisible();
+    await expect(stop).toHaveCount(0);
+    await expect(extend).toHaveCount(0);
+    expect(decisions).toBe(1);
+    expect(newExportRequests).toBe(0);
+  });
+}

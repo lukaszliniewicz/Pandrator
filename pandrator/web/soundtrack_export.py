@@ -19,8 +19,6 @@ from pandrator.logic.dubbing.audio_sync import build_mix_filter_complex
 from .models import Artifact, new_id
 
 SAMPLE_RATE = 48_000
-VIDEO_TAIL_EXTENSION_DEFAULT_MS = 2000
-VIDEO_TAIL_EXTENSION_MAX_MS = 30000
 MIX_KEYS = (
     "mix_source_gain_db",
     "mix_voice_gain_db",
@@ -29,6 +27,10 @@ MIX_KEYS = (
     "mix_attack_ms",
     "mix_release_ms",
 )
+
+
+class VideoTailExtensionRequired(ValueError):
+    """Signal that video export needs explicit approval to extend its tail."""
 
 
 def _executable(name: str) -> str:
@@ -112,29 +114,6 @@ def probe_soundtrack_media(path: Path) -> dict[str, Any]:
     }
 
 
-def video_tail_extension_cap_ms(settings: dict[str, Any] | None) -> int:
-    """Normalize the frozen-tail allowance for voiceover media export.
-
-    Returns an integer from 0 through 30000; 0 keeps the strict timeline with
-    no frame freeze. Unknown or malformed values raise instead of silently
-    widening the export.
-    """
-
-    raw = (settings or {}).get(
-        "video_tail_extension_max_ms", VIDEO_TAIL_EXTENSION_DEFAULT_MS
-    )
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        raise ValueError(
-            "video_tail_extension_max_ms must be an integer from 0 to 30000."
-        )
-    number = raw
-    if not 0 <= number <= VIDEO_TAIL_EXTENSION_MAX_MS:
-        raise ValueError(
-            "video_tail_extension_max_ms must be an integer from 0 to 30000."
-        )
-    return number
-
-
 OVERRUN_TOLERANCE_SECONDS = 0.05
 
 
@@ -158,24 +137,21 @@ def resolve_video_tail_extension_ms(
     fps: float | None,
     settings: dict[str, Any] | None,
 ) -> int:
-    """Return the frozen-tail extension in ms, or 0 when the timeline fits.
+    """Return the frozen-tail extension in ms, or ask before extending video."""
 
-    Raises a clear actionable error when the terminal overrun exceeds the
-    bounded allowance instead of silently clipping speech.
-    """
-
+    policy = (settings or {}).get("video_tail_extension_policy", "ask")
+    if not isinstance(policy, str) or policy not in {"ask", "extend"}:
+        raise ValueError("video_tail_extension_policy must be ask or extend.")
     overrun = generated_duration - reference_duration
     if overrun <= OVERRUN_TOLERANCE_SECONDS:
         return 0
     extension_seconds = ceil_tail_extension_seconds(overrun, fps)
-    allowance_ms = video_tail_extension_cap_ms(settings)
     extension_ms = round(extension_seconds * 1000)
-    if allowance_ms <= 0 or extension_ms > allowance_ms:
-        raise ValueError(
-            f"Generated speech exceeds the recording by {overrun:.2f} seconds. "
-            f"Cover up to {allowance_ms} ms by freezing the last video frame "
-            "(output.video_tail_extension_max_ms), review synchronization, or turn "
-            "off 'Match recording timeline'; speech will not be silently cut."
+    if policy == "ask":
+        raise VideoTailExtensionRequired(
+            f"Generated speech is {overrun:.2f} seconds longer than the video. "
+            f"Freeze the last frame and extend the video by {extension_ms / 1000:.2f} "
+            "seconds to keep all speech. This requires reencoding the video."
         )
     return extension_ms
 

@@ -369,7 +369,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "export_mode": "media",
         "audio_mode": "mixed",
         "audio_match_source_duration": True,
-        "video_tail_extension_max_ms": 2000,
+        "video_tail_extension_policy": "ask",
         "subtitle_mode": "none",
         "subtitle_selection": "translation",
         "subtitle_format": "srt",
@@ -722,17 +722,8 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
 
 def validate_output_settings(value: dict[str, Any]) -> None:
     """Validate stored output overrides without touching unrelated keys."""
-    if "video_tail_extension_max_ms" not in value:
-        return
-    number = value["video_tail_extension_max_ms"]
-    if (
-        isinstance(number, bool)
-        or not isinstance(number, int)
-        or not 0 <= number <= 30000
-    ):
-        raise ValueError(
-            "video_tail_extension_max_ms must be an integer from 0 to 30000."
-        )
+    if value.get("video_tail_extension_policy", "ask") not in ("ask", "extend"):
+        raise ValueError("video_tail_extension_policy must be ask or extend.")
 
 
 class WorkspaceSettingsService:
@@ -1153,7 +1144,7 @@ class WorkspaceSettingsService:
                     for key in (
                         "subtitle_mode",
                         "video_transcode",
-                        "video_tail_extension_max_ms",
+                        "video_tail_extension_policy",
                         "burn_video_encoder",
                         "burn_video_resolution",
                         "burn_video_quality",

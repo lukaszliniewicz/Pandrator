@@ -10988,6 +10988,54 @@
         }
       }
     },
+    "/api/v1/jobs/{jobId}/video-tail-decision": {
+      "post": {
+        "operationId": "decideExportVideoTail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "action": {
+                    "enum": [
+                      "stop",
+                      "extend"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "action"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Export stopped"
+          },
+          "202": {
+            "description": "Export continuing with an extended video"
+          },
+          "409": {
+            "description": "Warning already handled or export not awaiting a decision"
+          }
+        }
+      }
+    },
     "/api/v1/manager/components": {
       "get": {
         "operationId": "listManagerComponents",

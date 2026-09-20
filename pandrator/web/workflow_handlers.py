@@ -11587,8 +11587,8 @@ class WorkflowHandlers:
                     # Freeze math runs against the VIDEO stream duration (not the
                     # container duration). resolve_video_tail_extension_ms is the
                     # single shared computation: 0 when the timeline fits, the
-                    # frame-ceiled extension when bounded, otherwise a clear
-                    # actionable error. Its result is passed to both the video
+                    # frame-ceiled extension when approved, otherwise a clear
+                    # duration warning. Its result is passed to both the video
                     # tail step and the soundtrack master below so neither
                     # double-extends nor clips.
                     reference_duration = reference_info.get(

@@ -17,24 +17,50 @@ from pandrator.logic.dubbing.video_muxing import (
     video_tail_extension_seconds,
 )
 from pandrator.web.soundtrack_export import (
+    VideoTailExtensionRequired,
     resolve_video_tail_extension_ms,
-    video_tail_extension_cap_ms,
 )
 
 
 class TailMathTests(unittest.TestCase):
-    def test_cap_defaults_to_2000_and_accepts_bounds(self):
-        self.assertEqual(video_tail_extension_cap_ms({}), 2000)
-        self.assertEqual(video_tail_extension_cap_ms(None), 2000)
-        self.assertEqual(video_tail_extension_cap_ms({"video_tail_extension_max_ms": 0}), 0)
+    def test_default_policy_asks_for_true_overrun(self):
+        with self.assertRaisesRegex(
+            VideoTailExtensionRequired,
+            r"Generated speech is 5\.00 seconds longer than the video\. "
+            r"Freeze the last frame and extend the video by 5\.04 seconds",
+        ):
+            resolve_video_tail_extension_ms(
+                reference_duration=3.0,
+                generated_duration=8.0,
+                fps=25.0,
+                settings={},
+            )
+
+    def test_extend_policy_has_no_legacy_cap(self):
         self.assertEqual(
-            video_tail_extension_cap_ms({"video_tail_extension_max_ms": 30000}), 30000
+            resolve_video_tail_extension_ms(
+                reference_duration=3.0,
+                generated_duration=8.0,
+                fps=25.0,
+                settings={
+                    "video_tail_extension_policy": "extend",
+                    "video_tail_extension_max_ms": 0,
+                },
+            ),
+            round(5.04 * 1000),
         )
 
-    def test_cap_rejects_out_of_range_and_bools(self):
-        for bad in (-1, 30001, True, False, "2000ms", "abc"):
-            with self.subTest(value=bad), self.assertRaises(ValueError):
-                video_tail_extension_cap_ms({"video_tail_extension_max_ms": bad})
+    def test_invalid_policy_is_rejected_even_when_timeline_fits(self):
+        for bad in (None, "", "askk", 0, [], True):
+            with self.subTest(value=bad), self.assertRaisesRegex(
+                ValueError, r"video_tail_extension_policy must be ask or extend\."
+            ):
+                resolve_video_tail_extension_ms(
+                    reference_duration=3.0,
+                    generated_duration=3.04,
+                    fps=25.0,
+                    settings={"video_tail_extension_policy": bad},
+                )
 
     def test_tail_seconds_ceils_to_frames_plus_one(self):
         # 0.51 s at 25 fps: ceil(12.75) + 1 extra frame = 14 frames.
@@ -59,33 +85,14 @@ class TailMathTests(unittest.TestCase):
             0,
         )
 
-    def test_resolve_covers_small_overrun_within_default_cap(self):
+    def test_extend_policy_covers_small_overrun(self):
         extension = resolve_video_tail_extension_ms(
             reference_duration=3.0,
             generated_duration=3.51,
             fps=25.0,
-            settings={},
+            settings={"video_tail_extension_policy": "extend"},
         )
         self.assertEqual(extension, round(14 / 25 * 1000))
-        self.assertLessEqual(extension, 2000)
-
-    def test_resolve_rejects_overrun_beyond_cap(self):
-        with self.assertRaisesRegex(ValueError, "exceeds the recording"):
-            resolve_video_tail_extension_ms(
-                reference_duration=3.0,
-                generated_duration=8.0,
-                fps=25.0,
-                settings={},
-            )
-
-    def test_resolve_zero_cap_keeps_strict_timeline(self):
-        with self.assertRaisesRegex(ValueError, "exceeds the recording"):
-            resolve_video_tail_extension_ms(
-                reference_duration=3.0,
-                generated_duration=3.51,
-                fps=25.0,
-                settings={"video_tail_extension_max_ms": 0},
-            )
 
 
 class TailCommandTests(unittest.TestCase):
@@ -201,6 +208,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
     def _export_result(self, sid, settings):
         from pandrator.web.models import Artifact
 
+        settings = {"video_tail_extension_policy": "extend", **settings}
         result = self.handlers.export(
             {"session_id": sid, "settings": settings},
             lambda *_: None,
@@ -263,7 +271,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
             reference_duration=reference["duration"],
             generated_duration=generated["duration"],
             fps=reference["fps"],
-            settings={},
+            settings={"video_tail_extension_policy": "extend"},
         )
         self.assertGreater(expected_tail, 0)
         metadata, relative = self._export_result(
@@ -436,13 +444,16 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
         info = probe_soundtrack_media(self.services.paths.managed_path(relative))
         self.assertGreaterEqual(info["duration"], 2.6)
 
-    def test_overrun_beyond_cap_stays_actionable(self):
+    def test_default_ask_warns_before_final_artifact(self):
         sid = self._voiceover_session()
         video = self.services.paths.uploads / "short-source.mp4"
         self._make_video(video, 2)
         self._attach_upload(sid, video)
         self._register_speech(sid, 5.0)
-        with self.assertRaisesRegex(ValueError, "exceeds the recording"):
+        with self.assertRaisesRegex(
+            VideoTailExtensionRequired,
+            "This requires reencoding the video",
+        ):
             self.handlers.export(
                 {
                     "session_id": sid,
@@ -455,14 +466,30 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                 lambda *_: None,
                 threading.Event(),
             )
+        from sqlalchemy import select
+        from pandrator.web.models import Artifact
 
-    def test_strict_zero_cap_rejects_small_overrun(self):
+        with self.services.database.session() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.session_id == sid,
+                        Artifact.role == "export",
+                        Artifact.state == "current",
+                    )
+                )
+            )
+
+    def test_ask_policy_warns_even_when_legacy_cap_is_zero(self):
         sid = self._voiceover_session()
         video = self.services.paths.uploads / "strict-source.mp4"
         self._make_video(video, 2)
         self._attach_upload(sid, video)
         self._register_speech(sid, 2.6)
-        with self.assertRaisesRegex(ValueError, "exceeds the recording"):
+        with self.assertRaisesRegex(
+            VideoTailExtensionRequired,
+            r"Generated speech is .* longer than the video\. .*This requires reencoding",
+        ):
             self.handlers.export(
                 {
                     "session_id": sid,
@@ -470,11 +497,25 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                         "export_mode": "media",
                         "audio_mode": "dubbing_only",
                         "subtitle_mode": "none",
+                        "video_tail_extension_policy": "ask",
                         "video_tail_extension_max_ms": 0,
                     },
                 },
                 lambda *_: None,
                 threading.Event(),
+            )
+        from sqlalchemy import select
+        from pandrator.web.models import Artifact
+
+        with self.services.database.session() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(Artifact.id).where(
+                        Artifact.session_id == sid,
+                        Artifact.role == "export",
+                        Artifact.state == "current",
+                    )
+                )
             )
 
     def test_audio_only_overrun_stays_strict(self):

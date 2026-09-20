@@ -205,6 +205,11 @@
       const runOverride = {
         output: {
           export_mode: exportMode,
+          ...(exportMode === 'media' &&
+          hasSourceVideo &&
+          audioMode !== 'preserve'
+            ? { video_tail_extension_policy: 'ask' }
+            : {}),
           ...(session?.workflow_kind === 'voiceover'
             ? { audio_mode: audioMode }
             : {})
@@ -323,7 +328,56 @@
       deleting = { ...deleting, [artifact.id]: false };
     }
   }
+  function isVideoTailWarning(job: JobRecord) {
+    return (
+      job.status === 'failed' && job.error_code === 'VideoTailExtensionRequired'
+    );
+  }
+  async function decideVideoTail(job: JobRecord, action: 'stop' | 'extend') {
+    if (busy) return;
+    busy = true;
+    error = '';
+    try {
+      const result = await jobApi.decideVideoTail(job.id, action);
+      exportJobs = exportJobs.map((item) =>
+        item.id === job.id
+          ? {
+              ...item,
+              result_json: {
+                ...item.result_json,
+                video_tail_decision: action,
+                ...(action === 'extend'
+                  ? { continuation_job_id: result.id }
+                  : {})
+              }
+            }
+          : item
+      );
+      if (action === 'extend') {
+        exportJobs = [
+          result,
+          ...exportJobs.filter((item) => item.id !== result.id)
+        ].slice(0, 8);
+      }
+      message =
+        action === 'stop'
+          ? 'Export stopped. The prepared speech is available for another export.'
+          : 'Export continuing with the last frame frozen for the full extra duration.';
+      await load();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      busy = false;
+    }
+  }
   function jobLabel(job: JobRecord) {
+    if (isVideoTailWarning(job)) {
+      return job.result_json?.video_tail_decision === 'extend'
+        ? 'Continued'
+        : job.result_json?.video_tail_decision === 'stop'
+          ? 'Stopped'
+          : 'Needs your decision';
+    }
     return job.status === 'running'
       ? 'Running'
       : job.status === 'queued'
@@ -495,10 +549,18 @@
               />{:else if job.status === 'succeeded'}<CheckCircle2
                 class="text-[var(--success)]"
                 size={18}
-              />{:else}<CircleAlert class="text-red-500" size={18} />{/if}
+              />{:else}<CircleAlert
+                class={isVideoTailWarning(job)
+                  ? 'text-[var(--accent)]'
+                  : 'text-red-500'}
+                size={18}
+              />{/if}
             <div class="min-w-0 flex-1">
               <div class="font-semibold">
-                {jobLabel(job)} export
+                {isVideoTailWarning(job) &&
+                !job.result_json?.video_tail_decision
+                  ? 'Export needs your decision'
+                  : `${jobLabel(job)} export`}
                 <span class="muted font-mono text-xs">{job.id.slice(0, 8)}</span
                 >
               </div>
@@ -513,24 +575,45 @@
                 >
                   {progressDetail(job)}
                 </div>{/if}{#if job.error_message}<div
-                  class="mt-1 text-xs text-red-500"
+                  class="mt-1 text-sm leading-6"
+                  class:text-red-500={!isVideoTailWarning(job)}
+                  role={isVideoTailWarning(job) &&
+                  !job.result_json?.video_tail_decision
+                    ? 'alert'
+                    : undefined}
                 >
                   {job.error_message}
                 </div>{/if}
+              {#if isVideoTailWarning(job) && !job.result_json?.video_tail_decision}
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <button
+                    onclick={() => decideVideoTail(job, 'stop')}
+                    disabled={busy}
+                    class="rounded-xl border border-[var(--line)] px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                    >Stop export</button
+                  >
+                  <button
+                    onclick={() => decideVideoTail(job, 'extend')}
+                    disabled={busy}
+                    class="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    >Freeze last frame and continue</button
+                  >
+                </div>
+              {/if}
             </div>
-            <div
-              class="h-1.5 w-32 overflow-hidden rounded-full bg-[var(--line)]"
-              role="progressbar"
-              aria-label={`Export ${job.id.slice(0, 8)} progress`}
-              aria-valuemin="0"
-              aria-valuemax="100"
-              aria-valuenow={progressPercent(job)}
-            >
-              <div
-                class="h-full bg-[var(--accent)] transition-[width]"
-                style={`width:${progressPercent(job)}%`}
-              ></div>
-            </div>
+            {#if !isVideoTailWarning(job)}<div
+                class="h-1.5 w-32 overflow-hidden rounded-full bg-[var(--line)]"
+                role="progressbar"
+                aria-label={`Export ${job.id.slice(0, 8)} progress`}
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow={progressPercent(job)}
+              >
+                <div
+                  class="h-full bg-[var(--accent)] transition-[width]"
+                  style={`width:${progressPercent(job)}%`}
+                ></div>
+              </div>{/if}
           </div>{/each}
       </div>
     </section>{/if}

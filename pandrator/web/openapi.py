@@ -1667,6 +1667,24 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/jobs/{jobId}/video-tail-decision": {
+                "post": {
+                    "operationId": "decideExportVideoTail",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {
+                            "type": "object",
+                            "required": ["action"],
+                            "properties": {"action": {"type": "string", "enum": ["stop", "extend"]}},
+                        }}},
+                    },
+                    "responses": {
+                        "200": {"description": "Export stopped"},
+                        "202": {"description": "Export continuing with an extended video"},
+                        "409": {"description": "Warning already handled or export not awaiting a decision"},
+                    },
+                }
+            },
             "/api/v1/jobs/{jobId}/cancel": {
                 "post": {
                     "operationId": "cancelJob",
