@@ -1,1 +1,0 @@
-import"../chunks/DsnmJJEf.js";import"../chunks/ClOAKEJJ.js";import{a as i,c as m,d as t,r as e}from"../chunks/kpoMfget.js";import{V as p}from"../chunks/Dabua0j5.js";var s=m('<div class="min-h-[30rem]"><!></div>');function f(a){var r=s(),o=t(r);p(o,{}),e(r),i(a,r)}export{f as component};

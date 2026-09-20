@@ -59,7 +59,7 @@
   let useCase = $state('');
   let texture = $state('');
   let collectionId = $state('');
-  let kind = $state('all');
+  let kind = $state('managed');
   let service = $state('');
   let model = $state('');
   let readyOnly = $state(false);
@@ -213,7 +213,7 @@
   onMount(() => {
     service = initialService || route.url.searchParams.get('service') || '';
     model = initialModel || route.url.searchParams.get('model') || '';
-    kind = initialView === 'prebuilt' ? 'provider' : 'all';
+    kind = initialView === 'prebuilt' ? 'provider' : 'managed';
     initialized = true;
     void refreshAuxiliary().catch((caught) => (error = errorMessage(caught)));
     if (initialVoice)
@@ -461,6 +461,7 @@
     auditionBusy = false;
   }
   function clearFilters() {
+    kind = initialView === 'prebuilt' ? 'provider' : 'managed';
     language = '';
     accent = '';
     category = '';
