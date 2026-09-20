@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from ..context import McpRuntime
-from ..errors import NextAction
+from ..errors import NextAction, PandratorMcpError
 from ..results import ToolOutcome
 from ..schemas import (
     CancelWorkInput,
@@ -103,6 +103,18 @@ def get_work(
     else:
         elapsed_seconds = 0.0
     result = dict(result)
+    if arguments.work_type == "manager_operation" and work.state == "succeeded" and getattr(runtime, "application", None) is not None:
+        from .e2e import _safe_tts_service
+
+        try:
+            catalogue = runtime.require_application().tts_catalog(refresh=True)
+            result["tts_catalogue_refresh"] = {
+                "status": "refreshed",
+                "services": [_safe_tts_service(item) for item in catalogue.get("services", []) if item.get("id") == "audio_cpp"],
+            }
+        except PandratorMcpError:
+            # An app restart must not hide the successful durable operation.
+            result["tts_catalogue_refresh"] = {"status": "application_unavailable", "retry_tool": "pandrator_get_tts_catalog"}
     result["wait"] = {
         "requested_seconds": requested_seconds,
         "elapsed_seconds": elapsed_seconds,

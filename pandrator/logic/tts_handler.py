@@ -5844,8 +5844,11 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
         inferred_mode = "hybrid"
     elif "breeze" in normalized:
         inferred_mode = "optional_cloning"
-    else:
+    elif normalized in {"chatterbox", "chatterbox_q8_0"}:
         inferred_mode = "cloning"
+    else:
+        # Do not send reference recordings to an unfamiliar model on a guess.
+        inferred_mode = "unknown"
     if "qwen" in normalized:
         family = "qwen3_tts"
     elif "fish" in normalized:
@@ -5877,6 +5880,18 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
             )
         if not result.get("family") and family:
             result["family"] = family
+        if result.get("voice_mode") == "unknown":
+            live_family = str(result.get("family") or "")
+            task = str(result.get("task") or "")
+            if task in {"clon", "clone"}:
+                result["voice_mode"] = "cloning"
+            elif task in {"vdes", "design"}:
+                result["voice_mode"] = "design"
+            else:
+                modes = {entry["voice_mode"] for entry in AUDIO_CPP_MODEL_CATALOG
+                         if entry.get("family") == live_family}
+                if len(modes) == 1:
+                    result["voice_mode"] = modes.pop()
         return result
     if mode:
         return {"id": model, "family": family, "voice_mode": mode}
@@ -5895,14 +5910,22 @@ def _audio_cpp_language(model: str, language: object, endpoint: dict | None = No
     iso = normalized.split("-", 1)[0]
     metadata = _audio_cpp_model_metadata(model, endpoint or {})
     family = str(metadata.get("family") or "").strip().lower()
-    if family in {"fish_audio_s2", "fish_audio", "voxcpm2", "breeze_tts"}:
+    if family in {"fish_audio_s2", "fish_audio", "voxcpm2", "breeze_tts", "cosyvoice3"}:
         # These v0.7.2 sessions infer language from text; a hint is not consumed.
         return ""
+    if family == "moss_voicegen":
+        names = {"en": "English", "zh": "Chinese", "english": "English", "chinese": "Chinese"}
+        if iso not in names:
+            raise ValueError(f"audio.cpp model '{model}' does not support language '{language}'.")
+        return names[iso]
     if family == "pocket_tts":
         # Pocket's language belongs to the loaded model package, not a request.
-        if model == "pocket_tts_english_q8_0" and iso not in {"en", "english"}:
+        supported = metadata.get("supported_languages") or []
+        requested = canonical.split("-")[0] or iso
+        if supported and requested not in supported:
+            label = "English-only" if supported == ["en"] else "/".join(supported)
             raise ValueError(
-                "The selected PocketTTS package is English-only. "
+                f"The selected PocketTTS package is {label}. "
                 "Select a model package matching the requested language."
             )
         return ""
@@ -5972,6 +5995,11 @@ def _build_audio_cpp_audio_payload(
     is_design = voice_mode == "design"
     is_prebuilt = voice_mode == "prebuilt"
     family = str(metadata.get("family") or "").lower()
+    if voice_mode in {"unknown", "none"}:
+        raise ValueError(
+            f"audio.cpp model '{model}' has no verified speech request contract. "
+            "Refresh the catalogue or choose a documented speech model."
+        )
 
     payload: dict[str, Any] = {
         "model": model,
@@ -5979,7 +6007,7 @@ def _build_audio_cpp_audio_payload(
         "response_format": "wav",
     }
     voice = str(tts_settings.get("speaker") or tts_settings.get("voice") or "").strip()
-    if voice and not is_design and family != "magpie_tts":
+    if voice and not is_design and family not in {"magpie_tts", "neutts"}:
         payload["voice"] = voice
 
     raw_language = str(
@@ -6116,7 +6144,7 @@ def _build_audio_cpp_audio_payload(
             for key, value in options.items()
             if str(key).strip().casefold() not in cloning_only_options
         }
-    if family == "magpie_tts" and voice and not is_design:
+    if family in {"magpie_tts", "neutts"} and voice and not is_design:
         # Magpie consumes its selected preset as an option, not OpenAI's
         # top-level voice field.  A selected voice is authoritative.
         options["voice_id"] = voice
@@ -6124,7 +6152,25 @@ def _build_audio_cpp_audio_payload(
         # Pocket's reviewed clone transcript is a request option.  It must win
         # over any stale value in a legacy raw option bag.
         options["voice_clone_text"] = reference_text
-    linked_reference = isinstance(voice_ref, dict)
+    linked_reference = isinstance(voice_ref, dict) and bool(voice_ref)
+    if family in {"irodori_tts", "moss_voicegen"} and language:
+        options["language"] = payload.pop("language")
+    if family == "moss_voicegen":
+        native_seed = options.get("seed", payload.pop("seed", None))
+        if native_seed is not None:
+            # The native parser uses stoi, then casts to uint32_t. Preserve
+            # all 32 seed bits using its accepted signed decimal spelling.
+            numeric_seed = int(native_seed)
+            options["seed"] = numeric_seed if numeric_seed < 2**31 else numeric_seed - 2**32
+    if family == "cosyvoice3":
+        options["template_name"] = "instruct" if compiled.instructions else "zero_shot"
+    if family == "fireredtts3" and "instruct" in model.casefold():
+        if linked_reference:
+            options["template_name"] = "instruct_tts"
+        else:
+            if not compiled.instructions:
+                raise ValueError("FireRedTTS3 Instruct without reference audio requires a voice description.")
+            options["template_name"] = "voice_design"
     if linked_reference and family == "omnivoice" and not reference_text and not is_design:
         raise ValueError(
             "OmniVoice linked voice references require a reviewed transcript."

@@ -52,8 +52,30 @@ exports are different artifacts; generation does not imply final assembly.
 For deterministic speech-block review, use `pandrator_list_generation_segments`
 to inspect provenance, alignment groups, and the active plan revision. Apply
 only typed immutable topology edits with
-`pandrator_revise_speech_block_plan` (split, merge, or restore), then follow
+`pandrator_revise_speech_block_plan` (split, merge, restore, or resegment), then follow
 its next action to re-list the new revision.
+
+Split and merge preserve exact speaker/narrator spans and delivery markup.
+For a larger repair, use `action=resegment` with 1–100 contiguous `segment_ids`
+in reading order. Choose `max_chars` (40–4,000; default 300), or explicit
+`boundaries`: increasing Unicode code-point offsets into the selected texts
+joined with one space. An empty boundary list merges the range. The range is
+limited to 24,000 characters and must have matching display/speech text and
+speaker, voice and language overrides. Keep chapter headings outside it.
+
+Resegmentation creates an inactive draft with a before/after preview and source
+offset lineage. Inspect that revision, then use `action=restore` with its
+`target_revision_id` to adopt it. Adoption checks that the original plan has
+not changed and the session is idle. Drafts cannot be generated directly.
+This operation changes boundaries, not wording: correct invented punctuation
+separately. Unchanged blocks outside the range retain take lineage; affected
+blocks need generation and fresh performance review. A new performance plan
+can use `copy_from_id` to retain annotations on demonstrably unchanged blocks.
+If trimming would discard a vocal event, the edit is rejected for explicit repair.
+
+Performance previews report the generation revision and source artifact. Verify
+these before generation: creating a later optimized artifact does not select it
+as the generation source automatically.
 
 ## Optional contextual performance
 

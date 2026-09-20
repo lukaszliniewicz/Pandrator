@@ -88,11 +88,20 @@ model request** shows supported, approximated, and unsupported directions and
 the exact compiled input. A successful compilation does not guarantee that a
 speech model will obey every direction.
 
+Preview also reports live model availability, the source artifact and revision,
+and the effective assembly pause. Compilation success does not mean a model
+is installed or that its performance has been heard. Qwen CustomVoice requires
+built-in speakers; it cannot use a cloned cast reference.
+
 ## Long-form and timed generation
 
 Long-form generation keeps a dialogue exchange integral. `dialogue_turn` uses
 the sentence pause; `continuation` avoids an added paragraph pause. Explicit
 paragraph/scene/chapter boundaries use the configured paragraph pause.
+
+These effective pauses are frozen with the generation run and assembly.
+Punctuation-only spans stay in the accepted text but are folded into a nearby
+speakable request, so a closing quote does not become its own narrator take.
 
 A timed annotated cue retains its source timing envelope. Internal voice
 changes do not fabricate subtitle timestamps or create additional visible
@@ -150,3 +159,32 @@ previewing, and adopting do not invoke an LLM or synthesize audio. Generation
 is a separate action. The configured-model analysis endpoints remain available
 for users who explicitly choose them. Existing pSSML drafts remain readable
 and editable alongside XML drafts.
+
+### Choosing an audio.cpp model
+
+Use `pandrator_get_audio_cpp_catalogue` to browse the versioned upstream inventory
+before choosing a package. Start with `recommended_only=true`; narrow by language,
+capability, task category or `commercial_use`. Use the returned `next_offset` to
+page through results. This tool performs no download or activation.
+
+Catalogue membership is separate from installation and the live server's model
+list. Check `package_availability`, model licence, reference audio/transcript
+requirements and `pandrator_features`. Unknown licences remain unverified.
+Upstream capabilities describe the native model; Pandrator request support does
+not certify acoustic quality, timing or successful synthesis on this host.
+
+The current installer exposes digest-verified speech packages. Non-speech tasks,
+explicit editing variants, gated/unresolved downloads and unsupported package
+layouts remain visible for discovery. Speech editing is not implemented. Use the
+Manager model plan/apply workflow to install packages, then refresh the live TTS
+catalogue before selecting the model for a session. Manager status can include a
+truncated convenience model list; the catalogue tool is the complete paginated
+view.
+
+Directions are model-specific. Qwen Base does not accept natural-language
+performance directions; CustomVoice 1.7B and VoiceDesign do. Turbo uses
+`max_new_tokens`, not `max_tokens`. FireRed Instruct chooses voice design when no
+reference is supplied; its cloning route uses the instruction slot for the
+reference transcript, so additional delivery directions are reported unsupported.
+Supertonic has no verified vocal-event syntax in audio.cpp 0.8.1. Never insert
+invented tags or pass editing/path/reference controls through scalar tuning.

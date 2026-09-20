@@ -284,12 +284,13 @@ def register_performance_routes(app, context) -> None:
                         prepare_tts_provider_switch,
                     )
 
-                    runtime = adapt_runtime_settings(
+                    switched = adapt_runtime_settings(
                         "tts",
                         prepare_tts_provider_switch(
                             runtime, {"service": payload.service}
                         ),
                     )
+                    runtime = {**runtime, **switched}
                 if payload.model is not None:
                     runtime.update(model=payload.model, xtts_model=payload.model)
                 for name, value in (
@@ -309,8 +310,7 @@ def register_performance_routes(app, context) -> None:
                     raise KeyError(payload.segment_id)
                 if unit.get("language"):
                     runtime.update(language=unit["language"])
-                return jsonify(
-                    plans.preview_segment(
+                result = plans.preview_segment(
                         session,
                         plan,
                         payload.segment_id,
@@ -322,7 +322,31 @@ def register_performance_routes(app, context) -> None:
                         else None,
                         speech_xml=payload.speech_xml,
                     )
-                )
+                result["generation_source"] = {
+                    "plan_revision_id": plan.plan_revision_id,
+                    "source_artifact_id": (session.get(m.GenerationPlanRevision, plan.plan_revision_id).settings_json or {}).get("_source_artifact_id"),
+                }
+                from .speech_boundaries import boundary_pause
+                row = session.get(m.GenerationSegment, payload.segment_id)
+                boundary = (result.get("speech_structure") or {}).get("boundary_after")
+                audio = services.workspace_settings.get_in_session(session, session_id, "audio")["effective"]
+                result["assembly_boundary"] = {
+                    "boundary_after": boundary,
+                    "stored_silence_after_ms": row.silence_after_ms,
+                    "effective_silence_after_ms": boundary_pause(boundary, row.silence_after_ms, audio),
+                }
+                model = result["capabilities"].get("model")
+                backend = result["capabilities"].get("backend")
+            catalogue, _ = services.tts_catalogue.snapshot(refresh=True)
+            service = next((item for item in catalogue.get("services", []) if item.get("id") == backend), None)
+            ready = bool(service and service.get("available") and model in (service.get("models") or []))
+            result["readiness"] = {
+                "model_available": ready,
+                "status": "ready" if ready else "unavailable_or_unverified",
+                "compilation_only": True,
+                "acoustic_compliance": "not_tested",
+            }
+            return jsonify(result)
         except (ValueError, KeyError, RevisionConflict) as error:
             return failure(error)
 

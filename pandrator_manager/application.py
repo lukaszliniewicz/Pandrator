@@ -272,6 +272,7 @@ class ManagerApplication:
             desired=desired,
             expected_revision=revision if expected_revision is None else expected_revision,
             actual_revision=revision,
+            persisted_desired={key: value[0] for key, value in self.store.component_records().items()},
         )
         if persist:
             self.store.save_plan(plan)

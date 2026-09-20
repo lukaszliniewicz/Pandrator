@@ -2215,6 +2215,43 @@ class ApplicationClient:
             parameters={"refresh": "true"} if refresh else None,
         )
 
+    def audio_cpp_catalogue(
+        self,
+        *,
+        category: str = "",
+        family: str = "",
+        query: str = "",
+        language: str = "",
+        capability: str = "",
+        commercial_use: str = "",
+        recommended_only: bool = False,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        parameters: dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "recommended_only": "true" if recommended_only else "false",
+        }
+        parameters.update(
+            {
+                key: value
+                for key, value in {
+                    "category": category,
+                    "family": family,
+                    "query": query,
+                    "language": language,
+                    "capability": capability,
+                    "commercial_use": commercial_use,
+                }.items()
+                if value != ""
+            }
+        )
+        return self._request_json(
+            "/api/v1/services/audio-cpp/catalogue",
+            parameters=parameters,
+        )
+
     def list_generation_runs(
         self, session_id: str, *, limit: int | None = None, include_repairs: bool | None = None
     ) -> dict[str, Any]:
@@ -2332,6 +2369,9 @@ class ApplicationClient:
         left_segment_id: str | None = None,
         right_segment_id: str | None = None,
         target_revision_id: str | None = None,
+        segment_ids: list[str] | None = None,
+        boundaries: list[int] | None = None,
+        max_chars: int | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -2345,6 +2385,9 @@ class ApplicationClient:
             "left_segment_id": left_segment_id,
             "right_segment_id": right_segment_id,
             "target_revision_id": target_revision_id,
+            "segment_ids": segment_ids,
+            "boundaries": boundaries,
+            "max_chars": max_chars,
         }
         body.update({key: value for key, value in optional.items() if value is not None})
         return self._request_json(

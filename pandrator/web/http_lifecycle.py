@@ -488,7 +488,7 @@ class ApiGuards:
                 "validation_error",
                 "The request payload is invalid.",
                 422,
-                error.errors(include_input=False),
+                error.errors(include_input=False, include_context=False),
             )
 
         @app.errorhandler(HTTPException)

@@ -14,6 +14,7 @@
   import { errorMessage } from './errors';
   import { modalFocus } from './modal-focus';
   import AudioPlayer from './AudioPlayer.svelte';
+  import { languageName, readable } from './audio-cpp-catalogue';
   import { VOICE_DESIGN_SAMPLES } from './voice-design-samples';
 
   let {
@@ -60,10 +61,19 @@
       (service) => service.id === 'audio_cpp' || service.adapter === 'audio_cpp'
     )
   );
-  const designModelNames: Record<string, string> = {
+  const designModelNames: Record<string, string> = $derived({
     qwen3_tts_1_7b_voicedesign_q8_0: 'Qwen3 VoiceDesign',
-    breeze_tts_2_q8_0: 'BreezeTTS 2'
-  };
+    breeze_tts_2_q8_0: 'BreezeTTS 2',
+    ...Object.fromEntries(
+      (audioCpp?.model_catalog ?? [])
+        .filter(
+          (model) =>
+            model.catalogue_info?.pandrator_features?.voice_design ===
+            'documented'
+        )
+        .map((model) => [model.id, model.label ?? model.id])
+    )
+  });
   const designLanguageNames: Record<string, string> = {
     en: 'English',
     zh: 'Mandarin Chinese',
@@ -84,10 +94,23 @@
     (audioCpp?.model_catalog ?? []).find((model) => model.id === designModel)
   );
   const designLanguages = $derived(
-    designModel === 'breeze_tts_2_q8_0'
-      ? ['en', 'zh']
-      : Object.keys(designLanguageNames)
+    designInfo?.supported_languages?.length
+      ? designInfo.supported_languages.filter((code) =>
+          /^[a-z]{2,3}(-[A-Za-z0-9]+)*$/.test(code)
+        )
+      : designModel === 'breeze_tts_2_q8_0'
+        ? ['en', 'zh']
+        : Object.keys(designLanguageNames)
   );
+  const languageChoices = $derived({
+    ...designLanguageNames,
+    ...Object.fromEntries(
+      designLanguages.map((code) => [
+        code,
+        designLanguageNames[code] ?? languageName(code)
+      ])
+    )
+  });
   $effect(() => {
     if (!designModels.includes(designModel)) {
       designModel = designModels.includes('qwen3_tts_1_7b_voicedesign_q8_0')
@@ -101,7 +124,11 @@
   let voiceName = $state('');
   let language = $state('en');
   const designLanguageProblem = $derived(
-    Boolean(designModel && !designLanguages.includes(language))
+    Boolean(
+      designModel &&
+      !designInfo?.catalogue_info?.unlisted_languages &&
+      !designLanguages.includes(language)
+    )
   );
   const canGenerate = $derived(
     Boolean(
@@ -486,7 +513,7 @@
         </div>{:else if !designModel}<div
           class="mt-5 rounded-xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-4 py-3 text-sm"
         >
-          Install Qwen3 VoiceDesign or BreezeTTS 2 under audio.cpp in the
+          Install a model with voice-design support under audio.cpp in the
           Manager before designing a voice.
           <a
             href="/providers?tab=speech&speech=local#component-audio_cpp"
@@ -517,9 +544,7 @@
                 >Install a voice-design model</option
               >{/if}
             {#each designModels as model}<option value={model}
-                >{designModelNames[model]}{model === 'breeze_tts_2_q8_0'
-                  ? ' · English and Mandarin Chinese'
-                  : ' · 10 languages'}</option
+                >{designModelNames[model]}</option
               >{/each}
           </select>
         </label>
@@ -555,24 +580,37 @@
             >
           </div>{/if}
         <label class="text-sm font-semibold"
-          >Language<select
-            bind:value={language}
-            onchange={chooseLanguage}
-            disabled={generating || saving}
-            class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
-          >
-            {#if !(language in designLanguageNames)}<option
-                value={language}
-                disabled>{language} · unsupported language</option
-              >{/if}
-            {#each Object.entries(designLanguageNames) as [code, name]}<option
-                value={code}
-                disabled={!designLanguages.includes(code)}
-                >{name}{!designLanguages.includes(code)
-                  ? ' · unsupported by this model'
-                  : ''}</option
-              >{/each}
-          </select></label
+          >Language{#if designInfo?.catalogue_info?.unlisted_languages}
+            <input
+              aria-label="Language code"
+              bind:value={language}
+              onchange={chooseLanguage}
+              maxlength="40"
+              placeholder="e.g. en, pl, ja"
+              class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+            />
+            <span class="muted mt-1 block text-xs font-normal"
+              >Upstream reports broad language coverage without a complete
+              verified list. Enter a language code and review the preview.</span
+            >
+          {:else}<select
+              bind:value={language}
+              onchange={chooseLanguage}
+              disabled={generating || saving}
+              class="mt-1 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 font-normal"
+            >
+              {#if !(language in languageChoices)}<option
+                  value={language}
+                  disabled>{language} · unsupported language</option
+                >{/if}
+              {#each Object.entries(languageChoices) as [code, name]}<option
+                  value={code}
+                  disabled={!designLanguages.includes(code)}
+                  >{name}{!designLanguages.includes(code)
+                    ? ' · unsupported by this model'
+                    : ''}</option
+                >{/each}
+            </select>{/if}</label
         >
         <div class="text-sm font-semibold">
           <label
@@ -760,9 +798,9 @@
         class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-5"
       >
         <p class="muted max-w-lg text-xs leading-relaxed">
-          {designModel === 'breeze_tts_2_q8_0'
-            ? 'BreezeTTS 2 is licensed for research and non-commercial use.'
-            : 'Qwen3 VoiceDesign is licensed under Apache-2.0.'}
+          Model licence: {designInfo?.license?.name ?? 'Not verified'}. {readable(
+            designInfo?.catalogue_info?.license?.commercial_use
+          )}.
           {#if designInfo?.license?.url}<a
               href={designInfo.license.url}
               target="_blank"

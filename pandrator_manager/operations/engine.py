@@ -14,6 +14,10 @@ from pathlib import Path
 from ..components import ComponentRegistry
 from ..context import ManagerContext
 from ..errors import CancellationRequested, ManagerError
+from ..model_maintenance import (
+    ensure_application_quiescent_for_model_maintenance,
+    plan_touches_audio_cpp,
+)
 from ..models import (
     TERMINAL_OPERATION_STATES,
     OperationRecord,
@@ -206,6 +210,13 @@ class OperationEngine:
         self.store.update_operation(operation)
         self._event(operation, "operation.running", {})
         try:
+            if plan_touches_audio_cpp(plan):
+                # This check is deliberately inside the existing rollback
+                # boundary.  A manager operation is durable before the app
+                # check, so any refusal leaves no task execution behind.
+                ensure_application_quiescent_for_model_maintenance(
+                    self.context.layout
+                )
             for original_record in task_records:
                 current_records = self.store.operation_tasks(operation.id)
                 task_record = next(

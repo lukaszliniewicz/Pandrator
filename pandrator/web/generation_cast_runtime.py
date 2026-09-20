@@ -71,6 +71,15 @@ def resolve_binding(session, binding: dict, settings: dict) -> dict:
         )
     voice_name = binding.get("voice") or ""
     managed_id = binding.get("voice_id")
+    capability = resolve_capabilities(settings)
+    if service == "audio_cpp" and capability.get("voice_mode") in {"prebuilt", "design"} and managed_id:
+        raise ValueError("This model cannot use a cloned cast reference. Choose its built-in speakers or a cloning-capable model.")
+    if service == "audio_cpp" and capability.get("voice_mode") == "prebuilt" and voice_name:
+        from pandrator.logic.tts_handler import get_service_config
+        config = get_service_config(settings, service) or {}
+        allowed = (config.get("voice_catalogues") or {}).get(model) or []
+        if allowed and voice_name not in allowed:
+            raise ValueError(f"Cast voice '{voice_name}' is not a built-in speaker for {model}.")
     if managed_id:
         voice = session.get(m.Voice, managed_id)
         if voice is None:

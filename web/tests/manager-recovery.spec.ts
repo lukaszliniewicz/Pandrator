@@ -43,6 +43,7 @@ type ManagerComponent = {
       license_url?: string | null;
       usage_note?: string;
       estimated_download_bytes?: number | null;
+      model_info?: import('../src/lib/audio-cpp-catalogue').AudioCppModelInfo;
     }>;
     languages: string[];
     estimated_download_bytes: number;
@@ -505,7 +506,7 @@ test('Pandrator sends selected Qwen and Fish install options to the manager', as
 
 test('Pandrator installs selected audio.cpp models and mutes absent compatibility engines', async ({
   page
-}) => {
+}, testInfo) => {
   const audioCpp = component('audio_cpp', 'audio.cpp', 'tts.audio_cpp');
   audioCpp.desired.present = false;
   audioCpp.desired.compute = 'auto';
@@ -519,6 +520,14 @@ test('Pandrator installs selected audio.cpp models and mutes absent compatibilit
       id: 'qwen3_tts_1_7b_base_q8_0',
       label: 'Qwen3-TTS 1.7B Base Q8_0',
       description: 'Reference-audio cloning.',
+      model_info: {
+        id: 'qwen3_tts_1_7b_base_q8_0',
+        label: 'Qwen3-TTS 1.7B Base Q8_0',
+        family: 'qwen3_tts',
+        recommended_for: 'Multilingual cloned narration',
+        supported_languages: ['en', 'pl'],
+        license: { name: 'Apache-2.0', commercial_use: 'permitted' }
+      },
       license_name: 'Apache-2.0',
       license_url: 'https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base'
     },
@@ -526,6 +535,11 @@ test('Pandrator installs selected audio.cpp models and mutes absent compatibilit
       id: 'fireredtts3_base_q8_0',
       label: 'FireRedTTS3 Base Q8_0',
       description: 'Experimental multilingual cloning.',
+      model_info: {
+        id: 'fireredtts3_base_q8_0',
+        label: 'FireRedTTS3 Base Q8_0',
+        family: 'fireredtts3'
+      },
       license_name: 'Apache-2.0'
     }
   ];
@@ -587,6 +601,25 @@ test('Pandrator installs selected audio.cpp models and mutes absent compatibilit
   await page.getByRole('button', { name: /Compatibility backends/ }).click();
   await expect(page.locator('#component-qwen_tts')).toBeVisible();
 
+  await expect(
+    audioCard.getByRole('checkbox', { name: /FireRedTTS3 Base Q8_0/ })
+  ).toHaveCount(0);
+  await audioCard.getByLabel('Recommended and selected packages').uncheck();
+  await audioCard.getByLabel('Find a package').fill('FireRed');
+  await expect(
+    audioCard.getByRole('checkbox', { name: /Qwen3-TTS/ })
+  ).toHaveCount(0);
+  await audioCard.getByLabel('Find a package').fill('');
+  await audioCard
+    .getByText('Languages, licence and controls', { exact: true })
+    .first()
+    .click();
+  await expect(
+    audioCard.getByText('English, Polish', { exact: false })
+  ).toBeVisible();
+  await audioCard.screenshot({
+    path: testInfo.outputPath('audio-model-installation.png')
+  });
   await audioCard
     .getByRole('checkbox', { name: /FireRedTTS3 Base Q8_0/ })
     .check();

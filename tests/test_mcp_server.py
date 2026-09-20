@@ -115,6 +115,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_subtitle_evidence",
                         "pandrator_get_system_status",
                         "pandrator_get_target_status",
+                        "pandrator_get_audio_cpp_catalogue",
                         "pandrator_get_tts_catalog",
                         "pandrator_get_voice_capabilities",
                         "pandrator_get_voice_catalog",
@@ -794,6 +795,46 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 "pandrator_create_dispatch_run",
                 {tool.name for tool in listed.tools},
             )
+            by_name = {tool.name: tool for tool in listed.tools}
+            topology_schema = by_name["pandrator_revise_speech_block_plan"].input_schema
+            self.assertIn("resegment", topology_schema["properties"]["action"]["enum"])
+            self.assertIn("boundaries", topology_schema["properties"])
+            catalogue_schema = by_name["pandrator_get_audio_cpp_catalogue"].input_schema
+            self.assertEqual(
+                {
+                    "category",
+                    "family",
+                    "query",
+                    "language",
+                    "capability",
+                    "commercial_use",
+                    "recommended_only",
+                    "limit",
+                    "offset",
+                },
+                set(catalogue_schema["properties"]),
+            )
+            self.assertEqual(160, catalogue_schema["properties"]["query"]["maxLength"])
+            self.assertEqual(
+                ["", "permitted", "noncommercial", "conditional", "unknown"],
+                catalogue_schema["properties"]["commercial_use"]["enum"],
+            )
+            self.assertEqual(
+                "boolean",
+                catalogue_schema["properties"]["recommended_only"]["type"],
+            )
+            self.assertEqual(1, catalogue_schema["properties"]["limit"]["minimum"])
+            self.assertEqual(100, catalogue_schema["properties"]["limit"]["maximum"])
+            self.assertEqual(0, catalogue_schema["properties"]["offset"]["minimum"])
+            self.assertEqual(10_000, catalogue_schema["properties"]["offset"]["maximum"])
+            model_schema = by_name["pandrator_plan_component_change"].input_schema
+            Draft202012Validator(model_schema).validate({
+                "kind": "install", "expected_revision": 0,
+                "idempotency_key": "model-add-test",
+                "components": [{"component_id": "audio_cpp", "options": {
+                    "add_models": ["fish_audio_s2_pro_q8_0"],
+                }}],
+            })
 
 
 if __name__ == "__main__":

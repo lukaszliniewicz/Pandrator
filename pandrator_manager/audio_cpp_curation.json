@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-09-20",
+  "families": {
+    "qwen3_tts": {
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "commercial_use": "permitted"
+      },
+      "supported_languages": [
+        "zh",
+        "en",
+        "ja",
+        "ko",
+        "de",
+        "fr",
+        "ru",
+        "pt",
+        "es",
+        "it"
+      ],
+      "reference_text": "recommended",
+      "language_note": "Ten documented languages; voice and accent coverage vary by variant."
+    },
+    "breeze_tts": {
+      "license": {
+        "name": "BreezeBlue Research and Non-Commercial License 1.1",
+        "url": "https://huggingface.co/BreezeBlue/Breeze-TTS-2",
+        "commercial_use": "noncommercial"
+      },
+      "supported_languages": [
+        "zh",
+        "en"
+      ],
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "required_for_cloning",
+      "upstream_features": {
+        "voice_design": true,
+        "instructions": true,
+        "vocal_events": true
+      },
+      "language_note": "English and Mandarin Chinese. Cloning requires a matching reference transcript."
+    },
+    "fish_audio": {
+      "license": {
+        "name": "Fish Audio Research License",
+        "url": "https://huggingface.co/fishaudio/s2-pro",
+        "commercial_use": "noncommercial"
+      },
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "recommended",
+      "upstream_features": {
+        "instructions": true,
+        "emotion_control": true,
+        "vocal_events": true
+      },
+      "language_note": "Upstream reports 80+ languages. Runtime examples concentrate on English and Chinese; equal quality across languages is not established."
+    },
+    "chatterbox": {
+      "license": {
+        "name": "MIT",
+        "url": "https://huggingface.co/ResembleAI/chatterbox",
+        "commercial_use": "permitted"
+      },
+      "reference_text": "not_used",
+      "language_note": "Languages advertised by the pinned audio.cpp route; newer upstream Chatterbox variants may differ."
+    },
+    "chatterbox_turbo": {
+      "license": {
+        "name": "MIT",
+        "url": "https://huggingface.co/ResembleAI/chatterbox-turbo",
+        "commercial_use": "permitted"
+      },
+      "supported_languages": [
+        "en"
+      ],
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": false,
+        "voice_design": false,
+        "instructions": false,
+        "emotion_control": false,
+        "vocal_events": true
+      },
+      "language_note": "English only. The audio.cpp package uses its embedded voice and rejects cloning references."
+    },
+    "supertonic": {
+      "license": {
+        "name": "OpenRAIL-M",
+        "url": "https://huggingface.co/Supertone/supertonic-3",
+        "commercial_use": "conditional"
+      },
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": false,
+        "voice_design": false,
+        "vocal_events": false
+      },
+      "language_note": "31 documented languages and ten preset voices. Review the licence use restrictions."
+    },
+    "pocket_tts": {
+      "license": {
+        "name": "CC-BY-4.0",
+        "url": "https://huggingface.co/kyutai/pocket-tts",
+        "commercial_use": "permitted_with_attribution"
+      },
+      "voice_mode": "hybrid",
+      "reference_audio": "optional",
+      "reference_text": "optional",
+      "language_note": "Language belongs to the selected package. Source weights may require accepting upstream access terms."
+    },
+    "voxcpm2": {
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/openbmb/VoxCPM2",
+        "commercial_use": "permitted"
+      },
+      "reference_audio": "optional",
+      "reference_text": "recommended",
+      "upstream_features": {
+        "instructions": true,
+        "voice_design": true
+      },
+      "language_note": "Upstream lists 30 languages and Chinese dialects; prompt conventions affect delivery.",
+      "voice_mode": "optional_cloning"
+    },
+    "magpie_tts": {
+      "license": {
+        "name": "NVIDIA Open Model License",
+        "url": "https://huggingface.co/nvidia/magpie_tts_multilingual_357m",
+        "commercial_use": "conditional"
+      },
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": false
+      },
+      "language_note": "Use the language coverage of the installed release; newer upstream Magpie cards describe different revisions."
+    },
+    "omnivoice": {
+      "license": {
+        "name": "CC-BY-NC-4.0 (weights)",
+        "url": "https://huggingface.co/k2-fsa/OmniVoice",
+        "commercial_use": "noncommercial"
+      },
+      "reference_audio": "optional",
+      "reference_text": "required_for_linked_reference",
+      "upstream_features": {
+        "voice_design": true,
+        "instructions": true,
+        "vocal_events": true
+      },
+      "language_note": "Upstream claims 646+ languages; per-language quality is not independently verified here. Streaming is chunked rather than native continuous generation.",
+      "voice_mode": "optional_cloning",
+      "unlisted_languages": true
+    },
+    "fireredtts3": {
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/FireRedTeam/FireRedTTS3",
+        "commercial_use": "permitted"
+      },
+      "reference_text": "recommended",
+      "language_note": "Cloning and voice design use different templates. With a reference recording, audio.cpp 0.8.1 uses the instruction slot for its transcript; additional delivery directions are unavailable.",
+      "supported_languages": [
+        "zh",
+        "en",
+        "yue",
+        "ja",
+        "ko",
+        "es",
+        "fr",
+        "ru",
+        "ar",
+        "tr",
+        "id",
+        "pt",
+        "it",
+        "nl",
+        "vi",
+        "de",
+        "uk",
+        "th",
+        "pl",
+        "ro",
+        "el",
+        "cs",
+        "fi",
+        "hi"
+      ]
+    },
+    "kokoro_tts": {
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/hexgrad/Kokoro-82M",
+        "commercial_use": "permitted"
+      },
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "language_note": "Preset voices and language-specific phonemization; voice IDs must match the selected language."
+    },
+    "irodori_tts": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "not_used",
+      "language_note": "Japanese only. Native caption directions depend on checkpoint support and are not yet translated by Pandrator."
+    },
+    "cosyvoice3": {
+      "reference_text": "required_for_cloning",
+      "language_note": "Language is inferred from text by this audio.cpp route. Instructions select the instruct template."
+    }
+  },
+  "models": {
+    "qwen3_tts_1_7b_base_q8_0": {
+      "recommended_for": "Multilingual cloned narration",
+      "description": "Clone a reference voice in ten languages. Choose CustomVoice or an expressive model when delivery instructions matter."
+    },
+    "qwen3_tts_0_6b_base_q8_0": {
+      "recommended_for": "Smaller Qwen cloning",
+      "description": "The smaller Qwen Base variant for reference-voice narration. It still has a sizeable tokenizer and model download."
+    },
+    "qwen3_tts_1_7b_customvoice_q8_0": {
+      "recommended_for": "Directed speech with preset voices",
+      "description": "Nine built-in voices with natural-language delivery instructions. Existing cloned cast references must be reassigned.",
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "commercial_use": "permitted"
+      }
+    },
+    "qwen3_tts_1_7b_voicedesign_q8_0": {
+      "recommended_for": "Create a voice from a description",
+      "description": "Describe a voice and synthesize a sample without reference audio. Save a chosen sample for a stable reusable voice.",
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        "commercial_use": "permitted"
+      }
+    },
+    "breeze_tts_2_q8_0": {
+      "recommended_for": "Directed English or Mandarin speech",
+      "description": "Natural-language direction with optional cloning. A matching reference transcript is required for cloning; model weights have noncommercial terms."
+    },
+    "fish_audio_s2_pro_q8_0": {
+      "recommended_for": "Expressive speech and vocal events",
+      "description": "Free-form delivery tags and vocal events, with optional reference voices. Large download; commercial use needs a separate licence."
+    },
+    "chatterbox_turbo_q8_0": {
+      "recommended_for": "Fast English with an embedded voice",
+      "description": "A compact distilled English model with documented vocal-event tags and an embedded voice. Custom voice cloning is unavailable in this audio.cpp route."
+    },
+    "supertonic_3_q8_0": {
+      "recommended_for": "Compact multilingual preset speech",
+      "description": "A small model with 31 languages and ten preset voices. Suitable as a starting point when cloning is unnecessary."
+    },
+    "pocket_tts_english_q8_0": {
+      "recommended_for": "Small English model for CPU use",
+      "description": "A compact English model with preset voices and cloning. A useful starting point on machines with limited GPU memory."
+    },
+    "kokoro_82m_q8_0": {
+      "recommended_for": "Lightweight multilingual preset voices",
+      "description": "Small preset-voice synthesis with language-specific voice choices. No cloning or natural-language voice design."
+    }
+  }
+}

@@ -133,6 +133,44 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
+    def test_continuation_markup_removes_stored_pause_in_real_wav(self):
+        ids = self._plan_with_takes()
+        with self.database.session() as session:
+            row = session.get(GenerationSegment, ids[0])
+            row.speech_plan_json = {"speech_xml": f'<segment id="{row.id}" boundary_after="continuation">{row.text}</segment>'}
+            row.silence_after_ms = 700
+        queued = self.generation.create_assembly(self.record.id, run_override={"output": {"format": "wav"}})
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event(),
+        )
+        _artifact, output_path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+        self.assertEqual(240, len(AudioSegment.from_file(output_path)))
+
+    def test_inline_export_assembly_uses_run_frozen_pause(self):
+        from pandrator.web.speech_boundaries import freeze_boundaries
+
+        ids = self._plan_with_takes()
+        with self.database.session() as session:
+            row = session.get(GenerationSegment, ids[0])
+            row.speech_plan_json = {"speech_xml": f'<segment id="{row.id}" boundary_after="continuation">{row.text}</segment>'}
+            snapshot = {}
+            freeze_boundaries(session, row.plan_revision_id, snapshot)
+            run = GenerationRun(session_id=self.record.id, plan_revision_id=row.plan_revision_id, sequence_number=1, status="completed", settings_snapshot_json=snapshot)
+            session.add(run)
+            session.flush()
+            run_id = run.id
+            row.silence_after_ms = 700
+            for take in session.scalars(select(AudioTake)):
+                take.generation_run_id = run_id
+        prepared = self.generation.prepare_assembly(self.record.id, run_override={"output": {"format": "wav"}})
+        artifact_id = WorkflowHandlers(self.database, self.paths)._ensure_export_generation_assembly(
+            session_id=self.record.id, generation_run_id=run_id,
+            resolved_settings_snapshot=prepared["snapshot"],
+            progress=lambda *_args: None, cancel_event=threading.Event(),
+        )
+        _artifact, output_path = ArtifactService(self.database, self.paths).resolve(artifact_id)
+        self.assertEqual(240, len(AudioSegment.from_file(output_path)))
+
     def _plan_with_takes(self):
         plan = self.generation.create_plan(
             self.record.id,

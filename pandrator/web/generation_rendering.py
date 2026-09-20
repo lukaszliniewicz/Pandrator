@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any
+import unicodedata
 
 from pydub import AudioSegment
 
@@ -71,8 +72,21 @@ class _Group:
         return "".join(item.span.text for item in self.items)
 
     @property
+    def anchor(self) -> _PlannedSpan:
+        for item in self.items:
+            if _is_speakable_text(item.span.text):
+                return item
+        return self.items[0]
+
+    @property
     def voice_key(self) -> tuple[tuple[str, str], ...]:
-        return self.items[0].voice_key
+        return self.anchor.voice_key
+
+
+def _is_speakable_text(text: str) -> bool:
+    """Whether text contains a Unicode letter or number for a provider."""
+
+    return any(unicodedata.category(character)[0] in {"L", "N"} for character in text)
 
 
 def _control_values(
@@ -223,16 +237,16 @@ def _groups(planned: list[_PlannedSpan]) -> list[_Group]:
             initial.append(_Group([item]))
     if not initial:
         return []
-    non_whitespace = [
-        index for index, group in enumerate(initial) if group.text.strip()
-    ]
-    if not non_whitespace:
-        return initial
+    if not any(_is_speakable_text(group.text) for group in initial):
+        raise ValueError(
+            "Speech segment contains no speakable letter or number text; "
+            "punctuation-only input cannot be synthesized."
+        )
 
     folded: list[_Group] = []
     pending: list[_PlannedSpan] = []
     for group in initial:
-        if group.text.strip():
+        if _is_speakable_text(group.text):
             if pending:
                 group.items = pending + group.items
                 pending = []
@@ -412,6 +426,16 @@ def build_render_parts(
         parsed = _synthetic_markup(
             text, source_speaker=source_speaker, settings=settings
         )
+    if not any(_is_speakable_text(span.text) for span in parsed.spans):
+        if parsed.events:
+            raise ValueError(
+                "Speech segment contains vocal events but no speakable letter or "
+                "number text; event-only rendering is unsupported."
+            )
+        raise ValueError(
+            "Speech segment contains no speakable letter or number text; "
+            "punctuation-only input cannot be synthesized."
+        )
     performance_enabled = bool(settings.get("performance_enabled", True))
     casting_enabled = bool(settings.get("casting_enabled", False))
     planned: list[_PlannedSpan] = []
@@ -445,7 +469,8 @@ def build_render_parts(
         raise ValueError("tts_context_mode must be off, before, or both")
     result: list[dict[str, Any]] = []
     for index, group in enumerate(groups):
-        group_settings = deepcopy(group.items[0].settings)
+        anchor = group.anchor
+        group_settings = deepcopy(anchor.settings)
         _project_performance(
             group_settings,
             parsed=parsed,
@@ -472,7 +497,7 @@ def build_render_parts(
                 "end": group.end,
                 "text": group.text,
                 "settings": group_settings,
-                "voice_source": group.items[0].voice_source,
+                "voice_source": anchor.voice_source,
                 "fallback": all(item.fallback for item in group.items),
                 "speaker_ids": speaker_ids,
                 "index": index,

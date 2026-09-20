@@ -116,6 +116,24 @@ class TtsCatalogInput(ToolInput):
     )
 
 
+class AudioCppCatalogueInput(ToolInput):
+    category: str = Field(default="", max_length=160)
+    family: str = Field(default="", max_length=160)
+    query: str = Field(default="", max_length=160)
+    language: str = Field(default="", max_length=160)
+    capability: str = Field(default="", max_length=160)
+    commercial_use: Literal[
+        "",
+        "permitted",
+        "noncommercial",
+        "conditional",
+        "unknown",
+    ] = ""
+    recommended_only: bool = False
+    limit: int = Field(default=30, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=10_000)
+
+
 class ConfigureTtsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     service_id: str = Field(

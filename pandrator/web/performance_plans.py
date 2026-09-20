@@ -409,14 +409,15 @@ def create_plan(
     seed = {}
     if request.copy_from_id:
         previous = get_plan(session, session_id, request.copy_from_id)
-        if (
-            previous.plan_revision_id != selected.active_revision_id
-            or previous.base_signature != signature
-        ):
+        if previous.base_signature != plan_signature(session, previous.plan_revision_id):
             raise RevisionConflict(
-                "Only a performance plan for the same unchanged speech revision can be copied."
+                "The source performance plan no longer matches its saved speech revision."
             )
-        all_previous = _annotations(session, previous)
+        if previous.plan_revision_id != selected.active_revision_id:
+            from .audiobook_resegmentation import copy_unchanged_annotations
+            all_previous = copy_unchanged_annotations(session, previous, selected.active_revision_id, units, characters)
+        else:
+            all_previous = _annotations(session, previous)
         # A manual copy retains every choice; reanalysis preserves only locked
         # choices and allows the remaining decisions to be reconsidered.
         seed = {
@@ -867,6 +868,9 @@ def adopt_plan(
         previous.status = "superseded"
     plan.status, plan.adopted_at = "adopted", m.utcnow()
     plan.version += 1
+    from .workspace import mark_output_assemblies_stale
+
+    mark_output_assemblies_stale(session, plan.session_id)
     session.flush()
     return {
         "id": plan.id,

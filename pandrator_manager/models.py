@@ -61,6 +61,7 @@ class ComponentModel(StrictModel):
     license_name: str | None = None
     license_url: str | None = None
     usage_note: str = ""
+    model_info: dict[str, Any] = Field(default_factory=dict)
     capabilities: tuple[str, ...] = ()
     estimated_download_bytes: int | None = Field(default=None, ge=0)
     size_provenance: SizeProvenance = SizeProvenance.ESTIMATE

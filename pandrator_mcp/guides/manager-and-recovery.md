@@ -37,6 +37,33 @@ Read-only doctor reports never repair automatically. Stop, restart, update,
 remove, rollback, and data-purge actions are consequential and require their
 declared confirmation level.
 
+For audio.cpp models, inspect `pandrator_manager_status` for known and installed
+packages, and `pandrator_get_tts_catalog(refresh=true)` for live selectable and
+loaded models. A catalogue entry is not evidence of installation; a configured
+model need not be resident in GPU memory.
+
+Use the existing component plan tool with `component_id=audio_cpp` and
+`options={"add_models":["fish_audio_s2_pro_q8_0"]}` to retain installed/desired
+models and add a package. Alternatively, `options.models` declares the complete
+replacement set and may remove omitted models. These options are mutually
+exclusive, accept 1–32 unique supported IDs, and cannot contain URLs or paths.
+Review the resolved model set, add/remove/retain lists, download/disk estimates,
+service restart and confirmations before executing the immutable plan digest.
+
+Model-changing operations refuse to start while application work is active;
+new jobs are refused while that maintenance operation is active. Stop or finish
+the work, then create a fresh plan if the previous operation failed. Poll with
+`pandrator_get_work`; successful completion refreshes the live TTS catalogue
+when the application is reachable. If it is restarting, refresh explicitly after
+it returns. Select the desired session model with `pandrator_configure_tts`.
+Package activation and session model selection are separate steps.
+
+Qwen CustomVoice uses its native speakers, so cloned cast references must be
+reassigned. Preview distinguishes request compilation, live model availability,
+cast compatibility, and acoustic compliance (which requires a listening test).
+Direct runtime stop/restart commands remain explicit operator actions; the
+model-operation guard does not turn them into generation-aware maintenance.
+
 When application-proxy access is unavailable, only network/availability
 failures may fall back to the enrolled recovery endpoint. Scope denial,
 identity mismatch, stale plans, and policy denial are returned unchanged.

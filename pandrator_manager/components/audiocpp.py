@@ -51,12 +51,23 @@ class AudioCppModelPackage:
     mode: str = "offline"
     load_options: dict[str, str] | None = None
     session_options: dict[str, str] | None = None
+    # Inventory-backed packages carry their own immutable source pin and
+    # exact-file staging contract. Manual packages retain the historical
+    # audio.cpp repository/revision defaults.
+    label: str = ""
+    precision: str | None = None
+    download_kind: str = "huggingface_snapshot"
+    repository: str = AUDIO_CPP_MODEL_REPOSITORY
+    revision: str = AUDIO_CPP_MODEL_REVISION
+    download_files: tuple[str, ...] = ()
+    strip_prefix: str = ""
 
     @property
     def config_path(self) -> str:
-        if self.id == "pocket_tts_english_q8_0":
+        if self.family == "pocket_tts":
             return f"models/{self.target_directory}"
-        return f"models/{self.target_directory}/{self.files[0]}"
+        gguf = next(path for path in self.files if path.casefold().endswith(".gguf"))
+        return f"models/{self.target_directory}/{gguf}"
 
     def marker_path(self, models_root: Path) -> Path:
         return models_root / self.target_directory / f".audiocpp-package-{self.id}.json"
@@ -66,7 +77,7 @@ class AudioCppModelPackage:
         return tuple(root / relative for relative in self.files)
 
 
-SUPPORTED_MODEL_IDS = (
+MANUAL_MODEL_IDS = (
     "qwen3_tts_1_7b_base_q8_0",
     "qwen3_tts_1_7b_customvoice_q8_0",
     "qwen3_tts_1_7b_voicedesign_q8_0",
@@ -78,6 +89,10 @@ SUPPORTED_MODEL_IDS = (
     "pocket_tts_english_q8_0",
     "fireredtts3_base_q8_0",
     "breeze_tts_2_q8_0",
+    "qwen3_tts_0_6b_base_q8_0",
+    "chatterbox_turbo_q8_0",
+    "supertonic_3_q8_0",
+    "fireredtts3_instruct_q8_0",
 )
 
 
@@ -175,7 +190,57 @@ MODEL_PACKAGES: dict[str, AudioCppModelPackage] = {
         sha256=("0de52d61560f9f6b2dfeca79f9100f8fce0c2b17c52ec30622e23e150df1ad88",),
         task="tts",
     ),
+    "qwen3_tts_0_6b_base_q8_0": AudioCppModelPackage(
+        id="qwen3_tts_0_6b_base_q8_0",
+        family="qwen3_tts",
+        target_directory="Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+        files=("qwen3-tts-12hz-0.6b-base-q8_0.gguf",),
+        sha256=("771420bd20ff5f35407b4fa9cf9c5461e153800d3d772ef51c9febc0a520855d",),
+        task="clon",
+    ),
+    "chatterbox_turbo_q8_0": AudioCppModelPackage(
+        id="chatterbox_turbo_q8_0",
+        family="chatterbox_turbo",
+        target_directory="Chatterbox-Turbo-GGUF",
+        files=("chatterbox-turbo-q8_0.gguf",),
+        sha256=("6eed51ff0b2993fec67db6211dca92de5819d83ac50513ba7c065c467eb75910",),
+        task="tts",
+    ),
+    "supertonic_3_q8_0": AudioCppModelPackage(
+        id="supertonic_3_q8_0",
+        family="supertonic",
+        target_directory="Supertonic-3-GGUF",
+        files=("supertonic-3-q8_0.gguf",),
+        sha256=("af814486a0bc9513fb36afabd9b1155ad14fb2c36a107ac6ffe62ea9adafb662",),
+        task="tts",
+    ),
+    "fireredtts3_instruct_q8_0": AudioCppModelPackage(
+        id="fireredtts3_instruct_q8_0",
+        family="fireredtts3",
+        target_directory="FireRedTTS3-Instruct-GGUF",
+        files=("fireredtts3-instruct-q8_0.gguf",),
+        sha256=("04cd0ff6624bbfdc6b39e2dd1a0068f9e9769d1c217bf7343e28f3415eb2859e",),
+        task="tts",
+    ),
 }
+
+
+try:
+    from ..audio_cpp_inventory import load_audio_cpp_packages
+
+    _INVENTORY_PACKAGES = load_audio_cpp_packages()
+except (ImportError, OSError, ValueError):
+    # The manager remains usable with its reviewed built-in packages when a
+    # mirrored inventory is absent from a source checkout or an older wheel.
+    _INVENTORY_PACKAGES = ()
+
+for _package in _INVENTORY_PACKAGES:
+    if _package.id not in MODEL_PACKAGES:
+        MODEL_PACKAGES[_package.id] = _package
+
+SUPPORTED_MODEL_IDS = MANUAL_MODEL_IDS + tuple(
+    package.id for package in _INVENTORY_PACKAGES if package.id not in MANUAL_MODEL_IDS
+)
 
 # Public alias matching the naming used by the other native driver.
 # Digests: upstream v0.8.1 release assets, published 2026-09-17. Portable Linux

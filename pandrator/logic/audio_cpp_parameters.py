@@ -10,13 +10,65 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from numbers import Real
 from typing import Any, Mapping
+
+from .audio_cpp_catalogue import family_metadata
 
 
 _UINT32_MAX = 2**32 - 1
 _SAFE_INTEGER_MAX = 2**53 - 1
 _CHUNK_MODES = ["default", "tag_aware", "japanese", "endline"]
+_MAX_GENERIC_STRING_LENGTH = 1200
+_SAFE_OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+_RESERVED_OPTION_NAMES = {
+    "instruction",
+    "instruct",
+    "instructions",
+    "reference_text",
+    "reference_language",
+    "prompt_text",
+    "voice_clone_text",
+    "voice_id",
+    "voice",
+    "speaker",
+    "language",
+    "template_name",
+    "no_ref",
+    "source_text",
+    "target_text",
+    "multi_reference_cond",
+    "source_audio",
+    "target_voice",
+    "phonemes",
+    "return_video",
+    "path",
+    "audio_path",
+    "string_list",
+    "list",
+    "array",
+    "object",
+    "objects",
+}
+_UNSAFE_NATIVE_TYPES = {
+    "path",
+    "audio_path",
+    "string_list",
+    "list",
+    "array",
+    "object",
+    "objects",
+    "dict",
+    "mapping",
+}
+_NATIVE_SCALAR_TYPES = {
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "enum": "string",
+    "string": "string",
+}
 
 
 def _integer(
@@ -90,6 +142,30 @@ _CHUNK_MODE = _string(enum=_CHUNK_MODES)
 # voice, or instruction fields here: those values have separate safeguards in
 # the request builder and are not generic tuning controls.
 AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY: dict[str, dict[str, dict[str, Any]]] = {
+    "moss_voicegen": {
+        "seed": copy.deepcopy(_UINT32_OPTIONAL),
+        "temperature": _number(exclusive_minimum=0),
+        "top_p": _number(minimum=0, maximum=1),
+        "top_k": _integer(minimum=0, maximum=2**31 - 1),
+        "repetition_penalty": _number(exclusive_minimum=0),
+        "text_chunk_size": _integer(minimum=1),
+        "text_chunk_mode": copy.deepcopy(_CHUNK_MODE),
+    },
+    "chatterbox_turbo": {
+        "seed": _integer(default=0, minimum=0, maximum=_UINT32_MAX),
+        "temperature": _number(default=0.8, minimum=0),
+        "top_p": _number(default=0.95, minimum=0, maximum=1),
+        "top_k": _integer(default=1000, minimum=0, maximum=_UINT32_MAX),
+        "repetition_penalty": _number(default=1.2, exclusive_minimum=0),
+        "max_new_tokens": _integer(default=1000, minimum=1, maximum=_UINT32_MAX),
+    },
+    "supertonic": {
+        "seed": copy.deepcopy(_UINT32_OPTIONAL),
+        "num_inference_steps": _integer(minimum=1),
+        "speaking_rate": _number(exclusive_minimum=0),
+        "text_chunk_size": _integer(minimum=1),
+        "text_chunk_mode": copy.deepcopy(_CHUNK_MODE),
+    },
     "qwen3_tts": {
         "seed": copy.deepcopy(_UINT32_OPTIONAL),
         "max_tokens": _integer(default=2048, minimum=1),
@@ -205,12 +281,122 @@ AUDIO_CPP_PARAMETER_REGISTRY = AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY
 
 
 def request_parameters_for_family(family: str) -> dict[str, dict[str, Any]]:
-    """Return an isolated descriptor mapping for an audio.cpp model family."""
+    """Return reviewed manual and safe native descriptors for a family.
+
+    The generated catalogue describes the upstream request surface, while the
+    manual registry remains authoritative for controls already wired through
+    Pandrator.  Unknown or non-scalar catalogue fields are deliberately left
+    out of the returned mapping.
+    """
 
     normalized = str(family or "").strip().lower()
     if normalized == "fish_audio":
         normalized = "fish_audio_s2"
-    return copy.deepcopy(AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY.get(normalized, {}))
+    manual = copy.deepcopy(AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY.get(normalized, {}))
+    derived: dict[str, dict[str, Any]] = {}
+    try:
+        metadata = family_metadata(normalized)
+    except (OSError, TypeError, ValueError):
+        metadata = {}
+    if isinstance(metadata, Mapping):
+        options = metadata.get("options")
+        if isinstance(options, Mapping):
+            request_options = options.get("request", [])
+        else:
+            request_options = []
+        if isinstance(request_options, list):
+            for option in request_options:
+                descriptor = _descriptor_from_native_option(option)
+                if descriptor is not None:
+                    derived[descriptor.pop("_name")] = descriptor
+    derived.update(manual)
+    return derived
+
+
+def _finite_native_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return value if isinstance(value, int) else numeric
+
+
+def _valid_native_default(
+    value: Any,
+    option_type: str,
+    descriptor: Mapping[str, Any],
+) -> bool:
+    if option_type == "integer":
+        valid = isinstance(value, int) and not isinstance(value, bool)
+    elif option_type == "number":
+        valid = _finite_native_number(value) is not None
+    elif option_type == "boolean":
+        valid = isinstance(value, bool)
+    else:
+        valid = isinstance(value, str)
+        if valid and "enum" in descriptor:
+            valid = value in descriptor["enum"]
+        if valid and "enum" not in descriptor:
+            valid = "\x00" not in value and len(value) <= _MAX_GENERIC_STRING_LENGTH
+    if not valid:
+        return False
+    if option_type in {"integer", "number"}:
+        minimum = descriptor.get("minimum")
+        maximum = descriptor.get("maximum")
+        if minimum is not None and value < minimum:
+            return False
+        if maximum is not None and value > maximum:
+            return False
+    return True
+
+
+def _descriptor_from_native_option(option: Any) -> dict[str, Any] | None:
+    if not isinstance(option, Mapping):
+        return None
+    name = option.get("name")
+    native_type = option.get("type")
+    if (
+        not isinstance(name, str)
+        or not _SAFE_OPTION_NAME.fullmatch(name)
+        or name in _RESERVED_OPTION_NAMES
+        or not isinstance(native_type, str)
+    ):
+        return None
+    native_type = native_type.strip().lower()
+    if native_type in _UNSAFE_NATIVE_TYPES:
+        return None
+    option_type = _NATIVE_SCALAR_TYPES.get(native_type)
+    if option_type is None:
+        return None
+
+    descriptor: dict[str, Any] = {"_name": name, "type": option_type}
+    if native_type == "enum":
+        values = option.get("values")
+        if not isinstance(values, (list, tuple)) or not values or not all(
+            isinstance(value, str) for value in values
+        ):
+            return None
+        descriptor["enum"] = list(values)
+
+    if option_type in {"integer", "number"}:
+        minimum = _finite_native_number(option.get("min"))
+        maximum = _finite_native_number(option.get("max"))
+        if minimum is not None and maximum is not None and minimum > maximum:
+            minimum = maximum = None
+        if minimum is not None:
+            descriptor["minimum"] = minimum
+        if maximum is not None:
+            descriptor["maximum"] = maximum
+
+    if "default" in option and _valid_native_default(
+        option["default"], option_type, descriptor
+    ):
+        descriptor["default"] = option["default"]
+    return descriptor
 
 
 def _is_empty(value: Any) -> bool:
@@ -235,7 +421,7 @@ def _numeric(value: Any, *, key: str, integer: bool) -> int | float:
         if not numeric.is_integer():
             raise ValueError(f"audio.cpp option '{key}' must be an integer.")
         return int(numeric)
-    return value if isinstance(value, float) else int(value)
+    return value if isinstance(value, int) else numeric
 
 
 def validate_model_options(
@@ -252,6 +438,12 @@ def validate_model_options(
     if not isinstance(options, Mapping):
         raise ValueError("audio.cpp model settings must be an object.")
     descriptors = request_parameters_for_family(family)
+    normalized_family = str(family or "").strip().lower()
+    if normalized_family == "fish_audio":
+        normalized_family = "fish_audio_s2"
+    manual_descriptors = AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY.get(
+        normalized_family, {}
+    )
     result: dict[str, Any] = {}
     for key, value in options.items():
         if key not in descriptors:
@@ -267,6 +459,16 @@ def validate_model_options(
         elif option_type == "string":
             if not isinstance(value, str):
                 raise ValueError(f"audio.cpp option '{key}' must be a string.")
+            if key not in manual_descriptors and "enum" not in descriptor:
+                if "\x00" in value:
+                    raise ValueError(
+                        f"audio.cpp option '{key}' must not contain NUL characters."
+                    )
+                if len(value) > _MAX_GENERIC_STRING_LENGTH:
+                    raise ValueError(
+                        f"audio.cpp option '{key}' must be at most "
+                        f"{_MAX_GENERIC_STRING_LENGTH} characters."
+                    )
             normalized = value
         elif option_type in {"integer", "number"}:
             normalized = _numeric(value, key=key, integer=option_type == "integer")

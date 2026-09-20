@@ -17,6 +17,8 @@
   import ManagerPlanDialog, {
     type ManagerPlan
   } from './ManagerPlanDialog.svelte';
+  import AudioCppModelDetails from './AudioCppModelDetails.svelte';
+  import type { AudioCppModelInfo } from './audio-cpp-catalogue';
   import {
     MANAGER_TERMINAL_STATES,
     managerOperationStore,
@@ -55,6 +57,7 @@
       license_url?: string | null;
       usage_note?: string;
       estimated_download_bytes?: number | null;
+      model_info?: AudioCppModelInfo;
     }>;
     supported_actions: string[];
     catalogue_role?: 'primary' | 'compatibility';
@@ -142,6 +145,24 @@
   let installOptionValues = $state<Record<string, Record<string, string>>>({});
   let selectedModelIds = $state<Record<string, string[]>>({});
   let compatibilityOpen = $state(false);
+  let audioModelQuery = $state('');
+  let audioRecommendedOnly = $state(true);
+  function visibleAudioModels(component: Component) {
+    const query = audioModelQuery.trim().toLowerCase();
+    return (component.definition.models ?? []).filter((model) => {
+      const matches =
+        `${model.id} ${model.label} ${model.model_info?.recommended_for ?? ''}`
+          .toLowerCase()
+          .includes(query);
+      return (
+        matches &&
+        (!audioRecommendedOnly ||
+          !model.model_info ||
+          model.model_info.recommended_for ||
+          selectedModels(component).includes(model.id))
+      );
+    });
+  }
   let pendingPlan = $state<ManagerPlan | null>(null);
   const operation = $derived(managerOperationStore.operation);
   let error = $state('');
@@ -1131,6 +1152,11 @@
                         <p class="muted mt-1 text-xs leading-relaxed">
                           Install only what you expect to use. You can add or
                           remove packages later without changing the backend.
+                          <a
+                            href="/models"
+                            class="font-semibold text-[var(--accent)]"
+                            >Compare models, languages and licences.</a
+                          >
                         </p>
                         {#if modelChanges(component).added.length || modelChanges(component).removed.length}
                           <div
@@ -1173,61 +1199,98 @@
                             {/if}
                           </div>
                         {/if}
+                        <div
+                          class="mt-3 flex flex-wrap items-center gap-3 text-xs"
+                        >
+                          <label
+                            >Find a package
+                            <input
+                              type="search"
+                              class="ml-2 rounded border border-[var(--line)] bg-[var(--paper)] p-2"
+                              bind:value={audioModelQuery}
+                              placeholder="Model or family"
+                            />
+                          </label>
+                          <label class="flex items-center gap-2"
+                            ><input
+                              type="checkbox"
+                              bind:checked={audioRecommendedOnly}
+                            /> Recommended and selected packages</label
+                          >
+                          <span class="muted"
+                            >{visibleAudioModels(component).length} of {component
+                              .definition.models.length} packages</span
+                          >
+                        </div>
                         <div class="mt-3 grid gap-2">
-                          {#each component.definition.models as model}
-                            <label
-                              class="flex items-start gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
+                          {#each visibleAudioModels(component) as model}
+                            <div
+                              class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
                             >
-                              <input
-                                type="checkbox"
-                                class="mt-1"
-                                checked={selectedModels(component).includes(
-                                  model.id
-                                )}
-                                disabled={busy}
-                                onchange={() =>
-                                  toggleModel(component, model.id)}
-                              />
-                              <span class="min-w-0 flex-1">
-                                <span class="block text-xs font-semibold">
-                                  {model.label}
-                                  {#if model.estimated_download_bytes}
-                                    <span class="muted font-normal">
-                                      · {formatBytes(
-                                        model.estimated_download_bytes
-                                      )}
+                              <label class="flex items-start gap-3">
+                                <input
+                                  type="checkbox"
+                                  class="mt-1"
+                                  checked={selectedModels(component).includes(
+                                    model.id
+                                  )}
+                                  disabled={busy}
+                                  onchange={() =>
+                                    toggleModel(component, model.id)}
+                                />
+                                <span class="min-w-0 flex-1">
+                                  <span class="block text-xs font-semibold">
+                                    {model.label}
+                                    {#if model.model_info?.recommended_for}<span
+                                        class="mt-1 block font-normal text-[var(--accent)]"
+                                        >{model.model_info
+                                          .recommended_for}</span
+                                      >{/if}
+                                    {#if model.estimated_download_bytes}
+                                      <span class="muted font-normal">
+                                        · {formatBytes(
+                                          model.estimated_download_bytes
+                                        )}
+                                      </span>
+                                    {/if}
+                                  </span>
+                                  {#if model.description}
+                                    <span
+                                      class="muted mt-1 block text-xs leading-relaxed"
+                                    >
+                                      {model.description}
+                                    </span>
+                                  {/if}
+                                  {#if model.license_name}
+                                    <span
+                                      class="muted mt-1 block text-[.68rem] leading-relaxed"
+                                    >
+                                      License:
+                                      {#if model.license_url}
+                                        <a
+                                          href={model.license_url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          class="underline decoration-dotted underline-offset-2"
+                                          >{model.license_name}</a
+                                        >
+                                      {:else}
+                                        {model.license_name}
+                                      {/if}
+                                      {#if model.usage_note}
+                                        · {model.usage_note}{/if}
                                     </span>
                                   {/if}
                                 </span>
-                                {#if model.description}
-                                  <span
-                                    class="muted mt-1 block text-xs leading-relaxed"
-                                  >
-                                    {model.description}
-                                  </span>
-                                {/if}
-                                {#if model.license_name}
-                                  <span
-                                    class="muted mt-1 block text-[.68rem] leading-relaxed"
-                                  >
-                                    License:
-                                    {#if model.license_url}
-                                      <a
-                                        href={model.license_url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        class="underline decoration-dotted underline-offset-2"
-                                        >{model.license_name}</a
-                                      >
-                                    {:else}
-                                      {model.license_name}
-                                    {/if}
-                                    {#if model.usage_note}
-                                      · {model.usage_note}{/if}
-                                  </span>
-                                {/if}
-                              </span>
-                            </label>
+                              </label>
+                              {#if model.model_info}<div
+                                  class="mt-3 border-t border-[var(--line)] pt-3"
+                                >
+                                  <AudioCppModelDetails
+                                    model={model.model_info}
+                                  />
+                                </div>{/if}
+                            </div>
                           {/each}
                         </div>
                         {#if !modelSelectionValid(component)}

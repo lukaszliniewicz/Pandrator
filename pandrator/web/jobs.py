@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from .credentials import SecretRedactor
 from .database import Database
+from .model_maintenance import ensure_app_job_allowed
 from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, utcnow
 
 JobHandler = Callable[
@@ -519,6 +520,10 @@ class JobQueue:
         )
         session.add(job)
         session.flush()
+        # The flush has acquired the app SQLite writer transaction.  The
+        # manager guard must run before the queue event and return so a busy
+        # check raises into the caller's transaction and removes this job.
+        ensure_app_job_allowed(self.database.path)
         self._event(
             session,
             job.id,

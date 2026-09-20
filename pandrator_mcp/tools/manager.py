@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,9 +19,93 @@ from ..work_mapping import (
     manager_work_reference,
 )
 
+_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$")
+
 
 def _text(value: object, maximum: int = 2_000) -> str:
     return " ".join(str(value or "").split())[:maximum]
+
+
+def _safe_model_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for model_id in value[:32]:
+        if (
+            isinstance(model_id, str)
+            and _MODEL_ID.fullmatch(model_id) is not None
+            and model_id not in result
+        ):
+            result.append(model_id)
+    return result
+
+
+def _model_inventory_projection(payload: object) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        payload = payload.get("items")
+    if not isinstance(payload, list):
+        return []
+    inventory: list[dict[str, Any]] = []
+    for item in payload[:100]:
+        if not isinstance(item, dict):
+            continue
+        definition = item.get("definition")
+        if not isinstance(definition, dict):
+            continue
+        component_id = _text(definition.get("id"), 160)
+        if not component_id:
+            continue
+        known_models: list[dict[str, Any]] = []
+        source_models = definition.get("models")
+        if isinstance(source_models, list):
+            for model in source_models[:32]:
+                if not isinstance(model, dict):
+                    continue
+                model_id = model.get("id")
+                if (
+                    not isinstance(model_id, str)
+                    or _MODEL_ID.fullmatch(model_id) is None
+                ):
+                    continue
+                known_models.append(
+                    {
+                        "id": model_id,
+                        "label": _text(model.get("label"), 300),
+                        "license_name": (
+                            _text(model.get("license_name"), 300) or None
+                        ),
+                        "license_url": _reference_url(
+                            model.get("license_url")
+                        ),
+                        "usage_note": _text(model.get("usage_note"), 800),
+                        "estimated_download_bytes": max(
+                            0,
+                            int(model.get("estimated_download_bytes") or 0),
+                        ),
+                    }
+                )
+        inspection = item.get("inspection")
+        inspection = inspection if isinstance(inspection, dict) else {}
+        installed = _safe_model_ids(inspection.get("installed_model_ids"))
+        desired = item.get("desired")
+        desired = desired if isinstance(desired, dict) else {}
+        options = desired.get("options")
+        options = options if isinstance(options, dict) else {}
+        desired_ids = _safe_model_ids(options.get("models"))
+        if not known_models and not installed and not desired_ids:
+            continue
+        inventory.append(
+            {
+                "component_id": component_id,
+                "known_models": known_models,
+                "known_model_count": len(source_models) if isinstance(source_models, list) else 0,
+                "known_models_truncated": isinstance(source_models, list) and len(source_models) > len(known_models),
+                "catalogue_tool": "pandrator_get_audio_cpp_catalogue" if component_id == "audio_cpp" else None,
+                "installed_model_ids": installed,
+                "desired_model_ids": desired_ids,
+            }
+        )
+    return inventory
 
 
 def _target_binding(runtime: McpRuntime) -> dict[str, Any]:
@@ -192,51 +277,45 @@ def manager_plan_projection(
         for item in source_tasks[:300]:
             if not isinstance(item, dict):
                 continue
-            tasks.append(
-                {
-                    "id": _text(item.get("id"), 160),
-                    "kind": _text(item.get("kind"), 160),
-                    "label": _text(item.get("label"), 500),
-                    "component_id": (
-                        _text(item.get("component_id"), 160) or None
-                    ),
-                    "dependencies": [
-                        _text(value, 160)
-                        for value in list(
-                            item.get("dependencies") or ()
-                        )[:100]
-                    ],
-                    "resource_locks": [
-                        _text(value, 160)
-                        for value in list(
-                            item.get("resource_locks") or ()
-                        )[:100]
-                    ],
-                    "estimated_download_bytes": max(
-                        0,
-                        int(
-                            item.get(
-                                "estimated_download_bytes",
-                                0,
-                            )
-                            or 0
-                        ),
-                    ),
-                    "estimated_disk_bytes": max(
-                        0,
-                        int(
-                            item.get(
-                                "estimated_disk_bytes",
-                                0,
-                            )
-                            or 0
-                        ),
-                    ),
-                    "cancellation_boundary": bool(
-                        item.get("cancellation_boundary", True)
-                    ),
-                }
-            )
+            task = {
+                "id": _text(item.get("id"), 160),
+                "kind": _text(item.get("kind"), 160),
+                "label": _text(item.get("label"), 500),
+                "component_id": (
+                    _text(item.get("component_id"), 160) or None
+                ),
+                "dependencies": [
+                    _text(value, 160)
+                    for value in list(item.get("dependencies") or ())[:100]
+                ],
+                "resource_locks": [
+                    _text(value, 160)
+                    for value in list(item.get("resource_locks") or ())[:100]
+                ],
+                "estimated_download_bytes": max(
+                    0,
+                    int(item.get("estimated_download_bytes", 0) or 0),
+                ),
+                "estimated_disk_bytes": max(
+                    0,
+                    int(item.get("estimated_disk_bytes", 0) or 0),
+                ),
+                "cancellation_boundary": bool(
+                    item.get("cancellation_boundary", True)
+                ),
+            }
+            inputs = item.get("inputs")
+            if isinstance(inputs, dict):
+                models = _safe_model_ids(inputs.get("models"))
+                if models:
+                    task["models"] = models
+                model_changes = inputs.get("model_changes")
+                if isinstance(model_changes, dict):
+                    task["model_changes"] = {
+                        key: _safe_model_ids(model_changes.get(key))
+                        for key in ("add", "remove", "retain")
+                    }
+            tasks.append(task)
     preflight: list[dict[str, Any]] = []
     source_preflight = payload.get("preflight")
     if isinstance(source_preflight, list):
@@ -287,12 +366,14 @@ def manager_plan_projection(
                         _text(state.get("quantization"), 120) or None
                     ),
                     "options": {
-                        _text(key, 80): value
-                        for key, value in list(options.items())[:40]
-                        if isinstance(
-                            value,
-                            (str, int, float, bool, type(None)),
+                        _text(key, 80): (
+                            _safe_model_ids(value)
+                            if key in {"models", "add_models"}
+                            else value
                         )
+                        for key, value in list(options.items())[:40]
+                        if (key in {"models", "add_models"} and isinstance(value, list))
+                        or (key not in {"models", "add_models"} and isinstance(value, (str, int, float, bool, type(None))))
                     },
                 }
             )
@@ -430,7 +511,18 @@ def _runtime_projection(
 
 
 def manager_status(runtime: McpRuntime) -> dict[str, Any]:
-    return manager_status_projection(runtime.manager.status())
+    status = manager_status_projection(runtime.manager.status())
+    components = getattr(runtime.manager, "components", None)
+    if callable(components) and status.get("available") is True:
+        try:
+            status["model_inventory"] = _model_inventory_projection(
+                components()
+            )
+        except Exception:
+            # Status remains useful when an older Manager lacks the optional
+            # component inventory endpoint or it is temporarily unavailable.
+            pass
+    return status
 
 
 def manager_doctor(runtime: McpRuntime) -> dict[str, Any]:

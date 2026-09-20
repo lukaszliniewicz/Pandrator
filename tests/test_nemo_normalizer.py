@@ -40,6 +40,29 @@ class NeMoNormalizerTests(unittest.TestCase):
 
         self.assertEqual(nemo_normalizer.normalize_text_for_tts("12", "en"), "12")
 
+    @patch("pandrator.logic.nemo_normalizer._get_normalizer")
+    def test_leading_apostrophe_words_keep_literal_spacing_and_numbers(self, get_normalizer):
+        normalizer = MagicMock()
+        normalizer.normalize.side_effect = lambda text, **_kwargs: text.replace("5", "five")
+        get_normalizer.return_value = normalizer
+
+        result = nemo_normalizer.normalize_text_for_tts(
+            "in ’em, and pay 5 dollars; 'tis enough.",
+            "en",
+        )
+
+        self.assertEqual(result, "in ’em, and pay five dollars; 'tis enough.")
+
+    @patch("pandrator.logic.nemo_normalizer._get_normalizer")
+    def test_leading_apostrophe_literal_is_not_rewritten_by_normalizer(self, get_normalizer):
+        normalizer = MagicMock()
+        normalizer.normalize.side_effect = lambda text, **_kwargs: text.replace("’tis", "BROKEN")
+        get_normalizer.return_value = normalizer
+
+        result = nemo_normalizer.normalize_text_for_tts("’tis what I said.", "en")
+
+        self.assertEqual(result, "’tis what I said.")
+
 
 if __name__ == "__main__":
     unittest.main()

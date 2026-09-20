@@ -17,6 +17,7 @@
   import { languagesForService, describeVoice } from './voice-catalog';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
+  import AudioCppModelDetails from './AudioCppModelDetails.svelte';
   import SettingField from './SettingField.svelte';
   import TtsServiceSelect from './TtsServiceSelect.svelte';
   import { settingApplies } from './settings-fields';
@@ -971,6 +972,15 @@
           </div>
         {/if}
       </section>
+      {#if section === 'tts' && audioCpp && modelMetadata?.catalogue_info}
+        <div class="mt-4 rounded-xl border border-[var(--line)] p-3">
+          <AudioCppModelDetails model={modelMetadata.catalogue_info} />
+          <a
+            class="mt-3 inline-block text-xs font-semibold text-[var(--accent)]"
+            href="/models">Compare audio.cpp models</a
+          >
+        </div>
+      {/if}
       {#if section === 'tts' && audioCpp && modelMetadata?.request_parameters}
         <AudioCppModelSettings
           model={selectedModel}
@@ -1083,6 +1093,15 @@
           </div>
         {/each}
       </div>
+      {#if section === 'tts' && audioCpp && modelMetadata?.catalogue_info}
+        <div class="mt-4 rounded-xl border border-[var(--line)] p-3">
+          <AudioCppModelDetails model={modelMetadata.catalogue_info} />
+          <a
+            class="mt-3 inline-block text-xs font-semibold text-[var(--accent)]"
+            href="/models">Compare audio.cpp models</a
+          >
+        </div>
+      {/if}
       {#if section === 'tts' && audioCpp && modelMetadata?.request_parameters}
         <AudioCppModelSettings
           model={selectedModel}

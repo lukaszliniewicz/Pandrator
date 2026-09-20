@@ -83,6 +83,8 @@ pandrator_manager = "."
 
 [tool.setuptools.package-data]
 "pandrator_manager" = [
+  "audio_cpp_inventory.json",
+  "audio_cpp_curation.json",
   "provider_policy.json",
 ]
 "pandrator_manager.recovery_ui" = [

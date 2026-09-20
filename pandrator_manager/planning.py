@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .components import ComponentRegistry
+from .components.audiocpp import SUPPORTED_MODEL_IDS
 from .context import ManagerContext
 from .environments import PIXI_VERSION
 from .errors import RevisionConflict
@@ -77,6 +80,152 @@ class Planner:
         self.registry.validate_selection(normalized)
         return normalized
 
+    @staticmethod
+    def _validated_model_ids(
+        value: object,
+        *,
+        option: str,
+        supported: set[str],
+    ) -> list[str]:
+        if not isinstance(value, list) or not value or len(value) > 32:
+            raise ValueError(
+                f"audio.cpp option '{option}' must be a nonempty list of at most 32 model IDs."
+            )
+        invalid_format = [
+            item
+            for item in value
+            if not isinstance(item, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", item)
+            is None
+        ]
+        if invalid_format:
+            raise ValueError(
+                f"audio.cpp model package IDs are invalid: {invalid_format!r}."
+            )
+        if len(value) != len(set(value)):
+            raise ValueError("audio.cpp model package IDs must be unique.")
+        unsupported = [item for item in value if item not in supported]
+        if unsupported:
+            supported_values = ", ".join(sorted(supported))
+            raise ValueError(
+                "audio.cpp only supports these model package IDs: "
+                f"{supported_values}; unsupported selection: {unsupported!r}."
+            )
+        return list(value)
+
+    @staticmethod
+    def _validated_existing_model_ids(
+        value: object,
+        *,
+        supported: set[str],
+        source: str,
+        allow_empty: bool = False,
+    ) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)) or (
+            not value and not allow_empty
+        ) or len(value) > 32:
+            raise ValueError(
+                f"audio.cpp {source} model IDs must be a nonempty list of at most 32 IDs."
+            )
+        invalid = [
+            item
+            for item in value
+            if not isinstance(item, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,119}", item)
+            is None
+            or item not in supported
+        ]
+        if invalid:
+            raise ValueError(
+                f"audio.cpp {source} contains unsupported model package IDs: {invalid!r}."
+            )
+        if len(value) != len(set(value)):
+            raise ValueError(f"audio.cpp {source} model package IDs must be unique.")
+        return list(value)
+
+    def _normalize_audio_cpp_model_options(
+        self,
+        normalized: dict[str, DesiredComponentState],
+        *,
+        persisted_desired: Mapping[
+            str,
+            DesiredComponentState | None,
+        ] | None = None,
+    ) -> dict[str, DesiredComponentState]:
+        """Resolve additive model requests before any component inspection.
+
+        ``add_models`` is an MCP-only convenience.  Operation plans persist
+        the resulting exact ``models`` selection so retries and execution use
+        one canonical payload.
+        """
+
+        supported: set[str] = set(SUPPORTED_MODEL_IDS)
+        for component_id, state in normalized.items():
+            options = state.options
+            model_keys = {"models", "add_models"}.intersection(options)
+            if not model_keys:
+                continue
+            if component_id != "audio_cpp":
+                raise ValueError(
+                    "Manager model selections are supported only for audio_cpp."
+                )
+            if model_keys == {"models", "add_models"}:
+                raise ValueError("Specify either models or add_models, not both.")
+            self._validated_model_ids(
+                options[next(iter(model_keys))],
+                option=next(iter(model_keys)),
+                supported=supported,
+            )
+
+        state = normalized.get("audio_cpp")
+        if state is None or "add_models" not in state.options:
+            return normalized
+        if not state.present:
+            raise ValueError("audio.cpp add_models requires present=true.")
+
+        requested = self._validated_model_ids(
+            state.options["add_models"],
+            option="add_models",
+            supported=supported,
+        )
+        actual = self.inspect("audio_cpp").installed_model_ids or ()
+        actual_ids = self._validated_existing_model_ids(
+            list(actual),
+            supported=supported,
+            source="installed",
+            allow_empty=True,
+        )
+        persisted_state = (
+            persisted_desired.get("audio_cpp")
+            if persisted_desired is not None
+            else None
+        )
+        persisted_ids = self._validated_existing_model_ids(
+            persisted_state.options.get("models")
+            if persisted_state is not None
+            else None,
+            supported=supported,
+            source="persisted desired",
+        )
+        combined: list[str] = []
+        for model_id in (*actual_ids, *persisted_ids, *requested):
+            if model_id not in combined:
+                combined.append(model_id)
+        if not combined or len(combined) > 32:
+            raise ValueError(
+                "audio.cpp additive model selection must resolve to 1 to 32 IDs."
+            )
+        options = {
+            key: value
+            for key, value in state.options.items()
+            if key != "add_models"
+        }
+        options["models"] = combined
+        normalized["audio_cpp"] = state.model_copy(update={"options": options})
+        return normalized
+
     def create_plan(
         self,
         *,
@@ -84,10 +233,18 @@ class Planner:
         desired: dict[str, DesiredComponentState],
         expected_revision: int,
         actual_revision: int,
+        persisted_desired: Mapping[
+            str,
+            DesiredComponentState | None,
+        ] | None = None,
     ) -> OperationPlan:
         if expected_revision != actual_revision:
             raise RevisionConflict(expected_revision, actual_revision)
         normalized = self.normalize_desired(desired)
+        normalized = self._normalize_audio_cpp_model_options(
+            normalized,
+            persisted_desired=persisted_desired,
+        )
         inspections = {
             component_id: self.inspect(component_id, state)
             for component_id, state in normalized.items()

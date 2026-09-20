@@ -126,6 +126,7 @@ from .schemas import (
     VoiceCatalogInput,
 )
 from .schemas.delegation import execution_policy_json_schema
+from .schemas.e2e import AudioCppCatalogueInput
 from .schemas.transcription import (
     CancelTranscriptionInput,
     DeleteTranscriptionInput,
@@ -235,6 +236,7 @@ from .tools import (
     update_session_settings,
     voice_catalog,
 )
+from .tools.e2e import audio_cpp_catalogue
 from .tools.transcription import (
     cancel_transcription,
     delete_transcription,
@@ -2846,6 +2848,47 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(
+        name="pandrator_get_audio_cpp_catalogue",
+        title="Browse the audio.cpp catalogue",
+        annotations=read_only,
+    )
+    def audio_cpp_catalogue_tool(
+        category: Annotated[str, Field(max_length=160)] = "",
+        family: Annotated[str, Field(max_length=160)] = "",
+        query: Annotated[str, Field(max_length=160)] = "",
+        language: Annotated[str, Field(max_length=160)] = "",
+        capability: Annotated[str, Field(max_length=160)] = "",
+        commercial_use: Literal[
+            "",
+            "permitted",
+            "noncommercial",
+            "conditional",
+            "unknown",
+        ] = "",
+        recommended_only: bool = False,
+        limit: Annotated[int, Field(ge=1, le=100)] = 30,
+        offset: Annotated[int, Field(ge=0, le=10_000)] = 0,
+    ) -> dict[str, Any]:
+        """Browse all versioned audio.cpp families and packages; catalogue presence is not installation or acoustic validation."""
+
+        return _call_with_validated_input(
+            audio_cpp_catalogue,
+            runtime,
+            AudioCppCatalogueInput,
+            {
+                "category": category,
+                "family": family,
+                "query": query,
+                "language": language,
+                "capability": capability,
+                "commercial_use": commercial_use,
+                "recommended_only": recommended_only,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+    @server.tool(
         name="pandrator_configure_tts",
         title="Configure a catalog-backed TTS selection",
         annotations=write_action,
@@ -3043,7 +3086,7 @@ def build_server(runtime: McpRuntime):
     def generation_topology_revision_tool(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         expected_revision_id: Annotated[str, Field(min_length=1, max_length=80)],
-        action: Literal["split", "merge", "restore"],
+        action: Literal["split", "merge", "restore", "resegment"],
         idempotency_key: Annotated[
             str,
             Field(
@@ -3066,8 +3109,11 @@ def build_server(runtime: McpRuntime):
         target_revision_id: Annotated[
             str | None, Field(min_length=1, max_length=80)
         ] = None,
+        segment_ids: list[str] | None = None,
+        boundaries: list[int] | None = None,
+        max_chars: int | None = None,
     ) -> dict[str, Any]:
-        """Create a typed immutable split, merge, or restore plan revision."""
+        """Split/merge/restore a plan, or draft a bounded audiobook resegmentation. Select contiguous segment_ids and exact joined-text boundaries or max_chars. Inspect the returned preview, then restore the draft to adopt it."""
 
         return _call_with_validated_input(
             revise_speech_block_plan,
@@ -3084,6 +3130,9 @@ def build_server(runtime: McpRuntime):
                 "left_segment_id": left_segment_id,
                 "right_segment_id": right_segment_id,
                 "target_revision_id": target_revision_id,
+                "segment_ids": segment_ids,
+                "boundaries": boundaries,
+                "max_chars": max_chars,
             },
         )
 

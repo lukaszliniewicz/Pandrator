@@ -65,6 +65,40 @@ def test_cast_voice_replaces_legacy_provider_id_and_narrator_reference():
     assert "audio_cpp_reference_text" not in applied
 
 
+@pytest.mark.parametrize("model", ["qwen3_tts_1_7b_customvoice_q8_0", "qwen3_tts_1_7b_voicedesign_q8_0"])
+def test_prebuilt_and_design_models_reject_cloned_cast(model):
+    from pandrator.web.generation_cast_runtime import resolve_binding
+
+    with pytest.raises(ValueError, match="cloned cast"):
+        resolve_binding(None, {"voice_id": "managed-reference"}, {"service": "audio_cpp", "model": model})
+
+
+def test_customvoice_requires_a_native_speaker():
+    from pandrator.web.generation_cast_runtime import resolve_binding
+
+    settings = {"service": "audio_cpp", "model": "qwen3_tts_1_7b_customvoice_q8_0"}
+    with pytest.raises(ValueError, match="built-in speaker"):
+        resolve_binding(None, {"voice": "My cloned Scrooge"}, settings)
+    assert resolve_binding(None, {"voice": "Ryan"}, settings)["voice"] == "Ryan"
+
+
+def test_preview_service_override_keeps_cast_and_reports_live_readiness(case):
+    plan, _xml = seed_cast(case)
+    catalogue = case["services"]["tts_catalogue"]
+    with patch.object(catalogue, "snapshot", return_value=({"services": [{"id": "audio_cpp", "available": True, "models": []}]}, 1)) as refresh:
+        response = case["post"]("/" + plan["id"] + "/preview", {
+            "segment_id": case["segment_ids"][0], "service": "audio_cpp",
+            "model": "qwen3_tts_1_7b_base_q8_0", "casting_enabled": True,
+        })
+    assert response.status_code == 200, response.get_json()
+    result = response.get_json()
+    assert len(result["parts"]) == 3
+    assert result["readiness"]["model_available"] is False
+    assert result["readiness"]["compilation_only"] is True
+    assert result["generation_source"]["plan_revision_id"] == case["revision_id"]
+    refresh.assert_called_once_with(refresh=True)
+
+
 @pytest.mark.parametrize("cancel_at", ["part", "verification"])
 def test_canceled_cast_never_publishes_a_take(case, cancel_at):
     seed_cast(case)

@@ -155,6 +155,73 @@ def test_whitespace_folds_without_empty_provider_requests():
     assert all(part["text"] for part in parts)
 
 
+def test_punctuation_only_narrator_after_dialogue_uses_previous_speakable_voice():
+    markup = '<segment id="s"><dialogue><speaker ref="c-one">Hello</speaker><narrator>.</narrator></dialogue></segment>'
+    parts = build_render_parts(
+        "Hello.",
+        {"casting_enabled": True},
+        speech_xml=markup,
+        segment_id="s",
+        controls=CONTROLS,
+    )
+    assert len(parts) == 1
+    assert parts[0]["text"] == "Hello."
+    assert parts[0]["settings"]["voice"] == "one"
+    assert parts[0]["voice_source"] == "character"
+    assert parts[0]["start"] == 0
+    assert parts[0]["end"] == len("Hello.")
+
+
+def test_leading_orphan_punctuation_uses_following_speakable_voice():
+    markup = '<segment id="s"><narrator>…</narrator><dialogue><speaker ref="c-two">你好</speaker></dialogue></segment>'
+    parts = build_render_parts(
+        "…你好",
+        {"casting_enabled": True},
+        speech_xml=markup,
+        segment_id="s",
+        controls=CONTROLS,
+    )
+    assert len(parts) == 1
+    assert parts[0]["text"] == "…你好"
+    assert parts[0]["settings"]["voice"] == "two"
+    assert parts[0]["voice_source"] == "character"
+
+
+def test_punctuation_control_and_event_are_projected_once_when_folded():
+    markup = '<segment id="s"><speaker ref="c-one"><emphasis>strong</emphasis>.<event kind="pause" duration_ms="100"/></speaker><speaker ref="c-two">word</speaker></segment>'
+    controls = {**CONTROLS, "cast": {**CONTROLS["cast"], "characters": {"c-one": {"voice": "same"}, "c-two": {"voice": "same"}}}}
+    parts = build_render_parts(
+        ".word",
+        {"casting_enabled": True, "performance_enabled": True},
+        speech_xml=markup,
+        segment_id="s",
+        controls=controls,
+    )
+    assert len(parts) == 1
+    assert parts[0]["text"] == ".word"
+    assert parts[0]["settings"]["voice"] == "same"
+    events = parts[0]["settings"]["_performance"]["events"]
+    assert len(events) == 1
+    assert events[0]["kind"] == "pause"
+
+
+@pytest.mark.parametrize("text", ["...", "!!!", "、？！"])
+def test_punctuation_only_segments_fail_instead_of_synthesizing(text):
+    with pytest.raises(ValueError, match="speakable|punctuation"):
+        build_render_parts(text, {})
+
+
+def test_event_only_segments_fail_explicitly():
+    markup = '<segment id="s"><event kind="pause" duration_ms="100"/></segment>'
+    with pytest.raises(ValueError, match="vocal events|event-only"):
+        build_render_parts(
+            "",
+            {},
+            speech_xml=markup,
+            segment_id="s",
+        )
+
+
 def test_no_xml_preserves_existing_request_and_does_not_leak_markup():
     settings = {
         "voice": "base",

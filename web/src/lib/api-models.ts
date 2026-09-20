@@ -665,6 +665,7 @@ export type TtsRequestParameter = {
 };
 
 type TtsModel = {
+  catalogue_info?: import('./audio-cpp-catalogue').AudioCppModelInfo;
   family?: string;
   supported_languages?: string[];
   request_parameters?: Record<string, TtsRequestParameter>;

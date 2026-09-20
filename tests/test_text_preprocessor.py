@@ -1,7 +1,9 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 from pandrator.logic.text_preprocessor import (
     CHUNK_SIZE,
+    _ensure_line_terminal_punctuation,
+    append_short_sentences,
     find_best_split_index,
     normalize_punctuation,
     preprocess_text,
@@ -11,7 +13,10 @@ from pandrator.logic.text_preprocessor import (
 class TextPreprocessorTests(unittest.TestCase):
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
     def test_single_newlines_are_wrapping_and_blank_lines_are_paragraphs(self, split_text):
-        split_text.return_value = ["First sentence.", "Second sentence.", "New paragraph."]
+        split_text.side_effect = [
+            ["First sentence.", "Second sentence."],
+            ["New paragraph."],
+        ]
         settings = {
             "language": "en",
             "max_sentence_length": 200,
@@ -23,8 +28,31 @@ class TextPreprocessorTests(unittest.TestCase):
 
         sentences = preprocess_text("First sentence.\nSecond sentence.\n\nNew paragraph.", settings)
 
-        split_text.assert_called_once_with("First sentence. Second sentence.\n\nNew paragraph.")
-        self.assertEqual([item["paragraph"] for item in sentences], ["no", "yes", "no"])
+        self.assertEqual(
+            split_text.call_args_list,
+            [call("First sentence. Second sentence."), call("New paragraph.")],
+        )
+        self.assertEqual([item["paragraph"] for item in sentences], ["no", "yes", "yes"])
+
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_sentence_appending_does_not_cross_source_paragraphs(self, split_text):
+        split_text.side_effect = [["First dialogue."], ["Second dialogue."]]
+        settings = {
+            "language": "en",
+            "max_sentence_length": 200,
+            "enable_sentence_splitting": True,
+            "enable_sentence_appending": True,
+            "enable_nemo_normalization": False,
+            "tts_service": "XTTS",
+        }
+
+        sentences = preprocess_text("First dialogue.\n\nSecond dialogue.", settings)
+
+        self.assertEqual(
+            [item["original_sentence"] for item in sentences],
+            ["First dialogue.", "Second dialogue."],
+        )
+        self.assertEqual([item["paragraph"] for item in sentences], ["yes", "yes"])
 
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
     def test_wtpsplit_is_primary_sentence_segmenter(self, split_text):
@@ -78,6 +106,14 @@ class TextPreprocessorTests(unittest.TestCase):
         text = "To be continued…"
         normalized = normalize_punctuation(text)
         self.assertEqual(normalized, "To be continued...")
+
+    def test_terminal_punctuation_before_nested_closing_marks(self):
+        text = 'He asked “Stop!』'
+        self.assertEqual(_ensure_line_terminal_punctuation(text), text)
+        self.assertEqual(
+            _ensure_line_terminal_punctuation('He asked “Stop”』'),
+            'He asked “Stop”』.',
+        )
 
     def test_preprocessor_pipeline_integration(self):
         settings = {
@@ -174,7 +210,7 @@ class TextPreprocessorTests(unittest.TestCase):
 
         self.assertEqual(
             seen_texts,
-            ["これはテストです。\n\n次の行です！\n\n質問です？\n\n全角です．"],
+            ["これはテストです。", "次の行です！", "質問です？", "全角です．"],
         )
         self.assertTrue(all("。." not in text for text in seen_texts))
         self.assertTrue(all("！." not in text for text in seen_texts))
@@ -280,6 +316,61 @@ class TextPreprocessorTests(unittest.TestCase):
         self.assertGreater(len(parts), 1)
         self.assertTrue(all(part["sentence_continues_after"] for part in parts[:-1]))
         self.assertFalse(parts[-1]["sentence_continues_after"])
+
+    def test_narration_append_preserves_opening_quote_space(self):
+        rows = [
+            {
+                "original_sentence": "nephew.",
+                "paragraph": "no",
+                "chapter": "no",
+                "sentence_continues_after": False,
+            },
+            {
+                "original_sentence": '"You are welcome."',
+                "paragraph": "no",
+                "chapter": "no",
+                "sentence_continues_after": False,
+            },
+        ]
+
+        result = append_short_sentences(rows, 200)
+
+        self.assertEqual(result[0]["original_sentence"], 'nephew. "You are welcome."')
+
+        rows[1]["original_sentence"] = "‘You are welcome.’"
+        result = append_short_sentences(rows, 200)
+
+        self.assertEqual(result[0]["original_sentence"], "nephew. ‘You are welcome.’")
+
+    def test_narration_append_keeps_closing_quote_with_previous_text(self):
+        rows = [
+            {
+                "original_sentence": 'He answered "Humbug!',
+                "paragraph": "no",
+                "chapter": "no",
+                "sentence_continues_after": False,
+            },
+            {
+                "original_sentence": '"',
+                "paragraph": "no",
+                "chapter": "no",
+                "sentence_continues_after": False,
+            },
+        ]
+
+        result = append_short_sentences(rows, 200)
+
+        self.assertEqual(result[0]["original_sentence"], 'He answered "Humbug!"')
+
+    def test_narration_append_preserves_cjk_seam(self):
+        rows = [
+            {"original_sentence": "これは", "paragraph": "no", "chapter": "no"},
+            {"original_sentence": "テストです。", "paragraph": "no", "chapter": "no"},
+        ]
+
+        result = append_short_sentences(rows, 200)
+
+        self.assertEqual(result[0]["original_sentence"], "これはテストです。")
 
 if __name__ == "__main__":
     unittest.main()

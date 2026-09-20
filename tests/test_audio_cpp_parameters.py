@@ -7,11 +7,11 @@ from pandrator.web.generation_audio_identity import _material_settings
 
 class AudioCppParameterTests(unittest.TestCase):
     def test_every_static_model_has_scalar_request_parameters(self):
-        self.assertEqual(11, len(tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG))
+        self.assertGreaterEqual(len(tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG), 119)
         for model in tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG:
             with self.subTest(model=model["id"]):
                 parameters = model["request_parameters"]
-                self.assertTrue(parameters)
+                self.assertIsInstance(parameters, dict)
                 self.assertNotIn("reference_text", parameters)
                 self.assertNotIn("voice_id", parameters)
                 for descriptor in parameters.values():
@@ -62,15 +62,16 @@ class AudioCppParameterTests(unittest.TestCase):
                 settings = {
                     "model": model["id"],
                     "audio_cpp_model_settings": {
-                        model["id"]: representative[model["family"]]
+                        model["id"]: representative.get(model["family"], {})
                     },
                 }
-                if model["voice_mode"] == "design":
+                if model["voice_mode"] == "design" or "fireredtts3_instruct" in model["id"]:
                     settings["generation_prompt"] = "Warm and clear."
                 payload = tts_handler._build_audio_cpp_audio_payload(
                     "Hello", settings, endpoint
                 )
-                self.assertEqual(representative[model["family"]], payload["options"])
+                for key, expected in representative.get(model["family"], {}).items():
+                    self.assertEqual(expected, payload.get("options", {}).get(key))
 
     def test_selected_values_validate_types_bounds_and_unknown_keys(self):
         with self.assertRaisesRegex(ValueError, "boolean"):

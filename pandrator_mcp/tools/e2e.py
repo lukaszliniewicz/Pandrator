@@ -16,6 +16,7 @@ from ..errors import NextAction, PandratorMcpError
 from ..network_policy import TargetMode
 from ..results import ToolOutcome
 from ..schemas.e2e import (
+    AudioCppCatalogueInput,
     BrowseLocalSourcesInput,
     ConfigureTtsInput,
     CreateTextSourceInput,
@@ -527,6 +528,16 @@ def _safe_tts_service(
         "batch_synthesis",
     )
     result = {key: service.get(key) for key in compact_keys if key in service}
+    if _normalized_id(service.get("adapter") or service.get("id")) == "audio_cpp":
+        selected = set(model_ids if model_ids is not None else service.get("models") or [])
+        result["model_states"] = [
+            {"id": str(item["id"]),
+             "selectable": bool(service.get("available") and item["id"] in selected),
+             "loaded": item.get("loaded") if isinstance(item.get("loaded"), bool) else None}
+            for item in (service.get("model_catalog") or [])[:64]
+            if isinstance(item, dict) and item.get("id")
+            and (model_ids is None or item["id"] in selected)
+        ]
     if model_ids is not None and isinstance(result.get("models"), list):
         retained = {str(value).casefold() for value in model_ids}
         result["models"] = [
@@ -666,6 +677,25 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
         "services": services,
         "managed_voices": voices,
     }
+
+
+def audio_cpp_catalogue(
+    runtime: McpRuntime,
+    arguments: AudioCppCatalogueInput,
+) -> dict[str, Any]:
+    """Browse the static, versioned audio.cpp inventory through the application."""
+
+    return runtime.require_application().audio_cpp_catalogue(
+        category=arguments.category,
+        family=arguments.family,
+        query=arguments.query,
+        language=arguments.language,
+        capability=arguments.capability,
+        commercial_use=arguments.commercial_use,
+        recommended_only=arguments.recommended_only,
+        limit=arguments.limit,
+        offset=arguments.offset,
+    )
 
 
 def _catalog_value(values: Any, requested: str) -> str | None:

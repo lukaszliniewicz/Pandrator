@@ -474,6 +474,17 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_get_audio_cpp_catalogue",
+            "Browse the audio.cpp catalogue",
+            "AudioCppCatalogueInput",
+            RiskClass.READ,
+            "app.read",
+            "listAudioCppCatalogue",
+            "GET",
+            "/api/v1/services/audio-cpp/catalogue",
+            True,
+        ),
+        ActionSpec(
             "pandrator_configure_tts",
             "Configure a catalog-backed TTS selection",
             "ConfigureTtsInput",

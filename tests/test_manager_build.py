@@ -152,6 +152,18 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
         self.assertIn('"pandrator_manager.tray"', package_configuration)
         self.assertIn('"pandrator-tray.png"', package_configuration)
 
+    def test_audio_cpp_catalogue_is_included_in_the_frozen_bootstrap(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        specification = (repository / "pandrator_manager_bootstrap.spec").read_text(
+            encoding="utf-8"
+        )
+        for filename in ("audio_cpp_inventory.json", "audio_cpp_curation.json"):
+            self.assertIn(
+                f'(str(manager_package / "{filename}"), "pandrator_manager")',
+                specification,
+            )
+            self.assertTrue((repository / "pandrator_manager" / filename).is_file())
+
     def test_release_bundle_uses_public_platform_names(self) -> None:
         self.assertEqual(
             _release_platform(system="win32", machine="AMD64"),

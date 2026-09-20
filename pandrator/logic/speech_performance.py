@@ -17,8 +17,8 @@ import regex
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA = "pandrator.performance/v1"
-COMPILER_VERSION = "pssml-1.1"
-CAPABILITY_VERSION = "2026-09-19.1"
+COMPILER_VERSION = "pssml-1.2"
+CAPABILITY_VERSION = "2026-09-20.1"
 
 
 def content_hash(value: Any) -> str:
@@ -174,6 +174,8 @@ _GEMINI_EVENTS = {
     "gasp": "gasp",
 }
 _TURBO_EVENTS = {"laugh": "laugh", "chuckle": "chuckle", "cough": "cough"}
+_BREEZE_EVENTS = {"laugh": "laugh", "cough": "cough", "clear_throat": "clears throat", "sigh": "sigh"}
+_BREEZE_ZH_EVENTS = {"laugh": "笑", "cough": "咳嗽", "clear_throat": "清嗓子", "sigh": "叹气"}
 
 
 def capabilities_for_model(
@@ -286,11 +288,11 @@ def capabilities_for_model(
             instruction_scope=["request"],
             emotion={"mode": "open_description", "tags": []},
         )
-    elif route == "chatterbox" and normalized in {"chatterbox_turbo", "turbo"}:
+    elif (route == "chatterbox" and normalized in {"chatterbox_turbo", "turbo"}) or (audio_cpp and family == "chatterbox_turbo"):
         profile.update(
             status="documented",
             dialect="chatterbox_tags",
-            event_tags=dict(_TURBO_EVENTS),
+            event_tags={"laugh": "laugh", "sigh": "sigh"} if audio_cpp else dict(_TURBO_EVENTS),
         )
         profile["notes"].append(
             "Only the listed vocal-event tags are compiled; this is not free-form instruction support."
@@ -304,7 +306,50 @@ def capabilities_for_model(
             instruction_scope=["request"],
             voice_design=True,
             emotion={"mode": "open_description", "tags": []},
+            event_tags=dict(_BREEZE_EVENTS),
+            event_format="parentheses",
         )
+    elif audio_cpp and family == "supertonic":
+        profile.update(
+            status="documented", dialect="none",
+        )
+    elif audio_cpp and family == "omnivoice":
+        profile.update(
+            status="documented", dialect="instructions", instructions="field",
+            instruction_scope=["request"], voice_design=True,
+            emotion={"mode": "open_description", "tags": []},
+            event_tags={"laugh": "laughter", "sigh": "sigh"},
+        )
+    elif audio_cpp and family == "fireredtts3" and "instruct" in normalized:
+        profile.update(
+            status="documented", dialect="instructions", instructions="field",
+            instruction_scope=["request"], voice_design=True,
+            emotion={"mode": "open_description", "tags": []},
+        )
+    elif audio_cpp and family == "moss_voicegen":
+        profile.update(status="documented", dialect="instructions", instructions="field",
+            instruction_scope=["request"], voice_design=True,
+            emotion={"mode": "open_description", "tags": []})
+    elif audio_cpp and family == "irodori_tts" and "voicedesign" in normalized:
+        profile.update(status="documented", dialect="instructions", instructions="field",
+            instruction_scope=["request"], voice_design=True,
+            emotion={"mode": "open_description", "tags": []})
+    elif audio_cpp and family == "neutts":
+        profile.update(status="documented", dialect="neutts",
+            emotion={"mode": "enum", "tags": ["angry", "disgusted", "sad", "happy", "fearful", "neutral", "surprised"]})
+    elif audio_cpp and family == "cosyvoice3":
+        profile.update(
+            status="documented", dialect="instructions", instructions="field",
+            instruction_scope=["request"],
+            emotion={"mode": "open_description", "tags": []},
+        )
+    elif audio_cpp and family == "voxcpm2":
+        profile.update(
+            status="documented", dialect="voxcpm2", instructions="inline",
+            instruction_scope=["request"], voice_design=True,
+            emotion={"mode": "open_description", "tags": []},
+        )
+        profile["notes"].append("Voice/style descriptions are parenthesized input prefixes; phrase scope is not established.")
     return profile
 
 
@@ -385,13 +430,18 @@ def resolve_capabilities(
             **tts_handler._audio_cpp_model_metadata(model, endpoint),
             **metadata,
         }
-    return capabilities_for_model(
+    profile = capabilities_for_model(
         model,
         backend=route,
         family=str(metadata.get("family") or ""),
         voice_mode=str(metadata.get("voice_mode") or ""),
         backend_version=str(endpoint.get("backend_version") or ""),
     )
+    if route == "audio_cpp" and metadata.get("family") == "fireredtts3" and settings.get("audio_cpp_voice_ref"):
+        # v0.8.1 reuses the instruction slot for the reference transcript.
+        profile.update(instructions="none", voice_design=False)
+        profile["notes"].append("FireRed cloning uses the instruction slot for the reference transcript; delivery directions are unavailable in this mode.")
+    return profile
 
 
 def _delivery_text(delivery: Delivery) -> str:
@@ -571,16 +621,21 @@ def compile_performance(
         or settings.get("openai_audio_instructions")
         or ""
     ).strip()
-    local = (
-        _delivery_text(annotation.delivery) if annotation.decision == "steer" else ""
-    )
+    native_emotion = annotation.delivery.emotion.casefold() if dialect == "neutts" else ""
+    if native_emotion not in capability["emotion"]["tags"]:
+        native_emotion = ""
+    delivery = annotation.delivery.model_copy(update={"emotion": ""}) if native_emotion else annotation.delivery
+    local = _delivery_text(delivery) if annotation.decision == "steer" else ""
     combined = "\n".join(part for part in (general, local) if part)
     instructions = ""
     provider_input = text
     inserts: dict[int, list[tuple[int, str]]] = {}
 
-    def insert(position: int, priority: int, tag: str):
-        inserts.setdefault(position, []).append((priority, f"[{tag}]"))
+    def insert(position: int, priority: int, tag: str, *, event: bool = False):
+        opening, closing = "[", "]"
+        if event and capability.get("event_format") == "parentheses":
+            opening, closing = "(", ")"
+        inserts.setdefault(position, []).append((priority, f"{opening}{tag}{closing}"))
 
     inline = dialect in {"fish_s2", "gemini"}
     if combined:
@@ -590,6 +645,11 @@ def compile_performance(
                 "direction",
                 "This model/route cannot apply natural-language delivery directions.",
             )
+        elif dialect == "voxcpm2":
+            if re.search(r"[()（）\x00]|<\||\|>", combined):
+                raise ValueError("VoxCPM2 direction must not contain nested parentheses or control tokens.")
+            inserts.setdefault(0, []).append((0, f"({combined.replace(chr(10), '; ')})"))
+            note("applied", "direction", "Compiled as a VoxCPM2 style prefix.")
         elif dialect == "fish_s2":
             # General directions are user input, not pSSML: reject nested control
             # syntax instead of creating malformed tags or reading it as speech.
@@ -649,7 +709,10 @@ def compile_performance(
         ):
             note("disabled", "event", f"Vocalizations are disabled: {event.kind}.")
             continue
-        tag = capability["event_tags"].get(event.kind)
+        event_tags = capability["event_tags"]
+        if capability.get("event_format") == "parentheses" and str(settings.get("language") or settings.get("target_language") or "").casefold().startswith(("zh", "chinese")):
+            event_tags = _BREEZE_ZH_EVENTS
+        tag = event_tags.get(event.kind)
         if not tag:
             note(
                 "unsupported",
@@ -669,7 +732,10 @@ def compile_performance(
                 "pause",
                 "Duration is a soft synthesis hint; assembly timing is unchanged.",
             )
-        insert(position, 10, tag)
+        if event_tags is _BREEZE_ZH_EVENTS:
+            inserts.setdefault(position, []).append((10, f"[{tag}]"))
+        else:
+            insert(position, 10, tag, event=True)
         note(
             "applied",
             "event",
@@ -782,6 +848,9 @@ def compile_performance(
                 f"Vertex TTS request exceeds the {vertex_limit}-byte UTF-8 limit."
             )
     request_options: dict[str, Any] = {}
+    if native_emotion:
+        request_options["emotion"] = native_emotion
+        note("applied", "emotion", "Compiled as a NeuTTS emotion option.")
     if dialect == "fish_s2" and capability["backend"] == "audio_cpp" and inserts:
         # Word-budget/Japanese splitting must not cut generated bracket controls
         # in half. Keep Pandrator's block intact while selecting the engine's

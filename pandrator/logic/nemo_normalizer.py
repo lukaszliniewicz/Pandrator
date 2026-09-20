@@ -51,6 +51,7 @@ _CHAPTER_MARKER = "[[Chapter]]"
 _PROTECTED_BOUNDARY_RE = re.compile(r"(\[\[Chapter\]\]|\r?\n+)")
 _NON_WHITESPACE_RE = re.compile(r"\S+")
 _INTERNAL_TOKEN_MARKUP_RE = re.compile(r"\b(?:tokens?|name|cardinal|ordinal|date|time)\s*\{")
+_LEADING_APOSTROPHE_WORD_RE = re.compile(r"(?<!\w)(['’])([^\W\d_]+)")
 _MAX_WORDS_PER_NORMALIZATION_UNIT = 300
 
 _NORMALIZER_CACHE = {}
@@ -144,6 +145,56 @@ def _split_long_unit(text: str) -> list[str]:
     return units
 
 
+def _normalize_body_segment(normalizer, body: str) -> str:
+    if not body or not body.strip():
+        return body
+
+    leading = body[: len(body) - len(body.lstrip())]
+    trailing = body[len(body.rstrip()) :]
+    body_end = len(body) - len(trailing) if trailing else len(body)
+    core = body[len(leading) : body_end]
+    if not core:
+        return body
+
+    try:
+        normalized = normalizer.normalize(
+            core,
+            verbose=False,
+            punct_pre_process=False,
+            punct_post_process=False,
+        )
+    except Exception as exc:
+        logging.warning("NeMo text normalization skipped a text segment: %s", exc)
+        return body
+
+    if not str(normalized or "").strip():
+        logging.warning("NeMo text normalization returned an empty text segment; using the source text.")
+        return body
+    if _INTERNAL_TOKEN_MARKUP_RE.search(str(normalized)):
+        logging.warning("NeMo text normalization returned internal token markup; using the source text.")
+        return body
+    return f"{leading}{normalized}{trailing}"
+
+
+def _normalize_body_with_literal_apostrophes(normalizer, body: str) -> str:
+    matches = [
+        match
+        for match in _LEADING_APOSTROPHE_WORD_RE.finditer(body)
+        if match.group(2) and match.group(2)[0].islower()
+    ]
+    if not matches:
+        return _normalize_body_segment(normalizer, body)
+
+    normalized_parts = []
+    cursor = 0
+    for match in matches:
+        normalized_parts.append(_normalize_body_segment(normalizer, body[cursor:match.start()]))
+        normalized_parts.append(match.group(0))
+        cursor = match.end()
+    normalized_parts.append(_normalize_body_segment(normalizer, body[cursor:]))
+    return "".join(normalized_parts)
+
+
 def _normalize_unit(normalizer, text: str) -> str:
     if not text or not text.strip():
         return text
@@ -155,24 +206,7 @@ def _normalize_unit(normalizer, text: str) -> str:
     if not body:
         return text
 
-    try:
-        normalized = normalizer.normalize(
-            body,
-            verbose=False,
-            punct_pre_process=False,
-            punct_post_process=False,
-        )
-    except Exception as exc:
-        logging.warning("NeMo text normalization skipped a text segment: %s", exc)
-        return text
-
-    if not str(normalized or "").strip():
-        logging.warning("NeMo text normalization returned an empty text segment; using the source text.")
-        return text
-    if _INTERNAL_TOKEN_MARKUP_RE.search(str(normalized)):
-        logging.warning("NeMo text normalization returned internal token markup; using the source text.")
-        return text
-
+    normalized = _normalize_body_with_literal_apostrophes(normalizer, body)
     return f"{leading}{normalized}{trailing}"
 
 

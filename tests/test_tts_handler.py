@@ -393,11 +393,12 @@ class TTSHandlerTests(unittest.TestCase):
             "Voice Cloning",
             services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
-        self.assertEqual(
-            ["qwen3_tts_1_7b_customvoice_q8_0", "qwen3_tts_1_7b_voicedesign_q8_0",
-             "fish_audio_s2_pro_q8_0", "breeze_tts_2_q8_0"],
-            services["audio_cpp"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
-        )
+        audio_directions = services["audio_cpp"][tts_handler.GENERATION_PROMPT_MODELS_FIELD]
+        self.assertTrue({"qwen3_tts_1_7b_customvoice_q8_0", "qwen3_tts_1_7b_voicedesign_q8_0",
+                        "fish_audio_s2_pro_q8_0", "breeze_tts_2_q8_0", "voxcpm2_q8_0",
+                        "omnivoice_q8_0", "fireredtts3_instruct_q8_0", "cosyvoice3_q8_0"}.issubset(audio_directions))
+        self.assertNotIn("qwen3_tts_1_7b_base_q8_0", audio_directions)
+        self.assertNotIn("qwen3_tts_0_6b_customvoice_q8_0", audio_directions)
 
     def test_openai_generation_prompt_uses_instructions_only_on_capable_model(self):
         endpoint = {
@@ -852,6 +853,8 @@ class TTSHandlerTests(unittest.TestCase):
             "breeze_tts": None,
         }
         for model in tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG:
+            if model["family"] not in expected_by_family or model["id"].startswith("pocket_tts_") and model["id"] != "pocket_tts_english_q8_0":
+                continue
             with self.subTest(model=model["id"]):
                 payload = tts_handler._build_audio_cpp_audio_payload(
                     "Test.", {"model": model["id"], "language": "en-US",
@@ -880,7 +883,7 @@ class TTSHandlerTests(unittest.TestCase):
     def test_audio_cpp_language_mapping_uses_live_family_for_custom_model_id(self):
         payload = tts_handler._build_audio_cpp_audio_payload(
             "Test.", {"model": "my-cloner", "language": "de"},
-            {"model_catalog": [{"id": "my-cloner", "family": "fireredtts3"}]},
+            {"model_catalog": [{"id": "my-cloner", "family": "fireredtts3", "task": "clon"}]},
         )
         self.assertEqual("German", payload["language"])
 

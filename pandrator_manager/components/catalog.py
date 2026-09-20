@@ -7,7 +7,7 @@ WebUI, the CLI, and future native clients.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..models import (
     ComponentCapability,
@@ -140,17 +140,7 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
             "build has not yet been tested on NVIDIA hardware. FireRedTTS3 Base "
             "is experimental."
         ),
-        languages=(
-            "Qwen3: Chinese, English, French, German, Italian, Japanese, Korean, "
-            "Portuguese, Russian, Spanish",
-            "Fish Audio: English, Chinese, Japanese",
-            "VoxCPM2: 30+ languages",
-            "Magpie: 9 languages",
-            "OmniVoice: 600+ languages",
-            "PocketTTS: English, German, Italian, Portuguese, Spanish",
-            "FireRedTTS3: 24 languages plus Chinese dialects",
-            "BreezeTTS 2: English, Mandarin Chinese",
-        ),
+        languages=("Language and voice coverage depend on the selected model package.",),
         capabilities=(
             capability("voice_design", "Voice design"),
             capability("voice_cloning", "Voice cloning"),
@@ -959,8 +949,59 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
 }
 
 
+def _audio_cpp_models() -> tuple[ComponentModel, ...]:
+    from ..audio_cpp_inventory import curation, inventory
+    from .audiocpp import MODEL_PACKAGES
+
+    data, reviewed = inventory(), curation()
+    families = {item["id"]: item for item in data["families"]}
+    packages = {item["id"]: item for item in data["packages"]}
+    existing = {item.id: item for item in PRESENTATIONS["audio_cpp"].models}
+    models = []
+    for model_id, package in MODEL_PACKAGES.items():
+        raw = packages.get(model_id, {})
+        family = families.get(package.family, {})
+        curated = {**reviewed.get("families", {}).get(package.family, {}),
+                   **reviewed.get("models", {}).get(model_id, {})}
+        license_info = curated.get("license", {"name": "Not verified", "commercial_use": "unknown"})
+        languages = curated.get("supported_languages", family.get("languages", []))
+        reference = curated.get("reference_audio", "required" if "clone" in family.get("tasks", []) else "not_used")
+        transcript = curated.get("reference_text", "unverified" if reference != "not_used" else "not_used")
+        if "customvoice" in model_id or "voicedesign" in model_id:
+            reference = transcript = "not_used"
+        if package.family == "pocket_tts":
+            languages = [code for name, code in {"english":"en", "german":"de", "italian":"it", "portuguese":"pt", "spanish":"es", "french":"fr"}.items() if name in model_id] or languages
+        if package.family == "fireredtts3":
+            reference = "optional" if "instruct" in model_id else "required"
+        size = sum(item.get("size") or 0 for item in raw.get("weight_manifest", {}).get("files", [])) or None
+        old = existing.get(model_id)
+        label = raw.get("label") or (old.label if old else package.label or model_id)
+        description = curated.get("description", family.get("description", ""))
+        info = {
+            "id":model_id, "label":label, "family":package.family,
+            "family_label":family.get("display_name", package.family),
+            "description":description, "supported_languages":languages,
+            "language_note":curated.get("language_note", "Coverage is reported by the upstream family."),
+            "license":license_info, "recommended_for":curated.get("recommended_for", ""),
+            "reference_audio":reference, "reference_text":transcript,
+            "estimated_download_bytes":size,
+            "sources":family.get("docs", []), "verified_runtime":data["runtime_version"],
+        }
+        models.append(ComponentModel(
+            id=model_id, label=label, description=description,
+            license_name=license_info.get("name"), license_url=license_info.get("url"),
+            usage_note=old.usage_note if old and old.license_name == license_info.get("name") else "Review the linked model licence before use.",
+            model_info=info, estimated_download_bytes=size,
+            size_provenance=SizeProvenance.PUBLISHED if size else SizeProvenance.UNKNOWN,
+            capabilities=old.capabilities if old else (),
+        ))
+    return tuple(sorted(models, key=lambda item: (not bool(item.model_info.get("recommended_for")), item.id)))
+
+
 def presentation_for(component_id: str) -> ComponentPresentation:
     try:
+        if component_id == "audio_cpp":
+            return replace(PRESENTATIONS[component_id], models=_audio_cpp_models())
         return PRESENTATIONS[component_id]
     except KeyError as error:  # pragma: no cover - every built-in is validated
         raise KeyError(f"Missing presentation metadata for {component_id}.") from error

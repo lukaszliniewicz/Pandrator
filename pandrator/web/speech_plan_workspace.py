@@ -44,10 +44,14 @@ def freeze_speech_snapshot(
     session, revision_id: str, snapshot: dict[str, Any], *, explicit: bool = False
 ) -> None:
     revision = session.get(m.GenerationPlanRevision, revision_id)
+    if revision is not None and (revision.operation_json or {}).get("draft"):
+        raise RevisionConflict("Adopt this resegmentation draft with a topology restore before generation.")
     performance_frozen = bool(
         revision is not None
         and freeze_generation_performance_snapshot(session, revision_id, snapshot)
     )
+    from .speech_boundaries import freeze_boundaries
+    freeze_boundaries(session, revision_id, snapshot)
     if revision is not None and (
         explicit or performance_frozen or session.get(m.SpeechPlanReview, revision_id)
         or (revision.settings_json or {}).get("_prepared_for_review")
@@ -684,6 +688,8 @@ def select_speech_plan(
         raise RevisionConflict(
             "The selected plan changed. Refresh before selecting another revision."
         )
+    if (revision.operation_json or {}).get("draft"):
+        raise RevisionConflict("Adopt this resegmentation draft with a topology restore so its source revision is checked.")
     plan.active_revision_id = revision.id
     plan.updated_at = m.utcnow()
     session.flush()

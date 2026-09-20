@@ -3496,8 +3496,10 @@ class GenerationService:
         if not isinstance(operation, dict):
             raise TypeError("A topology operation object is required.")
         action = str(operation.get("action") or "").strip().lower()
-        if action not in {"split", "merge", "restore"}:
-            raise ValueError("Topology action must be split, merge, or restore.")
+        if action not in {"split", "merge", "restore", "resegment"}:
+            raise ValueError("Topology action must be split, merge, restore, or resegment.")
+        if action == "resegment":
+            activate = False
         plan = session.scalar(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
@@ -3652,6 +3654,8 @@ class GenerationService:
             right_values["paragraph_break_after"] = segment.paragraph_break_after
             left_values["silence_after_ms"] = 0
             left_values["paragraph_break_after"] = False
+            from .audiobook_resegmentation import project_split_markup
+            project_split_markup(session, segment, [left_values, right_values], speech_cursor, session_id)
             replacement_by_old[segment.id] = [left_values, right_values]
             mappings.append(
                 {
@@ -3785,6 +3789,8 @@ class GenerationService:
                     "paragraph_break_after": right.paragraph_break_after,
                 }
             )
+            from .audiobook_resegmentation import project_merge_markup
+            project_merge_markup(session, left, right, merged_values, session_id)
             replacement_by_old[left.id] = [merged_values]
             replacement_by_old[right.id] = []
             mappings.append(
@@ -3793,11 +3799,24 @@ class GenerationService:
                     "new_segments": ["merged"],
                 }
             )
+        elif action == "resegment":
+            from .audiobook_resegmentation import prepare_resegmentation
+            from .speech_plan_workspace import plan_signature
+            replacement_by_old, mappings = prepare_resegmentation(
+                self, session, session_id, current, active_segments, operation,
+            )
+            operation = {**operation, "draft": True, "base_signature": plan_signature(session, current.id)}
         else:
             target_id = str(operation.get("target_revision_id") or "").strip()
             target = session.get(GenerationPlanRevision, target_id)
             if target is None or target.plan_id != plan.id:
                 raise KeyError(target_id)
+            if (target.operation_json or {}).get("draft"):
+                from .source_management import assert_session_idle
+                from .speech_plan_workspace import plan_signature
+                assert_session_idle(session, session_id)
+                if target.parent_revision_id != current.id or (target.operation_json or {}).get("base_signature") != plan_signature(session, current.id):
+                    raise RevisionConflict("The audiobook changed after this draft was prepared. Create a fresh resegmentation draft.")
             target_segments = list(
                 session.scalars(
                     select(GenerationSegment)
@@ -3941,6 +3960,12 @@ class GenerationService:
             new_index += replacement_count
         if action == "merge":
             lineage[right.id] = list(lineage[left.id])
+        if action == "resegment":
+            for source_id in replacement_by_old:
+                lineage[source_id] = [item.id for item in new_segments if any(
+                    span["segment_id"] == source_id
+                    for span in (item.speech_block_provenance_json or {}).get("resegmentation", {}).get("source_spans", [])
+                )]
         operation_json["lineage"] = lineage
         revision.operation_json = deepcopy(operation_json)
         revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
@@ -3954,6 +3979,10 @@ class GenerationService:
             "operation_json": dict(revision.operation_json or {}),
             "segment_ids": [segment.id for segment in new_segments],
             "affected_segment_ids": affected_ids,
+            "is_draft": not activate,
+            "active_plan_revision_id": plan.active_revision_id,
+            "preview": mappings[0] if action == "resegment" else None,
+            "review_required": {"performance": True, "changed_audio": len(affected_ids)},
         }
 
     def select_take(
@@ -4528,7 +4557,7 @@ class GenerationService:
             return {"id": run.id, "job_id": run.job_id, "status": run.status}
 
     def resume(self, run_id: str) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             run = session.get(GenerationRun, run_id)
             if run is None:
                 raise KeyError(run_id)
@@ -4543,14 +4572,13 @@ class GenerationService:
             from .generation_edit_audio import resume_segment_ids
 
             selected_ids = resume_segment_ids(session, run)
-        job = self.jobs.enqueue(
-            "generation.run",
-            {"generation_run_id": run_id, "segment_ids": selected_ids, "operation": "resume"},
-            session_id=session_id,
-            resource_keys=self._resource_keys(session_id, snapshot),
-        )
-        with self.database.session() as session:
-            run = session.get(GenerationRun, run_id)
+            job = self.jobs.enqueue_in_session(
+                session,
+                "generation.run",
+                {"generation_run_id": run_id, "segment_ids": selected_ids, "operation": "resume"},
+                session_id=session_id,
+                resource_keys=self._resource_keys(session_id, snapshot),
+            )
             run.job_id = job.id
         return {"id": run_id, "job_id": job.id, "status": "queued"}
 
@@ -5330,6 +5358,18 @@ class GenerationService:
         )
         if not plan_revision_id:
             raise ValueError("Create generation segments before assembling audio.")
+        from .speech_boundaries import freeze_boundaries
+        boundary_snapshot = deepcopy(run.settings_snapshot_json or {}) if run else {"audio": snapshot.get("audio") or {}}
+        if not run:
+            from .performance_plans import freeze_performance_snapshot
+            from .models import PerformancePlan
+            tts_settings = self.settings.get_in_session(session, session_id, "tts")["effective"]
+            if (tts_settings.get("casting_enabled") or tts_settings.get("performance_enabled")) and session.scalar(select(PerformancePlan.id).where(PerformancePlan.plan_revision_id == plan_revision_id, PerformancePlan.status == "adopted")):
+                freeze_performance_snapshot(session, plan_revision_id, boundary_snapshot)
+        if "speech_boundaries" not in boundary_snapshot:
+            freeze_boundaries(session, plan_revision_id, boundary_snapshot)
+        snapshot["speech_boundaries"] = boundary_snapshot.get("speech_boundaries", {})
+        settings_hash = stable_hash(snapshot)
         record = OutputAssembly(
             session_id=session_id,
             generation_run_id=run.id if run else None,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -19,6 +19,9 @@ _COMPONENT_ID = r"^[a-z][a-z0-9_-]{0,79}$"
 _SERVICE_ID = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$"
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 _OPTION_KEY = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
+_MODEL_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,119}$"
+_MODEL_ID = re.compile(_MODEL_ID_PATTERN)
+_MODEL_OPTION_KEYS = frozenset({"models", "add_models"})
 _FORBIDDEN_OPTION_KEYS = frozenset(
     {
         "api_key",
@@ -41,7 +44,11 @@ _FORBIDDEN_OPTION_KEYS = frozenset(
         "workspace",
     }
 )
-ManagerOptionValue = str | int | float | bool | None
+ManagerModelIds = Annotated[
+    list[Annotated[str, Field(pattern=_MODEL_ID_PATTERN)]],
+    Field(min_length=1, max_length=32),
+]
+ManagerOptionValue = str | int | float | bool | None | ManagerModelIds
 
 
 class ManagerDesiredComponentInput(ToolInput):
@@ -96,6 +103,32 @@ class ManagerDesiredComponentInput(ToolInput):
                     "Manager component options cannot contain paths, "
                     "commands, credentials, or connection endpoints."
                 )
+            if normalized in _MODEL_OPTION_KEYS and not isinstance(item, list):
+                raise ValueError(
+                    "Manager model options must be nonempty ID lists."
+                )
+            if isinstance(item, list):
+                if str(key) != normalized:
+                    raise ValueError(
+                        "Manager model option keys must be models or add_models."
+                    )
+                if normalized not in _MODEL_OPTION_KEYS:
+                    raise ValueError(
+                        "Manager component options accept lists only for "
+                        "models and add_models."
+                    )
+                if not item or len(item) > 32:
+                    raise ValueError(
+                        "Manager model selections must contain 1 to 32 IDs."
+                    )
+                if len(item) != len(set(item)):
+                    raise ValueError("Manager model IDs must be unique.")
+                if any(
+                    not isinstance(model_id, str)
+                    or _MODEL_ID.fullmatch(model_id) is None
+                    for model_id in item
+                ):
+                    raise ValueError("A Manager model ID is invalid.")
             if isinstance(item, float) and not math.isfinite(item):
                 raise ValueError(
                     "Manager component options must be finite JSON values."
@@ -115,6 +148,20 @@ class ManagerDesiredComponentInput(ToolInput):
                 "Manager component options exceed the MCP size limit."
             )
         return value
+
+    @model_validator(mode="after")
+    def validate_model_options(self) -> "ManagerDesiredComponentInput":
+        selected = {
+            str(key).strip().lower().replace("-", "_")
+            for key in self.options
+        }.intersection(_MODEL_OPTION_KEYS)
+        if selected and self.component_id != "audio_cpp":
+            raise ValueError(
+                "Manager model selections are supported only for audio_cpp."
+            )
+        if selected == _MODEL_OPTION_KEYS:
+            raise ValueError("Specify either models or add_models, not both.")
+        return self
 
 
 class PlanComponentChangeInput(ToolInput):

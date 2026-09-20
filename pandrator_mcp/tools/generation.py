@@ -8,18 +8,18 @@ from ..context import McpRuntime
 from ..errors import NextAction
 from ..results import ToolOutcome
 from ..schemas.generation import (
-    AssembleGenerationRunInput,
     AdoptSubtitleSourceInput,
+    AssembleGenerationRunInput,
     GenerateSpeechPlanInput,
+    ListGenerationSegmentsInput,
     ListSpeechPlanRevisionsInput,
     PrepareSpeechPlanInput,
-    ReviewSpeechPlanInput,
-    SpeechPlanStatusInput,
-    ReviseSpeechBlockPlanBatchInput,
-    ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
+    ReviewSpeechPlanInput,
+    ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
+    SpeechPlanStatusInput,
     UpdateGenerationSegmentInput,
 )
 from ..work_mapping import application_work_reference
@@ -48,6 +48,8 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "end_ms": segment.get("end_ms"),
         "speaker": segment.get("speaker"),
         "node_kind": segment.get("node_kind"),
+        "silence_after_ms": segment.get("silence_after_ms"),
+        "paragraph_break_after": segment.get("paragraph_break_after"),
         "source_segment_ids": segment.get("source_segment_ids") or [],
         "alignment_group": segment.get("alignment_group"),
         "text": segment.get("text"),
@@ -120,6 +122,7 @@ def revise_speech_block_plan(
         left_segment_id=arguments.left_segment_id,
         right_segment_id=arguments.right_segment_id,
         target_revision_id=arguments.target_revision_id,
+        **({key: getattr(arguments, key) for key in ("segment_ids", "boundaries", "max_chars") if getattr(arguments, key) is not None}),
         idempotency_key=arguments.idempotency_key,
     )
     return ToolOutcome(
@@ -127,8 +130,8 @@ def revise_speech_block_plan(
         next_actions=[
             NextAction(
                 tool="pandrator_list_generation_segments",
-                arguments={"session_id": arguments.session_id},
-                reason="Re-list segments and inspect the new immutable plan revision.",
+                arguments={"session_id": arguments.session_id, "plan_revision_id": result.get("plan_revision_id")},
+                reason="Inspect the new revision. A resegmentation draft must be adopted with restore against its unchanged base revision before generation.",
             )
         ],
     )

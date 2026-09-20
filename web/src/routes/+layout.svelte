@@ -60,6 +60,7 @@
     { href: '/transcribe', label: 'Quick Transcribe', icon: AudioLines },
     { href: '/sources', label: 'Source library', icon: Library },
     { href: '/voices', label: 'Voices', icon: Mic2 },
+    { href: '/models', label: 'Audio models', icon: AudioLines },
     { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
     { href: '/providers', label: 'Providers & services', icon: ServerCog },
     { href: '/rvc', label: 'RVC conversion', icon: AudioWaveform },

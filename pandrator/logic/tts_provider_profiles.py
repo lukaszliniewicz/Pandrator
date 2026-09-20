@@ -1,6 +1,7 @@
 import copy
 
 from ..constants import magpie_voice_catalog
+from .audio_cpp_catalogue import family_metadata, speech_model_catalog
 from .audio_cpp_parameters import request_parameters_for_family
 
 OPENAI_ADAPTER = "openai_compatible"
@@ -8,11 +9,6 @@ AUDIO_CPP_ADAPTER = "audio_cpp"
 GENERIC_JSON_ADAPTER = "generic_json"
 ELEVENLABS_NATIVE_ADAPTER = "elevenlabs_native"
 AZURE_SPEECH_ADAPTER = "azure_speech"
-
-AUDIO_CPP_VOICE_DESIGN_MODELS = (
-    "qwen3_tts_1_7b_voicedesign_q8_0",
-    "breeze_tts_2_q8_0",
-)
 
 # audio.cpp v0.7.2 ships these model families.  The server remains the source
 # of truth when it advertises a live catalogue; these entries keep a fresh or
@@ -109,10 +105,29 @@ AUDIO_CPP_MODEL_CATALOG = [
     },
 ]
 
+
+# Live server IDs still own selectability. This versioned inventory supplies
+# metadata even for speech packages that have not been installed yet.
+_audio_cpp_existing = {item["id"]: item for item in AUDIO_CPP_MODEL_CATALOG}
+for _metadata in speech_model_catalog():
+    _model = _audio_cpp_existing.get(_metadata["id"])
+    if _model is None:
+        _model = {}
+        AUDIO_CPP_MODEL_CATALOG.append(_model)
+    _model.update(_metadata)
+    _model["catalogue_info"] = copy.deepcopy(_metadata)
+    if _model["family"] == "fish_audio":
+        _model["family"] = "fish_audio_s2"
+
 for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
     _audio_cpp_model["request_parameters"] = request_parameters_for_family(
         str(_audio_cpp_model.get("family") or "")
     )
+
+AUDIO_CPP_VOICE_DESIGN_MODELS = tuple(
+    item["id"] for item in AUDIO_CPP_MODEL_CATALOG
+    if item.get("pandrator_features", {}).get("voice_design") == "documented"
+)
 
 AUDIO_CPP_MODEL_VOICE_MODES = {
     item["id"]: item["voice_mode"] for item in AUDIO_CPP_MODEL_CATALOG
@@ -1226,9 +1241,14 @@ def _audio_cpp_profile() -> dict:
         # cloning-only models when the live catalogue is unavailable.
         "voices": [],
         "voice_catalogues": {
+            **{entry["id"]: prebuilt_voices[:9] for entry in model_catalog if "customvoice" in entry["id"]},
+            **{entry["id"]: [f"{gender}{number}" for gender in ("F", "M") for number in range(1, 6)] for entry in model_catalog if entry.get("family") == "supertonic"},
+            **{entry["id"]: next((option.get("values", []) for option in family_metadata("neutts").get("options", {}).get("request", []) if option.get("name") == "voice_id"), []) for entry in model_catalog if entry.get("family") == "neutts"},
+            **{entry["id"]: ["af_heart"] for entry in model_catalog if entry.get("family") == "kokoro_tts"},
             "qwen3_tts_1_7b_customvoice_q8_0": prebuilt_voices[:9],
             "magpie_tts_q8_0": list(magpie_voice_catalog()),
             "pocket_tts_english_q8_0": ["alba"],
+            "supertonic_3_q8_0": [f"{gender}{number}" for gender in ("F", "M") for number in range(1, 6)],
         },
         "supports_prebuilt_voices": True,
         "supports_voice_cloning": True,

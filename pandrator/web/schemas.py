@@ -682,10 +682,10 @@ class GenerationPlanBatchRequest(StrictModel):
 
 
 class GenerationPlanTopologyRequest(StrictModel):
-    """One of the three immutable, typed generation-plan topology edits."""
+    """One immutable, typed generation-plan topology edit."""
 
     expected_revision_id: str = Field(min_length=1, max_length=80)
-    action: Literal["split", "merge", "restore"]
+    action: Literal["split", "merge", "restore", "resegment"]
     segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     cursor: StrictInt | None = None
     text_layer: Literal["display", "speech"] | None = None
@@ -694,9 +694,16 @@ class GenerationPlanTopologyRequest(StrictModel):
     right_segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     target_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
 
+    segment_ids: list[Annotated[str, Field(min_length=1, max_length=80)]] | None = Field(default=None, min_length=1, max_length=100)
+    boundaries: list[StrictInt] | None = Field(default=None, max_length=199)
+    max_chars: StrictInt | None = Field(default=None, ge=40, le=4000)
+
     @model_validator(mode="after")
     def validate_action_shape(self) -> GenerationPlanTopologyRequest:
         fields = {
+            "segment_ids": self.segment_ids,
+            "boundaries": self.boundaries,
+            "max_chars": self.max_chars,
             "segment_id": self.segment_id,
             "cursor": self.cursor,
             "text_layer": self.text_layer,
@@ -710,6 +717,8 @@ class GenerationPlanTopologyRequest(StrictModel):
             required = {"segment_id", "cursor", "text_layer"}
         elif self.action == "merge":
             required = {"left_segment_id", "right_segment_id"}
+        elif self.action == "resegment":
+            required = {"segment_ids"}
         else:
             required = {"target_revision_id"}
         missing = sorted(key for key in required if fields[key] is None)
@@ -718,6 +727,7 @@ class GenerationPlanTopologyRequest(StrictModel):
             for key, value in fields.items()
             if key not in required and value is not None
             and not (self.action == "split" and key == "passage_boundary_id")
+            and not (self.action == "resegment" and key in {"boundaries", "max_chars"})
         )
         if missing or forbidden:
             details = []
@@ -734,6 +744,8 @@ class GenerationPlanTopologyRequest(StrictModel):
             and not isinstance(self.cursor, int)
         ):
             raise ValueError("Split cursor must be an integer.")
+        if self.boundaries is not None and self.max_chars is not None:
+            raise ValueError("Choose explicit boundaries or max_chars, not both.")
         return self
 
 

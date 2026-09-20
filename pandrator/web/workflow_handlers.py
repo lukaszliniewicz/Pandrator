@@ -8352,6 +8352,10 @@ class WorkflowHandlers:
                 is_subtitle=source_artifact.role == "speech_blocks"
                 or self._is_subtitle_generation_record(record),
             )
+            if performance_snapshot.get("speech_boundaries"):
+                from .speech_boundaries import assembly_pause
+
+                silence_after = assembly_pause(segment, performance_snapshot)
             assembly_inputs.append((sentence_path, len(audio), silence_after))
             progress(
                 optimization_share + (index / len(records)) * synthesis_share,
@@ -10191,6 +10195,8 @@ class WorkflowHandlers:
                     int(alignment_diagnostics.get("final_drift_ms") or 0),
                 )
             else:
+                from .speech_boundaries import assembly_pause
+
                 planned_parts: list[AudioAssemblyPart] = []
                 planned_chapters: list[tuple[int, str]] = []
                 for index, (
@@ -10201,7 +10207,7 @@ class WorkflowHandlers:
                     duration_ms,
                 ) in enumerate(loaded):
                     silence_after_ms = (
-                        max(0, int(segment.silence_after_ms or 0))
+                        assembly_pause(segment, resolved)
                         if index < len(loaded) - 1
                         else 0
                     )
@@ -10846,6 +10852,14 @@ class WorkflowHandlers:
                 )
             if run.status != "completed":
                 raise ValueError("Only a completed generation run can be exported.")
+            from .speech_boundaries import freeze_boundaries
+
+            boundary_snapshot = deepcopy(run.settings_snapshot_json or {})
+            if "speech_boundaries" not in boundary_snapshot:
+                freeze_boundaries(session, run.plan_revision_id, boundary_snapshot)
+            assembly_snapshot["speech_boundaries"] = boundary_snapshot.get(
+                "speech_boundaries", {}
+            )
             existing_candidates = list(
                 session.scalars(
                     select(OutputAssembly)
@@ -10863,11 +10877,17 @@ class WorkflowHandlers:
                 (
                     candidate
                     for candidate in existing_candidates
-                    if candidate.settings_hash == settings_hash
-                    or output_assembly_settings_hash(
-                        dict((candidate.settings_json or {}).get("resolved") or {})
+                    if ((candidate.settings_json or {}).get("resolved") or {}).get(
+                        "speech_boundaries", {}
                     )
-                    == settings_hash
+                    == assembly_snapshot["speech_boundaries"]
+                    and (
+                        candidate.settings_hash == settings_hash
+                        or output_assembly_settings_hash(
+                            dict((candidate.settings_json or {}).get("resolved") or {})
+                        )
+                        == settings_hash
+                    )
                 ),
                 None,
             )

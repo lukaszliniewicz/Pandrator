@@ -1885,8 +1885,18 @@ A single reviewed cue.
             )
         self.assertEqual(["clean_source", "prepare_text", "optimize_document", "generate_audio"], [item["stage"] for item in result["artifacts"]])
         with self.database.session() as session:
-            active_segment = session.scalar(select(GenerationSegment).order_by(GenerationSegment.created_at.desc()))
-            self.assertEqual("Reviewed optimized narration.", active_segment.text)
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == self.session.id)
+            )
+            active_segments = list(session.scalars(
+                select(GenerationSegment)
+                .where(GenerationSegment.plan_revision_id == plan.active_revision_id)
+                .order_by(GenerationSegment.ordinal)
+            ))
+            self.assertEqual(
+                ["Reviewed optimized narration.", "A short paragraph."],
+                [segment.text for segment in active_segments],
+            )
 
     def test_llm_speech_optimization_runs_per_segment_without_mutating_plan_text(self):
         prepared_path = self.session_dir / "optimized-input.json"

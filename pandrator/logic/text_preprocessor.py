@@ -11,7 +11,12 @@ from . import nemo_normalizer
 from . import sentence_segmenter
 from .dubbing.languages import normalize_language_code
 from .dubbing.natural_boundaries import natural_split_candidates
-from .dubbing.text_units import clean_text, contains_cjk, join_fragments, strip_latin_diacritics
+from .dubbing.text_units import (
+    clean_text,
+    contains_cjk,
+    fragment_separator,
+    strip_latin_diacritics,
+)
 
 CHUNK_SIZE = 20000
 CHAPTER_MARKER = "[[Chapter]]"
@@ -30,7 +35,13 @@ DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE = str.maketrans("", "", DOUBLE_QUOTATION
 SINGLE_QUOTATION_MARK_PATTERN = re.compile(
     rf"(?<!\w)[{re.escape(SINGLE_QUOTATION_MARKS)}]|[{re.escape(SINGLE_QUOTATION_MARKS)}](?!\w)"
 )
-CLOSING_SPLIT_PUNCTUATION = "\"')]}”’»›」』》〟"
+CLOSING_SPLIT_PUNCTUATION = "\"')]}”’»›」』》〟〞〃）］｝〕】〉》〘〙〚〛"
+
+TERMINAL_PUNCTUATION = frozenset(".!?…。！？｡．‥⋯﹒﹖﹗")
+CLOSING_TERMINAL_PUNCTUATION = frozenset(
+    "\"'”’»›」』》〟〞〃)]}）］｝〕】〉》〘〙〚〛"
+)
+OPENING_NARRATION_QUOTES = frozenset("‘‚‛“„‟«‹「『《〝")
 
 SENTENCE_SPLITTER_SUPPORTED_LANGUAGES = {
     "ca",
@@ -135,7 +146,6 @@ def _split_structural_text_blocks(text: str) -> list[dict]:
 
 def _ensure_line_terminal_punctuation(text: str) -> str:
     """Treat one newline as wrapping and two or more as a paragraph break."""
-    terminal_punctuation = ".!?。！？｡．…"
     normalized = re.sub(r"\r\n?", "\n", text)
     paragraphs = []
     for paragraph in re.split(r"\n{2,}", normalized):
@@ -143,7 +153,17 @@ def _ensure_line_terminal_punctuation(text: str) -> str:
         paragraph = re.sub(r"[ \t]+", " ", paragraph).strip()
         if not paragraph:
             continue
-        if paragraph[-1] not in terminal_punctuation:
+
+        terminal_index = len(paragraph)
+        while (
+            terminal_index > 0
+            and paragraph[terminal_index - 1] in CLOSING_TERMINAL_PUNCTUATION
+        ):
+            terminal_index -= 1
+        if (
+            terminal_index == 0
+            or paragraph[terminal_index - 1] not in TERMINAL_PUNCTUATION
+        ):
             paragraph += "."
         paragraphs.append(paragraph)
     return "\n\n".join(paragraphs)
@@ -483,31 +503,33 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
             )
             continue
 
-        body_text = _ensure_line_terminal_punctuation(block["text"].strip())
-        body_paragraph_breaks = list(re.finditer(r'\n{2,}', body_text))
-        sentences = split_into_sentences(body_text, language, tts_service)
-
-        for sentence in sentences:
-            if not sentence.strip():
+        # Segment each source paragraph independently.  A sentence segmenter
+        # can return a single list for text spanning blank lines, which makes
+        # the boundary impossible to recover reliably after sentence appending.
+        for paragraph_text in re.split(r"\n{2,}", block["text"]):
+            body_text = _ensure_line_terminal_punctuation(paragraph_text.strip())
+            if not body_text:
                 continue
 
-            is_paragraph = any(
-                calculate_similarity(body_text[match.start()-15:match.start()], sentence[-15:]) >= 0.8
-                for match in body_paragraph_breaks
-            )
+            sentences = [
+                sentence for sentence in split_into_sentences(
+                    body_text, language, tts_service
+                ) if sentence.strip()
+            ]
 
-            sentence_dict = {
-                "original_sentence": sentence,
-                "paragraph": "yes" if is_paragraph else "no",
-                "chapter": "no",
-                "split_part": None,
-                "sentence_continues_after": False,
-            }
+            for sentence_index, sentence in enumerate(sentences):
+                sentence_dict = {
+                    "original_sentence": sentence,
+                    "paragraph": "yes" if sentence_index == len(sentences) - 1 else "no",
+                    "chapter": "no",
+                    "split_part": None,
+                    "sentence_continues_after": False,
+                }
 
-            if enable_sentence_splitting:
-                processed_sentences.extend(split_long_sentences(sentence_dict, max_sentence_length, language))
-            else:
-                processed_sentences.append(sentence_dict)
+                if enable_sentence_splitting:
+                    processed_sentences.extend(split_long_sentences(sentence_dict, max_sentence_length, language))
+                else:
+                    processed_sentences.append(sentence_dict)
 
     if enable_sentence_appending:
         processed_sentences = append_short_sentences(processed_sentences, max_sentence_length)
@@ -766,6 +788,49 @@ def split_long_sentences_2(sentence_dict, max_sentence_length, language: str):
 
     return split_sentences
 
+
+def _is_opening_narration_quote(text: str) -> bool:
+    if not text:
+        return False
+
+    first = text[0]
+    if first in OPENING_NARRATION_QUOTES:
+        return True
+    if first not in {'"', "'"}:
+        return False
+
+    remainder = text[1:].lstrip()
+    while remainder and remainder[0] in DOUBLE_QUOTATION_MARKS:
+        remainder = remainder[1:].lstrip()
+    if not remainder or remainder[0] in TERMINAL_PUNCTUATION:
+        return False
+
+    # An ASCII apostrophe followed by a lower-case word is a contraction such
+    # as 'tis or 'em, rather than an opening dialogue quote.
+    return first == '"' or not remainder[0].islower()
+
+
+def _join_narration_fragments(values) -> str:
+    """Join narration fragments while keeping dialogue quote seams readable."""
+    result = ""
+    for value in values:
+        fragment = clean_text(value)
+        if not fragment:
+            continue
+
+        separator = fragment_separator(result, fragment) if result else ""
+        if (
+            result
+            and not result[-1].isspace()
+            and _is_opening_narration_quote(fragment)
+            and not contains_cjk(result)
+            and not contains_cjk(fragment)
+        ):
+            separator = " "
+        result += separator + fragment
+    return result.strip(" \t\r\n")
+
+
 def append_short_sentences(sentence_dicts, max_sentence_length):
     appended_sentences = []
     i = 0
@@ -783,7 +848,9 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
             if appended_sentences: # Check if there's a previous sentence to append to
                 prev_sentence_dict = appended_sentences[-1]
                 if prev_sentence_dict.get("chapter") != "yes" and prev_sentence_dict.get("paragraph") != "yes":
-                    combined_text = join_fragments((prev_sentence_dict["original_sentence"], current_sentence_dict["original_sentence"]))
+                    combined_text = _join_narration_fragments(
+                        (prev_sentence_dict["original_sentence"], current_sentence_dict["original_sentence"])
+                    )
                     if len(combined_text) <= max_sentence_length:
                         # Update the previous sentence and mark it as a paragraph
                         prev_sentence_dict["original_sentence"] = combined_text
@@ -804,7 +871,9 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
             prev_sentence_dict = appended_sentences[-1]
             if (prev_sentence_dict.get("chapter") != "yes" and
                 prev_sentence_dict.get("paragraph") != "yes"):
-                combined_text = join_fragments((prev_sentence_dict["original_sentence"], current_sentence_dict["original_sentence"]))
+                combined_text = _join_narration_fragments(
+                    (prev_sentence_dict["original_sentence"], current_sentence_dict["original_sentence"])
+                )
                 if len(combined_text) <= max_sentence_length:
                     prev_sentence_dict["original_sentence"] = combined_text
                     prev_sentence_dict["sentence_continues_after"] = bool(
@@ -819,17 +888,19 @@ def append_short_sentences(sentence_dicts, max_sentence_length):
             next_sentence_dict = sentence_dicts[i + 1]
             if (next_sentence_dict.get("chapter") != "yes" and
                 next_sentence_dict.get("paragraph") != "yes"):
-                combined_text = current_sentence_dict["original_sentence"] + ' ' + next_sentence_dict["original_sentence"]
-                if len(combined_text) <= max_sentence_length:
-                    # Create a new merged sentence dictionary
-                    merged_dict = next_sentence_dict.copy() # Start with next sentence's properties
-                    merged_dict["original_sentence"] = combined_text
-                    merged_dict["paragraph"] = "no" # Result of merging non-paragraphs is non-paragraph
-                    merged_dict["split_part"] = None # Or determine appropriate merged split_part logic
-                    
-                    appended_sentences.append(merged_dict)
-                    i += 2 # Skip current and next as they are merged
-                    continue
+                    combined_text = _join_narration_fragments(
+                        (current_sentence_dict["original_sentence"], next_sentence_dict["original_sentence"])
+                    )
+                    if len(combined_text) <= max_sentence_length:
+                        # Create a new merged sentence dictionary
+                        merged_dict = next_sentence_dict.copy() # Start with next sentence's properties
+                        merged_dict["original_sentence"] = combined_text
+                        merged_dict["paragraph"] = "no" # Result of merging non-paragraphs is non-paragraph
+                        merged_dict["split_part"] = None # Or determine appropriate merged split_part logic
+
+                        appended_sentences.append(merged_dict)
+                        i += 2 # Skip current and next as they are merged
+                        continue
 
         # If no appending or prepending occurred, add the current sentence as is
         appended_sentences.append(current_sentence_dict)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, StrictInt, model_validator
 
@@ -54,11 +54,11 @@ class AssembleGenerationRunInput(ToolInput):
 
 
 class ReviseSpeechBlockPlanInput(ToolInput):
-    """Strict typed immutable split, merge, or restore operation."""
+    """Strict typed immutable split, merge, restore, or resegment operation."""
 
     session_id: str = Field(min_length=1, max_length=80)
     expected_revision_id: str = Field(min_length=1, max_length=80)
-    action: Literal["split", "merge", "restore"]
+    action: Literal["split", "merge", "restore", "resegment"]
     segment_id: str | None = Field(default=None, min_length=1, max_length=80)
     cursor: StrictInt | None = None
     text_layer: Literal["display", "speech"] | None = None
@@ -71,9 +71,16 @@ class ReviseSpeechBlockPlanInput(ToolInput):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
     )
 
+    segment_ids: list[Annotated[str, Field(min_length=1, max_length=80)]] | None = Field(default=None, min_length=1, max_length=100)
+    boundaries: list[StrictInt] | None = Field(default=None, max_length=199)
+    max_chars: StrictInt | None = Field(default=None, ge=40, le=4000)
+
     @model_validator(mode="after")
     def validate_action_shape(self) -> "ReviseSpeechBlockPlanInput":
         values = {
+            "segment_ids": self.segment_ids,
+            "boundaries": self.boundaries,
+            "max_chars": self.max_chars,
             "segment_id": self.segment_id,
             "cursor": self.cursor,
             "text_layer": self.text_layer,
@@ -85,10 +92,12 @@ class ReviseSpeechBlockPlanInput(ToolInput):
             "split": {"segment_id", "cursor", "text_layer"},
             "merge": {"left_segment_id", "right_segment_id"},
             "restore": {"target_revision_id"},
+            "resegment": {"segment_ids"},
         }[self.action]
         missing = sorted(key for key in required if values[key] is None)
         forbidden = sorted(
             key for key, value in values.items() if key not in required and value is not None
+            and not (self.action == "resegment" and key in {"boundaries", "max_chars"})
         )
         if missing or forbidden:
             detail = []
@@ -97,6 +106,8 @@ class ReviseSpeechBlockPlanInput(ToolInput):
             if forbidden:
                 detail.append(f"forbidden {', '.join(forbidden)}")
             raise ValueError(f"Invalid {self.action} topology operation ({'; '.join(detail)}).")
+        if self.boundaries is not None and self.max_chars is not None:
+            raise ValueError("Choose explicit boundaries or max_chars, not both.")
         return self
 
 

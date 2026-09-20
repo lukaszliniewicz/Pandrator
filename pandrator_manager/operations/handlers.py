@@ -21,7 +21,6 @@ from dulwich.repo import Repo
 from ..artifacts import ArtifactDownloader, ArtifactSpec, SafeExtractor
 from ..components import ComponentRegistry
 from ..components.audiocpp import (
-    AUDIO_CPP_MODEL_REPOSITORY,
     AUDIO_CPP_MODEL_REVISION,
     AUDIO_CPP_VERSION,
     AudioCppModelPackage,
@@ -529,8 +528,9 @@ class FilesystemTaskHandler:
                 "package_id": package_id,
                 "provenance": {
                     "manager": "audio.cpp tools/model_manager_v2.py",
-                    "repository": AUDIO_CPP_MODEL_REPOSITORY,
-                    "requested_revision": AUDIO_CPP_MODEL_REVISION,
+                    "repository": package.repository,
+                    "revision": package.revision,
+                    "requested_revision": package.revision,
                     "digest_verified": True,
                     "sha256": dict(zip(package.files, package.sha256, strict=True)),
                 },
@@ -546,6 +546,7 @@ class FilesystemTaskHandler:
         """Override selected upstream package specs with our immutable revision."""
 
         remaining = {package.id for package in packages}
+        packages_by_id = {package.id: package for package in packages}
         for path in sorted(specs_root.glob("*.json")):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -564,8 +565,24 @@ class FilesystemTaskHandler:
                     entry["download"] = download
                 if not isinstance(download, dict):
                     raise RuntimeError(f"Invalid audio.cpp download spec for {entry.get('id')}.")
-                download["revision"] = AUDIO_CPP_MODEL_REVISION
-                remaining.remove(str(entry["id"]))
+                package = packages_by_id[str(entry["id"])]
+                download.update(
+                    {
+                        "kind": package.download_kind,
+                        "repo": package.repository,
+                        "revision": package.revision,
+                    }
+                )
+                # model_manager_v2 reads file layout from the package, not
+                # from its nested download connection settings.
+                entry.update({
+                    "files": list(package.download_files or tuple(
+                        f"{package.target_directory}/{path}" for path in package.files
+                    )),
+                    "strip_prefix": package.strip_prefix if package.download_files else package.target_directory,
+                    "target_directory": package.target_directory,
+                })
+                remaining.remove(package.id)
                 changed = True
             if changed:
                 _atomic_json(path, payload)
@@ -804,6 +821,16 @@ class FilesystemTaskHandler:
                 "effective_backend": effective,
                 "assets": selected_assets,
                 "models": [package.id for package in packages],
+                "model_revisions": {
+                    package.id: package.revision
+                    for package in packages
+                },
+                "model_repositories": {
+                    package.id: package.repository
+                    for package in packages
+                },
+                # Retain the historical summary field for older readers;
+                # model_revisions is authoritative when packages have mixed pins.
                 "model_revision": AUDIO_CPP_MODEL_REVISION,
                 "model_digest_verification": "sha256",
                 "model_reuse": reused_models,
