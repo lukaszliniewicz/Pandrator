@@ -422,6 +422,11 @@ class AttachExistingSourceInput(ToolInput):
 
 
 class UpdateSessionSettingsInput(ToolInput):
+    """Replace the complete override; omitted fields are removed.
+
+    Use ``PatchSessionSettingsInput`` for ordinary partial edits.
+    """
+
     session_id: str = Field(min_length=1, max_length=80)
     section: _SETTING_SECTIONS
     expected_revision: int = Field(ge=0)
@@ -451,3 +456,7 @@ class UpdateSessionSettingsInput(ToolInput):
         if len(encoded) > 128 * 1024:
             raise ValueError("Session settings exceed the MCP size limit.")
         return value
+
+
+class PatchSessionSettingsInput(UpdateSessionSettingsInput):
+    """Top-level merge into one existing session settings override."""

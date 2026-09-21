@@ -58,7 +58,6 @@ from .logical_passages import (
     passage_srt,
     pin_raw_source_passages,
     same_timing_language,
-    source_passages,
     stored_passages,
 )
 from .models import (
@@ -96,6 +95,7 @@ from .models import (
 )
 from .output_settings_snapshot import build_output_settings_snapshot
 from .source_resolution import resolve_media_source, resolve_primary_source
+from .workflow_inputs import workflow_transformations
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
@@ -510,6 +510,9 @@ def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any
     ) = _speech_block_settings(settings)
     return {
         "segment_policy_version": GENERATION_SEGMENT_POLICY_VERSION,
+        "audiobook_chunking": settings.get("audiobook_chunking"),
+        "max_sentence_length": settings.get("max_sentence_length"),
+        "audiobook_chunk_budget": settings.get("_audiobook_chunk_budget"),
         "speech_block_min_chars": min_chars,
         "speech_block_max_chars": max_chars,
         "speech_block_merge_threshold": merge_threshold,
@@ -1331,6 +1334,7 @@ class WorkflowHandlers:
                 select(OutcomePlan).where(OutcomePlan.session_id == session_id)
             )
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
+            transformations = workflow_transformations(session, session_id, outcome, self.database)
             translation_setting = session.get(
                 SessionSetting,
                 (session_id, "translation"),
@@ -1344,11 +1348,6 @@ class WorkflowHandlers:
         input_choices = (
             outcome_value.get("inputs")
             if isinstance(outcome_value.get("inputs"), dict)
-            else {}
-        )
-        transformations = (
-            outcome_value.get("transformations")
-            if isinstance(outcome_value.get("transformations"), dict)
             else {}
         )
         stage_settings = (
@@ -1747,6 +1746,7 @@ class WorkflowHandlers:
                 select(OutcomePlan).where(OutcomePlan.session_id == session_id)
             )
             outcome_value = dict(outcome.value_json or {}) if outcome else {}
+            transformations = workflow_transformations(session, session_id, outcome, self.database)
             selected = selected_artifacts(session, session_id)
             translation_setting = session.get(
                 SessionSetting,
@@ -1761,11 +1761,6 @@ class WorkflowHandlers:
         input_choices = (
             outcome_value.get("inputs")
             if isinstance(outcome_value.get("inputs"), dict)
-            else {}
-        )
-        transformations = (
-            outcome_value.get("transformations")
-            if isinstance(outcome_value.get("transformations"), dict)
             else {}
         )
         required = self._continuation_required_stages(
@@ -2339,11 +2334,7 @@ class WorkflowHandlers:
                 if isinstance(outcome_value.get("inputs"), dict)
                 else {}
             )
-            transformations = (
-                outcome_value.get("transformations")
-                if isinstance(outcome_value.get("transformations"), dict)
-                else {}
-            )
+            transformations = workflow_transformations(session, session_id, outcome, self.database)
             generation_input = (
                 str(inputs.get("generation") or "translation").strip().lower()
             )
@@ -2476,7 +2467,6 @@ class WorkflowHandlers:
         """
         from pandrator.logic.dubbing.source_passage_settings import (
             RUNTIME_TO_WEB,
-            effective_source_passage_settings,
             from_runtime_keys,
             normalize_source_passage_settings,
         )
@@ -6915,6 +6905,7 @@ class WorkflowHandlers:
         )
 
     def prepare_text(self, payload, progress, cancel_event):
+        from pandrator.logic.audiobook_chunking import audiobook_chunk_budget
         from pandrator.logic.text_preprocessor import preprocess_text
 
         from .workspace import BUILTIN_DEFAULTS
@@ -6930,6 +6921,15 @@ class WorkflowHandlers:
         record = self._session_record(session_id)
         source_language = str(record.source_language or "auto")
         text_defaults = BUILTIN_DEFAULTS["text"]
+        captured_tts = settings.get("_audiobook_tts_settings")
+        if not isinstance(captured_tts, dict):
+            snapshot = payload.get("resolved_settings_snapshot")
+            captured_tts = (
+                snapshot.get("tts")
+                if isinstance(snapshot, dict) and isinstance(snapshot.get("tts"), dict)
+                else {"service": "XTTS"}
+            )
+        budget = audiobook_chunk_budget(settings, captured_tts, source_language)
         progress(0.1, "Segmenting narration")
         supplied_markup = (source_artifact.metadata_json or {}).get("speech_markup") or {}
         if supplied_markup:
@@ -6953,10 +6953,10 @@ class WorkflowHandlers:
                     # Segmentation is intentionally provider-independent.  This
                     # selects the shared multilingual sentence tokenizer only.
                     "tts_service": "XTTS",
-                    "max_sentence_length": int(
-                        settings.get("max_sentence_length")
-                        or text_defaults["max_sentence_length"]
-                    ),
+                    # XTTS remains the tokenizer choice for language-aware
+                    # splitting; the captured provider budget controls only
+                    # the target length.
+                    "max_sentence_length": budget["target_chars"],
                     "enable_sentence_splitting": bool(
                         settings.get(
                             "enable_sentence_splitting",
@@ -6996,6 +6996,43 @@ class WorkflowHandlers:
             )
         if cancel_event.is_set():
             return {}
+        segment_lengths = [
+            len(
+                str(
+                    item.get("text")
+                    or item.get("original_sentence")
+                    or item.get("tts_optimized_sentence")
+                    or ""
+                )
+            )
+            for item in prepared
+            if isinstance(item, dict)
+        ]
+        segment_summary = {
+            "count": len(segment_lengths),
+            "min_chars": min(segment_lengths) if segment_lengths else 0,
+            "max_chars": max(segment_lengths) if segment_lengths else 0,
+            "average_chars": round(sum(segment_lengths) / len(segment_lengths), 2)
+            if segment_lengths
+            else 0,
+            "over_target_count": sum(
+                length > int(budget["target_chars"]) for length in segment_lengths
+            ),
+        }
+        annotated_source = bool(supplied_markup)
+        segmentation = {
+            "budget": budget,
+            "segment_length_summary": segment_summary,
+            "policy_applied": not annotated_source,
+            "policy_explanation": (
+                "Annotated speech markup is immutable; the chunk policy was recorded "
+                "but did not repack its segments."
+                if annotated_source
+                else "The resolved audiobook chunk policy was applied during preparation."
+            ),
+        }
+        artifact_settings = dict(settings)
+        artifact_settings["_audiobook_chunk_budget"] = deepcopy(budget)
         progress(0.9, "Saving narration segments")
         destination = (
             self._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
@@ -7009,13 +7046,13 @@ class WorkflowHandlers:
             role="prepared_text",
             session_id=session_id,
             parent_ids=[source_artifact.id],
-            settings=settings,
-            metadata={"segment_count": len(prepared)},
+            settings=artifact_settings,
+            metadata={"segment_count": len(prepared), "segmentation": segmentation},
         )
         generation_revision_id, _segment_ids = self._store_generation_plan(
             session_id,
             prepared,
-            settings=settings,
+            settings=artifact_settings,
             source_revision_id=str(
                 (source_artifact.metadata_json or {}).get("revision_id") or ""
             )
@@ -7028,6 +7065,8 @@ class WorkflowHandlers:
             "path": artifact.relative_path,
             "segments": len(prepared),
             "generation_plan_revision_id": generation_revision_id,
+            "segmentation": segmentation,
+            "segmentation_budget": budget,
         }
 
     def _store_generation_plan(
@@ -8044,6 +8083,10 @@ class WorkflowHandlers:
                     language=self._usable_language(record.get("language")),
                     voice=str(record.get("voice") or "").strip() or None,
                 )
+                segment_tts_settings = segment_performance_settings(
+                    segment_tts_settings, performance_snapshot, generation_segment_id,
+                    synthesized_text, contexts=performance_contexts,
+                )
                 if not casting_enabled:
                     segment_tts_settings = self.prepare_audio_cpp_voice_reference(
                         segment_tts_settings
@@ -8054,10 +8097,6 @@ class WorkflowHandlers:
                         verified=verified_qwen_voices,
                         cancel_event=cancel_event,
                     )
-                segment_tts_settings = segment_performance_settings(
-                    segment_tts_settings, performance_snapshot, generation_segment_id,
-                    synthesized_text, contexts=performance_contexts,
-                )
                 batch_contexts[generation_segment_id] = {
                     "settings": segment_tts_settings,
                     "synthesized_text": synthesized_text,
@@ -8114,6 +8153,10 @@ class WorkflowHandlers:
                     language=self._usable_language(record.get("language")),
                     voice=str(record.get("voice") or "").strip() or None,
                 )
+                segment_tts_settings = segment_performance_settings(
+                    segment_tts_settings, performance_snapshot, generation_segment_id,
+                    synthesized_text, contexts=performance_contexts,
+                )
                 if not casting_enabled:
                     segment_tts_settings = self.prepare_audio_cpp_voice_reference(
                         segment_tts_settings
@@ -8125,10 +8168,6 @@ class WorkflowHandlers:
                         cancel_event=cancel_event,
                     )
 
-            segment_tts_settings = segment_performance_settings(
-                segment_tts_settings, performance_snapshot, generation_segment_id,
-                synthesized_text, contexts=performance_contexts,
-            )
             render_manifest: list[dict[str, Any]] = []
 
             def synthesize_request(
@@ -9087,6 +9126,14 @@ class WorkflowHandlers:
                         language=seed["language"],
                         voice=seed["voice"],
                     )
+                    synthesized_text = optimized_by_id.get(
+                        segment_id,
+                        str(seed["text"]),
+                    )
+                    segment_tts_settings = segment_performance_settings(
+                        segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
+                        contexts=performance_contexts,
+                    )
                     segment_tts_settings = self.prepare_audio_cpp_voice_reference(
                         segment_tts_settings
                     )
@@ -9097,14 +9144,6 @@ class WorkflowHandlers:
                         cancel_event=cancel_event,
                     )
                     _assert_current_audio_identity(segment_id)
-                    synthesized_text = optimized_by_id.get(
-                        segment_id,
-                        str(seed["text"]),
-                    )
-                    segment_tts_settings = segment_performance_settings(
-                        segment_tts_settings, settings_snapshot, segment_id, synthesized_text,
-                        contexts=performance_contexts,
-                    )
                     batch_contexts[segment_id] = {
                         "text": str(seed["text"]),
                         "synthesized_text": synthesized_text,

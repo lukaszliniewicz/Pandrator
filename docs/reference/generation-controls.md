@@ -1,7 +1,9 @@
 # Speech directions, dialogue, and character voices
 
-The **Speech direction** panel on the speech plan combines generation defaults,
-the session's character dictionary and cast, and block-level direction review.
+Audiobooks expose **One narrator** and **Multiple voices** in a dedicated
+**Audiobook voices** card, with a character dictionary and casting controls.
+The **Speech direction** panel on the speech plan holds generation defaults
+and block-level direction review. Other workflows retain casting in that panel.
 Dialogue recognition lives in **Optimize text for speech → Timing & settings**.
 It can annotate the document without rewriting any spoken words. Emotional
 directions and multiple voices are independent options.
@@ -20,7 +22,9 @@ from those identities. Stable voice descriptions are available for models
 whose capabilities support voice design. Voice categories can also be edited
 in the Voice Library. A category is metadata, not a provider voice ID.
 
-Voice selection uses the first applicable assignment:
+A whole-block voice override takes precedence over phrase/cast choices; an
+explicit alternate-take voice takes precedence over the block override. With
+no whole-block override, voice selection uses the first applicable assignment:
 
 1. An explicit XML span voice.
 2. The named character's cast voice.
@@ -33,6 +37,32 @@ An explicit `<narrator>` bypasses source-speaker and dialogue-category
 assignments. Preview lists the resolved voices and fallbacks. All parts in a
 run use the selected service and model; a binding qualified for a different
 service/model fails validation rather than changing the run's provider.
+
+## Review and edit in the Generation drawer
+
+Enable **Voices & directions** in Display options. Underlines distinguish
+narration, characters, and directed phrases; the speech symbol opens an
+inspector. Hover, focus, or click to see the actual compiler's voices and
+instruction support. Historical runs show their frozen settings.
+
+Select text in the annotated view or the text editor (Shift-selection works
+with the keyboard) to open **Edit selected speech**. Choose a narrator or
+character, a published compatible voice, and optional delivery controls.
+Preview first, review the whole block's resulting voice sequence, then apply.
+A protected annotation requires an explicit unlock; stale previews cannot be
+applied. The spoken text and other phrases remain unchanged. Changes create a
+new adopted manual direction plan, preserving previous plans and audio.
+
+Casting and delivery are independent switches. Stored markings remain visible
+when disabled. Qwen Base cloning can switch voices but does not support acting
+instructions. The preview reports unsupported controls. A block voice override
+still wins over a phrase voice until cleared in the block's voice settings.
+
+Older structured JSON direction records remain editable in **Directions**.
+The phrase popup refuses to convert nonempty legacy directions automatically,
+so anchored directions or events outside a selection cannot be discarded.
+When displayed text differs from optimized speech, select the speech layer;
+unsaved text edits must be saved before adding annotations.
 
 ## Compact speech XML
 

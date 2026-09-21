@@ -9,6 +9,12 @@
   import { errorMessage } from './errors';
   import PassageSplitDialog from './PassageSplitDialog.svelte';
   import PassageActionsPopover from './PassageActionsPopover.svelte';
+  import SpeechAnnotationPopover from './SpeechAnnotationPopover.svelte';
+  import PerformancePanel from './PerformancePanel.svelte';
+  import type { SpeechSelection, SpeechPreview } from './speech-annotations';
+  import SpeechSelectionEditor from './SpeechSelectionEditor.svelte';
+  import { apiJson } from './api';
+  import { modalFocus } from './modal-focus';
   import {
     readPassageVisibility,
     savePassageVisibility,
@@ -37,7 +43,8 @@
     Square,
     Trash2,
     Undo2,
-    WandSparkles
+    WandSparkles,
+    X
   } from '@lucide/svelte';
   import { onMount, tick, untrack } from 'svelte';
   import { appState } from './app-state.svelte';
@@ -97,6 +104,7 @@
   const isVoiceover = $derived(workflowKind === 'voiceover');
   const generationStore = new GenerationStore(untrack(() => sessionId));
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
+  let headerHeight = $state(64);
   const payload = $derived(generationStore.payload);
   const run = $derived(generationStore.activeRun);
   const runs = $derived(visibleGenerationRuns(generationStore.runs));
@@ -150,6 +158,56 @@
   let textMode = $state<'display' | 'speech'>('display');
   let displayMenuOpen = $state(false);
   let showPassageBoundaries = $state(readPassageVisibility());
+  let showSpeechAnnotations = $state(true);
+  let speechPreviews = $state<Record<string, SpeechPreview>>({});
+  let speechSelection = $state<SpeechSelection | null>(null);
+  function editSelectedSpeech(selection: SpeechSelection) {
+    if (selectedRunId || !payload.plan_revision_id || pendingSegmentUpdates)
+      return;
+    speechTarget = null;
+    passageActions = null;
+    speechSelection = selection;
+  }
+  type SpeechTarget = {
+    item: GenerationSegment;
+    offset: number;
+    anchor: HTMLButtonElement;
+    activate: boolean;
+    revisionId: string;
+    runId: string;
+  };
+  let speechTarget = $state<SpeechTarget | null>(null);
+  let directionsTarget = $state<SpeechTarget | null>(null);
+  let directionsPanel = $state<{ requestClose: (next: () => void) => void }>();
+  function closeDirections() {
+    if (directionsPanel)
+      directionsPanel.requestClose(() => {
+        directionsTarget = null;
+      });
+    else directionsTarget = null;
+  }
+  function inspectSpeech(
+    item: GenerationSegment,
+    offset: number,
+    anchor: HTMLButtonElement,
+    activate: boolean
+  ) {
+    const revisionId = payload.plan_revision_id;
+    if (!revisionId) return;
+    if (speechSelection) return;
+    passageActions = null;
+    speechTarget = {
+      item,
+      offset,
+      anchor,
+      activate:
+        activate ||
+        (speechTarget?.anchor === anchor && speechTarget.activate) ||
+        false,
+      revisionId,
+      runId: selectedRunVersionId || selectedRunId
+    };
+  }
   let showRepairHistory = $state(false);
   type PassageTarget = {
     item: GenerationSegment;
@@ -1962,6 +2020,14 @@
     if (mode !== 'collapsed') void untrack(loadSupportingOptions);
   });
   $effect(() => {
+    void payload.plan_revision_id;
+    void selectedRunId;
+    void selectedRunVersionId;
+    speechPreviews = {};
+    speechTarget = null;
+    speechSelection = null;
+  });
+  $effect(() => {
     void filter;
     void selectedRunId;
     void selectedRunVersionId;
@@ -2025,6 +2091,10 @@
 {/if}
 
 {#if payload.total > 0 || payload.plan_revision_id || run || searchQuery || filter !== 'all'}
+  <div
+    aria-hidden="true"
+    style={`height:${mode === 'collapsed' ? headerHeight + 16 : 80}px`}
+  ></div>
   <aside
     data-generation-layout={mode}
     class:full={mode === 'full'}
@@ -2032,12 +2102,14 @@
     class="generation-drawer fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"
   >
     <header
+      bind:clientHeight={headerHeight}
       class:border-b={mode !== 'collapsed'}
       class="generation-header flex shrink-0 flex-wrap items-center gap-3 border-[var(--line)] px-4 py-3 lg:flex-nowrap"
     >
       <button
         onclick={() => (mode = mode === 'collapsed' ? 'full' : 'collapsed')}
-        class="flex items-center gap-2 font-semibold"
+        aria-expanded={mode !== 'collapsed'}
+        class="drawer-toggle flex min-h-11 items-center gap-2 font-semibold"
       >
         {#if mode === 'collapsed'}<ChevronUp size={17} />{:else}<ChevronDown
             size={17}
@@ -2045,7 +2117,7 @@
         Generation
       </button>
       <span
-        class="muted min-w-0 text-xs lg:flex-1 lg:truncate"
+        class="drawer-summary muted min-w-0 text-xs lg:flex-1 lg:truncate"
         title={`${payload.total} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
         >{payload.total} segments · {selectedHistoryRun?.label ??
           'Active mix'}{#if selectedAssembly}
@@ -2216,9 +2288,24 @@
               <button
                 type="button"
                 class="dropdown-item"
+                aria-pressed={showSpeechAnnotations}
+                onclick={() => {
+                  showSpeechAnnotations = !showSpeechAnnotations;
+                  if (showSpeechAnnotations) showPassageBoundaries = false;
+                  speechTarget = null;
+                  displayMenuOpen = false;
+                }}
+                >{showSpeechAnnotations
+                  ? 'Hide voices and delivery'
+                  : 'Show voices and delivery'}</button
+              >
+              <button
+                type="button"
+                class="dropdown-item"
                 aria-pressed={showPassageBoundaries}
                 onclick={() => {
                   showPassageBoundaries = !showPassageBoundaries;
+                  if (showPassageBoundaries) showSpeechAnnotations = false;
                   savePassageVisibility(showPassageBoundaries);
                   passageActions = null;
                   displayMenuOpen = false;
@@ -2303,7 +2390,7 @@
           </button>
         {/if}
       {/if}
-      <div class="ml-auto flex flex-wrap gap-2">
+      <div class="drawer-actions ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
           <button
             onclick={() => start()}
@@ -2644,9 +2731,20 @@
             {regenerationNotice}
           </p>{/if}
 
+        {#if !selectedRunId && payload.items.length}
+          <p class="muted border-b border-[var(--line)] px-4 py-2 text-xs">
+            Select speech text to edit its speaker, voice or delivery.
+            Underlines show speaker changes; double underlines indicate
+            directions.
+          </p>
+        {/if}
         <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
           {#if viewMode === 'segments'}
             <GenerationSegmentTable
+              {showSpeechAnnotations}
+              {speechPreviews}
+              onspeech={inspectSpeech}
+              onselection={selectedRunId ? undefined : editSelectedSpeech}
               {showPassageBoundaries}
               onpassage={inspectPassage}
               items={payload.items}
@@ -2678,6 +2776,10 @@
             />
           {:else}
             <GenerationReadingView
+              {showSpeechAnnotations}
+              {speechPreviews}
+              onspeech={inspectSpeech}
+              onselection={selectedRunId ? undefined : editSelectedSpeech}
               {showPassageBoundaries}
               onpassage={inspectPassage}
               blocks={readingBlocks}
@@ -2710,6 +2812,109 @@
       </div>
     {/if}
   </aside>
+{/if}
+{#if speechSelection && payload.plan_revision_id}
+  {@const selected = speechSelection}
+  {#key `${selected.item.id}:${selected.start}:${selected.end}`}
+    <SpeechSelectionEditor
+      {sessionId}
+      revisionId={payload.plan_revision_id}
+      selection={selected}
+      onclose={() => {
+        speechSelection = null;
+        window.getSelection()?.removeAllRanges();
+      }}
+      onapplied={async () => {
+        speechPreviews = {};
+        await load(true, false);
+        if (!payload.plan_revision_id) return;
+        try {
+          const preview = await apiJson<SpeechPreview>(
+            `/sessions/${encodeURIComponent(sessionId)}/speech-plan/preview`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                revision_id: payload.plan_revision_id,
+                segment_id: selected.item.id
+              })
+            }
+          );
+          speechPreviews = { ...speechPreviews, [selected.item.id]: preview };
+        } catch (caught) {
+          error = errorMessage(caught);
+        }
+      }}
+    />
+  {/key}
+{/if}
+{#if speechTarget}
+  {@const target = speechTarget}
+  <SpeechAnnotationPopover
+    {sessionId}
+    revisionId={target.revisionId}
+    segmentId={target.item.id}
+    segmentNumber={target.item.ordinal + 1}
+    runId={target.runId}
+    offset={target.offset}
+    anchor={target.anchor}
+    activate={target.activate}
+    canPlay={Boolean(activeTake(target.item)) && !target.item.removed}
+    onclose={() => {
+      speechTarget = null;
+    }}
+    onplay={() => void playOnly(target.item)}
+    onloaded={(preview) => {
+      speechPreviews = { ...speechPreviews, [target.item.id]: preview };
+    }}
+    onedit={() => {
+      directionsTarget = target;
+    }}
+  />
+{/if}
+{#if directionsTarget}
+  <div
+    class="fixed inset-0 z-[100] grid place-items-center bg-black/45 p-3 backdrop-blur-sm"
+  >
+    <div
+      class="w-full max-w-4xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-5 shadow-xl"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="drawer-direction-title"
+      tabindex="-1"
+      use:modalFocus={{ onclose: closeDirections }}
+    >
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 id="drawer-direction-title" class="text-lg font-semibold">
+            Speech directions
+          </h2>
+          <p class="muted text-sm">
+            Review segment {directionsTarget.item.ordinal + 1} and adopt changes before
+            regenerating.
+          </p>
+        </div>
+        <button
+          class="grid size-10 place-items-center rounded-lg border border-[var(--line)]"
+          aria-label="Close speech directions"
+          onclick={closeDirections}><X size={18} /></button
+        >
+      </div>
+      <PerformancePanel
+        bind:this={directionsPanel}
+        {sessionId}
+        revisionId={directionsTarget.revisionId}
+        initialOpen={true}
+        initialSegmentId={directionsTarget.item.id}
+        initialOrdinal={directionsTarget.item.ordinal}
+        showCasting={false}
+        onchanged={() => {
+          speechPreviews = {};
+          void load(true, false);
+        }}
+      />
+    </div>
+  </div>
 {/if}
 {#if passageActions}
   <PassageActionsPopover
@@ -3178,7 +3383,8 @@
   .generation-drawer {
     display: flex;
     flex-direction: column;
-    height: 3.9rem;
+    height: auto;
+    min-height: 3.9rem;
     border: 1px solid var(--line);
     background: var(--paper-strong);
     box-shadow: var(--shadow);
@@ -3191,6 +3397,24 @@
     height: calc(100vh - 1.5rem);
   }
   @media (width < 48rem) {
+    .generation-header {
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+    }
+    .drawer-summary {
+      flex: 1 1 calc(100% - 10rem);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .generation-drawer:not(.half, .full) .header-playback {
+      margin-left: 0;
+    }
+    .header-playback :global(button),
+    .drawer-actions :global(button) {
+      min-height: 2.75rem;
+      min-width: 2.75rem;
+    }
     .generation-drawer:is(.half, .full) {
       inset: 0;
       height: 100dvh;

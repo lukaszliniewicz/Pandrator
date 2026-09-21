@@ -20,19 +20,18 @@ from .e2e import (
     tts_catalog,
 )
 from .generation import (
+    adopt_subtitle_source,
     assemble_generation_run,
+    generate_speech_plan,
     list_generation_segments,
     list_speech_plan_revisions,
-    speech_plan_status,
     prepare_speech_plan,
-    review_speech_plan,
-    revise_speech_block_plan_batch,
-    generate_speech_plan,
-    adopt_subtitle_source,
-
     regenerate_segments,
+    review_speech_plan,
     revise_speech_block_plan,
+    revise_speech_block_plan_batch,
     select_take,
+    speech_plan_status,
     update_generation_segment,
 )
 from .guidance import explain_system
@@ -75,6 +74,7 @@ from .sessions import (
     import_subtitles,
     list_sessions,
     list_sources,
+    patch_session_settings,
     patch_subtitle_cues,
     preview_subtitles,
     replace_subtitle_text,
@@ -205,6 +205,7 @@ __all__ = [
     "manager_doctor",
     "manager_status",
     "patch_subtitle_cues",
+    "patch_session_settings",
     "prepare_media_edit",
     "plan_workflow",
     "plan_orchestrated_workflow",

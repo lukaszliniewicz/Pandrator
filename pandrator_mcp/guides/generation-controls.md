@@ -1,5 +1,16 @@
 # Speech directions, dialogue, and character voices
 
+Audiobooks expose **One narrator / Multiple voices** and a dedicated casting
+card in the workflow. In the generation drawer, underlined speech opens a
+compiler-backed voice/delivery preview by hover, focus, or tap. Select a phrase
+to assign its speaker or voice, add or clear delivery directions, preview the
+result, and apply the reviewed change. Existing audio stays in history.
+
+For MCP inspection, `pandrator_preview_speech_segment` compiles the selected
+speech-plan segment directly; creating a performance draft just to check casting
+is unnecessary. Set `generation_run_id` for its frozen historical settings and
+`include_request=true` only when debugging the provider request.
+
 The **Speech direction** panel on the speech plan combines generation defaults,
 the session's character dictionary and cast, and block-level direction review.
 Dialogue recognition lives in **Optimize text for speech → Timing & settings**.
@@ -22,12 +33,20 @@ in the Voice Library. A category is metadata, not a provider voice ID.
 
 Voice selection uses the first applicable assignment:
 
-1. An explicit XML span voice.
-2. The named character's cast voice.
-3. A source speaker's cast voice.
-4. A dialogue category default.
-5. The narrator cast voice.
-6. The session voice.
+1. An explicit selected-take voice override.
+2. A speech block's managed voice ID or provider voice override.
+3. An explicit XML span voice.
+4. The named character's cast voice.
+5. A source speaker's cast voice.
+6. A dialogue category default.
+7. The narrator cast voice.
+8. The session voice.
+
+Selected-take and block voice overrides apply to the entire block, including
+narrator spans, and remain active when casting is disabled. Split a block at
+speaker transitions before assigning a single block voice, or leave its voice
+unset to use internal XML and casting. Managed overrides must be published or
+linked to the run's provider. Generation freezes these bindings for the run.
 
 An explicit `<narrator>` bypasses source-speaker and dialogue-category
 assignments. Preview lists the resolved voices and fallbacks. All parts in a

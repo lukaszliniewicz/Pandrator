@@ -1318,6 +1318,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/services/audio-cpp/catalogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listAudioCppCatalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/services/stt": {
         parameters: {
             query?: never;
@@ -1476,6 +1492,30 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/audiobook-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect audiobook setup
+         * @description Read the current audiobook voice mode and effective configuration without refreshing the catalog or writing session state.
+         */
+        get: operations["getAudiobookSetup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Configure audiobook voice mode
+         * @description Atomically configure audiobook annotation/casting and document-optimization flags while preserving engine, references and delivery directions. The operation never starts synthesis.
+         */
+        patch: operations["configureAudiobook"];
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/bundle": {
@@ -2250,7 +2290,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["patchSessionSettings"];
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
@@ -2535,6 +2575,66 @@ export interface paths {
         get: operations["listSpeechOptimizationDispatchRuns"];
         put?: never;
         post: operations["createSpeechOptimizationDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/speech-plan/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a speech-plan segment
+         * @description Compile the current or explicitly frozen cast and speech directions for one segment. This read-only operation creates no performance plan and synthesizes no audio; include_request opts into provider request details.
+         */
+        post: operations["previewSpeechSegment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/speech-plan/selection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a reviewed direct speech-selection edit
+         * @description Create and adopt one manual XML performance plan containing the reviewed selection while preserving the previous plan and generated audio.
+         */
+        post: operations["applySpeechSelection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview a direct speech-selection edit
+         * @description Compile a selected phrase with proposed speaker, voice, and delivery metadata. This read-only operation creates no performance-plan row and does not access providers or synthesize audio.
+         */
+        post: operations["previewSpeechSelection"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3667,6 +3767,19 @@ export interface components {
              */
             service?: string;
         };
+        /**
+         * AudiobookSetupConfigureRequest
+         * @description Revision-checked audiobook voice-mode configuration.
+         */
+        AudiobookSetupConfigureRequest: {
+            /** Expected Revision */
+            expected_revision: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "single_voice" | "multi_voice";
+        };
         /** AutomationClientCreateRequest */
         AutomationClientCreateRequest: {
             /** Client Id */
@@ -4443,14 +4556,19 @@ export interface components {
         };
         /**
          * GenerationPlanTopologyRequest
-         * @description One of the three immutable, typed generation-plan topology edits.
+         * @description One immutable, typed generation-plan topology edit.
          */
         GenerationPlanTopologyRequest: {
             /**
              * Action
              * @enum {string}
              */
-            action: "split" | "merge" | "restore";
+            action: "split" | "merge" | "restore" | "resegment";
+            /**
+             * Boundaries
+             * @default null
+             */
+            boundaries?: number[] | null;
             /**
              * Cursor
              * @default null
@@ -4463,6 +4581,11 @@ export interface components {
              * @default null
              */
             left_segment_id?: string | null;
+            /**
+             * Max Chars
+             * @default null
+             */
+            max_chars?: number | null;
             /**
              * Passage Boundary Id
              * @default null
@@ -4478,6 +4601,11 @@ export interface components {
              * @default null
              */
             segment_id?: string | null;
+            /**
+             * Segment Ids
+             * @default null
+             */
+            segment_ids?: string[] | null;
             /**
              * Target Revision Id
              * @default null
@@ -6707,6 +6835,26 @@ export interface components {
             /** Source Artifact Id */
             source_artifact_id: string;
         };
+        /**
+         * SpeechPlanPreviewRequest
+         * @description Read-only compilation request for one speech-plan segment.
+         */
+        SpeechPlanPreviewRequest: {
+            /**
+             * Generation Run Id
+             * @default null
+             */
+            generation_run_id?: string | null;
+            /**
+             * Include Request
+             * @default false
+             */
+            include_request?: boolean;
+            /** Revision Id */
+            revision_id: string;
+            /** Segment Id */
+            segment_id: string;
+        };
         /** SpeechPlanReviewRequest */
         SpeechPlanReviewRequest: {
             /** Content Signature */
@@ -6723,6 +6871,131 @@ export interface components {
             expected_plan_revision_id?: string | null;
             /** Revision Id */
             revision_id: string;
+        };
+        /** SpeechSelectionApplyRequest */
+        SpeechSelectionApplyRequest: {
+            /**
+             * Character Id
+             * @default null
+             */
+            character_id?: string | null;
+            /** @default null */
+            delivery?: components["schemas"]["SpeechSelectionDelivery"] | null;
+            /**
+             * Enable Casting
+             * @default false
+             */
+            enable_casting?: boolean;
+            /**
+             * Enable Performance
+             * @default false
+             */
+            enable_performance?: boolean;
+            /** End */
+            end: number;
+            /** Expected Preview Revision */
+            expected_preview_revision: string;
+            /** Expected Segment Revision */
+            expected_segment_revision: number;
+            /** Revision Id */
+            revision_id: string;
+            /** Segment Id */
+            segment_id: string;
+            /**
+             * Speaker
+             * @default unchanged
+             * @enum {string}
+             */
+            speaker?: "unchanged" | "narrator" | "character";
+            /** Start */
+            start: number;
+            /**
+             * Unlock Locked
+             * @default false
+             */
+            unlock_locked?: boolean;
+            /**
+             * Voice
+             * @default null
+             */
+            voice?: string | null;
+        };
+        /**
+         * SpeechSelectionDelivery
+         * @description A partial delivery patch; omitted fields remain unchanged.
+         */
+        SpeechSelectionDelivery: {
+            /**
+             * Cadence
+             * @default null
+             */
+            cadence?: ("" | "continuing" | "concluding" | "questioning" | "contrast") | null;
+            /**
+             * Emotion
+             * @default null
+             */
+            emotion?: string | null;
+            /**
+             * Emphasis
+             * @default null
+             */
+            emphasis?: ("" | "light" | "moderate" | "strong") | null;
+            /**
+             * Instruction
+             * @default null
+             */
+            instruction?: string | null;
+            /**
+             * Pace
+             * @default null
+             */
+            pace?: ("" | "natural" | "slower" | "brisk") | null;
+        };
+        /** SpeechSelectionRequest */
+        SpeechSelectionRequest: {
+            /**
+             * Character Id
+             * @default null
+             */
+            character_id?: string | null;
+            /** @default null */
+            delivery?: components["schemas"]["SpeechSelectionDelivery"] | null;
+            /**
+             * Enable Casting
+             * @default false
+             */
+            enable_casting?: boolean;
+            /**
+             * Enable Performance
+             * @default false
+             */
+            enable_performance?: boolean;
+            /** End */
+            end: number;
+            /** Expected Segment Revision */
+            expected_segment_revision: number;
+            /** Revision Id */
+            revision_id: string;
+            /** Segment Id */
+            segment_id: string;
+            /**
+             * Speaker
+             * @default unchanged
+             * @enum {string}
+             */
+            speaker?: "unchanged" | "narrator" | "character";
+            /** Start */
+            start: number;
+            /**
+             * Unlock Locked
+             * @default false
+             */
+            unlock_locked?: boolean;
+            /**
+             * Voice
+             * @default null
+             */
+            voice?: string | null;
         };
         /** StageSelectionUpdate */
         StageSelectionUpdate: {
@@ -7122,6 +7395,11 @@ export interface components {
              */
             cursor?: string | null;
             /**
+             * Delivery Preset
+             * @default
+             */
+            delivery_preset?: string;
+            /**
              * Kind
              * @default all
              * @enum {string}
@@ -7147,6 +7425,12 @@ export interface components {
              * @default
              */
             origin?: string;
+            /**
+             * Perceived Age
+             * @default
+             * @enum {string}
+             */
+            perceived_age?: "" | "childlike" | "youthful" | "adult" | "older";
             /**
              * Pitch
              * @default
@@ -7179,6 +7463,11 @@ export interface components {
              * @enum {string}
              */
             sort?: "relevance" | "name" | "recently_added" | "recently_updated";
+            /**
+             * Tag
+             * @default
+             */
+            tag?: string;
             /**
              * Texture
              * @default
@@ -9656,6 +9945,43 @@ export interface operations {
             };
         };
     };
+    listAudioCppCatalogue: {
+        parameters: {
+            query?: {
+                category?: string;
+                family?: string;
+                query?: string;
+                language?: string;
+                capability?: string;
+                commercial_use?: "" | "permitted" | "noncommercial" | "conditional" | "unknown";
+                recommended_only?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Versioned audio.cpp family and package catalogue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid catalogue filters */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listSttServices: {
         parameters: {
             query?: never;
@@ -10013,6 +10339,137 @@ export interface operations {
         responses: {
             /** @description Agentic cleaning queued */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAudiobookSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current audiobook setup and configuration revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The audiobook session or requested segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current configuration or speech-plan revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    configureAudiobook: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AudiobookSetupConfigureRequest"];
+            };
+        };
+        responses: {
+            /** @description Current audiobook setup and configuration revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The audiobook session or requested segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current configuration or speech-plan revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields are invalid. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12184,7 +12641,35 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Session override saved */
+            /** @description Replace session override; omitted fields are removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchSessionSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                sessionId: string;
+                section: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Shallow-merge fields into the stored session override */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -12830,6 +13315,197 @@ export interface operations {
         responses: {
             /** @description Passive speech-optimization run created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSpeechSegment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechPlanPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Compiled speech-plan segment preview; no audio. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The audiobook session or requested segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current configuration or speech-plan revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    applySpeechSelection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSelectionApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Adopted manual selection edit. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The speech session or segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The selected speech plan, block, lock, or preview is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields or speech markup are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSpeechSelection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSelectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Compilation-only selection preview. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The speech session or segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The selected speech plan, block, lock, or preview is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields or speech markup are invalid. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14281,7 +14957,10 @@ export interface operations {
                 accent?: string;
                 voice_category?: "" | "male" | "female" | "androgynous" | "unspecified";
                 pitch?: "" | "low" | "mid" | "high";
+                perceived_age?: "" | "childlike" | "youthful" | "adult" | "older";
                 texture?: string;
+                delivery_preset?: string;
+                tag?: string;
                 use_case?: string;
                 collection_id?: string;
                 kind?: "all" | "managed" | "provider";

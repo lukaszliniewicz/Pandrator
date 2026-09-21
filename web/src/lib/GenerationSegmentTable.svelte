@@ -15,6 +15,12 @@
   import { tick } from 'svelte';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
+  import SpeechAnnotationText from './SpeechAnnotationText.svelte';
+  import {
+    textareaSpeechRange,
+    type SpeechSelection,
+    type SpeechPreview
+  } from './speech-annotations';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
   import WaveformPeaks from './WaveformPeaks.svelte';
@@ -45,6 +51,10 @@
     onmerge,
     onsplit,
     showPassageBoundaries = false,
+    showSpeechAnnotations = false,
+    speechPreviews = {},
+    onspeech,
+    onselection,
     onpassage,
     topologyDisabled = false,
     textMode = 'display'
@@ -81,6 +91,15 @@
       cursor: number
     ) => unknown;
     showPassageBoundaries?: boolean;
+    showSpeechAnnotations?: boolean;
+    speechPreviews?: Record<string, SpeechPreview>;
+    onspeech?: (
+      item: GenerationSegment,
+      offset: number,
+      anchor: HTMLButtonElement,
+      activate: boolean
+    ) => void;
+    onselection?: (selection: SpeechSelection) => void;
     onpassage?: (
       item: GenerationSegment,
       layer: PassageTextLayer,
@@ -100,6 +119,14 @@
 
   let cursorBySegment = $state<Record<string, CursorState>>({});
   let editingPassageId = $state('');
+  function inspectSelection(
+    node: HTMLTextAreaElement,
+    item: GenerationSegment,
+    layer: 'display' | 'speech'
+  ) {
+    const selected = textareaSpeechRange(node, item, layer);
+    if (selected) onselection?.(selected);
+  }
 
   function codePointOffset(value: string, codeUnitOffset: number) {
     return Array.from(value.slice(0, codeUnitOffset)).length;
@@ -233,7 +260,30 @@
               >{item.speaker}</span
             >
           {/if}
-          {#if showPassageBoundaries && hasPassages && editingPassageId !== item.id}
+          {#if showSpeechAnnotations && (item.speech_annotation_xml || item.speech_plan?.speech_xml || speechPreviews[item.id]) && editingPassageId !== item.id}
+            <div class="passage-row p-2 text-sm leading-relaxed">
+              <SpeechAnnotationText
+                {item}
+                layer={textMode}
+                preview={speechPreviews[item.id]}
+                oninspect={onspeech ?? (() => {})}
+                {onselection}
+              />
+              <button
+                type="button"
+                class="passage-edit"
+                aria-label={`Edit text for segment ${item.ordinal + 1}`}
+                title="Edit text"
+                onclick={async (event) => {
+                  event.stopPropagation();
+                  const cell = event.currentTarget.closest('td');
+                  editingPassageId = item.id;
+                  await tick();
+                  cell?.querySelector('textarea')?.focus();
+                }}><Pencil size={14} /></button
+              >
+            </div>
+          {:else if showPassageBoundaries && hasPassages && editingPassageId !== item.id}
             <div class="passage-row p-2 text-sm leading-relaxed">
               <PassageText
                 {item}
@@ -285,8 +335,13 @@
                 data-generation-search-index={itemIndex}
                 onselect={(event) =>
                   rememberCursor(item, 'speech', event.currentTarget)}
-                onkeyup={(event) =>
-                  rememberCursor(item, 'speech', event.currentTarget)}
+                onkeyup={(event) => {
+                  rememberCursor(item, 'speech', event.currentTarget);
+                  if (event.key === 'Shift')
+                    inspectSelection(event.currentTarget, item, 'speech');
+                }}
+                onpointerup={(event) =>
+                  inspectSelection(event.currentTarget, item, 'speech')}
                 oninput={(event) =>
                   rememberCursor(item, 'speech', event.currentTarget)}
                 onclick={(event) => {
@@ -315,8 +370,13 @@
                 data-generation-search-index={itemIndex}
                 onselect={(event) =>
                   rememberCursor(item, 'display', event.currentTarget)}
-                onkeyup={(event) =>
-                  rememberCursor(item, 'display', event.currentTarget)}
+                onkeyup={(event) => {
+                  rememberCursor(item, 'display', event.currentTarget);
+                  if (event.key === 'Shift')
+                    inspectSelection(event.currentTarget, item, 'display');
+                }}
+                onpointerup={(event) =>
+                  inspectSelection(event.currentTarget, item, 'display')}
                 oninput={(event) =>
                   rememberCursor(item, 'display', event.currentTarget)}
                 onclick={(event) => {
@@ -340,14 +400,14 @@
                 </p>
               {/if}
             {/if}
-            {#if showPassageBoundaries && hasPassages && editingPassageId === item.id}
+            {#if (showSpeechAnnotations || (showPassageBoundaries && hasPassages)) && editingPassageId === item.id}
               <button
                 type="button"
                 class="muted mb-2 text-xs underline underline-offset-2"
                 onclick={(event) => {
                   event.stopPropagation();
                   editingPassageId = '';
-                }}>Return to passage view</button
+                }}>Return to annotated text</button
               >
             {/if}
           {/if}
@@ -380,6 +440,15 @@
             </button>
           {/if}
           <div class="flex min-w-0 flex-wrap items-center gap-2">
+            {#if onspeech}<button
+                type="button"
+                class="mini"
+                aria-label={`Inspect voices and delivery for segment ${item.ordinal + 1}`}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  onspeech?.(item, 0, event.currentTarget, true);
+                }}>Voices &amp; delivery</button
+              >{/if}
             <select
               value={item.node_kind ?? 'paragraph'}
               onchange={(event) =>

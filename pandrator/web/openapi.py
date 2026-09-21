@@ -15,6 +15,8 @@ from .generation_control_openapi import GENERATION_CONTROL_SCHEMAS, generation_c
 from .voice_catalog_openapi import VOICE_CATALOG_SCHEMAS, extend_voice_lifecycle_paths, voice_catalog_paths
 from .repair_batch_schemas import RepairBatchUndoRequest
 from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
+from .audiobook_openapi import AUDIOBOOK_SCHEMAS, audiobook_paths
+from .speech_selection_openapi import SPEECH_SELECTION_SCHEMAS, speech_selection_paths
 
 
 def build_openapi_document() -> dict:
@@ -24,6 +26,8 @@ def build_openapi_document() -> dict:
         **FLOW_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
+        **AUDIOBOOK_SCHEMAS,
+        **SPEECH_SELECTION_SCHEMAS,
         **VOICE_CATALOG_SCHEMAS,
         "ApplicationIdentityDocument": ApplicationIdentityDocument,
         "RepairBatchUndoRequest": RepairBatchUndoRequest,
@@ -2703,7 +2707,12 @@ def build_openapi_document() -> dict:
                 ),
                 "put": operation(
                     "putSessionSettings",
-                    "Session override saved",
+                    "Replace session override; omitted fields are removed",
+                    "SessionSettingsUpdate",
+                ),
+                "patch": operation(
+                    "patchSessionSettings",
+                    "Shallow-merge fields into the stored session override",
                     "SessionSettingsUpdate",
                 ),
             },
@@ -2968,6 +2977,10 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/settings/{section}",
             "put",
         ),
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "patch",
+        ),
         ("/api/v1/sessions/{sessionId}/sources", "post"),
     ):
         parameters = paths[path][method].setdefault("parameters", [])
@@ -3010,6 +3023,10 @@ def build_openapi_document() -> dict:
         (
             "/api/v1/sessions/{sessionId}/settings/{section}",
             "put",
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "patch",
         ),
         ("/api/v1/sessions/{sessionId}/sources", "post"),
         ("/api/v1/uploads/init", "post"),
@@ -3234,6 +3251,11 @@ def build_openapi_document() -> dict:
             "put",
             "app.write",
         ),
+        (
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            "patch",
+            "app.write",
+        ),
         ("/api/v1/sources", "get", "app.read"),
         ("/api/v1/automation/local-paths", "get", "app.read"),
         ("/api/v1/automation/local-paths", "put", "app.write"),
@@ -3291,6 +3313,8 @@ def build_openapi_document() -> dict:
     paths.update(session_flow_paths())
     paths.update(performance_paths())
     paths.update(generation_control_paths())
+    paths.update(audiobook_paths())
+    paths.update(speech_selection_paths())
     paths.update(voice_catalog_paths())
     extend_voice_lifecycle_paths(paths)
     # Subtitle-first media and immutable speech-plan review operations.

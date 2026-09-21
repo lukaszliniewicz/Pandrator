@@ -40,6 +40,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "finalization_conflict",
         "finalization_incomplete",
         "ineligible_source",
+        "structured_speech_source_required",
         "ineligible_session",
         "invalid_kind",
         "invalid_model_response",
@@ -1169,6 +1170,36 @@ class ApplicationClient:
             maximum_body_bytes=512 * 1024,
         )
 
+    def get_audiobook_setup(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/audiobook-setup"
+        )
+
+    def configure_audiobook(
+        self, session_id: str, *, expected_revision: str, mode: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/audiobook-setup",
+            method="PATCH", body={"expected_revision": expected_revision, "mode": mode},
+            idempotency_key=idempotency_key, maximum_body_bytes=4096,
+        )
+
+    def preview_speech_segment(
+        self, session_id: str, *, revision_id: str, segment_id: str,
+        generation_run_id: str | None = None, include_request: bool = False,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "revision_id": revision_id, "segment_id": segment_id,
+            "include_request": include_request,
+        }
+        if generation_run_id:
+            body["generation_run_id"] = generation_run_id
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/speech-plan/preview",
+            method="POST", body=body, maximum_body_bytes=4096,
+        )
+
     def voice_metadata_request(
         self, action: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1227,7 +1258,10 @@ class ApplicationClient:
             "accent",
             "voice_category",
             "pitch",
+            "perceived_age",
             "texture",
+            "delivery_preset",
+            "tag",
             "use_case",
             "collection_id",
             "kind",
@@ -2032,6 +2066,25 @@ class ApplicationClient:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/settings/{quote(section, safe='')}",
             method="PUT",
+            body={"value": value},
+            idempotency_key=idempotency_key,
+            if_match_revision=expected_revision,
+        )
+
+    def patch_session_settings(
+        self,
+        session_id: str,
+        *,
+        section: str,
+        value: dict[str, Any],
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Merge top-level fields into one stored session settings override."""
+
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/settings/{quote(section, safe='')}",
+            method="PATCH",
             body={"value": value},
             idempotency_key=idempotency_key,
             if_match_revision=expected_revision,

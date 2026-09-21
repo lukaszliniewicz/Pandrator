@@ -326,7 +326,7 @@ class GenerationAudioIdentityTests(unittest.TestCase):
             voice = Voice(
                 name="Display voice",
                 metadata_json={
-                    "providers": {"provider-a": {"voice_id": "provider-voice"}}
+                    "providers": {"openai": {"voice_id": "provider-voice", "status": "ready"}}
                 },
             )
             session.add(voice)

@@ -124,6 +124,25 @@ export const voiceLibraryApi = {
         })
       }
     ),
+  updateCollection: (
+    collection: VoiceCollection,
+    changes: {
+      name?: string;
+      add_members?: VoiceReference[];
+      remove_members?: VoiceReference[];
+    }
+  ) =>
+    apiJson<VoiceCollection>(
+      `/voice-collections/${encodeURIComponent(collection.id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_revision: collection.revision,
+          ...changes
+        })
+      }
+    ),
   update: (voice: CatalogVoice, changes: Record<string, unknown>) =>
     apiJson<CatalogVoice>(
       voice.kind === 'managed'

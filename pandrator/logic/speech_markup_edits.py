@@ -9,6 +9,7 @@ guarded parser before returning it.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Any
 
 from .speech_markup import (
@@ -27,6 +28,9 @@ _CONTROL_TAGS = (
     ("cadence", "cadence"),
     ("emphasis", "emphasis"),
 )
+
+_VOICE_UNCHANGED = object()
+_DELIVERY_FIELDS = frozenset(field for field, _tag in _CONTROL_TAGS)
 
 
 def _event_xml(event: SpeechMarkupEvent) -> str:
@@ -307,4 +311,146 @@ def join_speech_markup(
     )
 
 
-__all__ = ["join_speech_markup", "slice_speech_markup"]
+def edit_speech_markup_range(
+    xml: str,
+    *,
+    segment_id: str,
+    text: str,
+    characters: list[dict[str, Any]] | None,
+    start: int,
+    end: int,
+    speaker: str = "unchanged",
+    character_id: str | None = None,
+    voice: str | None | object = _VOICE_UNCHANGED,
+    delivery: dict[str, Any] | None = None,
+) -> str:
+    """Edit only the effective metadata intersecting a text range.
+
+    Offsets are Python code-point offsets into the accepted transcript.  A
+    selected span is split at both boundaries before applying the requested
+    metadata, so adjacent source scopes, events, whitespace, and the segment
+    boundary retain their parsed meaning.  The rebuilt document is always
+    validated by the same guarded parser before it is returned.
+    """
+
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    _validate_range(text, start, end)
+    if start == end:
+        raise ValueError("The selected speech range must not be empty.")
+    if speaker not in {"unchanged", "narrator", "character"}:
+        raise ValueError("speaker must be unchanged, narrator, or character")
+    if speaker == "character":
+        if not isinstance(character_id, str) or not character_id:
+            raise ValueError("character_id is required for a character selection")
+        catalog = characters or []
+        matches = [
+            entry
+            for entry in catalog
+            if isinstance(entry, dict) and entry.get("id") == character_id
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"Unknown character_id: {character_id!r}")
+        character_category = str(matches[0].get("voice_category") or "unspecified")
+    elif character_id is not None:
+        raise ValueError("character_id is only valid for a character selection")
+    if voice is not _VOICE_UNCHANGED and voice is not None:
+        if not isinstance(voice, str) or not voice:
+            raise ValueError("voice must be a non-empty string or null")
+    if delivery is not None:
+        if not isinstance(delivery, dict):
+            raise TypeError("delivery must be a mapping or None")
+        unknown = set(delivery) - _DELIVERY_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown delivery field(s): {sorted(unknown)}")
+        for field, value in delivery.items():
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"delivery.{field} must be a string or null")
+            if isinstance(value, str) and len(value) > 2000:
+                raise ValueError(f"delivery.{field} exceeds the 2000 character limit")
+
+    parsed = parse_speech_markup(
+        xml,
+        expected_segment_id=segment_id,
+        expected_text=text,
+        characters=characters,
+    )
+    updated: list[SpeechMarkupSpan] = []
+    for span in parsed.spans:
+        left = span.start
+        right = span.end
+        if right <= start or left >= end:
+            updated.append(span)
+            continue
+        # Split at the selection boundaries first.  Each fragment gets a
+        # copy of the source effective scope, preserving metadata outside the
+        # selected range even when the range crosses existing scopes.
+        cuts = sorted({left, right, max(left, start), min(right, end)})
+        for fragment_start, fragment_end in zip(cuts, cuts[1:]):
+            if fragment_end <= fragment_start:
+                continue
+            fragment = replace(
+                span,
+                start=fragment_start,
+                end=fragment_end,
+                text=text[fragment_start:fragment_end],
+            )
+            if fragment_start >= start and fragment_end <= end:
+                values = {
+                    "speaker_id": fragment.speaker_id,
+                    "voice_category": fragment.voice_category,
+                    "voice": fragment.voice,
+                    "dialogue": fragment.dialogue,
+                    "narrator": fragment.narrator,
+                }
+                if speaker == "narrator":
+                    values.update(
+                        speaker_id=None,
+                        voice_category="unspecified",
+                        dialogue=False,
+                        narrator=True,
+                    )
+                elif speaker == "character":
+                    values.update(
+                        speaker_id=character_id,
+                        voice_category=character_category,
+                        dialogue=True,
+                        narrator=False,
+                    )
+                if voice is not _VOICE_UNCHANGED:
+                    values["voice"] = voice
+                next_delivery = dict(fragment.delivery)
+                for field, value in (delivery or {}).items():
+                    next_delivery[field] = value or ""
+                fragment = replace(
+                    fragment,
+                    speaker_id=values["speaker_id"],
+                    voice_category=values["voice_category"],
+                    voice=values["voice"],
+                    dialogue=values["dialogue"],
+                    narrator=values["narrator"],
+                    delivery=next_delivery,
+                )
+            updated.append(fragment)
+
+    rebuilt = _serialize_segment(
+        segment_id=parsed.segment_id,
+        body=_serialize_body(
+            replace(parsed, spans=tuple(updated)),
+            include_end_events=True,
+        ),
+        boundary_after=parsed.boundary_after,
+    )
+    return _parse_rebuilt(
+        rebuilt,
+        segment_id=segment_id,
+        text=text,
+        characters=characters,
+    )
+
+
+__all__ = [
+    "edit_speech_markup_range",
+    "join_speech_markup",
+    "slice_speech_markup",
+]

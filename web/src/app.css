@@ -52,7 +52,7 @@
   scrollbar-width: thin;
 }
 html {
-  min-width: 320px;
+  min-width: 0;
   min-height: 100%;
   background: var(--paper);
 }
@@ -227,6 +227,14 @@ body::-webkit-scrollbar-thumb:hover,
   width: 2.55rem;
   padding: 0.55rem;
 }
+.compact-confirmation .btn {
+  min-height: 2.75rem;
+  white-space: normal;
+}
+.compact-confirmation .btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -5px;
+}
 :root[data-theme='dark'] .btn-primary {
   color: #fff;
 }
@@ -243,6 +251,9 @@ body::-webkit-scrollbar-thumb:hover,
   background: color-mix(in srgb, var(--paper-strong) 94%, transparent);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
+}
+.surface[role='dialog'] {
+  background: var(--paper-strong);
 }
 .eyebrow {
   color: var(--accent);

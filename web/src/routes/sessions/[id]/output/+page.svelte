@@ -649,7 +649,9 @@
                 {#each group.items as artifact}<article
                     class="w-full rounded-xl border border-[var(--line)] px-4 py-3"
                   >
-                    <div class="flex w-full flex-wrap items-center gap-3">
+                    <div
+                      class="grid w-full grid-cols-[auto_minmax(0,1fr)] items-start gap-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]"
+                    >
                       <div
                         class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]"
                       >
@@ -666,7 +668,8 @@
                         <div
                           class="flex min-w-0 flex-wrap items-baseline gap-x-2"
                         >
-                          <strong class="truncate"
+                          <strong
+                            class="line-clamp-2 break-words [overflow-wrap:anywhere]"
                             >{outputName(artifact)}</strong
                           >
                           <span class="muted text-xs"
@@ -689,16 +692,18 @@
                             >{/if}
                         </div>
                       </button>
-                      <div class="ml-auto flex items-center gap-1">
+                      <div
+                        class="col-span-2 flex items-center justify-end gap-1 border-t border-[var(--line)] pt-2 sm:col-span-1 sm:border-0 sm:pt-0"
+                      >
                         <button
                           onclick={() => (preview = artifact)}
-                          class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
+                          class="grid min-h-11 min-w-11 place-items-center rounded-lg p-2 hover:bg-[var(--accent-soft)]"
                           title="Preview output"
                           aria-label={`Preview ${outputName(artifact)}`}
                           ><Eye size={16} /></button
                         >{#if artifact.path}<button
                             onclick={() => copyAbsolutePath(artifact)}
-                            class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
+                            class="grid min-h-11 min-w-11 place-items-center rounded-lg p-2 hover:bg-[var(--accent-soft)]"
                             title="Copy absolute server path"
                             aria-label={`Copy absolute path for ${outputName(artifact)}`}
                             >{#if copiedPath === artifact.id}<Check
@@ -708,7 +713,7 @@
                           >{/if}<a
                           href={`/api/v1/artifacts/${artifact.id}/content`}
                           download={artifactFilename(artifact)}
-                          class="rounded-lg p-2 hover:bg-[var(--accent-soft)]"
+                          class="grid min-h-11 min-w-11 place-items-center rounded-lg p-2 hover:bg-[var(--accent-soft)]"
                           title="Download output"
                           aria-label={`Download ${outputName(artifact)}`}
                           ><Download size={16} /></a
@@ -721,7 +726,7 @@
                             title={isAssemblyArtifact(artifact)
                               ? 'Remove intermediate assembly'
                               : 'Remove export'}
-                            class="rounded-lg p-2 text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                            class="grid min-h-11 min-w-11 place-items-center rounded-lg p-2 text-red-500 hover:bg-red-500/10 disabled:opacity-50"
                             >{#if deleting[artifact.id]}<LoaderCircle
                                 class="animate-spin"
                                 size={16}

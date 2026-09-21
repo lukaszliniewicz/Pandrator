@@ -14,14 +14,50 @@ def recommend_next_steps(
 ) -> dict[str, Any]:
     raw_goal = str(arguments.goal or "").strip()
     goal = raw_goal.casefold()
+    multivoice = any(
+        term in goal
+        for term in (
+            "multivoice",
+            "multi-voice",
+            "multi voice",
+            "multiple voices",
+            "character voices",
+            "audio drama",
+        )
+    )
     voice_steps = []
-    if any(term in goal for term in ("cast", "voice", "audio drama", "scottish")):
+    if not multivoice and any(
+        term in goal for term in ("cast", "voice", "audio drama", "scottish")
+    ):
         voice_steps = [
-            {"tool": "pandrator_get_voice_capabilities", "reason": "Discover available renderer modes, reference requirements, and markup support."},
-            {"tool": "pandrator_get_voice_catalog", "reason": "Search reusable voices and evidence before designing a new reference."},
-            {"tool": "pandrator_explain_system", "arguments": {"topic": "voice-casting"}, "reason": "Follow the passive discovery, audition, reference, and casting procedure."},
+            {
+                "tool": "pandrator_get_voice_capabilities",
+                "reason": "Discover available renderer modes, reference requirements, and markup support.",
+            },
+            {
+                "tool": "pandrator_get_voice_catalog",
+                "reason": "Search reusable voices and evidence before designing a new reference.",
+            },
+            {
+                "tool": "pandrator_explain_system",
+                "arguments": {"topic": "voice-casting"},
+                "reason": "Follow the passive discovery, audition, reference, and casting procedure.",
+            },
         ]
     if not arguments.session_id:
+        if multivoice and not any(term in goal for term in ("dubbing", "voiceover")):
+            return {
+                "schema_version": "1",
+                "goal": arguments.goal,
+                "basis": "static_guidance",
+                "steps": [
+                    {
+                        "tool": "pandrator_explain_system",
+                        "arguments": {"topic": "multivoice-audiobooks", "detail": "full"},
+                        "reason": "Read the end-to-end procedure once, then create or reuse an audiobook session.",
+                    }
+                ],
+            }
         workflow_topic = (
             "workflows"
             if any(
@@ -95,13 +131,41 @@ def recommend_next_steps(
                 key = str(stage.get("key") or stage.get("stage_key") or "")
                 if key:
                     incomplete.append(key)
+    if multivoice and (session.get("workflow_kind") or session.get("kind")) == "audiobook":
+        return {
+            "schema_version": "1",
+            "goal": arguments.goal,
+            "basis": "live_session",
+            "session": {
+                key: session.get(key)
+                for key in ("id", "name", "workflow_kind", "status", "revision")
+            },
+            "incomplete_stages": incomplete,
+            "steps": [
+                {
+                    "tool": "pandrator_get_audiobook_setup",
+                    "arguments": {"session_id": arguments.session_id},
+                    "reason": "Inspect mode, engine, narration budget and revision before atomic multi_voice configuration.",
+                },
+                {
+                    "tool": "pandrator_get_generation_controls",
+                    "arguments": {"session_id": arguments.session_id},
+                    "reason": "Reuse stable character IDs and current voice bindings; update only the missing cast.",
+                },
+                {
+                    "tool": "pandrator_explain_system",
+                    "arguments": {"topic": "multivoice-audiobooks", "detail": "full"},
+                    "reason": "Follow prepared JSON annotation, direct compiler preview, reviewed generation, durable waiting and assembly.",
+                },
+            ],
+        }
     steps: list[dict[str, Any]] = [
         *voice_steps,
         {
             "tool": "pandrator_get_workflow",
             "arguments": {"session_id": arguments.session_id},
             "reason": "Review current stages, selections, and prerequisites.",
-        }
+        },
     ]
     media_edit_session = (session.get("workflow_kind") or session.get("kind")) == "media_edit"
     if not media_edit_session and ("correct" in goal or "proofread" in goal):

@@ -325,7 +325,12 @@ def freeze_generation_performance_snapshot(session, revision_id: str, snapshot: 
             PerformancePlan.status == "adopted",
         )):
             freeze_performance_snapshot(session, revision_id, snapshot)
-    if settings.get("performance_enabled") or settings.get("casting_enabled"):
+    has_block_voice = session.scalar(select(m.GenerationSegment.id).where(
+        m.GenerationSegment.plan_revision_id == revision_id,
+        m.GenerationSegment.removed.is_(False),
+        (m.GenerationSegment.voice_id.is_not(None) | m.GenerationSegment.voice.is_not(None)),
+    ).limit(1)) is not None
+    if settings.get("performance_enabled") or settings.get("casting_enabled") or has_block_voice:
         from .generation_cast_runtime import freeze_cast_snapshot
         freeze_cast_snapshot(session, revision_id, snapshot, settings)
     if mode != "off":
@@ -350,7 +355,9 @@ def segment_performance_settings(
     """Supply request-only metadata without changing spoken or alignment text."""
     from copy import deepcopy
 
-    result = dict(settings)
+    from .generation_cast_runtime import apply_segment_voice
+
+    result = apply_segment_voice(settings, snapshot, segment_id)
     result.pop("_performance", None)
     result.pop("_semantic_context", None)
     if bool(settings.get("performance_enabled")):

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.schemas import TtsCatalogInput, VoiceCatalogInput
 from pandrator_mcp.schemas.voice_lifecycle import VoiceCatalogCapabilitiesInput
 from pandrator_mcp.tools.e2e import tts_catalog
@@ -47,6 +48,9 @@ def test_voice_catalog_forwards_flat_filters_and_projects_safe_items():
             query="warm",
             language="en",
             kind="provider",
+            perceived_age="adult",
+            delivery_preset="storytelling",
+            tag="Narrator",
             ready_only=True,
             sort="recently_updated",
             limit=10,
@@ -58,11 +62,34 @@ def test_voice_catalog_forwards_flat_filters_and_projects_safe_items():
     assert call["query"] == "warm"
     assert call["language"] == "en"
     assert call["kind"] == "provider"
+    assert call["perceived_age"] == "adult"
+    assert call["delivery_preset"] == "storytelling"
+    assert call["tag"] == "Narrator"
     assert call["ready_only"] is True
     assert call["sort"] == "recently_updated"
     assert call["cursor"] == "cursor-1"
     assert result["items"][0]["safe_artifact_id"] == "artifact-1"
     assert "provider_token" not in str(result)
+
+
+def test_voice_client_forwards_new_flat_filters():
+    client = object.__new__(ApplicationClient)
+    client._request_json = Mock(return_value={"items": []})
+
+    client.voice_catalog(
+        perceived_age="adult",
+        delivery_preset="storytelling",
+        tag="Narrator",
+    )
+
+    args, kwargs = client._request_json.call_args
+    assert args == ("/api/v1/voice-catalog",)
+    assert kwargs["parameters"] == {
+        "perceived_age": "adult",
+        "delivery_preset": "storytelling",
+        "tag": "Narrator",
+        "limit": 30,
+    }
 
 
 def test_voice_catalog_capabilities_filters_models_without_exposing_raw_services():

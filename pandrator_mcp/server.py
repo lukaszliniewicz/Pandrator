@@ -76,6 +76,7 @@ from .schemas import (
     MediaEditDispatchResultInput,
     MediaEditKeepRange,
     MediaEditSourceReference,
+    PatchSessionSettingsInput,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
@@ -190,6 +191,7 @@ from .tools import (
     list_work,
     manager_doctor,
     manager_status,
+    patch_session_settings,
     patch_subtitle_cues,
     plan_component_change,
     plan_export_variant,
@@ -366,7 +368,9 @@ def build_server(runtime: McpRuntime):
             "session outcome, prefer pandrator_plan_orchestrated_workflow as the "
             "single-turn procedure layer; it defers the immutable native plan "
             "until passive artifacts are complete. Use filtered "
-            "pandrator_describe_parameters when exact setting definitions are needed."
+            "pandrator_describe_parameters when exact setting definitions are needed. "
+            "Use pandrator_patch_session_settings for partial override edits; "
+            "pandrator_update_session_settings replaces the complete override."
         ),
     )
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -395,6 +399,7 @@ def build_server(runtime: McpRuntime):
         open_world_hint=False,
     )
 
+    from .tools.audiobook import register_audiobook_tools
     from .tools.generation_controls import register_generation_controls_tools
     from .tools.performance import register_performance_tools
     from .tools.voice_lifecycle import register_voice_lifecycle_tools
@@ -408,6 +413,10 @@ def build_server(runtime: McpRuntime):
         _call_with_validated_input,
         read_only=read_only,
         write_action=write_action,
+    )
+    register_audiobook_tools(
+        server, runtime, _call_with_validated_input,
+        read_only=read_only, write_action=revisioned_write_action,
     )
     register_voice_metadata_tools(
         server,
@@ -436,9 +445,10 @@ def build_server(runtime: McpRuntime):
             "developer",
             "administrator",
         ] = "new_user",
-        include_live_context: bool = True,
+        detail: Literal["summary", "full"] = "summary",
+        include_live_context: bool = False,
     ) -> dict[str, Any]:
-        """Explain one advertised topic with deterministic, versioned guidance."""
+        """Get concise topic guidance; use detail='full' for the complete procedure. Live health/identity lookup is opt-in."""
 
         return _call(
             explain_system,
@@ -446,6 +456,7 @@ def build_server(runtime: McpRuntime):
             ExplainSystemInput(
                 topic=topic,
                 audience=audience,
+                detail=detail,
                 include_live_context=include_live_context,
             ),
         )
@@ -2551,7 +2562,10 @@ def build_server(runtime: McpRuntime):
 
     @server.tool(
         name="pandrator_update_session_settings",
-        title="Update one Pandrator session settings section",
+        title=(
+            "Replace full Pandrator session settings section; "
+            "omitted fields removed"
+        ),
         annotations=write_action,
     )
     def session_settings_update_tool(
@@ -2572,12 +2586,58 @@ def build_server(runtime: McpRuntime):
         value: dict[str, Any],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        """Replace one settings override using revision-safe idempotency."""
+        """Replace the complete settings override using revision-safe idempotency.
+
+        Omitted fields are removed. Use pandrator_patch_session_settings for
+        ordinary partial edits.
+        """
 
         return _call(
             update_session_settings,
             runtime,
             UpdateSessionSettingsInput(
+                session_id=session_id,
+                section=section,
+                expected_revision=expected_revision,
+                value=value,
+                idempotency_key=idempotency_key,
+            ),
+        )
+
+    @server.tool(
+        name="pandrator_patch_session_settings",
+        title="Patch one Pandrator session settings section",
+        annotations=write_action,
+    )
+    def session_settings_patch_tool(
+        session_id: str,
+        section: Literal[
+            "text",
+            "stt",
+            "subtitles",
+            "correction",
+            "translation",
+            "tts",
+            "audio",
+            "rvc",
+            "source_cleaning",
+            "output",
+        ],
+        expected_revision: Annotated[int, Field(ge=0)],
+        value: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Merge top-level fields into the stored override with revision-safe idempotency.
+
+        Use pandrator_update_session_settings for full replacement; omitted
+        fields are removed by that operation. Nested values replace whole
+        fields, and null remains a literal value.
+        """
+
+        return _call(
+            patch_session_settings,
+            runtime,
+            PatchSessionSettingsInput(
                 session_id=session_id,
                 section=section,
                 expected_revision=expected_revision,
@@ -3065,7 +3125,15 @@ def build_server(runtime: McpRuntime):
 
     @server.tool(name="pandrator_revise_speech_block_plan_batch", title="Atomically revise speech-block topology", annotations=write_action)
     def speech_plan_batch_tool(session_id: str, expected_revision_id: str, operations: list[dict[str, Any]], idempotency_key: str) -> dict[str, Any]:
-        """Apply up to 50 ordered split/merge edits atomically. Select by ID, ordinal, source_cue_ids or result_ref; split by unique text, cue, sentence or cursor. Labels expose label.left/right results. Ambiguity rolls back the entire batch."""
+        """Apply up to 50 ordered split/merge edits atomically.
+
+        Select a split with a nested selector such as ``segment: {ordinal: 0}``,
+        and select merge inputs with nested selectors such as
+        ``left: {ordinal: 1}, right: {ordinal: 2}``.
+        Selectors may use ID, ordinal, source_cue_ids, or result_ref; split by
+        unique text, cue, sentence, or cursor. Labels expose label.left/right
+        results. Ambiguity rolls back the entire batch.
+        """
         return _call_with_validated_input(revise_speech_block_plan_batch, runtime, ReviseSpeechBlockPlanBatchInput, {key: value for key, value in locals().items() if key in ReviseSpeechBlockPlanBatchInput.model_fields})
 
     @server.tool(name="pandrator_generate_speech_plan", title="Generate a selected speech-plan revision", annotations=write_action)

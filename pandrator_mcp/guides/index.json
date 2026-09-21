@@ -24,7 +24,7 @@
     {
       "topic": "audiobooks",
       "title": "Audiobook workflow",
-      "summary": "Document cleanup, narration preparation, generation, assembly, and export.",
+      "summary": "Prepare and review narration, generate takes, assemble, then export. For multiple voices, start with the multivoice-audiobooks guide and get_audiobook_setup. Use patch_session_settings for partial edits; prepared_text JSON is required for speaker annotation.",
       "audiences": [
         "new_user",
         "operator"
@@ -35,6 +35,9 @@
         "pandrator_import_local_source",
         "pandrator_create_text_source",
         "pandrator_get_workflow",
+        "pandrator_get_session_settings",
+        "pandrator_patch_session_settings",
+        "pandrator_update_session_settings",
         "pandrator_create_source_cleaning_dispatch_run",
         "pandrator_get_source_cleaning_dispatch_run",
         "pandrator_claim_source_cleaning_dispatch_batch",
@@ -45,7 +48,7 @@
         "pandrator_submit_speech_optimization_dispatch_batch"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 7,
+      "revision": 9,
       "file": "audiobooks.md"
     },
     {
@@ -316,11 +319,33 @@
         "pandrator_get_generation_controls",
         "pandrator_update_generation_controls",
         "pandrator_create_speech_optimization_dispatch_run",
-        "pandrator_preview_performance_plan"
+        "pandrator_preview_performance_plan",
+        "pandrator_get_audiobook_setup",
+        "pandrator_configure_audiobook",
+        "pandrator_preview_speech_segment"
+      ],
+      "minimum_application_version": "0.9.4",
+      "revision": 3,
+      "file": "generation-controls.md"
+    },
+    {
+      "topic": "multivoice-audiobooks",
+      "title": "Multiple-voice audiobooks",
+      "summary": "Inspect audiobook setup, then configure multi_voice atomically. Prepare narration before speaker annotation: use prepared_text JSON, annotation_mode=speakers and annotation_only=true. Cast stable character IDs, inspect representative segments with preview_speech_segment, review the plan, generate, wait with get_work, and assemble. Full guidance includes the exact cast shape and a compact procedure.",
+      "audiences": [
+        "new_user",
+        "operator"
+      ],
+      "related_tools": [
+        "pandrator_get_audiobook_setup",
+        "pandrator_configure_audiobook",
+        "pandrator_update_generation_controls",
+        "pandrator_preview_speech_segment",
+        "pandrator_get_work"
       ],
       "minimum_application_version": "0.9.4",
       "revision": 1,
-      "file": "generation-controls.md"
+      "file": "multivoice-audiobooks.md"
     }
   ]
 }

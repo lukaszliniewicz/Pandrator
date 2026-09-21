@@ -93,7 +93,10 @@ class VoiceCatalogInput(ToolInput):
     accent: str = Field(default="", max_length=80)
     voice_category: Literal["", "male", "female", "androgynous", "unspecified"] = ""
     pitch: Literal["", "low", "mid", "high"] = ""
+    perceived_age: Literal["", "childlike", "youthful", "adult", "older"] = ""
     texture: str = Field(default="", max_length=40)
+    delivery_preset: str = Field(default="", max_length=40)
+    tag: str = Field(default="", max_length=40)
     use_case: str = Field(default="", max_length=40)
     collection_id: str = Field(default="", max_length=160)
     kind: Literal["all", "managed", "provider"] = "all"

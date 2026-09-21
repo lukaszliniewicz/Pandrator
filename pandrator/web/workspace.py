@@ -84,6 +84,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "text": {
         "enable_sentence_splitting": True,
         "max_sentence_length": 200,
+        "audiobook_chunking": "model",
         "enable_sentence_appending": True,
         "remove_diacritics": False,
         "remove_quotation_marks": False,
@@ -914,7 +915,23 @@ class WorkspaceSettingsService:
         )
         session_context: dict[str, Any] = {}
         output_context: dict[str, Any] = {}
-        if section == "stt":
+        if section == "text":
+            # Before provider-aware budgets existed, an explicitly stored
+            # max_sentence_length was the user's manual policy.  Infer that
+            # mode only from persisted global/session values; never copy an
+            # inherited default into the session context.  An explicit mode
+            # always wins, including a value stored in either layer.
+            explicit_text = {**global_value, **override_value}
+            if (
+                "audiobook_chunking" not in explicit_text
+                and "max_sentence_length" in explicit_text
+                and explicit_text.get("max_sentence_length") is not None
+            ):
+                from pandrator.logic.audiobook_chunking import _manual_length
+
+                _manual_length(explicit_text["max_sentence_length"])
+                session_context = {"audiobook_chunking": "manual"}
+        elif section == "stt":
             session_context = {"stt_language": source_language}
         elif section == "translation":
             session_context = {
@@ -1065,6 +1082,78 @@ class WorkspaceSettingsService:
             revision = int(result["revision"])
         return self.get(session_id, section) | {"revision": revision}
 
+    def patch(
+        self,
+        session_id: str,
+        section: str,
+        expected_revision: int,
+        value: dict[str, Any],
+        *,
+        db_session: Session | None = None,
+    ) -> dict[str, Any]:
+        """Merge top-level fields into one stored session override."""
+
+        section = self._validate_section(section)
+        if db_session is not None:
+            self.patch_in_session(
+                db_session,
+                session_id,
+                section,
+                expected_revision,
+                value,
+            )
+            return self.get_in_session(db_session, session_id, section)
+        with self.database.immediate_session() as session:
+            result = self.patch_in_session(
+                session,
+                session_id,
+                section,
+                expected_revision,
+                value,
+            )
+            revision = int(result["revision"])
+        return self.get(session_id, section) | {"revision": revision}
+
+    def patch_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        section: str,
+        expected_revision: int,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Shallow-merge submitted fields with the existing stored override.
+
+        Inherited defaults are deliberately excluded: only the persisted
+        override participates in this merge.  Nested values are replaced as
+        whole fields, and ``None`` remains a literal stored value.
+        """
+
+        section = self._validate_section(section)
+        session_record = session.get(SessionRecord, session_id)
+        if session_record is None:
+            raise KeyError(session_id)
+        record = session.get(SessionSetting, (session_id, section))
+        current_revision = record.revision if record is not None else 0
+        if current_revision != expected_revision:
+            raise RevisionConflict("Session settings changed in another client.")
+        existing = record.value_json if record is not None else {}
+        if section == "tts":
+            # Normalize the submitted layer before merging: a speaker-only
+            # patch must win over the previously stored voice alias.
+            value = normalize_tts_voice_aliases(value)
+        merged = {
+            **(existing if isinstance(existing, dict) else {}),
+            **dict(value),
+        }
+        return self.update_in_session(
+            session,
+            session_id,
+            section,
+            expected_revision,
+            merged,
+        )
+
     def update_in_session(
         self,
         session: Session,
@@ -1078,6 +1167,10 @@ class WorkspaceSettingsService:
         if session_record is None:
             raise KeyError(session_id)
         value = dict(value)
+        if section == "text":
+            from pandrator.logic.audiobook_chunking import validate_audiobook_chunking_settings
+
+            validate_audiobook_chunking_settings(value)
         if section == "tts":
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]
@@ -1472,76 +1565,94 @@ class OutcomePlanService:
         self, session_id: str, expected_revision: int, value: dict[str, Any]
     ) -> dict[str, Any]:
         with self.database.session() as session:
-            record = session.get(SessionRecord, session_id)
-            if record is None:
-                raise KeyError(session_id)
-            plan = session.get(OutcomePlan, session_id)
-            previous_value = deepcopy(plan.value_json) if plan is not None else {}
-            if plan is None:
-                if expected_revision != 0:
-                    raise RevisionConflict(
-                        "The workflow plan was created in another client."
-                    )
-                plan = OutcomePlan(session_id=session_id, value_json=value, revision=1)
-                session.add(plan)
-            else:
-                if expected_revision != plan.revision:
-                    raise RevisionConflict(
-                        "The workflow plan changed in another client."
-                    )
-                session.add(
-                    OutcomePlanHistory(
-                        session_id=session_id,
-                        value_json=plan.value_json,
-                        revision=plan.revision,
-                    )
-                )
-                plan.value_json = value
-                plan.revision += 1
-                plan.updated_at = utcnow()
-            previous_inputs = (
-                previous_value.get("inputs")
-                if isinstance(previous_value.get("inputs"), dict)
-                else {}
+            result = self.update_in_session(
+                session, session_id, expected_revision, value
             )
-            next_inputs = (
-                value.get("inputs") if isinstance(value.get("inputs"), dict) else {}
-            )
-            if str(previous_inputs.get("translation") or "correction") != str(
-                next_inputs.get("translation") or "correction"
-            ):
-                # The chosen translation and speech-optimized descendants may
-                # belong to the other source branch. Preserve their immutable
-                # history, but do not continue presenting that branch as the
-                # selected/current workflow result.
-                from .artifact_selection import clear_selection
+            revision = result["revision"]
+        return {
+            "value": result["value"],
+            "revision": revision,
+            "pipeline": result["pipeline"],
+        }
 
-                clear_selection(session, session_id, "translate")
-            record.workflow_kind = str(
-                value.get("workflow_kind") or record.workflow_kind
-            )
-            record.workflow_preset = "custom"
-            pipeline_keys = {item["key"] for item in resolve_pipeline(value)}
-            record.included_stages_json = [
-                key
-                for key in (
-                    "transcribe",
-                    "edit_media",
-                    "correct",
-                    "translate",
-                    "optimize_tts",
-                    "generate_audio",
-                    "export",
+    def update_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        expected_revision: int,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update an outcome plan inside a caller-owned transaction."""
+
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError(session_id)
+        plan = session.get(OutcomePlan, session_id)
+        previous_value = deepcopy(plan.value_json) if plan is not None else {}
+        if plan is None:
+            if expected_revision != 0:
+                raise RevisionConflict(
+                    "The workflow plan was created in another client."
                 )
-                if key in pipeline_keys
-            ]
-            record.revision += 1
-            record.updated_at = utcnow()
-            session.flush()
-            revision = plan.revision
+            plan = OutcomePlan(session_id=session_id, value_json=value, revision=1)
+            session.add(plan)
+        else:
+            if expected_revision != plan.revision:
+                raise RevisionConflict(
+                    "The workflow plan changed in another client."
+                )
+            session.add(
+                OutcomePlanHistory(
+                    session_id=session_id,
+                    value_json=plan.value_json,
+                    revision=plan.revision,
+                )
+            )
+            plan.value_json = value
+            plan.revision += 1
+            plan.updated_at = utcnow()
+        previous_inputs = (
+            previous_value.get("inputs")
+            if isinstance(previous_value.get("inputs"), dict)
+            else {}
+        )
+        next_inputs = (
+            value.get("inputs") if isinstance(value.get("inputs"), dict) else {}
+        )
+        if str(previous_inputs.get("translation") or "correction") != str(
+            next_inputs.get("translation") or "correction"
+        ):
+            # The chosen translation and speech-optimized descendants may
+            # belong to the other source branch. Preserve their immutable
+            # history, but do not continue presenting that branch as the
+            # selected/current workflow result.
+            from .artifact_selection import clear_selection
+
+            clear_selection(session, session_id, "translate")
+        record.workflow_kind = str(
+            value.get("workflow_kind") or record.workflow_kind
+        )
+        record.workflow_preset = "custom"
+        pipeline_keys = {item["key"] for item in resolve_pipeline(value)}
+        record.included_stages_json = [
+            key
+            for key in (
+                "transcribe",
+                "edit_media",
+                "correct",
+                "translate",
+                "optimize_tts",
+                "generate_audio",
+                "export",
+            )
+            if key in pipeline_keys
+        ]
+        record.revision += 1
+        record.updated_at = utcnow()
+        session.flush()
         return {
             "value": deepcopy(value),
-            "revision": revision,
+            "revision": plan.revision,
             "pipeline": resolve_pipeline(value),
         }
 
@@ -2453,6 +2564,11 @@ class GenerationService:
                         ).all()
                     }
             from .passage_markers import describe_passages
+            from .speech_annotation_view import annotation_xml_by_segment
+
+            annotation_xml = annotation_xml_by_segment(
+                session, plan_revision_id, rows, selected_run
+            ) if view == "full" and fields is None else {}
 
             items = [
                 {
@@ -2471,6 +2587,8 @@ class GenerationService:
                     "alignment_group": item.alignment_group,
                     "optimized_text": item.optimized_text,
                     "speech_plan": dict(item.speech_plan_json or {}),
+                    **({"speech_annotation_xml": annotation_xml[item.id]}
+                       if annotation_xml.get(item.id) else {}),
                     "optimization_status": item.optimization_status,
                     "optimization_reviewed": item.optimization_reviewed,
                     "optimization_model": item.optimization_model,
@@ -4129,7 +4247,7 @@ class GenerationService:
                         requested_segment_ids.append(segment.id)
                 if not requested_segment_ids:
                     raise ValueError("There are no missing or stale speech blocks to generate.")
-        return {
+        prepared = {
             "requested_segment_ids": requested_segment_ids,
             "run_override": run_override,
             "selected_segment_override": selected_segment_override,
@@ -4141,6 +4259,21 @@ class GenerationService:
             "stale_only": stale_only,
             "reusable_take_ids": reusable_take_ids,
         }
+        from .generation_audio_identity import plan_audio_identities
+        from .generation_start_preparation import snapshot_guard
+        from .speech_plan_workspace import freeze_speech_snapshot
+
+        with self.database.session() as session:
+            revision_id, source_run = self._start_source(session, session_id, prepared)
+            snapshot = self._start_snapshot(prepared, source_run)
+            prepared["snapshot_source_run_id"] = source_run.id if source_run else None
+            prepared["snapshot_input_hash"] = stable_hash(snapshot)
+            prepared["snapshot_guard"] = snapshot_guard(session, session_id, revision_id)
+            snapshot["speech_plan_revision_id"] = revision_id
+            freeze_speech_snapshot(session, revision_id, snapshot, explicit=bool(speech_plan_revision_id))
+            snapshot["generation_audio_identities"] = plan_audio_identities(session, revision_id, snapshot)
+            prepared["frozen_snapshot"] = snapshot
+        return prepared
 
     def start(
         self,
@@ -4285,16 +4418,13 @@ class GenerationService:
             cls._clear_regeneration_baton(session, child, source_run_id)
         return batons
 
-    def start_in_session(
-        self, session: Session, session_id: str, *, prepared: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Create the durable run and its queued job in one caller transaction."""
+    def _start_source(
+        self, session: Session, session_id: str, prepared: dict[str, Any]
+    ) -> tuple[str, GenerationRun | None]:
+        """Resolve the same immutable source in preparation and final commit."""
         requested_segment_ids = list(prepared["requested_segment_ids"])
-        run_override = dict(prepared["run_override"])
-        selected_segment_override = deepcopy(prepared["selected_segment_override"])
         generation_run_id = prepared["generation_run_id"]
         operation = prepared["operation"]
-        resolved_for_new = prepared["resolved_for_new"]
         plan = session.scalar(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
@@ -4382,6 +4512,47 @@ class GenerationService:
                     session_id,
                     plan_revision_id,
                 )
+        return plan_revision_id, source_run
+
+    @staticmethod
+    def _start_snapshot(
+        prepared: dict[str, Any], source_run: GenerationRun | None
+    ) -> dict[str, Any]:
+        run_override = dict(prepared["run_override"])
+        selected_segment_override = deepcopy(prepared["selected_segment_override"])
+        resolved_for_new = prepared["resolved_for_new"]
+        if source_run is not None:
+            source_snapshot = dict(source_run.settings_snapshot_json or {})
+            # A previous alternate take is a useful source for ordinary
+            # settings, but its *selected-only* precedence must not leak
+            # into a later regeneration unless it is requested again.
+            source_snapshot.pop("selected_segment_override", None)
+            snapshot = _merge(source_snapshot, run_override, selected_segment_override)
+        else:
+            snapshot, _ = resolved_for_new
+            snapshot = deepcopy(snapshot)
+            if selected_segment_override:
+                snapshot = _merge(snapshot, selected_segment_override)
+        if selected_segment_override:
+            snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
+        return snapshot
+
+    def start_in_session(
+        self, session: Session, session_id: str, *, prepared: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create the durable run and its queued job in one caller transaction."""
+        requested_segment_ids = list(prepared["requested_segment_ids"])
+        generation_run_id = prepared["generation_run_id"]
+        operation = prepared["operation"]
+        plan_revision_id, source_run = self._start_source(session, session_id, prepared)
+        snapshot = self._start_snapshot(prepared, source_run)
+        from .generation_start_preparation import snapshot_guard
+
+        if ((source_run.id if source_run else None) != prepared["snapshot_source_run_id"]
+                or stable_hash(snapshot) != prepared["snapshot_input_hash"]
+                or snapshot_guard(session, session_id, plan_revision_id) != prepared["snapshot_guard"]):
+            raise RevisionConflict("Speech, cast, or voice references changed while generation was being prepared. Refresh and try again.")
+        snapshot = deepcopy(prepared["frozen_snapshot"])
         auto_resume_source_id = None
         scheduling_run = source_run
         if requested_segment_ids and operation == "regenerate" and not generation_run_id:
@@ -4408,36 +4579,19 @@ class GenerationService:
                 scheduling_run.pause_requested = True
                 scheduling_run.status = "pausing"
                 scheduling_run.updated_at = utcnow()
-        if source_run is not None:
-            source_snapshot = dict(source_run.settings_snapshot_json or {})
-            # A previous alternate take is a useful source for ordinary
-            # settings, but its *selected-only* precedence must not leak
-            # into a later regeneration unless it is requested again.
-            source_snapshot.pop("selected_segment_override", None)
-            snapshot = _merge(source_snapshot, run_override, selected_segment_override)
-            settings_hash = stable_hash(snapshot)
-        else:
-            snapshot, settings_hash = resolved_for_new
-            snapshot = deepcopy(snapshot)
-            if selected_segment_override:
-                snapshot = _merge(snapshot, selected_segment_override)
-                settings_hash = stable_hash(snapshot)
-        if selected_segment_override:
-            snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
         snapshot.pop("interrupted_generation_run_id", None)
         if auto_resume_source_id and (source_run is None or source_run.id != auto_resume_source_id):
             snapshot["interrupted_generation_run_id"] = auto_resume_source_id
         snapshot["speech_plan_revision_id"] = plan_revision_id
-        from .speech_plan_workspace import freeze_speech_snapshot
-        from .generation_edit_audio import capture_selection_guards, inherit_edit_copy_audio
+        from .generation_audio_identity import take_reuse_reason
+        from .generation_edit_audio import (
+            capture_selection_guards,
+            inherit_edit_copy_audio,
+        )
 
         inherit_edit_copy_audio(session, plan_revision_id)
         snapshot["generation_selection_guards"] = capture_selection_guards(session, plan_revision_id)
         snapshot["generation_request_segment_ids"] = list(requested_segment_ids)
-        freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(prepared.get("explicit_speech_plan_revision_id")))
-        from .generation_audio_identity import plan_audio_identities, take_reuse_reason
-
-        snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
         if prepared.get("stale_only"):
             snapshot["stale_only"] = True
         settings_hash = stable_hash(snapshot)

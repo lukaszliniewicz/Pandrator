@@ -49,6 +49,7 @@ from .source_resolution import (
     resolve_primary_source,
 )
 from .subtitle_sources import subtitle_source_status_in_session
+from .workflow_inputs import workflow_transformations
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
 
@@ -870,11 +871,7 @@ class WorkflowService:
                     else None
                 )
             )
-            transformations = (
-                (outcome.value_json or {}).get("transformations", {})
-                if outcome and isinstance(outcome.value_json, dict)
-                else {}
-            )
+            transformations = workflow_transformations(session, session_id, outcome, self.database)
             optimization_enabled = bool(transformations.get("llm_tts_optimization"))
             document_optimization_enabled = bool(
                 transformations.get("llm_tts_document_optimization")
@@ -1653,7 +1650,11 @@ class WorkflowService:
             "optimize_document": ("text",),
             "optimize_tts": ("text",),
             "clean_source": ("source_cleaning", "text"),
-            "prepare_text": ("text", "audio"),
+            # TTS is part of the immutable prepare snapshot because the
+            # provider-aware chunk policy depends on it.  It is copied into a
+            # private setting below rather than flattened into text runtime
+            # parameters consumed by the preprocessor.
+            "prepare_text": ("text", "audio", "tts"),
             "generate_audio": ("text", "tts", "audio", "rvc", "output"),
             "export": ("output", "audio", "subtitles"),
         }
@@ -1702,6 +1703,8 @@ class WorkflowService:
         )
         flattened: dict[str, Any] = {}
         for section in requested_sections:
+            if stage_key == "prepare_text" and section == "tts":
+                continue
             flattened.update(adapt_runtime_settings(section, resolved.get(section, {})))
         if stage_key == "translate" and not requested_source_artifact_id:
             requested_source_artifact_id = str(
@@ -1716,6 +1719,15 @@ class WorkflowService:
                 if key not in requested_sections
             }
         )
+        if stage_key == "prepare_text":
+            tts_snapshot = deepcopy(resolved.get("tts", {}))
+            # Flat legacy stage submissions may contain provider fields.  The
+            # immutable resolved TTS section is authoritative; keep those
+            # fields out of the preprocessor settings and pass one private
+            # captured snapshot to the worker instead.
+            for key in tts_snapshot:
+                flattened.pop(key, None)
+            flattened["_audiobook_tts_settings"] = deepcopy(tts_snapshot)
         # Flat Run Now overrides use stable web service IDs (for example
         # ``kokoro``).  Re-adapt after applying them so the legacy synthesis
         # boundary receives its canonical dispatcher label (``Kokoro``).
@@ -1725,8 +1737,14 @@ class WorkflowService:
         for key, sections in section_map.items():
             stage_value: dict[str, Any] = {}
             for section in sections:
+                if key == "prepare_text" and section == "tts":
+                    continue
                 stage_value.update(
                     adapt_runtime_settings(section, resolved.get(section, {}))
+                )
+            if key == "prepare_text":
+                stage_value["_audiobook_tts_settings"] = deepcopy(
+                    resolved.get("tts", {})
                 )
             supplied = (
                 provided_stage_settings.get(key, {})
@@ -1739,6 +1757,15 @@ class WorkflowService:
                     supplied if isinstance(supplied, dict) else {}, runtime=True,
                 ),
             }
+            if key == "prepare_text":
+                # Caller-supplied stage settings cannot replace the captured
+                # provider snapshot or flatten its fields into preprocessing.
+                captured_tts = stage_value["_audiobook_tts_settings"]
+                for field in captured_tts:
+                    resolved_stage_settings[key].pop(field, None)
+                resolved_stage_settings[key]["_audiobook_tts_settings"] = deepcopy(
+                    captured_tts
+                )
             if key == "generate_audio":
                 resolved_stage_settings[key] = adapt_runtime_settings(
                     "tts", resolved_stage_settings[key]
@@ -1799,6 +1826,7 @@ class WorkflowService:
             outcome = session.scalar(
                 select(OutcomePlan).where(OutcomePlan.session_id == session_id)
             )
+            transformations = workflow_transformations(session, session_id, outcome, self.database)
             inputs = (
                 (outcome.value_json or {}).get("inputs", {})
                 if outcome and isinstance(outcome.value_json, dict)
@@ -1814,11 +1842,6 @@ class WorkflowService:
                     else ("transcription", "upload")
                 )
             elif stage_key in {"optimize_document", "generate_audio"}:
-                transformations = (
-                    (outcome.value_json or {}).get("transformations", {})
-                    if outcome and isinstance(outcome.value_json, dict)
-                    else {}
-                )
                 if stage_key == "generate_audio" and bool(
                     transformations.get("llm_tts_document_optimization")
                 ):
@@ -1978,11 +2001,6 @@ class WorkflowService:
             if reuse_stages:
                 payload["reuse_stages"] = reuse_stages
             resource_keys = self._resource_keys(session_id, stage_key, flattened)
-            transformations = (
-                (outcome.value_json or {}).get("transformations", {})
-                if outcome and isinstance(outcome.value_json, dict)
-                else {}
-            )
             if any(
                 bool(transformations.get(key))
                 for key in (

@@ -841,6 +841,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .generation_control_routes import register_generation_control_routes
 
     register_generation_control_routes(app, context)
+    from .audiobook_routes import register_audiobook_routes
+    from .speech_selection_routes import register_speech_selection_routes
+
+    register_audiobook_routes(app, context)
+    register_speech_selection_routes(app, context)
     from .voice_catalog_routes import register_voice_catalog_routes
 
     register_voice_catalog_routes(app, context)
@@ -2494,6 +2499,116 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return response
         try:
             result = workspace_settings.update(
+                session_id, section, expected, payload.value
+            )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except WorkspaceRevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
+
+    @app.patch("/api/v1/sessions/<session_id>/settings/<section>")
+    @require_auth
+    def session_settings_patch(session_id: str, section: str):
+        payload = SessionSettingsUpdate.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        if rejected := inline_credential_error(payload.value):
+            return rejected
+        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
+        try:
+            expected = int(raw_etag)
+        except ValueError:
+            return error_response(
+                "precondition_required",
+                "If-Match must contain the current settings revision.",
+                428,
+            )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="patchSessionSettings",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "section": section,
+                            "expected_revision": expected,
+                            "value": payload.value,
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        if result.get("revision") is not None:
+                            response.headers["ETag"] = f'"{result["revision"]}"'
+                        return response
+                    session_record = db_session.get(SessionRecord, session_id)
+                    if session_record is None:
+                        abandon_idempotency(db_session, reservation)
+                        return error_response(
+                            "not_found",
+                            "Session not found.",
+                            404,
+                        )
+                    current = db_session.get(
+                        SessionSetting,
+                        (session_id, section),
+                    )
+                    current_revision = current.revision if current is not None else 0
+                    if current_revision != expected:
+                        abandon_idempotency(db_session, reservation)
+                        return error_response(
+                            "revision_conflict",
+                            "Session settings changed in another client.",
+                            409,
+                            {"current_revision": (current_revision)},
+                        )
+                    result = workspace_settings.patch(
+                        session_id,
+                        section,
+                        expected,
+                        payload.value,
+                        db_session=db_session,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="session_settings",
+                        resource_id=f"{session_id}:{section}",
+                    )
+                    g.audit_resource_kind = "session_settings"
+                    g.audit_resource_id = f"{session_id}:{section}"
+            except (
+                IdempotencyConflict,
+                IdempotencyInProgress,
+                ValueError,
+            ) as error:
+                if isinstance(error, WorkspaceRevisionConflict):
+                    return error_response(
+                        "revision_conflict",
+                        str(error),
+                        409,
+                    )
+                return idempotency_failure(error)
+            response = jsonify(result)
+            response.headers["ETag"] = f'"{result["revision"]}"'
+            return response
+        try:
+            result = workspace_settings.patch(
                 session_id, section, expected, payload.value
             )
         except KeyError:

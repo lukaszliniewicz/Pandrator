@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { LANGUAGE_OPTIONS } from './settings-fields';
+  import { voiceLanguageName } from './voice-presentation';
   import { Plus, X } from '@lucide/svelte';
   import {
     voiceFacetLabel,
@@ -142,14 +144,39 @@
         <div class="grid grid-cols-[1fr_auto] items-start gap-2">
           <div class="grid gap-3 sm:grid-cols-2">
             <label class="text-xs font-semibold"
-              >Language code<input
+              >Language<select
                 class="input mt-1 w-full"
-                placeholder="en"
-                maxlength="40"
-                bind:value={language.language}
-                oninput={() => languageChanged(index)}
-              /></label
-            >
+                value={LANGUAGE_OPTIONS.some(
+                  (item) => item.value === language.language
+                )
+                  ? language.language
+                  : 'custom'}
+                onchange={(event) => {
+                  language.language =
+                    event.currentTarget.value === 'custom'
+                      ? ''
+                      : event.currentTarget.value;
+                  languageChanged(index);
+                }}
+              >
+                <option value="custom">Other language or locale…</option>
+                {#each LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
+                    value={item.value}>{item.label} ({item.value})</option
+                  >{/each}
+              </select>
+              {#if !LANGUAGE_OPTIONS.some((item) => item.value === language.language)}<input
+                  aria-label="Language code"
+                  class="input mt-2 w-full"
+                  placeholder="e.g. en-GB"
+                  maxlength="40"
+                  bind:value={language.language}
+                  oninput={() => languageChanged(index)}
+                /><span class="muted mt-1 block font-normal"
+                  >{language.language
+                    ? voiceLanguageName(language.language)
+                    : 'Enter a language or locale code.'}</span
+                >{/if}
+            </label>
             <label class="text-xs font-semibold"
               >Accent<input
                 class="input mt-1 w-full"

@@ -58,6 +58,9 @@
   import SessionSourceCard from './SessionSourceCard.svelte';
   import StageInputPicker from './StageInputPicker.svelte';
   import SpeechPlanCard from './SpeechPlanCard.svelte';
+  import AudiobookCastCard from './AudiobookCastCard.svelte';
+  import type { CastDraftController } from './generation-controls';
+  let audiobookCastPanel = $state<CastDraftController>();
   import SpeechPlanSettings from './SpeechPlanSettings.svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
   import {
@@ -89,8 +92,7 @@
     validateSourcePassageValues,
     type SourcePassagePreviewResponse,
     type SourcePassageRebuildResponse,
-    type SourcePassageStatus,
-    type SourcePassageValues
+    type SourcePassageStatus
   } from './source-passages';
 
   type Stage = WorkflowStage;
@@ -355,7 +357,6 @@
   let sourcePassagesAvailable = $state(true);
   let sourcePassageOverrideCount = $state(0);
   let sourcePassagesTouched = $state(false);
-  let sourcePassageSettingsRevision = $state(0);
   let passageStatus = $state<SourcePassageStatus | null>(null);
   let passageStatusLoading = $state(false);
   let passageStatusError = $state('');
@@ -415,6 +416,7 @@
   let splitSentences = $state(true);
   let appendSentences = $state(true);
   let maxSentenceLength = $state(200);
+  let audiobookChunking = $state<'model' | 'manual'>('model');
   let nemoNormalization = $state(true);
   let normalizeAllCaps = $state(true);
   let removeDiacritics = $state(false);
@@ -1207,7 +1209,6 @@
       sourcePassageJoinGapMs = coerced.cue_join_gap_ms;
       sourcePassageDiagnosticSpanMs = coerced.diagnostic_span_ms;
       sourcePassageOverrideCount = Object.keys(passages.override ?? {}).length;
-      sourcePassageSettingsRevision = passages.revision;
       sourcePassagesAvailable = true;
     } catch {
       const fallback = { ...SOURCE_PASSAGE_DEFAULTS };
@@ -1217,7 +1218,6 @@
       sourcePassageJoinGapMs = fallback.cue_join_gap_ms;
       sourcePassageDiagnosticSpanMs = fallback.diagnostic_span_ms;
       sourcePassageOverrideCount = 0;
-      sourcePassageSettingsRevision = 0;
       sourcePassagesAvailable = false;
     }
     sourcePassagesTouched = false;
@@ -1291,6 +1291,8 @@
     splitSentences = Boolean(saved.enable_sentence_splitting ?? true);
     appendSentences = Boolean(saved.enable_sentence_appending ?? true);
     maxSentenceLength = Number(saved.max_sentence_length ?? 200);
+    audiobookChunking =
+      saved.audiobook_chunking === 'manual' ? 'manual' : 'model';
     nemoNormalization = Boolean(saved.enable_nemo_normalization ?? true);
     normalizeAllCaps = Boolean(saved.normalize_all_caps ?? true);
     removeDiacritics = Boolean(saved.remove_diacritics ?? false);
@@ -2701,6 +2703,7 @@
         enable_sentence_splitting: splitSentences,
         enable_sentence_appending: appendSentences,
         max_sentence_length: maxSentenceLength,
+        audiobook_chunking: audiobookChunking,
         enable_nemo_normalization: nemoNormalization,
         normalize_all_caps: normalizeAllCaps,
         remove_diacritics: removeDiacritics,
@@ -2851,7 +2854,6 @@
           sourcePassageOverrideCount = Object.keys(
             refreshed.override ?? {}
           ).length;
-          sourcePassageSettingsRevision = refreshed.revision;
           sourcePassagesAvailable = true;
         } catch {
           sourcePassagesAvailable = false;
@@ -3213,9 +3215,36 @@
   {:else if snapshot}
     <div class="space-y-4">
       {#if !sourceCardStage}{@render sessionSource()}{/if}
+      {#if session.workflow_kind === 'audiobook'}
+        <AudiobookCastCard
+          bind:castPanel={audiobookCastPanel}
+          navigationManaged={workspaceMode === 'review' &&
+            Boolean(speechPlan?.selected_revision_id)}
+          sessionId={session.id}
+          plan={speechPlan}
+          busy={planBusy || inputsLocked}
+          onchanged={async () => {
+            const [record, nextOutcome] = await Promise.all([
+              sessionApi.get(session.id),
+              sessionApi.outcome(session.id)
+            ]);
+            outcome = nextOutcome;
+            onupdated(record);
+            await load();
+          }}
+          onsettings={() => {
+            const stage = snapshot?.stages.find(
+              (item) => item.key === 'prepare_text'
+            );
+            if (stage) void openSettings(stage);
+          }}
+        />
+      {/if}
       {#each snapshot.stages as stage}
         {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
           <SpeechPlanCard
+            externalCastPanel={audiobookCastPanel}
+            showCasting={session.workflow_kind !== 'audiobook'}
             sessionId={session.id}
             plan={speechPlan}
             busy={planBusy}
@@ -4721,7 +4750,7 @@
                       class="mt-2 rounded-lg bg-[var(--accent-soft)] p-2 text-xs"
                     >
                       <p>
-                        Preview: {passagePreview.passage_count} passages{' '}{#if passageStatus?.passage_count != null}
+                        Preview: {passagePreview.passage_count} passages {#if passageStatus?.passage_count != null}
                           {@const delta =
                             passagePreview.passage_count -
                             (passageStatus.passage_count ?? 0)}
@@ -4976,15 +5005,26 @@
               class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
             >
               <div class="text-sm font-semibold">
-                Provider-independent segmentation
+                Model-aware narration length
               </div>
               <p class="muted mt-1 text-xs leading-relaxed">
-                These controls create editable narration units and pauses.
-                Voice, model, and synthesis controls are selected later in
-                Generate audio.
+                Pack complete sentences up to the selected model’s narration
+                budget, leaving headroom for generation. Paragraph and chapter
+                breaks remain intact. Changes apply when preparing new
+                narration.
               </p>
             </div>
             <div class="grid gap-3 sm:grid-cols-2">
+              <label class="text-sm font-semibold sm:col-span-2"
+                >Segment length policy<select
+                  bind:value={audiobookChunking}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="model"
+                    >Automatic · selected model with headroom</option
+                  ><option value="manual">Custom character limit</option
+                  ></select
+                ></label
+              >
               <label
                 class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-sm font-semibold"
                 ><input
@@ -5000,10 +5040,11 @@
                   class="size-4 accent-[var(--accent)]"
                 /> Join short sentences</label
               ><label class="text-sm font-semibold"
-                >Maximum segment length<input
+                >Custom maximum characters<input
                   type="number"
                   min="20"
-                  max="2000"
+                  max="8192"
+                  disabled={audiobookChunking !== 'manual'}
                   bind:value={maxSentenceLength}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                 /></label

@@ -136,7 +136,8 @@ def _label(name: str) -> str:
 _DESCRIPTIONS: dict[str, dict[str, str]] = {
     "text": {
         "enable_sentence_splitting": "Splits narration sentences that exceed max_sentence_length at suitable linguistic boundaries before speech-block creation.",
-        "max_sentence_length": "Sets the target maximum characters for narration sentence splitting and short-sentence appending; structural constraints can still produce a longer unit.",
+        "max_sentence_length": "Sets the custom character limit when audiobook chunking is manual. Automatic audiobook preparation uses the selected model's narration budget; structural boundaries may keep blocks shorter.",
+        "audiobook_chunking": "Chooses model-aware narration length with headroom, or a custom character limit. Applies to new audiobook preparation, preserving paragraph and chapter breaks and existing reviewed plans.",
         "enable_sentence_appending": "Combines adjacent short narration sentences when their combined text stays within max_sentence_length.",
         "remove_diacritics": "Transliterates narration text to remove diacritics before segmentation; this can change spelling and pronunciation and should be used only when the TTS voice requires it.",
         "remove_quotation_marks": "Removes quotation-mark characters from narration text before segmentation and synthesis.",
@@ -409,6 +410,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
 _METADATA: dict[str, dict[str, dict[str, object]]] = {
     "text": {
         "max_sentence_length": {"minimum": 1, "unit": "characters"},
+        "audiobook_chunking": {"choices": ["model", "manual"], "label": "Audiobook segment length", "applicability": "Audiobook narration preparation only."},
         "remove_diacritics": {
             "caveat": "Transliteration is destructive and can alter proper names or intended pronunciation."
         },

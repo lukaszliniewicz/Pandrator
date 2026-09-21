@@ -1,5 +1,6 @@
 <script lang="ts">
   import { LANGUAGE_OPTIONS } from './settings-fields';
+  import { voiceLanguageName } from './voice-presentation';
   import { voiceCategories, type VoiceCategory } from './generation-controls';
   import { sttLanguageProblem } from './stt-language-policy';
   import { selectableTtsServices } from './tts-provider-policy';
@@ -61,6 +62,8 @@
     initialVoice = '',
     embedded = false,
     detailOnly = false,
+    focused = false,
+    profileManaged = false,
     referencesOnly = false,
     onvoicepublished
   }: {
@@ -70,6 +73,8 @@
     initialVoice?: string;
     embedded?: boolean;
     detailOnly?: boolean;
+    focused?: boolean;
+    profileManaged?: boolean;
     referencesOnly?: boolean;
     onvoicepublished?: (providerVoiceId: string) => void;
   } = $props();
@@ -86,6 +91,8 @@
   let error = $state('');
   let notice = $state('');
   let newName = $state('');
+  let referenceSearch = $state('');
+  let pickerOpen = $state(true);
   let newNameInput = $state<HTMLInputElement>();
   let sampleUploadInput = $state<HTMLInputElement>();
   let nameRequired = $state(false);
@@ -266,6 +273,8 @@
   async function choose(voice: Voice) {
     stopPlayback();
     selected = voice;
+    pickerOpen = false;
+    samples = [];
     editingVoice = false;
     editName = voice.name;
     editLanguage = voice.language ?? '';
@@ -978,11 +987,28 @@
     {/if}
 
     <div
-      class={`grid min-w-0 grid-cols-1 items-start gap-5 ${detailOnly ? '' : 'lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]'}`}
+      class={`grid min-w-0 grid-cols-1 items-start gap-5 ${detailOnly || focused ? '' : 'lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]'}`}
     >
-      {#if !detailOnly}<aside
+      {#if focused && selected}<div class="flex flex-wrap items-center gap-3">
+          <button
+            class="btn btn-sm"
+            disabled={recording ||
+              stopping ||
+              uploadingSample ||
+              savingRecording ||
+              publishing}
+            onclick={() => (pickerOpen = !pickerOpen)}
+            >{pickerOpen
+              ? 'Hide voice selector'
+              : 'Choose another voice'}</button
+          >
+        </div>{/if}
+      {#if !detailOnly && (!focused || pickerOpen)}<aside
           class="surface flex min-w-0 flex-col rounded-3xl p-4"
         >
+          {#if focused}<h3 class="mb-3 text-sm font-semibold">
+              Create a reference voice
+            </h3>{/if}
           <form
             class="relative flex gap-2"
             onsubmit={(event) => {
@@ -1018,44 +1044,63 @@
                 ></span>
               </div>{/if}
           </form>
-          <div class="mt-4 space-y-1">
-            {#each voices as voice}<button
-                onclick={() => choose(voice)}
-                class:active={selected?.id === voice.id}
-                class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left"
-                ><Library size={17} /><span
-                  class="min-w-0 flex-1 truncate font-semibold"
-                  >{voice.name}</span
-                ><span class="muted text-xs">{voice.language}</span></button
-              >{:else}<p class="muted p-5 text-center text-sm">
-                Create a voice to add samples.
-              </p>{/each}
-          </div>
+          <details class="mt-4" open={!focused}>
+            <summary class="cursor-pointer text-sm font-semibold"
+              >Add a sample to an existing voice</summary
+            >
+            <label class="mt-3 block"
+              ><span class="sr-only">Find a reference voice</span><input
+                class="input w-full"
+                type="search"
+                placeholder="Search saved voices…"
+                bind:value={referenceSearch}
+              /></label
+            >
+            <div class="mt-3 max-h-72 space-y-1 overflow-y-auto">
+              {#each voices.filter((voice) => (!focused || !voice.bundled) && `${voice.name} ${voice.language ?? ''}`
+                    .toLowerCase()
+                    .includes(referenceSearch.toLowerCase())) as voice}<button
+                  onclick={() => choose(voice)}
+                  class:active={selected?.id === voice.id}
+                  class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left"
+                  ><Library size={17} /><span
+                    class="min-w-0 flex-1 truncate font-semibold"
+                    >{voice.name}</span
+                  ><span class="muted text-xs"
+                    >{voice.language
+                      ? voiceLanguageName(voice.language)
+                      : ''}</span
+                  ></button
+                >{:else}<p class="muted p-5 text-center text-sm">
+                  Create a voice to add samples.
+                </p>{/each}
+            </div>
+          </details>
         </aside>{/if}
 
-      <main
+      <section
         class="surface min-w-0 rounded-3xl p-5 [overflow-wrap:anywhere] sm:p-7"
       >
         {#if selected}
           <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <div class="flex flex-wrap items-center gap-2">
-                <h2 class="text-2xl font-semibold">{selected.name}</h2>
-                {#if selected.bundled}<span
-                    class="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[0.65rem] font-bold uppercase tracking-wide text-[var(--accent)]"
-                    >Bundled</span
-                  >{/if}
-              </div>
-              <p class="muted text-sm">
-                Review playback, transcripts, and recordings in one place.
-              </p>
-            </div>
+            {#if !profileManaged}<div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <h2 class="text-2xl font-semibold">{selected.name}</h2>
+                  {#if selected.bundled}<span
+                      class="rounded-full bg-[var(--accent-soft)] px-2 py-1 text-[0.65rem] font-bold uppercase tracking-wide text-[var(--accent)]"
+                      >Bundled</span
+                    >{/if}
+                </div>
+                <p class="muted text-sm">
+                  Review playback, transcripts, and recordings in one place.
+                </p>
+              </div>{/if}
             <div class="flex flex-wrap items-center justify-end gap-2">
-              {#if !selected.bundled}<button
-                  onclick={() => (editingVoice = !editingVoice)}
-                  class="stt-control font-semibold"
-                  ><Pencil size={15} /> Edit voice</button
-                ><button
+              {#if !selected.bundled}{#if !profileManaged}<button
+                    onclick={() => (editingVoice = !editingVoice)}
+                    class="stt-control font-semibold"
+                    ><Pencil size={15} /> Edit voice</button
+                  >{/if}<button
                   onclick={requestDeleteVoice}
                   disabled={deletingVoice}
                   class="stt-control font-semibold text-red-600 disabled:opacity-40"
@@ -1656,7 +1701,7 @@
             </div>
           </div>
         {/if}
-      </main>
+      </section>
     </div>
   {:else}
     <div>

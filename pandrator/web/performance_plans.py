@@ -1037,11 +1037,7 @@ def preview_segment(
         else None
     )
     from .generation_cast_runtime import preview_render_parts
-    if prepared.get("casting_enabled"):
-        parts = preview_render_parts(session, plan.session_id, unit["spoken_text"], segment_id, prepared, xml, unit.get("speaker"))
-    else:
-        from .generation_rendering import build_render_parts
-        parts = build_render_parts(unit["spoken_text"], prepared, speech_xml=xml, segment_id=segment_id, controls={"characters": characters})
+    parts = preview_render_parts(session, plan.session_id, unit["spoken_text"], segment_id, prepared, xml, unit.get("speaker"))
     compiled_parts = [
         {"start": part["start"], "end": part["end"], "text": part["text"],
          "voice": part["settings"].get("voice") or part["settings"].get("speaker") or "",

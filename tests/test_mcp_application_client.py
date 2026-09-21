@@ -301,6 +301,10 @@ class ApplicationClientTests(unittest.TestCase):
                     200,
                     {"section": "tts", "revision": 1},
                 ),
+                FakeResponse(
+                    200,
+                    {"section": "tts", "revision": 2},
+                ),
             ]
         )
         client = ApplicationClient(
@@ -339,8 +343,15 @@ class ApplicationClientTests(unittest.TestCase):
             expected_revision=0,
             idempotency_key="settings:tts:1",
         )
+        client.patch_session_settings(
+            "session-1",
+            section="tts",
+            value={"performance_enabled": False},
+            expected_revision=1,
+            idempotency_key="settings:tts:patch:1",
+        )
 
-        create, update, attach, settings = session.calls
+        create, update, attach, settings, settings_patch = session.calls
         self.assertEqual("POST", create["method"])
         self.assertTrue(create["url"].endswith("/api/v1/sessions"))
         self.assertEqual(
@@ -384,6 +395,21 @@ class ApplicationClientTests(unittest.TestCase):
             json.loads(settings["data"]),
         )
         self.assertEqual('"0"', settings["headers"]["If-Match"])
+        self.assertEqual("PATCH", settings_patch["method"])
+        self.assertTrue(
+            settings_patch["url"].endswith(
+                "/api/v1/sessions/session-1/settings/tts"
+            )
+        )
+        self.assertEqual(
+            {"value": {"performance_enabled": False}},
+            json.loads(settings_patch["data"]),
+        )
+        self.assertEqual('"1"', settings_patch["headers"]["If-Match"])
+        self.assertEqual(
+            "settings:tts:patch:1",
+            settings_patch["headers"]["Idempotency-Key"],
+        )
 
     def test_session_trash_restore_and_output_delete_use_bounded_native_routes(self):
         origin = "http://127.0.0.1:8097"

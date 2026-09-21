@@ -404,6 +404,7 @@ def build_render_parts(
     segment_id: str = "",
     controls: dict[str, Any] | None = None,
     source_speaker: str | None = None,
+    voice_binding: dict[str, Any] | None = None,
     apply_binding: Callable[[dict[str, Any] | None, dict[str, Any]], dict[str, Any]]
     | None = None,
 ) -> list[dict[str, Any]]:
@@ -441,7 +442,13 @@ def build_render_parts(
     planned: list[_PlannedSpan] = []
     for span in parsed.spans:
         prepared = deepcopy(settings)
-        if casting_enabled:
+        if voice_binding:
+            # An explicit block assignment applies to the whole block, while
+            # its markup still supplies delivery and boundary information.
+            binding = voice_binding
+            prepared = (apply_binding or _default_apply_binding)(binding, prepared)
+            source, fallback = "segment", False
+        elif casting_enabled:
             prepared, source, fallback, binding = _binding_result(
                 prepared,
                 controls=control_values,

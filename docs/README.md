@@ -37,6 +37,7 @@ interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md)
 - [Supported formats and exports](reference/formats-and-exports.md)
 - [Document ingestion and narration pipeline](reference/document-ingestion.md)
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
+- [Speech directions, dialogue, and character voices](reference/generation-controls.md)
 - [Speech-text optimization and dispatch](reference/speech-optimization.md)
 - [Voiceover repair history and undo](guides/repair-history.md)
 

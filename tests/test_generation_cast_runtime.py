@@ -187,6 +187,192 @@ def overrides(**extra):
     }
 
 
+@pytest.mark.parametrize("casting_enabled", [False, True])
+def test_managed_block_voices_reach_provider_and_invalidate_narrator_takes(case, casting_enabled):
+    services = case["services"]
+    database = services["database"]
+    handlers = services["workflow_handlers"]
+    run_override = overrides(casting_enabled=casting_enabled, performance_enabled=False, tts_batch_size=1)
+    with database.session() as session:
+        save_generation_controls(session, case["session_id"], expected_revision=0,
+                                 cast={"narrator": {"voice": "Kore"}})
+        old_identity = AudioIdentityContext(session, run_override).for_segment(
+            session.get(m.GenerationSegment, case["segment_ids"][1]))
+        for segment_id, provider_voice in zip(case["segment_ids"][1:], ["Puck", "Charon"], strict=True):
+            voice = m.Voice(name=provider_voice, metadata_json={"providers": {
+                "gemini": {"status": "ready", "provider_voice_id": provider_voice}}})
+            session.add(voice)
+            session.flush()
+            session.get(m.GenerationSegment, segment_id).voice_id = voice.id
+    started = services["generation"].start(case["session_id"],
+        speech_plan_revision_id=case["revision_id"], run_override=run_override)
+    requests = []
+
+    def synthesize(text, settings, **kwargs):
+        requests.append(settings["voice"])
+        return AudioSegment.silent(duration=20)
+
+    with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
+        handlers.run_generation({"generation_run_id": started["id"]}, lambda *_: None, threading.Event())
+    assert requests == ["Kore", "Puck", "Charon"]
+    with database.session() as session:
+        run = session.get(m.GenerationRun, started["id"])
+        assert run.status == "completed"
+        identities = run.settings_snapshot_json["generation_audio_identities"]
+        assert identities[case["segment_ids"][1]] != old_identity
+        takes = list(session.scalars(select(m.AudioTake).where(m.AudioTake.generation_run_id == run.id)))
+        assert len(takes) == 3
+        if casting_enabled:
+            voices = {}
+            for take in takes:
+                artifact = session.get(m.Artifact, take.artifact_id)
+                voices[take.generation_segment_id] = artifact.metadata_json["render_parts"][0]["voice"]
+            assert [voices[key] for key in case["segment_ids"]] == requests
+
+
+def test_block_binding_overrides_cast_markup_and_is_frozen(case):
+    from pandrator.web.generation_cast_runtime import (
+        freeze_cast_snapshot,
+        segment_render_parts,
+    )
+    from pandrator.web.generation_rendering import build_render_parts
+
+    settings = overrides(performance_enabled=False)["tts"]
+    with case["services"]["database"].session() as session:
+        voice = m.Voice(name="Scrooge", metadata_json={"providers": {
+            "gemini": {"status": "ready", "provider_voice_id": "Puck"}}})
+        session.add(voice)
+        session.flush()
+        segment = session.get(m.GenerationSegment, case["segment_ids"][0])
+        segment.voice_id = voice.id
+        snapshot = {"tts": settings}
+        freeze_cast_snapshot(session, case["revision_id"], snapshot, settings)
+        voice.metadata_json = {"providers": {"gemini": {"status": "ready", "provider_voice_id": "Charon"}}}
+        parts = segment_render_parts(settings, snapshot, segment.id, segment.text)
+        assert parts[0]["settings"]["voice"] == "Puck"
+    xml = '<segment id="s"><narrator>Hello.</narrator></segment>'
+    parts = build_render_parts("Hello.", settings, segment_id="s", speech_xml=xml,
+        controls={"cast": {"narrator": {"voice": "Kore"}}}, voice_binding={"voice": "Puck"})
+    assert parts[0]["settings"]["voice"] == "Puck"
+    assert parts[0]["voice_source"] == "segment"
+
+
+def test_missing_managed_block_voice_blocks_generation(case):
+    with case["services"]["database"].session() as session:
+        voice = m.Voice(name="Unpublished character", metadata_json={})
+        session.add(voice)
+        session.flush()
+        session.get(m.GenerationSegment, case["segment_ids"][0]).voice_id = voice.id
+    with pytest.raises(ValueError, match="Publish or link"):
+        case["services"]["generation"].start(case["session_id"],
+            speech_plan_revision_id=case["revision_id"],
+            run_override=overrides(performance_enabled=False))
+
+
+def test_generation_snapshot_compilation_does_not_hold_sqlite_writer(case):
+    import sqlite3
+
+    from pandrator.web import generation_audio_identity, speech_plan_workspace
+
+    services = case["services"]
+    checked = []
+
+    def check_writer_free(original):
+        def wrapped(*args, **kwargs):
+            with sqlite3.connect(services["database"].path, timeout=0.05) as probe:
+                probe.execute("BEGIN IMMEDIATE")
+                probe.rollback()
+            checked.append(original.__name__)
+            return original(*args, **kwargs)
+        return wrapped
+
+    with (
+        patch.object(speech_plan_workspace, "freeze_speech_snapshot",
+                     side_effect=check_writer_free(speech_plan_workspace.freeze_speech_snapshot)),
+        patch.object(generation_audio_identity, "plan_audio_identities",
+                     side_effect=check_writer_free(generation_audio_identity.plan_audio_identities)),
+    ):
+        started = services["generation"].start(case["session_id"],
+            speech_plan_revision_id=case["revision_id"], run_override=overrides(performance_enabled=False))
+    assert started["status"] == "queued"
+    assert checked == ["freeze_speech_snapshot", "plan_audio_identities"]
+
+
+@pytest.mark.parametrize("change", ["text", "cast", "voice"])
+def test_generation_commit_rejects_changed_prepared_inputs(case, change):
+    from pandrator.web.workspace import RevisionConflict
+
+    services = case["services"]
+    with services["database"].session() as session:
+        voice = m.Voice(name="Managed block", metadata_json={"providers": {
+            "gemini": {"status": "ready", "provider_voice_id": "Puck"}}})
+        session.add(voice)
+        session.flush()
+        voice_id = voice.id
+        session.get(m.GenerationSegment, case["segment_ids"][0]).voice_id = voice_id
+    prepared = services["generation"].prepare_start(case["session_id"],
+        speech_plan_revision_id=case["revision_id"], run_override=overrides(performance_enabled=False))
+    with services["database"].session() as session:
+        if change == "text":
+            session.get(m.GenerationSegment, case["segment_ids"][0]).text = "Changed words."
+        elif change == "cast":
+            save_generation_controls(session, case["session_id"], expected_revision=0,
+                                     cast={"narrator": {"voice": "Charon"}})
+        else:
+            session.get(m.Voice, voice_id).metadata_json = {"providers": {
+                "gemini": {"status": "ready", "provider_voice_id": "Charon"}}}
+    with (
+        pytest.raises(RevisionConflict, match="changed while generation"),
+        services["database"].immediate_session() as session,
+    ):
+        services["generation"].start_in_session(session, case["session_id"], prepared=prepared)
+    with services["database"].session() as session:
+        assert not list(session.scalars(select(m.GenerationRun)))
+        assert not list(session.scalars(select(m.Job)))
+
+
+def test_repeated_cast_binding_is_resolved_once(case):
+    from pandrator.web import generation_cast_runtime as runtime
+
+    with case["services"]["database"].session() as session:
+        save_generation_controls(session, case["session_id"], expected_revision=0,
+                                 cast={"narrator": {"voice": "Kore"}})
+        snapshot = overrides(performance_enabled=False)
+        with patch.object(runtime, "resolve_binding", wraps=runtime.resolve_binding) as resolve:
+            runtime.freeze_cast_snapshot(session, case["revision_id"], snapshot, snapshot["tts"])
+        assert resolve.call_count == 1
+
+
+def test_generation_commit_rejects_source_run_swap_with_identical_settings(case):
+    from pandrator.web.workspace import RevisionConflict
+
+    services = case["services"]
+    snapshot = overrides(performance_enabled=False)
+    with services["database"].session() as session:
+        original = m.GenerationRun(session_id=case["session_id"],
+            plan_revision_id=case["revision_id"], sequence_number=1,
+            status="completed", settings_snapshot_json=snapshot)
+        session.add(original)
+        session.flush()
+        original_id = original.id
+    prepared = services["generation"].prepare_start(case["session_id"],
+        segment_ids=[case["segment_ids"][0]], operation="regenerate",
+        speech_plan_revision_id=case["revision_id"])
+    assert prepared["snapshot_source_run_id"] == original_id
+    with services["database"].session() as session:
+        session.add(m.GenerationRun(session_id=case["session_id"],
+            plan_revision_id=case["revision_id"], sequence_number=2,
+            status="completed", settings_snapshot_json=snapshot))
+    with (
+        pytest.raises(RevisionConflict, match="changed while generation"),
+        services["database"].immediate_session() as session,
+    ):
+        services["generation"].start_in_session(session, case["session_id"], prepared=prepared)
+    with services["database"].session() as session:
+        assert len(list(session.scalars(select(m.GenerationRun)))) == 2
+        assert not list(session.scalars(select(m.Job)))
+
+
 def test_composite_generation_frozen_cast_and_one_take_per_segment(case):
     plan, xml = seed_cast(case)
     handlers = case["services"]["workflow_handlers"]
@@ -384,7 +570,6 @@ def test_markup_import_preserves_source_scopes_and_dialogue_pauses(case):
 def test_passive_xml_only_submission_survives_artifact_and_plan_import(case):
     import json
     import uuid
-    from pathlib import Path
 
     database = case["services"]["database"]
     with database.session() as session:
@@ -398,6 +583,9 @@ def test_passive_xml_only_submission_survives_artifact_and_plan_import(case):
     artifact = case["services"]["artifacts"].register(
         path, kind="json", role="prepared_text", session_id=case["session_id"]
     )
+    case["services"]["workspace_settings"].update(case["session_id"], "text", 0,
+        {"llm_tts_document_optimization": True, "llm_tts_annotation_mode": "speakers",
+         "llm_tts_annotation_only": True})
 
     def post(url, body, key=None):
         return case["client"].post(
@@ -448,7 +636,6 @@ def test_passive_xml_only_submission_survives_artifact_and_plan_import(case):
         assert controls["revision"] == 1 and len(controls["characters"]) == 1
         assert controls["characters"][0]["status"] == "proposed"
         saved = session.get(m.Artifact, result["result_artifact_id"])
-        saved_path = case["services"]["paths"].managed_path(saved.relative_path)
         assert (
             saved.metadata_json["speech_markup"]["1"]
             == body["result"]["items"][0]["speech_xml"]
@@ -456,15 +643,58 @@ def test_passive_xml_only_submission_survives_artifact_and_plan_import(case):
         assert not list(
             session.scalars(select(m.Job).where(m.Job.session_id == case["session_id"]))
         )
-    rows = json.loads(Path(saved_path).read_text())
-    revision, ids = case["services"]["workflow_handlers"]._store_generation_plan(
-        case["session_id"], rows, settings={}
-    )
+    status_url = f"/api/v1/sessions/{case['session_id']}/generation-plan/status"
+    status = case["client"].get(status_url).get_json()
+    assert status["current_input"]["artifact_id"] == result["result_artifact_id"]
+    response = post(f"sessions/{case['session_id']}/generation-plan/prepare", {
+        "source_artifact_id": result["result_artifact_id"],
+        "expected_revision": status["session_revision"],
+        "expected_plan_revision_id": status["selected_revision_id"],
+    })
+    assert response.status_code == 200, response.get_json()
+    revision = response.get_json()["selected_revision_id"]
     with database.session() as session:
-        first = session.get(m.GenerationSegment, ids[0])
+        first = session.scalar(select(m.GenerationSegment).where(
+            m.GenerationSegment.plan_revision_id == revision).order_by(m.GenerationSegment.ordinal))
         assert first.optimized_text == "Hello."
         assert "c-new" in first.speech_plan_json["speech_xml"]
         assert first.paragraph_break_after is False
+        save_generation_controls(session, case["session_id"], expected_revision=1,
+            cast={"narrator": {"voice": "Kore"}, "characters": {"c-new": {"voice": "Puck"}}})
+    started = case["services"]["generation"].start(case["session_id"],
+        speech_plan_revision_id=revision, run_override=overrides(performance_enabled=False))
+    requests = []
+
+    def synthesize(text, settings, **kwargs):
+        requests.append((text, settings["voice"]))
+        return AudioSegment.silent(duration=20)
+
+    handlers = case["services"]["workflow_handlers"]
+    with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
+        handlers.run_generation({"generation_run_id": started["id"]}, lambda *_: None, threading.Event())
+    assert requests == [("Hello.", "Puck"), ("Goodbye.", "Kore")]
+
+
+@pytest.mark.parametrize("outcome_enabled", [None, False, True])
+def test_annotation_input_selection_agrees_across_planners(case, outcome_enabled):
+    import json
+
+    services = case["services"]
+    sid = case["session_id"]
+    sources = {}
+    for role in ("prepared_text", "tts_optimized"):
+        path = services["paths"].uploads / f"{role}.json"
+        path.write_text(json.dumps([{"original_sentence": "Hello."}]))
+        sources[role] = services["artifacts"].register(path, kind="json", role=role, session_id=sid)
+    services["workspace_settings"].update(sid, "text", 0, {"llm_tts_document_optimization": True})
+    if outcome_enabled is not None:
+        with services["database"].session() as session:
+            session.add(m.OutcomePlan(session_id=sid, value_json={"transformations": {
+                "llm_tts_document_optimization": outcome_enabled}}))
+    expected = sources["prepared_text" if outcome_enabled is False else "tts_optimized"].id
+    status = case["client"].get(f"/api/v1/sessions/{sid}/generation-plan/status").get_json()
+    assert status["current_input"]["artifact_id"] == expected
+    assert services["workflows"].resolve_stage(sid, "generate_audio").source_artifact_id == expected
 
 
 def test_timed_annotated_cues_remain_integral_and_store_document_markup(case):

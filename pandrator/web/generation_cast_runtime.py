@@ -157,6 +157,27 @@ def apply_resolved_binding(
     return result
 
 
+def segment_voice_binding(segment: m.GenerationSegment, snapshot: dict | None = None) -> dict | None:
+    """An alternate take's voice wins over the persistent block assignment."""
+    alternate = ((snapshot or {}).get("selected_segment_override") or {}).get("tts") or {}
+    voice = str(alternate.get("voice") or alternate.get("speaker") or "").strip()
+    if voice:
+        return {"voice": voice}
+    if segment.voice_id:
+        return {"voice_id": segment.voice_id}
+    if segment.voice:
+        return {"voice": segment.voice}
+    return None
+
+
+def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict:
+    frozen = snapshot.get("generation_control_snapshot") or {}
+    entry = (frozen.get("segments") or {}).get(segment_id) or {}
+    return apply_resolved_binding(
+        entry.get("voice_binding"), settings, frozen.get("resolved_bindings") or {}
+    )
+
+
 def freeze_cast_snapshot(
     session, revision_id: str, snapshot: dict, settings: dict
 ) -> None:
@@ -172,9 +193,9 @@ def freeze_cast_snapshot(
 
     def apply(binding, base):
         if binding:
-            resolutions.setdefault(
-                _binding_key(binding), resolve_binding(session, binding, base)
-            )
+            key = _binding_key(binding)
+            if key not in resolutions:
+                resolutions[key] = resolve_binding(session, binding, base)
         return apply_resolved_binding(binding, base, resolutions)
 
     for segment in session.scalars(
@@ -194,6 +215,7 @@ def freeze_cast_snapshot(
             "text_hash": content_hash(text),
             "speech_xml": xml,
             "source_speaker": segment.speaker,
+            "voice_binding": segment_voice_binding(segment, snapshot),
         }
         entries[segment.id] = entry
         base = dict(settings)
@@ -208,6 +230,7 @@ def freeze_cast_snapshot(
             segment_id=segment.id,
             controls=controls,
             source_speaker=segment.speaker,
+            voice_binding=entry["voice_binding"],
             apply_binding=apply,
         )
     snapshot["generation_control_snapshot"] = {
@@ -245,6 +268,7 @@ def segment_render_parts(
         segment_id=segment_id,
         controls=frozen["controls"],
         source_speaker=entry.get("source_speaker"),
+        voice_binding=entry.get("voice_binding"),
         apply_binding=lambda binding, base: apply_resolved_binding(
             binding, base, frozen["resolved_bindings"]
         ),
@@ -267,9 +291,9 @@ def preview_render_parts(
 
     def apply(binding, base):
         if binding:
-            resolutions.setdefault(
-                _binding_key(binding), resolve_binding(session, binding, base)
-            )
+            key = _binding_key(binding)
+            if key not in resolutions:
+                resolutions[key] = resolve_binding(session, binding, base)
         return apply_resolved_binding(binding, base, resolutions)
 
     return build_render_parts(
@@ -279,6 +303,11 @@ def preview_render_parts(
         segment_id=segment_id,
         controls=controls,
         source_speaker=source_speaker,
+        voice_binding=(
+            segment_voice_binding(segment)
+            if (segment := session.get(m.GenerationSegment, segment_id)) is not None
+            else None
+        ),
         apply_binding=apply,
     )
 

@@ -334,7 +334,8 @@ audiobook chapter markers.
 | Text setting | Default | Effect |
 | --- | --- | --- |
 | `enable_sentence_splitting` | `true` | Splits overlong narration at safe boundaries. |
-| `max_sentence_length` | `200` | Preferred maximum characters for prepared sentences. Later TTS block limits can be smaller. |
+| `audiobook_chunking` | `model` | Use the captured TTS model's narration budget, or select `manual` for a custom limit. |
+| `max_sentence_length` | `200` | Custom limit in manual mode; ignored by model mode. Previously saved explicit lengths remain manual until changed. |
 | `enable_sentence_appending` | `true` | Appends short neighboring sentences when the combined segment remains within the length policy. |
 | `enable_nemo_normalization` | `true` | Applies deterministic written-to-spoken normalization only when the selected source language is supported. `auto` no longer silently means English. |
 | `normalize_all_caps` | `true` | Normalizes likely all-caps words while protecting common acronyms, Roman numerals, and chapter structure. |
@@ -345,7 +346,17 @@ Choose a concrete session source language when you know it. With `auto`,
 language-independent sentence segmentation still runs, while language-specific
 NeMo normalization is skipped rather than guessed as English.
 
-Generation applies a second, provider-facing segmentation policy:
+Model-aware targets are application policies with headroom, not claims of an
+acoustic optimum. Qwen and VoxCPM2 target 1,800 characters; OpenAI and native
+Azure Speech target 3,600; Gemini 1,800; Kokoro 216; Fish S2 180; XTTS 200;
+unknown providers 300. Qwen uses 450 for Chinese, Japanese, and Korean, and
+scales down for explicitly lower output-token limits. Short paragraphs remain
+short. Prepared artifacts record the resolved budget and observed lengths.
+Changes affect new preparation only; annotated XML is never silently repacked.
+
+Timed subtitle/voiceover generation uses separate speech-block limits; these
+do not reduce audiobook narration to 220-character blocks. Assembly pause
+settings apply to narration too:
 
 | TTS/audio setting | Default | Effect |
 | --- | --- | --- |

@@ -23,7 +23,10 @@ class VoiceCatalogQuery(BaseModel):
     accent: str = Field(default="", max_length=80)
     voice_category: Literal["", "male", "female", "androgynous", "unspecified"] = ""
     pitch: Literal["", "low", "mid", "high"] = ""
+    perceived_age: Literal["", "childlike", "youthful", "adult", "older"] = ""
     texture: str = Field(default="", max_length=40)
+    delivery_preset: str = Field(default="", max_length=40)
+    tag: str = Field(default="", max_length=40)
     use_case: str = Field(default="", max_length=40)
     collection_id: str = Field(default="", max_length=160)
     kind: Literal["all", "managed", "provider"] = "all"
@@ -505,7 +508,15 @@ def query_catalog(
             continue
         if query.pitch and profile.get("pitch") != query.pitch:
             continue
+        if query.perceived_age and profile.get("perceived_age") != query.perceived_age:
+            continue
         if query.texture and query.texture not in profile["textures"]:
+            continue
+        if query.delivery_preset and query.delivery_preset not in profile["delivery_presets"]:
+            continue
+        if query.tag and not any(
+            query.tag.casefold() == tag.casefold() for tag in profile["tags"]
+        ):
             continue
         if query.use_case and query.use_case not in profile["use_cases"]:
             continue
@@ -542,7 +553,10 @@ def query_catalog(
             for field, value in [
                 ("voice_category", query.voice_category),
                 ("pitch", query.pitch),
+                ("perceived_age", query.perceived_age),
                 ("textures", query.texture),
+                ("delivery_presets", query.delivery_preset),
+                ("tags", query.tag),
                 ("use_cases", query.use_case),
             ]
         ):
@@ -615,7 +629,10 @@ def query_catalog(
                 ("Accent", query.accent),
                 ("Presentation", query.voice_category),
                 ("Pitch", query.pitch),
+                ("Perceived age", query.perceived_age),
                 ("Texture", query.texture),
+                ("Delivery", query.delivery_preset),
+                ("Tag", query.tag),
                 ("Use", query.use_case),
             ]
             if value

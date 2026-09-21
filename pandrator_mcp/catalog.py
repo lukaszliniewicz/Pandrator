@@ -51,6 +51,9 @@ class ActionCatalog:
 
 ACTION_CATALOG = ActionCatalog(
     (
+        ActionSpec("pandrator_get_audiobook_setup", "Inspect audiobook setup", "GetAudiobookSetupInput", RiskClass.READ, "app.read", "getAudiobookSetup", "GET", "/api/v1/sessions/{sessionId}/audiobook-setup", True),
+        ActionSpec("pandrator_configure_audiobook", "Configure audiobook voice mode", "ConfigureAudiobookInput", RiskClass.WRITE, "app.write", "configureAudiobook", "PATCH", "/api/v1/sessions/{sessionId}/audiobook-setup", True, requires_idempotency=True),
+        ActionSpec("pandrator_preview_speech_segment", "Preview a speech-plan segment", "PreviewSpeechSegmentInput", RiskClass.READ, "app.read", "previewSpeechSegment", "POST", "/api/v1/sessions/{sessionId}/speech-plan/preview", True),
         *(ActionSpec(name, title, model, RiskClass(risk), scope, operation, method,
                      performance_api_path(suffix), True, requires_idempotency=risk != "read")
           for _action, name, title, model, risk, scope, operation, method, suffix in PERFORMANCE_ACTIONS),
@@ -1250,12 +1253,24 @@ ACTION_CATALOG = ActionCatalog(
         ),
         ActionSpec(
             "pandrator_update_session_settings",
-            "Update one session settings section",
+            "Replace full session settings section; omitted fields removed",
             "UpdateSessionSettingsInput",
             RiskClass.WRITE,
             "app.write",
             "putSessionSettings",
             "PUT",
+            "/api/v1/sessions/{sessionId}/settings/{section}",
+            True,
+            True,
+        ),
+        ActionSpec(
+            "pandrator_patch_session_settings",
+            "Patch one session settings section",
+            "PatchSessionSettingsInput",
+            RiskClass.WRITE,
+            "app.write",
+            "patchSessionSettings",
+            "PATCH",
             "/api/v1/sessions/{sessionId}/settings/{section}",
             True,
             True,

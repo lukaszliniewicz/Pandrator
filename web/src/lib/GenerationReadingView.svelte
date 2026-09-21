@@ -5,6 +5,8 @@
   import type { ReadingBlock } from './generation-view-models';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
+  import SpeechAnnotationText from './SpeechAnnotationText.svelte';
+  import type { SpeechSelection, SpeechPreview } from './speech-annotations';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
 
@@ -28,6 +30,10 @@
     onpatch,
     onmerge,
     showPassageBoundaries = false,
+    showSpeechAnnotations = false,
+    speechPreviews = {},
+    onspeech,
+    onselection,
     onpassage,
     topologyDisabled = false
   }: {
@@ -56,6 +62,15 @@
     ) => unknown;
     onmerge: (left: GenerationSegment, right: GenerationSegment) => unknown;
     showPassageBoundaries?: boolean;
+    showSpeechAnnotations?: boolean;
+    speechPreviews?: Record<string, SpeechPreview>;
+    onspeech?: (
+      item: GenerationSegment,
+      offset: number,
+      anchor: HTMLButtonElement,
+      activate: boolean
+    ) => void;
+    onselection?: (selection: SpeechSelection) => void;
     onpassage?: (
       item: GenerationSegment,
       layer: PassageTextLayer,
@@ -122,7 +137,15 @@
             class:removed={item.removed}
             class="reading-segment"
           >
-            {#if showPassageBoundaries && item.passage_structure?.layers[textMode].boundaries.length}
+            {#if showSpeechAnnotations && (item.speech_annotation_xml || item.speech_plan?.speech_xml || speechPreviews[item.id])}
+              <SpeechAnnotationText
+                {item}
+                layer={textMode}
+                preview={speechPreviews[item.id]}
+                oninspect={onspeech ?? (() => {})}
+                {onselection}
+              />
+            {:else if showPassageBoundaries && item.passage_structure?.layers[textMode].boundaries.length}
               <PassageText
                 {item}
                 layer={textMode}

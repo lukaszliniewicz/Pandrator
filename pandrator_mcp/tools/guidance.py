@@ -12,7 +12,15 @@ def explain_system(
     runtime: McpRuntime,
     arguments: ExplainSystemInput,
 ) -> dict[str, Any]:
-    guide = runtime.guides.get(arguments.topic)
+    if arguments.detail == "summary":
+        guide = runtime.guides.summary(arguments.topic)
+        guide["full_guide_arguments"] = {
+            "topic": guide["topic"],
+            "detail": "full",
+            "include_live_context": False,
+        }
+    else:
+        guide = runtime.guides.get(arguments.topic)
     guide["audience"] = arguments.audience
     if arguments.include_live_context and runtime.application is not None:
         try:

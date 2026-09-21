@@ -295,6 +295,8 @@
       <div class="space-y-1 border-t border-[var(--line)] pt-3">
         <button
           onclick={toggleTheme}
+          aria-label={theme === 'light' ? 'Dark mode' : 'Light mode'}
+          title={theme === 'light' ? 'Dark mode' : 'Light mode'}
           class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"
           >{#if theme === 'light'}<Moon size={19} />{:else}<Sun
               size={19}
@@ -304,6 +306,8 @@
         >
         <button
           onclick={() => appState.logout()}
+          aria-label="Sign out"
+          title="Sign out"
           class="nav-item flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold"
           ><LogOut class="shrink-0" size={19} />{#if renderSidebarLabels}<span
               class="sidebar-label">Sign out</span
@@ -312,6 +316,13 @@
         <button
           onclick={() =>
             (appState.sidebarCollapsed = !appState.sidebarCollapsed)}
+          aria-label={appState.sidebarCollapsed
+            ? 'Expand sidebar'
+            : 'Collapse sidebar'}
+          title={appState.sidebarCollapsed
+            ? 'Expand sidebar'
+            : 'Collapse sidebar'}
+          aria-expanded={!appState.sidebarCollapsed}
           class="sidebar-preference nav-item hidden w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold md:flex"
           >{#if appState.sidebarCollapsed}<ChevronRight
               size={19}

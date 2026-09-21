@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { beforeNavigate, goto } from '$app/navigation';
   import { apiJson } from './api';
   import { sessionApi } from './domain-api';
@@ -8,7 +8,7 @@
   import { modalFocus } from './modal-focus';
   import { invalidationBus, invalidates } from './invalidation';
   import GenerationCastPanel from './GenerationCastPanel.svelte';
-  import type { Character } from './generation-controls';
+  import type { Character, CastDraftController } from './generation-controls';
   import {
     controlFields,
     markupControls,
@@ -82,6 +82,7 @@
     }[];
   };
   const voiceSourceLabels: Record<string, string> = {
+    segment: 'Block voice override',
     span: 'Explicit span voice',
     character: 'Character cast',
     source_speaker: 'Source speaker cast',
@@ -94,11 +95,21 @@
   let {
     sessionId,
     revisionId,
+    initialOpen = false,
+    initialSegmentId = '',
+    initialOrdinal = 0,
+    showCasting = true,
+    externalCastPanel,
     busy = false,
     onchanged
   }: {
     sessionId: string;
     revisionId: string;
+    initialOpen?: boolean;
+    initialSegmentId?: string;
+    initialOrdinal?: number;
+    showCasting?: boolean;
+    externalCastPanel?: CastDraftController;
     busy?: boolean;
     onchanged?: () => void;
   } = $props();
@@ -120,9 +131,9 @@
     settingsBaseline = $state('');
   let planningInstructions = $state(''),
     modelName = $state(''),
-    offset = $state(0),
+    offset = $state(untrack(() => Math.floor(initialOrdinal / 20) * 20)),
     filter = $state('all');
-  let unitId = $state(''),
+  let unitId = $state(untrack(() => initialSegmentId)),
     draft = $state<Annotation>({ decision: 'none' }),
     xml = $state(''),
     xmlMode = $state(false),
@@ -134,7 +145,7 @@
     editorBaseline = $state('');
   let preview = $state<Preview | null>(null),
     previewKey = $state('');
-  let opened = $state(false),
+  let opened = $state(untrack(() => initialOpen)),
     externalRevision = $state(0);
   let characters = $state<Character[]>([]),
     speaker = $state(''),
@@ -151,7 +162,8 @@
     saveChanges: () => Promise<boolean>;
     discardChanges: () => void;
   }>();
-  const castDraft = $derived(castPanel?.draftState());
+  const activeCastPanel = $derived(externalCastPanel ?? castPanel);
+  const castDraft = $derived(activeCastPanel?.draftState());
   let alive = true,
     serial = 0,
     previewSerial = 0;
@@ -304,6 +316,13 @@
     routeNavigation = false;
     if (editorDirty) navigation = next;
     else void next();
+  }
+  export function requestClose(next: () => void) {
+    if (pending) return;
+    if (editorDirty || settingsDirty || castDraft?.dirty) {
+      routeNavigation = true;
+      navigation = next;
+    } else next();
   }
   function applySettings(settings: SettingsPayload) {
     general = String(settings.effective.generation_prompt ?? '');
@@ -630,6 +649,7 @@
   }}
 />
 <details
+  open={opened}
   class="speech-controls mt-5 border-t border-[var(--line)] pt-5 sm:rounded-2xl sm:border sm:p-4"
   ontoggle={(event) => {
     opened = event.currentTarget.open;
@@ -650,18 +670,19 @@
     </p>
     {#if error}<p class="text-sm text-red-700" role="alert">{error}</p>{/if}
     {#if message}<p class="muted text-sm" role="status">{message}</p>{/if}
-    <GenerationCastPanel
-      bind:this={castPanel}
-      {sessionId}
-      {service}
-      {model}
-      {busy}
-      onchanged={(items) => {
-        characters = items;
-        preview = null;
-        onchanged?.();
-      }}
-    />
+    {#if showCasting}<GenerationCastPanel
+        bind:this={castPanel}
+        {sessionId}
+        {service}
+        {model}
+        sessionVoice={String(stored?.effective.voice ?? '')}
+        {busy}
+        onchanged={(items) => {
+          characters = items;
+          preview = null;
+          onchanged?.();
+        }}
+      />{/if}
     <fieldset disabled={blocked} class="space-y-3">
       <legend class="mb-2 font-semibold">Generation defaults</legend>
       <label class="block text-sm"
@@ -1148,7 +1169,7 @@
             if (
               routeNavigation &&
               castDraft?.dirty &&
-              !(await castPanel?.saveChanges())
+              !(await activeCastPanel?.saveChanges())
             )
               return;
             if (editorDirty && !(await saveAnnotation())) return;
@@ -1165,7 +1186,7 @@
             selectUnit(unitId);
             if (routeNavigation) {
               if (stored) applySettings(stored);
-              castPanel?.discardChanges();
+              activeCastPanel?.discardChanges();
             }
             navigation = null;
             void next?.();

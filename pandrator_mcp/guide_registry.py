@@ -39,6 +39,9 @@ _TOPIC_ALIASES = {
     "voiceover": "voiceover-and-dubbing",
     "voice over": "voiceover-and-dubbing",
     "dubbing": "voiceover-and-dubbing",
+    "multivoice": "multivoice-audiobooks",
+    "multi voice": "multivoice-audiobooks",
+    "multiple voices": "multivoice-audiobooks",
     "workflow": "workflows",
 }
 
@@ -95,16 +98,18 @@ class GuideRegistry:
             "items": [entry.model_dump(mode="json") for entry in self.list()],
         }
 
-    def get(self, topic: str) -> dict[str, Any]:
+    def _entry(self, topic: str) -> GuideEntry:
         selected = normalize_guide_topic(topic)
         try:
-            entry = self._entries[selected]
+            return self._entries[selected]
         except KeyError as error:
             available = ", ".join(sorted(self._entries))
             raise ValueError(
                 f"Unknown Pandrator guide topic {topic!r}. Available: {available}."
             ) from error
-        text = self._root.joinpath(entry.file).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _metadata(entry: GuideEntry) -> dict[str, Any]:
         return {
             "schema_version": "1",
             "topic": entry.topic,
@@ -112,6 +117,21 @@ class GuideRegistry:
             "summary": entry.summary,
             "audiences": list(entry.audiences),
             "revision": entry.revision,
-            "content": text,
             "related_tools": list(entry.related_tools),
         }
+
+    def summary(self, topic: str) -> dict[str, Any]:
+        """Return guide metadata without reading the packaged markdown."""
+
+        return self._metadata(self._entry(topic))
+
+    def get(self, topic: str) -> dict[str, Any]:
+        """Return the complete guide, including its packaged markdown."""
+
+        entry = self._entry(topic)
+        text = self._root.joinpath(entry.file).read_text(encoding="utf-8")
+        result = self._metadata(entry)
+        related_tools = result.pop("related_tools")
+        result["content"] = text
+        result["related_tools"] = related_tools
+        return result

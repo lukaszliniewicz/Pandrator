@@ -1063,6 +1063,7 @@ export type GenerationSegment = {
   speech_block_provenance?: SpeechBlockProvenance | null;
   optimized_text?: string | null;
   speech_plan?: SpeechPlan;
+  speech_annotation_xml?: string | null;
   optimization_status?: string | null;
   optimization_reviewed?: boolean;
   optimization_model?: string | null;

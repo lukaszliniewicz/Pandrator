@@ -86,6 +86,40 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
         self.assertEqual(201, response.status_code, response.get_json())
         return response.get_json()
 
+    def _assert_no_dispatch_rows(self, session_id: str):
+        with self.extension["database"].session() as session:
+            runs = list(
+                session.scalars(
+                    select(SpeechOptimizationDispatchRun).where(
+                        SpeechOptimizationDispatchRun.session_id == session_id
+                    )
+                ).all()
+            )
+            batches = list(
+                session.scalars(
+                    select(SpeechOptimizationDispatchBatch)
+                    .join(
+                        SpeechOptimizationDispatchRun,
+                        SpeechOptimizationDispatchRun.id
+                        == SpeechOptimizationDispatchBatch.dispatch_run_id,
+                    )
+                    .where(SpeechOptimizationDispatchRun.session_id == session_id)
+                ).all()
+            )
+        self.assertEqual([], runs)
+        self.assertEqual([], batches)
+
+    def _assert_structured_source_error(self, response):
+        self.assertEqual(422, response.status_code, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(
+            "structured_speech_source_required", payload["error"]["code"]
+        )
+        message = payload["error"]["message"].lower()
+        self.assertIn("prepare_text", message)
+        self.assertIn("prepared_text", message)
+        self.assertIn("json", message)
+
     def _claim(self, run_id: str, ordinal: int):
         response = self.client.post(
             f"/api/v1/speech-optimization-dispatch-runs/{run_id}/claim",
@@ -589,6 +623,95 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
         )
         self.assertEqual(record.id, artifact.session_id)
         self.assertIn("I A R F", output_path.read_text(encoding="utf-8"))
+
+    def test_audiobook_speaker_annotations_reject_explicit_clean_text(self):
+        record, source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="clean_text",
+            filename="clean.txt",
+            content="Plain audiobook text.",
+        )
+        response = self.client.post(
+            f"/api/v1/sessions/{record.id}/speech-optimization-dispatch-runs",
+            json={
+                "source_artifact_id": source.id,
+                "annotation_mode": "speakers",
+            },
+            headers=self._headers("speech-structured-clean-text"),
+        )
+        self._assert_structured_source_error(response)
+        self._assert_no_dispatch_rows(record.id)
+
+    def test_audiobook_dialogue_annotations_reject_auto_fallback(self):
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="upload",
+            filename="uploaded.txt",
+            content="Uploaded audiobook text.",
+        )
+        response = self.client.post(
+            f"/api/v1/sessions/{record.id}/speech-optimization-dispatch-runs",
+            json={"annotation_mode": "dialogue"},
+            headers=self._headers("speech-structured-auto-fallback"),
+        )
+        self._assert_structured_source_error(response)
+        self._assert_no_dispatch_rows(record.id)
+
+    def test_audiobook_annotations_accept_prepared_text_json(self):
+        rows = [
+            {
+                "processed_sentence": "Prepared audiobook text.",
+                "language": "en",
+                "speaker": "Narrator",
+            }
+        ]
+        record, source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="prepared.json",
+            content=json.dumps(rows),
+        )
+        run = self._create_run(
+            record.id,
+            source_artifact_id=source.id,
+            annotation_mode="dialogue",
+        )
+        self.assertEqual(source.id, run["source_artifact_id"])
+        self.assertEqual("prepared_text", source.role)
+        self.assertEqual("json", run["source_format"])
+        self.assertEqual("dialogue", run["annotation_mode"])
+        self.assertEqual(1, run["batch_count"])
+
+    def test_audiobook_annotations_reject_wrong_format_prepared_text(self):
+        record, source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="prepared.txt",
+            content="Prepared audiobook text.",
+        )
+        response = self.client.post(
+            f"/api/v1/sessions/{record.id}/speech-optimization-dispatch-runs",
+            json={
+                "source_artifact_id": source.id,
+                "annotation_mode": "speakers",
+            },
+            headers=self._headers("speech-structured-wrong-format"),
+        )
+        self._assert_structured_source_error(response)
+        self._assert_no_dispatch_rows(record.id)
+
+    def test_audiobook_plain_text_remains_available_without_annotations(self):
+        record, source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="clean_text",
+            filename="clean.txt",
+            content="Plain audiobook text.",
+        )
+        run = self._create_run(record.id, source_artifact_id=source.id)
+        self.assertEqual(source.id, run["source_artifact_id"])
+        self.assertEqual("txt", run["source_format"])
+        self.assertEqual("off", run["annotation_mode"])
+        self.assertEqual(1, run["batch_count"])
 
     def test_audiobook_auto_selection_ignores_original_epub(self):
         record, _upload, _path = self._create_source(

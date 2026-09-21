@@ -90,10 +90,21 @@ class GenerationPlanReviewTests(unittest.TestCase):
         return response.get_json()
 
     def test_batch_follows_original_ids_and_named_results_and_is_idempotent(self):
+        rejected = self.batch(
+            [
+                {
+                    "action": "split",
+                    "ordinal": 0,
+                    "boundary": {"after_sentence": 1},
+                }
+            ],
+            key="batch-flat-ordinal-rejected",
+        )
+        self.assertEqual(422, rejected.status_code, rejected.get_json())
         operations = [
-            {"action": "split", "segment_id": self.segment_ids[0], "boundary": {"after_sentence": 1}, "label": "opening"},
+            {"action": "split", "segment": {"ordinal": 0}, "boundary": {"after_sentence": 1}, "label": "opening"},
             {"action": "split", "segment": {"result_ref": "opening.right"}, "boundary": {"before_text": "these interfaith"}, "label": "topic"},
-            {"action": "merge", "left": {"result_ref": "topic.left"}, "right": {"result_ref": "topic.right"}, "label": "joined"},
+            {"action": "merge", "left": {"ordinal": 1}, "right": {"ordinal": 2}, "label": "joined"},
         ]
         response = self.batch(operations, key="batch-idempotent-regression")
         self.assertEqual(response.status_code, 201, response.get_json())

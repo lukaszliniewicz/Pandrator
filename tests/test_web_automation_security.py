@@ -993,13 +993,15 @@ class AutomationSecurityTests(unittest.TestCase):
         create = paths["/api/v1/sessions"]["post"]
         update = paths["/api/v1/sessions/{sessionId}"]["patch"]
         settings = paths["/api/v1/sessions/{sessionId}/settings/{section}"]["put"]
+        settings_patch = paths["/api/v1/sessions/{sessionId}/settings/{section}"]["patch"]
         attach = paths["/api/v1/sessions/{sessionId}/sources"]["post"]
-        for operation in (create, update, settings, attach):
+        for operation in (create, update, settings, settings_patch, attach):
             names = {item["name"] for item in operation.get("parameters", [])}
             self.assertIn("Idempotency-Key", names)
-        for operation in (update, settings, attach):
+        for operation in (update, settings, settings_patch, attach):
             names = {item["name"] for item in operation.get("parameters", [])}
             self.assertIn("If-Match", names)
+        self.assertEqual("patchSessionSettings", settings_patch["operationId"])
         optional_retry_operations = (
             paths["/api/v1/sessions/{sessionId}/subtitles/{stage}/review"]["post"],
             paths["/api/v1/generation-segments/{segmentId}"]["patch"],

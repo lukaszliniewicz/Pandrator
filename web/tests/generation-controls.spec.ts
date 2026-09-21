@@ -293,17 +293,16 @@ test('recognition settings and managed voice categories are editable without gen
   });
   await page.getByRole('button', { name: 'Close stage settings' }).click();
 
+  const referenceName = `Character reference ${crypto.randomUUID().slice(0, 8)}`;
   const created = await page.request.post('/api/v1/voices', {
     headers: { 'X-CSRF-Token': csrf },
-    data: { name: 'Character reference', voice_category: 'unspecified' }
+    data: { name: referenceName, voice_category: 'unspecified' }
   });
   expect(created.ok(), await created.text()).toBeTruthy();
   const voice = await created.json();
   await page.goto('/voices');
-  await page.getByLabel('Search voices').fill('Character reference');
-  await page
-    .getByRole('button', { name: 'Character reference', exact: true })
-    .click();
+  await page.getByLabel('Search voices').fill(referenceName);
+  await page.getByRole('button', { name: referenceName, exact: true }).click();
   await page.getByRole('button', { name: 'Edit profile', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Voice presentation', exact: true })
@@ -323,10 +322,21 @@ test('recognition settings and managed voice categories are editable without gen
   ).toBe('androgynous');
 });
 
+async function openAudiobookCast(page: Page) {
+  const card = page.getByRole('region', { name: 'Audiobook voices' });
+  await card.getByRole('radio', { name: /Multiple voices/ }).check();
+  const cast = card.locator('details.speech-controls');
+  await expect(
+    cast.getByRole('button', { name: 'Add character', exact: true })
+  ).toBeVisible();
+  return cast;
+}
+
 test('catalog selection assigns a managed reference to a character', async ({
   page
 }) => {
-  const { panel, sid, csrf } = await setup(page);
+  const { sid, csrf } = await setup(page);
+  const panel = await openAudiobookCast(page);
   const name = `Cast reference ${crypto.randomUUID()}`;
   const created = await page.request.post('/api/v1/voices', {
     headers: { 'X-CSRF-Token': csrf },
@@ -335,28 +345,24 @@ test('catalog selection assigns a managed reference to a character', async ({
   expect(created.ok()).toBeTruthy();
   const voice = await created.json();
   await panel
-    .locator('summary')
-    .filter({ hasText: /^Characters and cast/ })
-    .click();
-  await panel
     .getByRole('button', { name: 'Add character', exact: true })
     .click();
   const character = panel.locator('article');
   await character.getByLabel('Name', { exact: true }).fill('Scrooge');
   await character
-    .getByRole('button', { name: 'Browse voice library', exact: true })
+    .getByRole('button', { name: 'Choose Voice for Scrooge', exact: true })
     .click();
   const library = page.getByRole('dialog', {
-    name: 'Voice Library',
+    name: 'Choose Voice for Scrooge',
     exact: true
   });
   await library.getByLabel('Search voices').fill(name);
-  await expect(library.getByRole('button', { name, exact: true })).toBeVisible();
+  await expect(
+    library.getByRole('button', { name, exact: true })
+  ).toBeVisible();
   await library.getByRole('button', { name: 'Use voice', exact: true }).click();
   await expect(library).toBeHidden();
-  await expect(
-    character.getByText(`Reference: ${name}`, { exact: true })
-  ).toBeVisible();
+  await expect(character.locator('p').filter({ hasText: name })).toBeVisible();
   await panel
     .getByRole('button', { name: 'Save characters and cast', exact: true })
     .click();
@@ -375,11 +381,8 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   await page.setViewportSize({ width: 390, height: 844 });
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  const { panel, sid } = await setup(page);
-  await panel
-    .locator('summary')
-    .filter({ hasText: /^Characters and cast/ })
-    .click();
+  const { sid } = await setup(page);
+  const panel = await openAudiobookCast(page);
   await panel
     .getByRole('button', { name: 'Add character', exact: true })
     .click();
@@ -394,8 +397,9 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   await character
     .getByLabel('Identity notes')
     .fill('Same character throughout the book.');
+  await character.getByText('Manual voice settings', { exact: true }).click();
   await character
-    .getByLabel('Voice for Scrooge', { exact: true })
+    .getByLabel('Provider voice ID', { exact: true })
     .fill('Charon');
   await panel
     .getByRole('button', { name: 'Save characters and cast', exact: true })
@@ -515,14 +519,11 @@ test('leaving a section can save character, direction and generation-default dra
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const { panel, sid, writes } = await setup(page);
-  await panel
-    .locator('summary')
-    .filter({ hasText: /^Characters and cast/ })
-    .click();
-  await panel
+  const cast = await openAudiobookCast(page);
+  await cast
     .getByRole('button', { name: 'Add character', exact: true })
     .click();
-  await panel
+  await cast
     .locator('article')
     .getByLabel('Name', { exact: true })
     .fill('Alice');

@@ -14,6 +14,7 @@ GUIDE_TOPICS = (
     "durable-work",
     "generation-controls",
     "manager-and-recovery",
+    "multivoice-audiobooks",
     "overview",
     "providers-and-voices",
     "remote-targets",
@@ -43,4 +44,5 @@ GuideTopic = Annotated[
 class ExplainSystemInput(ToolInput):
     topic: GuideTopic = "overview"
     audience: Literal["new_user", "operator", "developer", "administrator"] = "new_user"
-    include_live_context: bool = True
+    detail: Literal["summary", "full"] = "summary"
+    include_live_context: bool = False

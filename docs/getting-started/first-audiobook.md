@@ -48,6 +48,10 @@ markers later.
 ## 3. Segment narration
 
 Segmentation creates editable speech units with pause and structure metadata.
+Choose the TTS model before preparation: the default length policy groups
+neighboring sentences within its narration budget, preserving paragraphs and
+chapters. **Narration settings** also offers a custom character limit. Existing
+reviewed plans keep their boundaries until explicitly resegmented.
 Read several neighboring segments aloud before generating: a boundary that is
 visually tidy can still sound unnatural. Fix the text or boundary at this
 stage rather than trying to repair every generated take afterward.
@@ -72,6 +76,20 @@ before a pause takes effect, and provider rate limits still apply.
 Use the [pronunciation library](../guides/pronunciation-and-speech.md) for known
 names and terms. It changes only the TTS request; your displayed source remains
 readable.
+
+For character voices, choose **Multiple voices** in the **Audiobook voices**
+card. Prepare narration, annotate the prepared speech units, then assign voices
+to the narrator and accepted characters in that card. Reporting clauses such as
+“said Scrooge” belong to the narrator. Speaker annotation preserves the spoken
+words; acting directions are optional and require a compatible model.
+
+Open the Generation drawer to review underlined speaker phrases and delivery
+symbols. Hover or focus a phrase to inspect its resolved voice; select text to
+change its speaker, published voice, or directions. **Preview change** shows
+the compiled voice sequence and unsupported controls before **Apply reviewed
+change**. Protected annotations require an explicit unlock. Existing takes and
+previous direction plans remain in history. See the
+[generation-controls reference](../reference/generation-controls.md) for details.
 
 ## 5. Generate and review takes
 

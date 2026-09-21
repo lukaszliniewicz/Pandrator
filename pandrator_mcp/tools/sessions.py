@@ -19,6 +19,7 @@ from ..schemas import (
     ImportSubtitlesInput,
     ListSessionsInput,
     ListSourcesInput,
+    PatchSessionSettingsInput,
     PatchSubtitleCuesInput,
     PreviewSubtitlesInput,
     ReplaceSubtitleTextInput,
@@ -501,6 +502,45 @@ def update_session_settings(
     arguments: UpdateSessionSettingsInput,
 ) -> ToolOutcome:
     result = runtime.require_application().update_session_settings(
+        arguments.session_id,
+        section=arguments.section,
+        value=arguments.value,
+        expected_revision=arguments.expected_revision,
+        idempotency_key=arguments.idempotency_key,
+    )
+    safe = {
+        "schema_version": "1",
+        "session_id": arguments.session_id,
+        "section": result.get("section") or arguments.section,
+        "override": (
+            _safe_setting_value(result.get("override"))
+            if isinstance(result.get("override"), dict)
+            else {}
+        ),
+        "revision": result.get("revision"),
+    }
+    return ToolOutcome(
+        result=safe,
+        next_actions=[
+            NextAction(
+                tool="pandrator_get_session_settings",
+                arguments={
+                    "session_id": arguments.session_id,
+                    "section": arguments.section,
+                },
+                reason=(
+                    "Review the effective settings and new revision before planning execution."
+                ),
+            )
+        ],
+    )
+
+
+def patch_session_settings(
+    runtime: McpRuntime,
+    arguments: PatchSessionSettingsInput,
+) -> ToolOutcome:
+    result = runtime.require_application().patch_session_settings(
         arguments.session_id,
         section=arguments.section,
         value=arguments.value,

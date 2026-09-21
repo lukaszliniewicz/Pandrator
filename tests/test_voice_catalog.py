@@ -48,6 +48,101 @@ def _voice(identifier, accent="Scottish", evidence=None):
     }
 
 
+def _voice_with_profile(identifier, **profile):
+    voice = _voice(identifier)
+    voice["profile"].update(profile)
+    return voice
+
+
+def _trait_evidence(status):
+    if status == "reviewed":
+        return {
+            "source": "audition_review",
+            "status": status,
+            "artifact_id": f"{status}-artifact",
+        }
+    return {
+        "source": "design_request" if status == "requested" else "user",
+        "status": status,
+    }
+
+
+def _trait_voice(identifier, status):
+    return _voice_with_profile(
+        identifier,
+        perceived_age="adult",
+        delivery_presets=["storytelling"],
+        tags=["Narrator"],
+        evidence={
+            "perceived_age": _trait_evidence(status),
+            "delivery_presets": _trait_evidence(status),
+            "tags": _trait_evidence(status),
+        },
+    )
+
+
+def test_trait_filters_match_age_and_delivery_exactly_and_tags_case_insensitively():
+    entries = catalog_entries(
+        [
+            _voice_with_profile(
+                "match",
+                perceived_age="adult",
+                delivery_presets=["storytelling"],
+                tags=["Narrator"],
+            ),
+            _voice_with_profile(
+                "other-age",
+                perceived_age="youthful",
+                delivery_presets=["formal"],
+                tags=["narrator-extra"],
+            ),
+        ],
+        {},
+        [],
+    )
+
+    assert (
+        query_catalog(entries, VoiceCatalogQuery(perceived_age="adult"))["total"] == 1
+    )
+    assert query_catalog(
+        entries, VoiceCatalogQuery(delivery_preset="storytelling")
+    )["total"] == 1
+    assert [
+        item["id"]
+        for item in query_catalog(entries, VoiceCatalogQuery(tag="nArRaToR"))["items"]
+    ] == ["match"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("perceived_age", "adult"),
+        ("delivery_preset", "storytelling"),
+        ("tag", "narrator"),
+    ],
+)
+def test_trait_filters_apply_requested_and_reviewed_evidence_gates(field, value):
+    entries = catalog_entries(
+        [
+            _trait_voice("requested", "requested"),
+            _trait_voice("described", "described"),
+            _trait_voice("reviewed", "reviewed"),
+        ],
+        {},
+        [],
+    )
+
+    query = VoiceCatalogQuery(**{field: value})
+    assert {item["id"] for item in query_catalog(entries, query)["items"]} == {
+        "described",
+        "reviewed",
+    }
+    reviewed = query_catalog(
+        entries, VoiceCatalogQuery(**{field: value, "reviewed_only": True})
+    )
+    assert [item["id"] for item in reviewed["items"]] == ["reviewed"]
+
+
 def test_requested_accent_is_not_a_demonstrated_match():
     entries = catalog_entries(
         [

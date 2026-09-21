@@ -112,6 +112,33 @@
         "title": "ApplicationIdentityDocument",
         "type": "object"
       },
+      "AudiobookSetupConfigureRequest": {
+        "additionalProperties": false,
+        "description": "Revision-checked audiobook voice-mode configuration.",
+        "properties": {
+          "expected_revision": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "single_voice",
+              "multi_voice"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "mode"
+        ],
+        "title": "AudiobookSetupConfigureRequest",
+        "type": "object"
+      },
       "AutomationClientCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2042,16 +2069,33 @@
       },
       "GenerationPlanTopologyRequest": {
         "additionalProperties": false,
-        "description": "One of the three immutable, typed generation-plan topology edits.",
+        "description": "One immutable, typed generation-plan topology edit.",
         "properties": {
           "action": {
             "enum": [
               "split",
               "merge",
-              "restore"
+              "restore",
+              "resegment"
             ],
             "title": "Action",
             "type": "string"
+          },
+          "boundaries": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "maxItems": 199,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Boundaries"
           },
           "cursor": {
             "anyOf": [
@@ -2084,6 +2128,20 @@
             ],
             "default": null,
             "title": "Left Segment Id"
+          },
+          "max_chars": {
+            "anyOf": [
+              {
+                "maximum": 4000,
+                "minimum": 40,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Chars"
           },
           "passage_boundary_id": {
             "anyOf": [
@@ -2125,6 +2183,25 @@
             ],
             "default": null,
             "title": "Segment Id"
+          },
+          "segment_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 80,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment Ids"
           },
           "target_revision_id": {
             "anyOf": [
@@ -7585,6 +7662,49 @@
         "title": "SpeechPlanPrepareRequest",
         "type": "object"
       },
+      "SpeechPlanPreviewRequest": {
+        "additionalProperties": false,
+        "description": "Read-only compilation request for one speech-plan segment.",
+        "properties": {
+          "generation_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation Run Id"
+          },
+          "include_request": {
+            "default": false,
+            "title": "Include Request",
+            "type": "boolean"
+          },
+          "revision_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "segment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "segment_id"
+        ],
+        "title": "SpeechPlanPreviewRequest",
+        "type": "object"
+      },
       "SpeechPlanReviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -7636,6 +7756,311 @@
           "revision_id"
         ],
         "title": "SpeechPlanSelectRequest",
+        "type": "object"
+      },
+      "SpeechSelectionApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "character_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Character Id"
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechSelectionDelivery"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "enable_casting": {
+            "default": false,
+            "title": "Enable Casting",
+            "type": "boolean"
+          },
+          "enable_performance": {
+            "default": false,
+            "title": "Enable Performance",
+            "type": "boolean"
+          },
+          "end": {
+            "minimum": 0,
+            "title": "End",
+            "type": "integer"
+          },
+          "expected_preview_revision": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "title": "Expected Preview Revision",
+            "type": "string"
+          },
+          "expected_segment_revision": {
+            "minimum": 1,
+            "title": "Expected Segment Revision",
+            "type": "integer"
+          },
+          "revision_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "segment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "speaker": {
+            "default": "unchanged",
+            "enum": [
+              "unchanged",
+              "narrator",
+              "character"
+            ],
+            "title": "Speaker",
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0,
+            "title": "Start",
+            "type": "integer"
+          },
+          "unlock_locked": {
+            "default": false,
+            "title": "Unlock Locked",
+            "type": "boolean"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "revision_id",
+          "segment_id",
+          "expected_segment_revision",
+          "start",
+          "end",
+          "expected_preview_revision"
+        ],
+        "title": "SpeechSelectionApplyRequest",
+        "type": "object"
+      },
+      "SpeechSelectionDelivery": {
+        "additionalProperties": false,
+        "description": "A partial delivery patch; omitted fields remain unchanged.",
+        "properties": {
+          "cadence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "",
+                  "continuing",
+                  "concluding",
+                  "questioning",
+                  "contrast"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cadence"
+          },
+          "emotion": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emotion"
+          },
+          "emphasis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "",
+                  "light",
+                  "moderate",
+                  "strong"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emphasis"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "maxLength": 1200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instruction"
+          },
+          "pace": {
+            "anyOf": [
+              {
+                "enum": [
+                  "",
+                  "natural",
+                  "slower",
+                  "brisk"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pace"
+          }
+        },
+        "title": "SpeechSelectionDelivery",
+        "type": "object"
+      },
+      "SpeechSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "character_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Character Id"
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechSelectionDelivery"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "enable_casting": {
+            "default": false,
+            "title": "Enable Casting",
+            "type": "boolean"
+          },
+          "enable_performance": {
+            "default": false,
+            "title": "Enable Performance",
+            "type": "boolean"
+          },
+          "end": {
+            "minimum": 0,
+            "title": "End",
+            "type": "integer"
+          },
+          "expected_segment_revision": {
+            "minimum": 1,
+            "title": "Expected Segment Revision",
+            "type": "integer"
+          },
+          "revision_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "segment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "speaker": {
+            "default": "unchanged",
+            "enum": [
+              "unchanged",
+              "narrator",
+              "character"
+            ],
+            "title": "Speaker",
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0,
+            "title": "Start",
+            "type": "integer"
+          },
+          "unlock_locked": {
+            "default": false,
+            "title": "Unlock Locked",
+            "type": "boolean"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "revision_id",
+          "segment_id",
+          "expected_segment_revision",
+          "start",
+          "end"
+        ],
+        "title": "SpeechSelectionRequest",
         "type": "object"
       },
       "StageSelectionUpdate": {
@@ -8640,6 +9065,12 @@
             "default": null,
             "title": "Cursor"
           },
+          "delivery_preset": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Delivery Preset",
+            "type": "string"
+          },
           "kind": {
             "default": "all",
             "enum": [
@@ -8673,6 +9104,18 @@
             "default": "",
             "maxLength": 40,
             "title": "Origin",
+            "type": "string"
+          },
+          "perceived_age": {
+            "default": "",
+            "enum": [
+              "",
+              "childlike",
+              "youthful",
+              "adult",
+              "older"
+            ],
+            "title": "Perceived Age",
             "type": "string"
           },
           "pitch": {
@@ -8717,6 +9160,12 @@
               "recently_updated"
             ],
             "title": "Sort",
+            "type": "string"
+          },
+          "tag": {
+            "default": "",
+            "maxLength": 40,
+            "title": "Tag",
             "type": "string"
           },
           "texture": {
@@ -12224,6 +12673,138 @@
         }
       }
     },
+    "/api/v1/services/audio-cpp/catalogue": {
+      "get": {
+        "operationId": "listAudioCppCatalogue",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "category",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "family",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "language",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "capability",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 160,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "commercial_use",
+            "required": false,
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "permitted",
+                "noncommercial",
+                "conditional",
+                "unknown"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "recommended_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Versioned audio.cpp family and package catalogue"
+          },
+          "422": {
+            "description": "Invalid catalogue filters"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/services/stt": {
       "get": {
         "operationId": "listSttServices",
@@ -12793,6 +13374,145 @@
             "description": "Agentic cleaning queued"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/audiobook-setup": {
+      "get": {
+        "description": "Read the current audiobook voice mode and effective configuration without refreshing the catalog or writing session state.",
+        "operationId": "getAudiobookSetup",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current audiobook setup and configuration revision."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The audiobook session or requested segment was not found."
+          },
+          "409": {
+            "description": "The current configuration or speech-plan revision is stale."
+          },
+          "422": {
+            "description": "The request fields are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Inspect audiobook setup"
+      },
+      "patch": {
+        "description": "Atomically configure audiobook annotation/casting and document-optimization flags while preserving engine, references and delivery directions. The operation never starts synthesis.",
+        "operationId": "configureAudiobook",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudiobookSetupConfigureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current audiobook setup and configuration revision."
+          },
+          "400": {
+            "description": "A valid idempotency key is required."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The audiobook session or requested segment was not found."
+          },
+          "409": {
+            "description": "The current configuration or speech-plan revision is stale."
+          },
+          "422": {
+            "description": "The request fields are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Configure audiobook voice mode"
       }
     },
     "/api/v1/sessions/{sessionId}/bundle": {
@@ -15872,6 +16592,74 @@
           }
         ]
       },
+      "patch": {
+        "operationId": "patchSessionSettings",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "section",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Shallow-merge fields into the stored session override"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      },
       "put": {
         "operationId": "putSessionSettings",
         "parameters": [
@@ -15923,7 +16711,7 @@
         },
         "responses": {
           "200": {
-            "description": "Session override saved"
+            "description": "Replace session override; omitted fields are removed"
           }
         },
         "security": [
@@ -16920,6 +17708,223 @@
             ]
           }
         ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/speech-plan/preview": {
+      "post": {
+        "description": "Compile the current or explicitly frozen cast and speech directions for one segment. This read-only operation creates no performance plan and synthesizes no audio; include_request opts into provider request details.",
+        "operationId": "previewSpeechSegment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechPlanPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compiled speech-plan segment preview; no audio."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The audiobook session or requested segment was not found."
+          },
+          "409": {
+            "description": "The current configuration or speech-plan revision is stale."
+          },
+          "422": {
+            "description": "The request fields are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Preview a speech-plan segment"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/speech-plan/selection": {
+      "post": {
+        "description": "Create and adopt one manual XML performance plan containing the reviewed selection while preserving the previous plan and generated audio.",
+        "operationId": "applySpeechSelection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSelectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Adopted manual selection edit."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The speech session or segment was not found."
+          },
+          "409": {
+            "description": "The selected speech plan, block, lock, or preview is stale."
+          },
+          "422": {
+            "description": "The request fields or speech markup are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Apply a reviewed direct speech-selection edit"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-preview": {
+      "post": {
+        "description": "Compile a selected phrase with proposed speaker, voice, and delivery metadata. This read-only operation creates no performance-plan row and does not access providers or synthesize audio.",
+        "operationId": "previewSpeechSelection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compilation-only selection preview."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The speech session or segment was not found."
+          },
+          "409": {
+            "description": "The selected speech plan, block, lock, or preview is stale."
+          },
+          "422": {
+            "description": "The request fields or speech markup are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Preview a direct speech-selection edit"
       }
     },
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/artifacts": {
@@ -19227,11 +20232,47 @@
           },
           {
             "in": "query",
+            "name": "perceived_age",
+            "schema": {
+              "default": "",
+              "enum": [
+                "",
+                "childlike",
+                "youthful",
+                "adult",
+                "older"
+              ],
+              "title": "Perceived Age",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "texture",
             "schema": {
               "default": "",
               "maxLength": 40,
               "title": "Texture",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "delivery_preset",
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Delivery Preset",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag",
+            "schema": {
+              "default": "",
+              "maxLength": 40,
+              "title": "Tag",
               "type": "string"
             }
           },

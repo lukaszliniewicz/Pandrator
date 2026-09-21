@@ -169,7 +169,7 @@ test('reading view shares markers; Escape restores focus and native editing neve
     })
   ).toHaveValue(text);
   await page
-    .getByRole('button', { name: 'Return to passage view', exact: true })
+    .getByRole('button', { name: 'Return to annotated text', exact: true })
     .click();
   await page
     .getByRole('button', { name: 'Display options', exact: true })

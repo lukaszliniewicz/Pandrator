@@ -33,3 +33,9 @@ export type GenerationControls = {
   characters: Character[];
   cast: Cast;
 };
+
+export type CastDraftController = {
+  draftState: () => { dirty: boolean; blocked: boolean; valid: boolean };
+  saveChanges: () => Promise<boolean>;
+  discardChanges: () => void;
+};

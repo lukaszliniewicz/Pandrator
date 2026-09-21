@@ -364,6 +364,28 @@ class AudioIdentityContext:
                 settings.update(language=language, target_language=language)
             if voice:
                 settings.update(voice=voice, speaker=voice)
+        from .generation_cast_runtime import (
+            _binding_key,
+            apply_resolved_binding,
+            resolve_binding,
+            segment_voice_binding,
+        )
+
+        binding = segment_voice_binding(segment, self.snapshot)
+        binding_error = None
+        if binding:
+            try:
+                frozen = self.snapshot.get("generation_control_snapshot") or {}
+                entry = (frozen.get("segments") or {}).get(segment.id) or {}
+                if entry.get("voice_binding") == binding:
+                    resolutions = frozen.get("resolved_bindings") or {}
+                else:
+                    resolutions = {_binding_key(binding): resolve_binding(self.session, binding, settings)}
+                settings = apply_resolved_binding(binding, settings, resolutions)
+            except ValueError as error:
+                # Keep history inspectable when a managed voice is unavailable.
+                # The generation boundary independently rejects the binding.
+                binding_error = str(error)
         selected_voice = str(
             settings.get("voice") or settings.get("speaker") or ""
         ).strip()
@@ -412,6 +434,8 @@ class AudioIdentityContext:
             ),
             "voice_reference_hash": _hash(sorted({_hash(item) for item in references})),
         }
+        if binding_error:
+            identity.update(performance_request_hash="unavailable", performance_error=binding_error)
         self.cache[key] = identity
         self.effective_settings_cache[key] = settings
         return self._with_performance(segment, identity, settings)
@@ -427,6 +451,8 @@ def take_reuse_reason(
         return "audio_unavailable"
     if segment.status != "completed" or take.status != "completed":
         return "not_completed"
+    if expected.get("performance_error"):
+        return "audio_identity_unknown"
     actual = (artifact.metadata_json or {}).get(IDENTITY_KEY)
     if not isinstance(actual, dict) or actual.get("schema_version") != IDENTITY_VERSION:
         return "audio_identity_unknown"

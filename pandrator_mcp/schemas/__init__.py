@@ -1,5 +1,11 @@
 """Public MCP input schemas."""
 
+from .audiobook import (
+    AUDIOBOOK_INPUT_MODELS,
+    ConfigureAudiobookInput,
+    GetAudiobookSetupInput,
+    PreviewSpeechSegmentInput,
+)
 from .common import ToolEnvelope, ToolInput, WorkReference
 from .dispatch import (
     ClaimDispatchBatchInput,
@@ -113,6 +119,7 @@ from .sessions import (
     ImportSubtitlesInput,
     ListSessionsInput,
     ListSourcesInput,
+    PatchSessionSettingsInput,
     PatchSubtitleCuesInput,
     PreviewSubtitlesInput,
     ReplaceSubtitleTextInput,
@@ -199,6 +206,7 @@ from .workflow import (
 )
 
 TOOL_INPUT_MODELS = (
+    *AUDIOBOOK_INPUT_MODELS,
     *PERFORMANCE_INPUT_MODELS,
     *GENERATION_CONTROLS_INPUT_MODELS,
     *VOICE_METADATA_INPUT_MODELS,
@@ -265,6 +273,7 @@ TOOL_INPUT_MODELS = (
     UpdateSessionInput,
     AttachExistingSourceInput,
     UpdateSessionSettingsInput,
+    PatchSessionSettingsInput,
     DescribeParametersInput,
     PlanWorkflowInput,
     PlanOrchestratedWorkflowInput,
@@ -322,6 +331,9 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "ConfigureAudiobookInput",
+    "GetAudiobookSetupInput",
+    "PreviewSpeechSegmentInput",
     "AdoptPerformancePlanInput", "AnalysePerformancePlanInput", "ClaimPerformanceBatchInput",
     "CreatePerformancePlanInput", "EditPerformancePlanInput", "GetPerformancePlanInput",
     "ListPerformancePlansInput", "PreviewPerformancePlanInput", "ReleasePerformanceBatchInput",
@@ -463,6 +475,7 @@ __all__ = [
     "UpdateMediaEditArguments",
     "UpdateSessionInput",
     "UpdateSessionSettingsInput",
+    "PatchSessionSettingsInput",
     "TrashSessionInput",
     "RestoreSessionInput",
     "DeleteOutputInput",

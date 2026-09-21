@@ -1,5 +1,10 @@
 # Audiobook workflow
 
+For narrator-plus-character casting, use the `multivoice-audiobooks` guide.
+Start with `pandrator_get_audiobook_setup` and the atomic
+`pandrator_configure_audiobook` mode switch. Compiler inspection is available
+through `pandrator_preview_speech_segment`; no performance draft is needed.
+
 An audiobook session starts from an uploaded, downloaded, deliberately reused,
 or inline text source. For short text supplied directly by the user, use
 `pandrator_create_text_source` to create and attach a managed UTF-8 source
@@ -18,6 +23,14 @@ without first writing a temporary host file. Its normal stages are:
 Whole-document speech optimization and generation-time batch optimization are
 alternative places to perform the same kind of transformation. Review the plan
 and avoid enabling both unintentionally.
+
+Session settings writes are revision guarded. Use
+`pandrator_patch_session_settings` for ordinary partial edits: it shallow-merges
+the submitted top-level fields into the stored override, leaves omitted fields
+in place, and replaces nested values as whole fields. Use
+`pandrator_update_session_settings` only when the complete override should be
+replaced; omitted overrides are removed. Neither operation copies inherited
+defaults, and an explicit `null` remains a stored value.
 
 PDF layout/OCR, EPUB spine and navigation handling, deterministic and optional
 model-assisted cleanup, artifacts, and narration segmentation are described in
@@ -43,6 +56,11 @@ provider or token budget and materializes the result as `tts_optimized` before
 generation. Prefer this whole-document route when review is important; use
 generation-time optimization only when final segment context is required, and
 avoid enabling both accidentally.
+
+Speaker/dialogue annotation specifically requires the **prepared_text JSON**
+artifact. Set `annotation_mode=speakers` and `annotation_only=true` to retain
+the exact words. Plain `clean_text` remains eligible for ordinary text cleanup,
+but cannot supply structured speech-plan units.
 
 Generation can send narration text to a configured TTS provider. Cleanup or
 optimization can send text to an LLM provider. A useful plan therefore states

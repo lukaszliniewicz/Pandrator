@@ -568,6 +568,18 @@ class SpeechOptimizationDispatchRunService:
             workflow_kind=record.workflow_kind,
             source_artifact_id=source_artifact_id,
         )
+        if (
+            record.workflow_kind == "audiobook"
+            and annotation_mode in {"speakers", "dialogue"}
+            and (source.role != "prepared_text" or source_format != "json")
+        ):
+            raise DispatchError(
+                "structured_speech_source_required",
+                "Audiobook speaker or dialogue annotations require a prepared_text "
+                "JSON artifact. Run prepare_text first, then select its prepared_text "
+                "JSON artifact.",
+                422,
+            )
         selected_language = (
             _clean_text(language)
             or _clean_text((source.metadata_json or {}).get("language"))

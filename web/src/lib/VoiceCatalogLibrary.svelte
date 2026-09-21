@@ -16,7 +16,6 @@
     X
   } from '@lucide/svelte';
   import { speechServiceApi, voiceApi } from './admin-api';
-  import { jobApi } from './domain-api';
   import { errorMessage } from './errors';
   import type { TtsService, VoiceRecord } from './api-models';
   import {
@@ -33,6 +32,13 @@
   import VoiceDesignDialog from './VoiceDesignDialog.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import { modalFocus } from './modal-focus';
+  import VoiceComparison from './VoiceComparison.svelte';
+  import {
+    voiceLanguageName,
+    readinessLabel,
+    bestBinding,
+    setupHref
+  } from './voice-presentation';
 
   let {
     initialService = '',
@@ -58,7 +64,13 @@
   let pitch = $state('');
   let useCase = $state('');
   let texture = $state('');
+  let perceivedAge = $state('');
+  let deliveryPreset = $state('');
+  let tag = $state('');
   let collectionId = $state('');
+  const defaultKind = $derived(
+    initialView === 'prebuilt' ? 'provider' : 'managed'
+  );
   let kind = $state('managed');
   let service = $state('');
   let model = $state('');
@@ -87,18 +99,34 @@
   let collectionBusy = $state(false);
   let designerOpen = $state(false);
   let compare = $state<CatalogVoice[]>([]);
-  let auditionText = $state(
-    'The fire was burning low, but there was still time to tell the story.'
-  );
-  let auditionBusy = $state(false);
-  let activeJob = $state('');
-  let stopAuditions = false;
-  let comparisonAudio = $state<
-    Record<string, { artifactId: string; context: string }>
-  >({});
-  const comparisonContext = $derived(
-    JSON.stringify({ service, model, language, auditionText })
-  );
+  let comparisonOpen = $state(false);
+  let bulkMode = $state(false);
+  let bulkVoices = $state<CatalogVoice[]>([]);
+  let bulkCollectionId = $state('');
+  let renameId = $state('');
+  let selectedVariants = $state<Record<string, string>>({});
+  const voiceGroups = $derived.by(() => {
+    const groups = new Map<string, CatalogVoice[]>();
+    for (const voice of page?.items ?? []) {
+      const key =
+        voice.reference.kind === 'provider'
+          ? `provider:${voice.reference.voice}:${voice.name}`
+          : voice.key;
+      const entries = groups.get(key) ?? [];
+      entries.push(voice);
+      groups.set(key, entries);
+    }
+    return [...groups.entries()].map(([key, variants]) => ({
+      key,
+      variants,
+      voice:
+        variants.find((voice) => voice.key === selectedVariants[key]) ??
+        variants.find((voice) =>
+          voice.compatibility.some((binding) => binding.ready)
+        ) ??
+        variants[0]
+    }));
+  });
   let filterPanel = $state<HTMLElement>();
   $effect(() => {
     if (!filtersOpen || !filterPanel) return;
@@ -111,6 +139,7 @@
   let pendingClose = $state<(() => void) | null>(null);
   let initialized = $state(false);
   let sequence = 0;
+  let auxiliarySequence = 0;
   let alive = true;
   let opener: HTMLButtonElement | null = null;
   let scrollY = 0;
@@ -128,6 +157,9 @@
     voice_category: category,
     pitch,
     texture,
+    perceived_age: perceivedAge,
+    delivery_preset: deliveryPreset,
+    tag,
     use_case: useCase,
     collection_id: collectionId,
     kind,
@@ -146,7 +178,12 @@
       pitch,
       texture,
       useCase,
-      service,
+      perceivedAge,
+      deliveryPreset,
+      tag,
+      kind !== defaultKind,
+      service !== initialService && service,
+      model !== initialModel && model,
       readyOnly,
       reviewedOnly
     ].filter(Boolean).length
@@ -155,7 +192,7 @@
 
   async function load(cursor?: string) {
     const ticket = ++sequence;
-    const request = { ...parameters, limit: 30, cursor };
+    const request = { ...parameters, limit: 100, cursor };
     loading = true;
     error = '';
     try {
@@ -199,21 +236,22 @@
       error = errorMessage(caught);
     }
   }
-  async function refreshAuxiliary() {
+  async function refreshAuxiliary(probe = false) {
+    const ticket = ++auxiliarySequence;
     const [groupPayload, servicePayload, library] = await Promise.all([
       voiceLibraryApi.collections(),
-      speechServiceApi.catalogue(false),
+      speechServiceApi.catalogue(probe),
       voiceApi.list<VoiceRecord>()
     ]);
     if (!alive) return;
-    collections = groupPayload.items;
+    if (ticket === auxiliarySequence) collections = groupPayload.items;
     services = servicePayload.services;
     voices = library.items;
   }
   onMount(() => {
     service = initialService || route.url.searchParams.get('service') || '';
     model = initialModel || route.url.searchParams.get('model') || '';
-    kind = initialView === 'prebuilt' ? 'provider' : 'managed';
+    kind = defaultKind;
     initialized = true;
     void refreshAuxiliary().catch((caught) => (error = errorMessage(caught)));
     if (initialVoice)
@@ -227,7 +265,6 @@
   });
   onDestroy(() => {
     alive = false;
-    stopAuditions = true;
   });
   export function requestClose(close: () => void) {
     if (dirty) pendingClose = close;
@@ -308,9 +345,9 @@
         revision: result.revision
       };
       editing = false;
-      notice = 'Voice profile saved.';
       await load();
       await refreshAuxiliary();
+      notice = 'Voice profile saved.';
       return true;
     } catch (caught) {
       error = errorMessage(caught);
@@ -322,12 +359,23 @@
   async function createCollection() {
     if (!collectionName.trim()) return;
     collectionBusy = true;
+    auxiliarySequence++;
     error = '';
     try {
-      const created = await voiceLibraryApi.createCollection(
-        collectionName.trim()
+      const existing = collections.find(
+        (collection) => collection.id === renameId
       );
-      collections = [...collections, created];
+      const created = existing
+        ? await voiceLibraryApi.updateCollection(existing, {
+            name: collectionName.trim()
+          })
+        : await voiceLibraryApi.createCollection(collectionName.trim());
+      collections = existing
+        ? collections.map((collection) =>
+            collection.id === created.id ? created : collection
+          )
+        : [...collections, created];
+      renameId = '';
       collectionName = '';
       collectionForm = false;
       collectionId = created.id;
@@ -339,30 +387,76 @@
   }
   async function membership(collection: VoiceCollection, add: boolean) {
     if (!detail) return;
+    const target = detail;
     collectionBusy = true;
+    auxiliarySequence++;
     error = '';
     try {
       const updated = await voiceLibraryApi.membership(
         collection,
-        detail.reference,
+        target.reference,
         add
       );
       collections = collections.map((c) => (c.id === updated.id ? updated : c));
-      detail = {
-        ...detail,
-        collections: add
-          ? [
-              ...detail.collections.filter((c) => c.id !== collection.id),
-              { id: collection.id, name: collection.name }
-            ]
-          : detail.collections.filter((c) => c.id !== collection.id)
-      };
+      if (detail?.key === target.key)
+        detail = {
+          ...detail,
+          collections: add
+            ? [
+                ...detail.collections.filter((c) => c.id !== collection.id),
+                { id: collection.id, name: collection.name }
+              ]
+            : detail.collections.filter((c) => c.id !== collection.id)
+        };
       await load();
     } catch (caught) {
       error = errorMessage(caught);
       await refreshAuxiliary();
     } finally {
       collectionBusy = false;
+    }
+  }
+  async function bulkMembership(add: boolean) {
+    const collection = collections.find((item) => item.id === bulkCollectionId);
+    if (!collection || !bulkVoices.length || collectionBusy) return;
+    collectionBusy = true;
+    auxiliarySequence++;
+    error = '';
+    try {
+      const updated = await voiceLibraryApi.updateCollection(collection, {
+        [add ? 'add_members' : 'remove_members']: bulkVoices.map(
+          (voice) => voice.reference
+        )
+      });
+      collections = collections.map((item) =>
+        item.id === updated.id ? updated : item
+      );
+      notice = `${bulkVoices.length} voice${bulkVoices.length === 1 ? '' : 's'} ${add ? 'added to' : 'removed from'} ${updated.name}.`;
+      bulkVoices = [];
+      await load();
+    } catch (caught) {
+      error = errorMessage(caught);
+      await refreshAuxiliary();
+    } finally {
+      collectionBusy = false;
+    }
+  }
+  function toggleBulk(voice: CatalogVoice) {
+    bulkVoices = bulkVoices.some((item) => item.key === voice.key)
+      ? bulkVoices.filter((item) => item.key !== voice.key)
+      : bulkVoices.length < 200
+        ? [...bulkVoices, voice]
+        : bulkVoices;
+  }
+  async function checkAvailability() {
+    loading = true;
+    try {
+      await refreshAuxiliary(true);
+      await load();
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      loading = false;
     }
   }
   function selectVoice(voice: CatalogVoice) {
@@ -386,87 +480,18 @@
       compare = compare.filter((v) => v.key !== voice.key);
     else if (compare.length < 3) compare = [...compare, voice];
   }
-  async function auditions() {
-    if (!service || !model || !auditionText.trim()) return;
-    auditionBusy = true;
-    stopAuditions = false;
-    error = '';
-    notice = '';
-    const renderer = service,
-      rendererModel = model,
-      text = auditionText.trim(),
-      auditionLanguage = language || 'en',
-      context = comparisonContext;
-    const shortlist = [...compare];
-    try {
-      for (const voice of shortlist) {
-        if (!alive || stopAuditions) break;
-        const binding = voice.compatibility.find(
-          (c) => c.service_id === renderer && c.model === rendererModel
-        );
-        if (!binding?.ready || !binding.voice)
-          throw new Error(
-            `${voice.name} is not ready for this renderer. Open its samples and provider links first.`
-          );
-        const queued = await speechServiceApi.preview(renderer, {
-          text,
-          model: rendererModel,
-          voice: binding.voice,
-          language: auditionLanguage
-        });
-        activeJob = queued.id;
-        let finished = false;
-        for (
-          let attempt = 0;
-          attempt < 3600 && alive && !stopAuditions;
-          attempt++
-        ) {
-          const job = await jobApi.get(queued.id);
-          if (job.status === 'succeeded') {
-            const artifact = String(job.result_json?.artifact_id ?? '');
-            if (!artifact)
-              throw new Error('The audition completed without audio.');
-            comparisonAudio = {
-              ...comparisonAudio,
-              [voice.key]: { artifactId: artifact, context }
-            };
-            finished = true;
-            break;
-          }
-          if (['failed', 'canceled', 'interrupted'].includes(job.status))
-            throw new Error(job.error_message || `Audition ${job.status}.`);
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-        if (!finished && !stopAuditions)
-          throw new Error(
-            'The audition is still running. Follow it in Activity & logs.'
-          );
-        activeJob = '';
-      }
-    } catch (caught) {
-      if (alive) error = errorMessage(caught);
-    } finally {
-      if (alive) auditionBusy = false;
-    }
-  }
-  async function cancelAuditions() {
-    stopAuditions = true;
-    if (activeJob)
-      try {
-        await jobApi.cancel(activeJob);
-      } catch (caught) {
-        error = errorMessage(caught);
-      }
-    activeJob = '';
-    auditionBusy = false;
-  }
   function clearFilters() {
-    kind = initialView === 'prebuilt' ? 'provider' : 'managed';
     language = '';
     accent = '';
     category = '';
     pitch = '';
     texture = '';
+    perceivedAge = '';
+    deliveryPreset = '';
+    tag = '';
+    kind = defaultKind;
+    query = '';
+    collectionId = '';
     useCase = '';
     readyOnly = false;
     reviewedOnly = false;
@@ -487,7 +512,11 @@
       voice.profile.pitch
         ? `${voiceFacetLabel(voice.profile.pitch)} pitch`
         : '',
-      ...voice.profile.textures.slice(0, 2)
+      voice.profile.perceived_age
+        ? voiceFacetLabel(voice.profile.perceived_age)
+        : '',
+      ...voice.profile.textures.map(voiceFacetLabel),
+      ...voice.profile.delivery_presets.map(voiceFacetLabel)
     ].filter(Boolean);
   }
 </script>
@@ -498,15 +527,15 @@
   class:embedded
 >
   {#if !detail && !samplesOpen}
-    <header class="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <div class="eyebrow">Your cast starts here</div>
-        <h1 class="mt-2 text-3xl font-semibold sm:text-4xl">Voice library</h1>
-        <p class="muted mt-2 max-w-2xl text-sm">
-          Find a familiar voice, audition a new one, or design the speaker you
-          have in mind.
-        </p>
-      </div>
+    <header class="mb-4 flex flex-wrap items-end justify-between gap-4 sm:mb-6">
+      {#if !embedded}<div>
+          <div class="eyebrow">Your cast starts here</div>
+          <h1 class="mt-2 text-3xl font-semibold sm:text-4xl">Voice library</h1>
+          <p class="muted mt-2 max-w-2xl text-sm">
+            Find a familiar voice, audition a new one, or design the speaker you
+            have in mind.
+          </p>
+        </div>{/if}
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-primary" onclick={() => (designerOpen = true)}
           ><WandSparkles size={16} />Design voice</button
@@ -561,7 +590,21 @@
             >{/if}
         </div>
       </div>
-      {#if detail.preview_artifact_id}<div class="mt-5">
+      {#if detail.kind === 'managed' && !editing}<div
+          class="mt-5 flex gap-2 border-b border-[var(--line)] pb-3"
+          aria-label="Voice workspace"
+        >
+          <button
+            class="btn"
+            class:btn-primary={!samplesOpen}
+            onclick={() => void closeSamples()}>Profile</button
+          ><button
+            class="btn"
+            class:btn-primary={samplesOpen}
+            onclick={() => (samplesOpen = true)}>Samples &amp; setup</button
+          >
+        </div>{/if}
+      {#if !samplesOpen && detail.preview_artifact_id}<div class="mt-5">
           <AudioPlayer
             src={`/api/v1/artifacts/${detail.preview_artifact_id}/content`}
             label={`${detail.name} reference`}
@@ -624,19 +667,22 @@
             >
           </div>
         </form>
-      {:else}
+      {:else if !samplesOpen}
         <div class="mt-5 flex flex-wrap gap-2">
           {#each traits(detail) as trait}<span class="catalog-chip"
               >{trait}</span
             >{/each}{#each detail.profile.use_cases as use}<span
               class="catalog-chip">{voiceFacetLabel(use)}</span
+            >{/each}{#each detail.profile.tags as tag}<span class="catalog-chip"
+              >#{tag}</span
             >{/each}
         </div>
         <div class="mt-4 space-y-2">
           {#each detail.profile.languages as lang}<p class="text-sm">
-              <strong>{lang.language.toUpperCase()}</strong>{lang.accent
-                ? ` · ${lang.accent}`
-                : ''}<span class="muted ml-2 text-xs"
+              <strong>{voiceLanguageName(lang.language)}</strong><span
+                class="muted ml-1 text-xs">({lang.language})</span
+              >{lang.accent ? ` · ${lang.accent}` : ''}<span
+                class="muted ml-2 text-xs"
                 >{lang.evidence?.status === 'reviewed'
                   ? 'Audition reviewed'
                   : lang.evidence?.status === 'requested'
@@ -667,7 +713,7 @@
         </section>
         <details
           class="mt-6 border-t border-[var(--line)] pt-5"
-          open={Boolean(service)}
+          open={detail.kind === 'provider' || Boolean(service)}
         >
           <summary class="cursor-pointer font-semibold"
             >Renderers <span class="muted text-xs font-normal"
@@ -675,17 +721,39 @@
             ></summary
           >
           <div class="mt-3 space-y-2">
-            {#each detail.compatibility as binding}<p
-                class="break-words text-sm"
+            {#each detail.compatibility as binding}<div
+                class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--line)] p-3 text-sm"
               >
-                <span>{binding.service_id} · {binding.model}</span><span
-                  class="muted ml-2 text-xs"
-                  >{voiceFacetLabel(binding.status)}{binding.modes
-                    .reference_with_instructions
-                    ? ' · clone + direction'
-                    : ''}</span
-                >
-              </p>{:else}<p class="muted text-sm">
+                <div class="min-w-0 break-words">
+                  <span
+                    >{services.find((item) => item.id === binding.service_id)
+                      ?.name ?? binding.service_id} · {services
+                      .find((item) => item.id === binding.service_id)
+                      ?.model_catalog?.find((item) => item.id === binding.model)
+                      ?.label ?? binding.model}</span
+                  >
+                  <p class="muted mt-1 text-xs">
+                    {readinessLabel(binding)}{binding.modes
+                      .reference_with_instructions
+                      ? ' · clone + direction'
+                      : ''}
+                  </p>
+                </div>
+                {#if binding.status === 'needs_reference' || binding.status === 'needs_link'}<button
+                    class="btn btn-sm"
+                    onclick={() => (samplesOpen = true)}
+                    >{binding.status === 'needs_reference'
+                      ? 'Add a sample'
+                      : 'Prepare reference'}</button
+                  >
+                {:else if !binding.ready}<a
+                    class="btn btn-sm"
+                    href={setupHref(binding)}
+                    >{binding.status === 'model_unavailable'
+                      ? 'Find model'
+                      : 'Open service settings'}</a
+                  >{/if}
+              </div>{:else}<p class="muted text-sm">
                 No compatible renderer is configured yet.
               </p>{/each}
           </div>
@@ -707,6 +775,7 @@
           initialService={service}
           embedded
           detailOnly
+          profileManaged
           referencesOnly
           onvoicepublished={async (id) => {
             onvoicepublished?.(id);
@@ -717,15 +786,32 @@
   {:else if samplesOpen}
     <h2 class="mb-2 text-2xl font-semibold">Add a reference voice</h2>
     <p class="muted mb-5 text-sm">
-      Create a voice or select one below to add a recording.
+      Name a new voice, then upload or record a sample. Choose an existing voice
+      to add another recording.
     </p>
     <VoiceManager
       onback={() => void closeSamples()}
       embedded
       referencesOnly
+      focused
       initialService={service}
     />
   {:else}
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap gap-1" aria-label="Voice sources">
+        {#each [{ value: 'managed', label: 'Saved voices' }, { value: 'provider', label: 'Provider catalog' }, { value: 'all', label: 'All voices' }] as scope}<button
+            class="btn btn-sm"
+            class:btn-primary={kind === scope.value}
+            aria-pressed={kind === scope.value}
+            onclick={() => (kind = scope.value)}>{scope.label}</button
+          >{/each}
+      </div>
+    </div>
+    {#if initialService || initialModel}<p class="muted mb-4 text-xs">
+        Casting context: {services.find((item) => item.id === initialService)
+          ?.name ?? initialService}{initialModel ? ` · ${initialModel}` : ''}.
+        Clear filters restores this context.
+      </p>{/if}
     <div class="catalog-toolbar mb-4">
       <label
         class="search-field flex min-w-0 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3"
@@ -749,6 +835,9 @@
         ><span class="sr-only">Collection</span><select
           class="input h-full min-h-12 w-full"
           bind:value={collectionId}
+          onchange={() => {
+            if (collectionId) kind = 'all';
+          }}
           ><option value="">All collections</option
           >{#each collections as collection}<option value={collection.id}
               >{collection.name} ({collection.member_count})</option
@@ -759,10 +848,63 @@
         class="btn btn-icon"
         aria-label="Create collection"
         title="Create collection"
-        onclick={() => (collectionForm = !collectionForm)}
-        ><FolderPlus size={18} /></button
+        onclick={() => {
+          renameId = '';
+          collectionName = '';
+          collectionForm = !collectionForm;
+        }}><FolderPlus size={18} /></button
       >
     </div>
+    {#if collectionId}<div class="mb-4 flex flex-wrap gap-2">
+        <button
+          class="btn btn-sm"
+          onclick={() => {
+            const collection = collections.find(
+              (item) => item.id === collectionId
+            );
+            if (collection) {
+              renameId = collection.id;
+              collectionName = collection.name;
+              collectionForm = true;
+            }
+          }}>Rename collection</button
+        >
+      </div>{/if}
+    {#if bulkMode}<div
+        class="surface mb-4 space-y-3 rounded-xl border border-[var(--line)] p-4"
+      >
+        <p class="text-sm font-semibold">
+          {bulkVoices.length} voices selected
+          <span class="muted font-normal">· up to 200</span>
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <label class="min-w-0 flex-1"
+            ><span class="sr-only">Destination collection</span><select
+              class="input w-full"
+              bind:value={bulkCollectionId}
+              disabled={collectionBusy}
+              ><option value="">Choose a collection</option
+              >{#each collections as collection}<option value={collection.id}
+                  >{collection.name}</option
+                >{/each}</select
+            ></label
+          >
+          <button
+            class="btn btn-primary"
+            disabled={collectionBusy || !bulkCollectionId || !bulkVoices.length}
+            onclick={() => void bulkMembership(true)}>Add selected</button
+          >
+          <button
+            class="btn"
+            disabled={collectionBusy || !bulkCollectionId || !bulkVoices.length}
+            onclick={() => void bulkMembership(false)}>Remove selected</button
+          >
+        </div>
+        <p class="muted text-xs">
+          Select voices below, then update their collection membership. Removing
+          membership keeps the voices in your library.
+        </p>
+      </div>{/if}
     {#if collectionForm}<form
         class="mb-4 flex flex-wrap gap-2 rounded-xl border border-[var(--line)] p-3"
         onsubmit={(event) => {
@@ -780,7 +922,7 @@
         ><button
           class="btn btn-primary"
           disabled={collectionBusy || !collectionName.trim()}
-          >Create collection</button
+          >{renameId ? 'Save collection name' : 'Create collection'}</button
         ><button
           class="btn btn-secondary"
           type="button"
@@ -806,19 +948,13 @@
         </div>
         <div class="space-y-4">
           <label class="filter-label"
-            >Origin<select class="input mt-1 w-full" bind:value={kind}
-              ><option value="all">All voices</option><option value="managed"
-                >Saved references</option
-              ><option value="provider">Provider voices</option></select
-            ></label
-          >
-          <label class="filter-label"
             >Language<select class="input mt-1 w-full" bind:value={language}
               ><option value="">Any language</option
               >{#each languages as lang}<option value={lang}
-                  >{lang.toUpperCase()}</option
+                  >{voiceLanguageName(lang)} ({lang})</option
                 >{/each}{#if language && !languages.includes(language)}<option
-                  value={language}>{language.toUpperCase()}</option
+                  value={language}
+                  >{voiceLanguageName(language)} ({language})</option
                 >{/if}</select
             ></label
           >
@@ -864,6 +1000,34 @@
                 >{/each}</select
             ></label
           >
+          <label class="filter-label"
+            >Perceived age<select
+              class="input mt-1 w-full"
+              bind:value={perceivedAge}
+              ><option value="">Any age</option
+              >{#each page?.taxonomy.perceived_age ?? [] as value}<option
+                  {value}>{voiceFacetLabel(value)}</option
+                >{/each}</select
+            ></label
+          >
+          <label class="filter-label"
+            >Delivery<select
+              class="input mt-1 w-full"
+              bind:value={deliveryPreset}
+              ><option value="">Any delivery</option
+              >{#each page?.taxonomy.delivery_presets ?? [] as value}<option
+                  {value}>{voiceFacetLabel(value)}</option
+                >{/each}</select
+            ></label
+          >
+          <label class="filter-label"
+            >Tag<input
+              class="input mt-1 w-full"
+              placeholder="e.g. winter"
+              maxlength="40"
+              bind:value={tag}
+            /></label
+          >
           <details
             class="border-t border-[var(--line)] pt-3"
             open={Boolean(initialService)}
@@ -872,6 +1036,11 @@
               >Renderer compatibility</summary
             >
             <div class="mt-3 space-y-3">
+              <button
+                class="btn btn-sm"
+                disabled={loading}
+                onclick={checkAvailability}>Check availability</button
+              >
               <label class="filter-label"
                 >Service<select
                   class="input mt-1 w-full"
@@ -916,20 +1085,25 @@
           aria-label="Dismiss filters"
           onclick={() => (filtersOpen = false)}
         ></button>{/if}
-      <main class="min-w-0">
+      <section class="min-w-0" aria-label="Voice results">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <p class="muted flex items-center gap-2 text-sm" role="status">
             {#if loading}<LoaderCircle
                 size={15}
                 class="animate-spin"
-              />{/if}{page?.total ?? '…'} voices{collectionId
+              />{/if}{page?.total ?? '…'}
+            {kind === 'managed' ? 'voices' : 'voice entries'}{collectionId
               ? ' in this collection'
               : ''}
           </p>
-          {#if compare.length}<a
-              class="btn btn-secondary btn-sm"
-              href="#voice-comparison">Compare {compare.length} voices</a
-            >{/if}
+          <button
+            class="btn btn-sm"
+            aria-pressed={bulkMode}
+            onclick={() => {
+              bulkMode = !bulkMode;
+              if (!bulkMode) bulkVoices = [];
+            }}>{bulkMode ? 'Done organizing' : 'Organize voices'}</button
+          >
           <label class="flex items-center gap-2 text-xs"
             >Sort<select class="input text-sm" bind:value={sort}
               ><option value="relevance">Best match</option><option value="name"
@@ -941,12 +1115,13 @@
           >
         </div>
         {#if filterCount}<div class="mb-4 flex flex-wrap gap-2">
-            {#each [language.toUpperCase(), accent, category && voiceFacetLabel(category), pitch && `${voiceFacetLabel(pitch)} pitch`, useCase && voiceFacetLabel(useCase), texture, readyOnly && 'Ready', reviewedOnly && 'Reviewed'].filter(Boolean) as filter}<span
+            {#each [language && voiceLanguageName(language), accent, category && voiceFacetLabel(category), pitch && `${voiceFacetLabel(pitch)} pitch`, useCase && voiceFacetLabel(useCase), texture, perceivedAge && voiceFacetLabel(perceivedAge), deliveryPreset && voiceFacetLabel(deliveryPreset), tag && `#${tag}`, kind !== defaultKind && (kind === 'provider' ? 'Provider catalog' : kind === 'managed' ? 'Saved voices' : 'All voices'), service && (services.find((item) => item.id === service)?.name ?? service), model, readyOnly && 'Ready', reviewedOnly && 'Reviewed'].filter(Boolean) as filter}<span
                 class="catalog-chip">{filter}</span
               >{/each}
           </div>{/if}
         <div class="space-y-3" aria-busy={loading}>
-          {#each page?.items ?? [] as voice (voice.key)}
+          {#each voiceGroups as group (group.key)}
+            {@const voice = group.voice}
             <article
               class="surface rounded-2xl border border-[var(--line)] p-4 sm:p-5"
             >
@@ -957,26 +1132,41 @@
                     onclick={(event) => openDetail(voice, event.currentTarget)}
                     >{voice.name}</button
                   >
-                  <p class="muted mt-1 line-clamp-2 text-sm">
-                    {voice.description ||
-                      (voice.kind === 'managed'
-                        ? 'Reusable reference voice'
-                        : 'Provider speaker')}
-                  </p>
+                  {#if voice.description}<p
+                      class="muted mt-1 line-clamp-2 text-sm"
+                    >
+                      {voice.description}
+                    </p>{/if}
                 </div>
                 <span class="muted shrink-0 text-xs"
                   >{voice.kind === 'managed' ? 'Saved' : 'Provider'}</span
                 >
               </div>
               <p class="muted mt-2 break-words text-xs">
-                {rendererLabel(voice)}{voice.compatibility.some((c) => c.ready)
-                  ? ' · Ready'
-                  : ' · Needs setup'}
+                {rendererLabel(voice)} · {readinessLabel(bestBinding(voice))}
               </p>
+              {#if group.variants.length > 1}<label
+                  class="mt-3 block text-xs font-semibold"
+                  >Model for {voice.name}<select
+                    class="input mt-1 w-full"
+                    value={voice.key}
+                    onchange={(event) =>
+                      (selectedVariants[group.key] = event.currentTarget.value)}
+                    >{#each group.variants as variant}<option
+                        value={variant.key}
+                        >{rendererLabel(variant)} · {readinessLabel(
+                          bestBinding(variant)
+                        )}</option
+                      >{/each}</select
+                  ><span class="muted mt-1 block font-normal"
+                    >{group.variants.length} model variants loaded. Choose the service
+                    and model for this speaker.</span
+                  ></label
+                >{/if}
               <div class="mt-3 flex flex-wrap gap-2">
                 {#each voice.profile.languages.slice(0, 2) as lang}<span
                     class="catalog-chip"
-                    >{lang.language.toUpperCase()}{lang.accent
+                    >{voiceLanguageName(lang.language)}{lang.accent
                       ? ` · ${lang.accent}`
                       : ''}{lang.evidence?.status === 'requested'
                       ? ' · requested'
@@ -988,16 +1178,30 @@
               <div
                 class="mt-4 flex flex-wrap items-center justify-between gap-3"
               >
-                <label class="muted flex min-h-10 items-center gap-2 text-xs"
-                  ><input
-                    type="checkbox"
-                    checked={compare.some((v) => v.key === voice.key)}
-                    disabled={auditionBusy ||
-                      (compare.length >= 3 &&
-                        !compare.some((v) => v.key === voice.key))}
-                    onchange={() => toggleCompare(voice)}
-                  />Compare</label
-                >
+                {#if bulkMode}<label
+                    class="flex min-h-11 items-center gap-2 text-sm"
+                    ><input
+                      type="checkbox"
+                      aria-label={`Select ${voice.name} for collection`}
+                      checked={bulkVoices.some(
+                        (item) => item.key === voice.key
+                      )}
+                      disabled={collectionBusy ||
+                        (bulkVoices.length >= 200 &&
+                          !bulkVoices.some((item) => item.key === voice.key))}
+                      onchange={() => toggleBulk(voice)}
+                    />Select</label
+                  >{:else}
+                  <label class="muted flex min-h-10 items-center gap-2 text-xs"
+                    ><input
+                      type="checkbox"
+                      checked={compare.some((v) => v.key === voice.key)}
+                      aria-label={`Compare ${voice.name}`}
+                      disabled={compare.length >= 3 &&
+                        !compare.some((v) => v.key === voice.key)}
+                      onchange={() => toggleCompare(voice)}
+                    />Compare</label
+                  >{/if}
                 <div class="flex flex-wrap gap-2">
                   {#if voice.preview_artifact_id}<button
                       class="btn btn-secondary btn-sm"
@@ -1053,65 +1257,33 @@
             onclick={() => void load(page?.next_cursor ?? undefined)}
             >Load more voices</button
           >{/if}
-      </main>
+      </section>
     </div>
-    {#if compare.length}<section
-        id="voice-comparison"
-        class="surface mt-6 rounded-2xl border border-[var(--line)] p-4 sm:p-6"
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 class="font-semibold">Compare {compare.length} voices</h2>
-            <p class="muted mt-1 text-xs">
-              Use the same passage and renderer to hear the difference.
-            </p>
-          </div>
-          <button
-            class="btn btn-secondary btn-sm"
-            disabled={auditionBusy}
-            onclick={() => (compare = [])}>Clear shortlist</button
-          >
-        </div>
-        <label class="mt-4 block text-sm font-semibold"
-          >Audition passage<textarea
-            class="input mt-1 w-full"
-            rows="2"
-            maxlength="1000"
-            bind:value={auditionText}
-            disabled={auditionBusy}></textarea></label
-        >{#if !service || !model}<p class="muted mt-2 text-xs">
-            Choose a service and model under Renderer compatibility to generate
-            auditions.
-          </p>{/if}
-        <div class="mt-4 flex flex-wrap gap-2">
-          {#if auditionBusy}<button
-              class="btn btn-secondary"
-              onclick={cancelAuditions}>Cancel auditions</button
-            >{:else}<button
-              class="btn btn-primary"
-              disabled={!service || !model || !auditionText.trim()}
-              onclick={auditions}
-              ><Play size={15} />Generate {compare.length} auditions</button
-            >{/if}
-        </div>
-        <div class="mt-4 grid gap-3 md:grid-cols-3">
-          {#each compare as voice}<div
-              class="min-w-0 rounded-xl border border-[var(--line)] p-3"
-            >
-              <p class="mb-3 break-words text-sm font-semibold">{voice.name}</p>
-              {#if comparisonAudio[voice.key]?.context === comparisonContext}<AudioPlayer
-                  src={`/api/v1/artifacts/${comparisonAudio[voice.key].artifactId}/content`}
-                  label={`${voice.name} audition`}
-                />{:else}<p class="muted text-xs">
-                  {auditionBusy
-                    ? 'Preparing audition…'
-                    : 'No comparison audition yet'}
-                </p>{/if}
-            </div>{/each}
-        </div>
-      </section>{/if}
   {/if}
+  {#if compare.length && !samplesOpen}<button
+      class="btn btn-primary fixed bottom-5 right-5 z-[75] shadow-xl"
+      onclick={() => (comparisonOpen = true)}
+      >Compare {compare.length} voices</button
+    >{/if}
 </div>
+
+{#if compare.length}<VoiceComparison
+    open={comparisonOpen}
+    voices={compare}
+    {services}
+    initialService={service}
+    initialModel={model}
+    onclose={() => (comparisonOpen = false)}
+    onremove={(key) => {
+      compare = compare.filter((voice) => voice.key !== key);
+      if (!compare.length) comparisonOpen = false;
+    }}
+    oninspect={(voice) => {
+      comparisonOpen = false;
+      openDetail(voice);
+      samplesOpen = voice.kind === 'managed';
+    }}
+  />{/if}
 
 {#if designerOpen}<VoiceDesignDialog
     {services}
@@ -1176,7 +1348,7 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="voice-unsaved-title"
-      class="surface w-full max-w-md rounded-2xl p-5"
+      class="compact-confirmation surface w-full max-w-md rounded-2xl p-5"
     >
       <h2 id="voice-unsaved-title" class="text-lg font-semibold">
         Keep your profile changes?

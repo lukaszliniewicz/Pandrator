@@ -17,7 +17,12 @@ from pandrator.web.credentials import (
     shared_provider_credential_key,
     tts_credential_key,
 )
-from pandrator.web.models import AppSetting, AppSettingHistory, StoredCredential
+from pandrator.web.models import (
+    AppSetting,
+    AppSettingHistory,
+    SessionSettingHistory,
+    StoredCredential,
+)
 from pandrator.web.tts_optimization import (
     DEFAULT_FIRST_PROMPT,
     DEFAULT_PROMPT,
@@ -68,6 +73,121 @@ class SettingsApiTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             self.assertEqual(session.scalar(select(func.count()).select_from(AppSettingHistory)), 1)
+
+    def test_session_settings_patch_preserves_override_fields_and_put_replaces(self):
+        session_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Partial settings", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
+        original = {
+            "performance_enabled": True,
+            "casting_enabled": True,
+            "service": "audio_cpp",
+            "model": "qwen3_tts_1_7b_customvoice_q8_0",
+            "voice": "Kobo",
+            "audio_cpp_seed": 17,
+            "audio_cpp_model_settings": {"temperature": 0.4},
+        }
+        created = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": original},
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, created.status_code, created.get_json())
+
+        patched = self.client.patch(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {"performance_enabled": False}},
+            headers={
+                **self.headers,
+                "If-Match": '"1"',
+                "Idempotency-Key": "settings-patch-1",
+            },
+        )
+        self.assertEqual(200, patched.status_code, patched.get_json())
+        self.assertEqual(2, patched.get_json()["revision"])
+        expected = {**original, "performance_enabled": False}
+        expected["speaker"] = "Kobo"
+        self.assertEqual(expected, patched.get_json()["override"])
+
+        replay = self.client.patch(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {"performance_enabled": False}},
+            headers={
+                **self.headers,
+                "If-Match": '"1"',
+                "Idempotency-Key": "settings-patch-1",
+            },
+        )
+        self.assertEqual(200, replay.status_code, replay.get_json())
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        self.assertEqual(2, replay.get_json()["revision"])
+
+        conflict = self.client.patch(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {"voice": "stale"}},
+            headers={
+                **self.headers,
+                "If-Match": '"1"',
+                "Idempotency-Key": "settings-patch-2",
+            },
+        )
+        self.assertEqual(409, conflict.status_code, conflict.get_json())
+        current = self.client.get(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            headers=self.headers,
+        ).get_json()
+        self.assertEqual(2, current["revision"])
+        self.assertEqual(expected, current["override"])
+
+        reset = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {"voice": "reset"}},
+            headers={**self.headers, "If-Match": '"2"'},
+        )
+        self.assertEqual(200, reset.status_code, reset.get_json())
+        self.assertEqual(
+            {"voice": "reset", "speaker": "reset"},
+            reset.get_json()["override"],
+        )
+        database = self.app.extensions["pandrator"]["database"]
+        with database.session() as session:
+            self.assertEqual(
+                2,
+                session.scalar(select(func.count()).select_from(SessionSettingHistory)),
+            )
+
+        rejected = self.client.patch(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {"api_key": "secret"}},
+            headers={**self.headers, "If-Match": '"3"'},
+        )
+        self.assertEqual(422, rejected.status_code, rejected.get_json())
+
+    def test_session_settings_patch_aliases_nested_values_and_literal_null(self):
+        session_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Settings merge semantics", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
+        url = f"/api/v1/sessions/{session_id}/settings/tts"
+        original = {"voice": "Kore", "audio_cpp_seed": 17,
+                    "audio_cpp_model_settings": {"temperature": 0.4, "top_p": 0.9}}
+        created = self.client.put(url, json={"value": original},
+                                  headers={**self.headers, "If-Match": '"0"'})
+        self.assertEqual(200, created.status_code, created.get_json())
+        response = self.client.patch(url, json={"value": {
+            "speaker": "Puck", "audio_cpp_seed": None,
+            "audio_cpp_model_settings": {"temperature": 0.2},
+        }}, headers={**self.headers, "If-Match": '"1"'})
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual({
+            "voice": "Puck", "speaker": "Puck", "audio_cpp_seed": None,
+            "audio_cpp_model_settings": {"temperature": 0.2},
+        }, response.get_json()["override"])
+        self.assertNotIn("service", response.get_json()["override"])
+        self.assertIn("service", response.get_json()["effective"])
 
     def test_tts_optimization_prompts_are_visible_in_builtin_settings(self):
         payload = self.client.get("/api/v1/defaults/text").get_json()["builtin"]

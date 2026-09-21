@@ -7,6 +7,7 @@
     LoaderCircle,
     Settings2
   } from '@lucide/svelte';
+  import type { CastDraftController } from './generation-controls';
   import type { Snippet } from 'svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
   import PerformancePanel from './PerformancePanel.svelte';
@@ -17,6 +18,8 @@
     sessionId,
     plan,
     busy = false,
+    showCasting = true,
+    externalCastPanel,
     onprepare,
     onselect,
     onreview,
@@ -27,6 +30,8 @@
     sessionId: string;
     plan: SpeechPlanState | null;
     busy?: boolean;
+    showCasting?: boolean;
+    externalCastPanel?: CastDraftController;
     onprepare: () => Promise<unknown>;
     onselect: (id: string) => Promise<unknown>;
     onreview: () => Promise<unknown>;
@@ -94,6 +99,11 @@
         {plan.blocked_reason}
       </p>{/if}
     <div class="flex flex-wrap gap-2">
+      {#if showCasting}<a
+          class="btn btn-secondary"
+          href={`/sessions/${sessionId}/voice#characters-cast`}
+          >Characters &amp; cast</a
+        >{/if}
       <button class="btn btn-secondary" onclick={onsettings} disabled={busy}
         ><Settings2 size={16} /> Block settings</button
       >
@@ -132,6 +142,8 @@
     {#if selected}
       {#key `${sessionId}:${selected.id}`}
         <PerformancePanel
+          {showCasting}
+          {externalCastPanel}
           {sessionId}
           revisionId={selected.id}
           {busy}

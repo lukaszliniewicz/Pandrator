@@ -1,12 +1,32 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { ExternalLink, Mic2, RefreshCw, X } from '@lucide/svelte';
+  import { ExternalLink, Mic2, RefreshCw } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
-  import { modalFocus } from '$lib/modal-focus';
+  import { onMount } from 'svelte';
+  import { sessionApi } from '$lib/domain-api';
+  import type { SettingsPayload } from '$lib/api-models';
+  import { errorMessage } from '$lib/errors';
+  import GenerationCastPanel from '$lib/GenerationCastPanel.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
-  import VoiceManager from '$lib/VoiceManager.svelte';
+  import VoiceLibraryModal from '$lib/VoiceLibraryModal.svelte';
   const sessionId = String(page.params.id);
   let voicesOpen = $state(false);
+  let settings = $state<SettingsPayload | null>(null);
+  let error = $state('');
+  const service = $derived(String(settings?.effective.service ?? ''));
+  const model = $derived(String(settings?.effective.model ?? ''));
+  const sessionVoice = $derived(String(settings?.effective.voice ?? ''));
+  async function loadSettings() {
+    try {
+      settings = await sessionApi.settings(sessionId, 'tts');
+      error = '';
+    } catch (caught) {
+      error = errorMessage(caught);
+    }
+  }
+  onMount(() => {
+    void loadSettings();
+  });
 </script>
 
 <div class="space-y-5">
@@ -14,8 +34,8 @@
     <div>
       <h2 class="text-2xl font-semibold">Voice and audio</h2>
       <p class="muted mt-2">
-        Choose a detected service and voice, then reveal backend-specific
-        controls when needed.
+        Review your cast, choose the speech model, and adjust generation and
+        audio settings.
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
@@ -30,10 +50,36 @@
       >
     </div>
   </div>
+  <section
+    id="characters-cast"
+    class="surface scroll-mt-20 rounded-2xl p-4 sm:p-6"
+  >
+    {#if error}<p role="alert" class="mb-3 text-sm text-red-600">{error}</p>
+      <button class="btn" onclick={loadSettings}
+        >Retry loading voice settings</button
+      >{/if}
+    {#if settings}<p class="muted mb-4 break-words text-xs">
+        Saved generation settings: {service || 'No service selected'}{model
+          ? ` · ${model}`
+          : ''}. Change these below, then save to update casting compatibility.
+      </p>
+      <GenerationCastPanel
+        {sessionId}
+        {service}
+        {model}
+        {sessionVoice}
+        standalone
+      />{:else if !error}<p class="muted text-sm">
+        Loading casting settings…
+      </p>{/if}
+  </section>
   <SettingsPanel
     {sessionId}
     section="tts"
     title="Speech generation"
+    onpersisted={(payload) => {
+      settings = payload;
+    }}
   /><SettingsPanel
     {sessionId}
     section="audio"
@@ -41,23 +87,11 @@
     description="Optional signal verification examines each raw generated take before fades or future normalization, and marks suspicious segments for review."
   /><SettingsPanel {sessionId} section="rvc" title="RVC variants" />
 </div>
-{#if voicesOpen}<div
-    use:modalFocus={{ onclose: () => (voicesOpen = false) }}
-    class="fixed inset-0 z-[70] bg-[var(--paper)] p-4 sm:p-7"
-    role="dialog"
-    aria-modal="true"
-    aria-label="Voice library"
-  >
-    <button
-      onclick={() => (voicesOpen = false)}
-      aria-label="Close voice library"
-      class="fixed right-6 top-6 z-10 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-2"
-      ><X size={19} /></button
-    >
-    <div class="h-full">
-      <VoiceManager onback={() => (voicesOpen = false)} />
-    </div>
-  </div>{/if}
+{#if voicesOpen}<VoiceLibraryModal
+    initialService={service}
+    initialModel={model}
+    onclose={() => (voicesOpen = false)}
+  />{/if}
 
 <style>
   .tool {

@@ -70,6 +70,7 @@ FailureCode = Literal[
     "source_session_mismatch",
     "source_unavailable",
     "source_unmaterialized",
+    "structured_speech_source_required",
     "transcription_expired",
     "transcription_limit",
     "invalid_chunk",
