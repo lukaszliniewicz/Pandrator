@@ -46,13 +46,27 @@ def repair_state_hash(session, revision_id: str) -> str:
     ).mappings()]
     take_columns = [column for column in m.AudioTake.__table__.columns
                     if column.name not in {"created_at", "updated_at"}]
-    takes = [dict(row) for row in session.execute(
-        select(*take_columns).join(m.GenerationSegment,
-            m.GenerationSegment.id == m.AudioTake.generation_segment_id)
-        .where(m.GenerationSegment.plan_revision_id == revision_id,
-               m.AudioTake.is_active.is_(True))
-        .order_by(m.AudioTake.generation_segment_id, m.AudioTake.id)
-    ).mappings()]
+    # Segment-driven IN queries, as in revision_history: joining takes first
+    # lets SQLite scan active takes cross-session. Row order matches the
+    # original join so stored guard hashes stay comparable.
+    take_rows = []
+    segment_ids = [row["id"] for row in segments]
+    for offset in range(0, len(segment_ids), 500):
+        take_rows.extend(session.execute(
+            select(*take_columns).where(
+                m.AudioTake.generation_segment_id.in_(
+                    segment_ids[offset:offset + 500]
+                ),
+                m.AudioTake.is_active.is_(True),
+            )
+        ).mappings())
+    takes = [
+        dict(row)
+        for row in sorted(
+            take_rows,
+            key=lambda row: (row["generation_segment_id"], row["id"]),
+        )
+    ]
     artifact_ids = {take["artifact_id"] for take in takes if take.get("artifact_id")}
     source_id = (revision.settings_json or {}).get("_source_artifact_id")
     if source_id:

@@ -389,14 +389,16 @@ def decorate_service_capabilities(service: dict[str, Any]) -> None:
 
 
 def resolve_capabilities(
-    settings: dict[str, Any], endpoint: dict[str, Any] | None = None
+    settings: dict[str, Any],
+    endpoint: dict[str, Any] | None = None,
+    _service_config_cache: dict | None = None,
 ) -> dict[str, Any]:
     from . import tts_handler
 
     service_name = str(settings.get("service") or settings.get("tts_service") or "")
     if endpoint is None:
         selected = str(settings.get("openai_audio_endpoint") or service_name)
-        endpoint = tts_handler.get_service_config(settings, selected) or {}
+        endpoint = tts_handler.get_service_config(settings, selected, _cache=_service_config_cache) or {}
     model = str(
         settings.get("xtts_model")
         or settings.get("model")
@@ -598,10 +600,13 @@ def _fit_context_char_budget(
 
 
 def compile_performance(
-    text: str, settings: dict[str, Any], endpoint: dict[str, Any] | None = None
+    text: str,
+    settings: dict[str, Any],
+    endpoint: dict[str, Any] | None = None,
+    _service_config_cache: dict | None = None,
 ) -> CompiledPerformance:
     """Deterministic, one-utterance compilation shared by every synthesis path."""
-    capability = resolve_capabilities(settings, endpoint)
+    capability = resolve_capabilities(settings, endpoint, _service_config_cache=_service_config_cache)
     dialect = capability["dialect"]
     report: list[dict[str, str]] = []
 

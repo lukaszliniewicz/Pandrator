@@ -1,0 +1,1 @@
+import{C as r,N as i,ad as c,A as y,a4 as f}from"./CZDo_Uyv.js";import{B as N}from"./BW_p_BF2.js";const S=Symbol("NaN");function b(s,e,n){r&&i();var o=new N(s),t=!c();y(()=>{var a=e();a!==a&&(a=S),t&&a!==null&&typeof a=="object"&&(a={}),o.ensure(a,n)})}const l=Symbol("pandrator-session"),p=()=>f(l);export{l as S,b as k,p as u};

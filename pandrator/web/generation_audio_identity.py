@@ -35,7 +35,7 @@ def _hash(value: Any) -> str:
     ).hexdigest()
 
 
-def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> dict[str, Any]:
     # Imported lazily: workspace owns the persisted settings vocabulary and
     # consumes this module at its generation boundary.
     from pandrator.logic import tts_handler
@@ -52,7 +52,7 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
 
     values = {
-        **adapt_runtime_settings("tts", snapshot.get("tts") or {}),
+        **adapt_runtime_settings("tts", snapshot.get("tts") or {}, _service_config_cache),
         **adapt_runtime_settings("audio", snapshot.get("audio") or {}),
     }
     inline_reference = values.get("audio_cpp_voice_ref")
@@ -98,7 +98,7 @@ def _material_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
     selected = str(values.get("service") or values.get("tts_service") or "")
     if selected == tts_handler.OPENAI_COMPAT_SERVICE:
         selected = str(values.get("openai_audio_endpoint") or selected)
-    provider = tts_handler.get_service_config(values, selected)
+    provider = tts_handler.get_service_config(values, selected, _cache=_service_config_cache)
     raw_model_settings = values.pop("audio_cpp_model_settings", None)
     selected_model_options: dict[str, Any] | None = None
     selected_model = str(
@@ -181,17 +181,26 @@ class AudioIdentityContext:
     """Resolve one settings snapshot and managed voice inventory per inspection."""
 
     def __init__(self, session: Session, snapshot: dict[str, Any]):
+        from .tts_providers import TtsProviderRegistry
         from .voice_library import sample_file_status
         from .workspace import adapt_runtime_settings
 
         self.session = session
         self.snapshot = snapshot
+        # Request-scoped memoization only: this context is built fresh for one
+        # inspection call, so entries can never leak across requests. Every key
+        # hashes the complete input settings, never a subset, so a settings,
+        # voice, or casting change always misses and recomputes.
+        self._service_config_cache: dict = {}
+        self._voice_reference_cache: dict[str, Any] = {}
+        self._service_id_cache: dict[str, str] = {}
+        self._registry = TtsProviderRegistry()
         self.performance_states: dict[str, tuple[dict[str, Any], dict[str, dict[str, str]]]] = {}
         self.effective_settings_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
         # The SQLite database and managed artifacts share the DataPaths root.
         self.paths = DataPaths(Path(str(session.get_bind().engine.url.database)).parent)
         self.settings = {
-            **adapt_runtime_settings("tts", snapshot.get("tts") or {}),
+            **adapt_runtime_settings("tts", snapshot.get("tts") or {}, _service_config_cache=self._service_config_cache),
             **adapt_runtime_settings("audio", snapshot.get("audio") or {}),
         }
         selected = snapshot.get("selected_segment_override") or {}
@@ -305,9 +314,9 @@ class AudioIdentityContext:
                         references = [*references, *self.voices.get(_voice_key(managed_id), [])]
                     requests.append({
                         "range": [part["start"], part["end"]],
-                        "settings": _material_settings({"tts": part_settings}),
+                        "settings": _material_settings({"tts": part_settings}, self._service_config_cache),
                         "references": sorted({_hash(item) for item in references}),
-                        "request": compile_performance(part["text"], part_settings).fingerprint,
+                        "request": compile_performance(part["text"], part_settings, None, self._service_config_cache).fingerprint,
                     })
                 # Base narrator settings/references are not audible when every
                 # part has a cast binding. Hash the actual resolved requests.
@@ -322,11 +331,11 @@ class AudioIdentityContext:
                         {"range": part["range"], "request": part["request"]} for part in requests
                     ]),
                 }
-            compiled = compile_performance(text, prepared)
+            compiled = compile_performance(text, prepared, None, self._service_config_cache)
             baseline_settings = dict(settings)
             for key in ("_performance", "_semantic_context", "generation_prompt", "openai_audio_instructions"):
                 baseline_settings.pop(key, None)
-            baseline = compile_performance(text, baseline_settings)
+            baseline = compile_performance(text, baseline_settings, None, self._service_config_cache)
         except ValueError as error:
             self.performance_states[revision_id] = ({"_performance_error": str(error)}, {})
             return {**identity, "performance_request_hash": "unavailable", "performance_error": str(error)}
@@ -351,7 +360,7 @@ class AudioIdentityContext:
             # These overrides have precedence over persistent segment choices.
             from .workspace import adapt_runtime_settings
 
-            settings = adapt_runtime_settings("tts", {**settings, **self.selected_tts})
+            settings = adapt_runtime_settings("tts", {**settings, **self.selected_tts}, self._service_config_cache)
             language = str(
                 self.selected_tts.get("language")
                 or self.selected_tts.get("target_language")
@@ -380,7 +389,7 @@ class AudioIdentityContext:
                 if entry.get("voice_binding") == binding:
                     resolutions = frozen.get("resolved_bindings") or {}
                 else:
-                    resolutions = {_binding_key(binding): resolve_binding(self.session, binding, settings)}
+                    resolutions = {_binding_key(binding): resolve_binding(self.session, binding, settings, self._service_config_cache, self._registry)}
                 settings = apply_resolved_binding(binding, settings, resolutions)
             except ValueError as error:
                 # Keep history inspectable when a managed voice is unavailable.
@@ -395,38 +404,50 @@ class AudioIdentityContext:
                 *references,
                 *self.voices.get(_voice_key(segment.voice_id), []),
             ]
-        from .tts_providers import TtsProviderRegistry
         from .voice_library import resolve_audio_cpp_voice_reference
 
-        if TtsProviderRegistry().service_id_for_settings(settings) == "audio_cpp":
+        settings_hash_key = _hash(settings)
+        service_id = self._service_id_cache.get(settings_hash_key)
+        if service_id is None:
+            service_id = self._registry.service_id_for_settings(settings)
+            self._service_id_cache[settings_hash_key] = service_id
+        if service_id == "audio_cpp":
             references = []
             if "audio_cpp_voice_ref" not in settings:
-                try:
-                    reference = resolve_audio_cpp_voice_reference(
-                        self.session, self.paths, settings
-                    )
-                except ValueError:
-                    references = [{"unavailable": True}]
-                else:
-                    if reference is not None:
-                        content_hash, _path, artifact, sample = reference
-                        references = [
-                            {
-                                "sample_id": sample.id,
-                                "artifact_id": artifact.id,
-                                "content_hash": content_hash,
-                                "transcript_hash": _hash(
-                                    str(sample.transcript or "").strip()
-                                    if sample.transcript_reviewed
-                                    else ""
-                                ),
-                            }
-                        ]
+                # Request-scoped: same session/settings snapshot within one
+                # inspection, keyed on the complete effective settings.
+                cached = self._voice_reference_cache.get(settings_hash_key, ...)
+                if cached is ...:
+                    try:
+                        reference = resolve_audio_cpp_voice_reference(
+                            self.session, self.paths, settings,
+                            self._service_config_cache,
+                        )
+                    except ValueError:
+                        cached = [{"unavailable": True}]
+                    else:
+                        cached = []
+                        if reference is not None:
+                            content_hash, _path, artifact, sample = reference
+                            cached = [
+                                {
+                                    "sample_id": sample.id,
+                                    "artifact_id": artifact.id,
+                                    "content_hash": content_hash,
+                                    "transcript_hash": _hash(
+                                        str(sample.transcript or "").strip()
+                                        if sample.transcript_reviewed
+                                        else ""
+                                    ),
+                                }
+                            ]
+                    self._voice_reference_cache[settings_hash_key] = cached
+                references = cached
         identity = {
             "schema_version": IDENTITY_VERSION,
             "settings_hash": _hash(
                 {
-                    "tts": _material_settings({"tts": settings}),
+                    "tts": _material_settings({"tts": settings}, self._service_config_cache),
                     "rvc": self.selected_rvc
                     if self.selected_rvc.get("enabled")
                     else {},

@@ -23,6 +23,10 @@
     X
   } from '@lucide/svelte';
   import { jobApi, sessionApi } from './domain-api';
+  import {
+    getTtsCatalogue,
+    getVoiceLibrary
+  } from './tts-catalogue-cache';
   import { isSourcePassageConflict } from './source-passages';
   import { speechRecognitionApi, voiceApi } from './admin-api';
   import type {
@@ -1478,8 +1482,8 @@
     const previousVoice = voiceName;
     try {
       const [services, voices] = await Promise.all([
-        sessionApi.ttsCatalogue(true),
-        sessionApi.voices()
+        getTtsCatalogue(true, force),
+        getVoiceLibrary(force)
       ]);
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];

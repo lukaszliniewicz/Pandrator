@@ -27,8 +27,9 @@ function presentSnapshot(snapshot: WorkflowSnapshot) {
 export class WorkflowStore {
   private readonly resource = new ResourceState<WorkflowSnapshot | null>(null);
   private unsubscribe?: () => void;
+  private reloadQueued = false;
 
-  constructor(readonly sessionId: string) {}
+  constructor(public sessionId: string) {}
 
   get snapshot() {
     return this.resource.value;
@@ -47,10 +48,29 @@ export class WorkflowStore {
   }
 
   async load(force = false) {
+    const sessionId = this.sessionId;
     return this.resource.load(
-      async () => presentSnapshot(await sessionApi.workflow(this.sessionId)),
-      { force }
+      async () => presentSnapshot(await sessionApi.workflow(sessionId)),
+      {
+        force,
+        isCurrent: () => this.sessionId === sessionId
+      }
     );
+  }
+
+  /**
+   * Point this store at a different session (SvelteKit reuses the layout
+   * across [id] navigations). reset() bumps the resource epoch, so an
+   * in-flight load for the old id is discarded instead of overwriting the
+   * new session's state. Returns true when the id actually changed.
+   */
+  retarget(sessionId: string) {
+    if (sessionId === this.sessionId) return false;
+    this.sessionId = sessionId;
+    this.resource.reset(null);
+    // Show the loading state until reload lands.
+    this.resource.status = 'loading';
+    return true;
   }
 
   refresh() {
@@ -76,7 +96,24 @@ export class WorkflowStore {
     this.patchLiveProgress(batch);
     if (invalidates(batch, 'workflow', this.sessionId)) {
       this.resource.markStale();
-      this.load().catch(() => undefined);
+      void this.reloadCoalesced();
+    }
+  }
+
+  /**
+   * Reload, draining mid-flight invalidations (see SessionStore). Concurrent
+   * callers coalesce on reloadQueued instead of storming the backend.
+   */
+  private async reloadCoalesced() {
+    if (this.reloadQueued) return;
+    this.reloadQueued = true;
+    try {
+      for (;;) {
+        await this.load().catch(() => undefined);
+        if (this.resource.status !== 'stale') break;
+      }
+    } finally {
+      this.reloadQueued = false;
     }
   }
 

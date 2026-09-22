@@ -44,10 +44,11 @@ def _binding_key(binding: dict) -> str:
     return content_hash(VoiceBinding.model_validate(binding).model_dump(mode="json"))
 
 
-def resolve_binding(session, binding: dict, settings: dict) -> dict:
+def resolve_binding(session, binding: dict, settings: dict, _service_config_cache=None, _registry=None) -> dict:
     """Resolve a managed reference once; never treat a character name as a voice."""
     binding = VoiceBinding.model_validate(binding).model_dump(mode="json")
-    service = TtsProviderRegistry().service_id_for_settings(settings)
+    registry = _registry if _registry is not None else TtsProviderRegistry()
+    service = registry.service_id_for_settings(settings)
     requested_service = binding.get("service")
     actual_service = str(
         settings.get("service") or settings.get("tts_service") or service
@@ -59,8 +60,9 @@ def resolve_binding(session, binding: dict, settings: dict) -> dict:
         raise ValueError(
             f"Cast voice is assigned to {requested_service}; this run uses {actual_service}. Reassign the cast for the selected service."
         )
+    capability = resolve_capabilities(settings, None, _service_config_cache)
     model = str(
-        resolve_capabilities(settings).get("model")
+        capability.get("model")
         or settings.get("xtts_model")
         or settings.get("model")
         or ""
@@ -71,12 +73,11 @@ def resolve_binding(session, binding: dict, settings: dict) -> dict:
         )
     voice_name = binding.get("voice") or ""
     managed_id = binding.get("voice_id")
-    capability = resolve_capabilities(settings)
     if service == "audio_cpp" and capability.get("voice_mode") in {"prebuilt", "design"} and managed_id:
         raise ValueError("This model cannot use a cloned cast reference. Choose its built-in speakers or a cloning-capable model.")
     if service == "audio_cpp" and capability.get("voice_mode") == "prebuilt" and voice_name:
         from pandrator.logic.tts_handler import get_service_config
-        config = get_service_config(settings, service) or {}
+        config = get_service_config(settings, service, _service_config_cache) or {}
         allowed = (config.get("voice_catalogues") or {}).get(model) or []
         if allowed and voice_name not in allowed:
             raise ValueError(f"Cast voice '{voice_name}' is not a built-in speaker for {model}.")
@@ -108,7 +109,7 @@ def resolve_binding(session, binding: dict, settings: dict) -> dict:
         )
     # Voice-design models have a stable voice-description channel; other models
     # must not turn a voice identity description into a local emotion.
-    if binding.get("voice_description") and not resolve_capabilities(settings).get(
+    if binding.get("voice_description") and not capability.get(
         "voice_design"
     ):
         raise ValueError(

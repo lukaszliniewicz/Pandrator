@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import load_only
 
 from .models import (
     Artifact,
@@ -82,13 +83,62 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 if not removed:
                     values["active"] += count
             audio_identity = AudioIdentityContext(session, snapshot)
-            for segment, take, artifact in session.execute(select(
-                GenerationSegment, AudioTake, Artifact,
-            ).join(AudioTake, AudioTake.generation_segment_id == GenerationSegment.id).join(Artifact, Artifact.id == AudioTake.artifact_id).where(
+            # Drive from the visible revision IDs: the three-table join lets
+            # SQLite lead with audio_takes via its status index and scan takes
+            # cross-session before filtering to these revisions. Segment-first
+            # IN queries stay on the plan_revision index and the take/artifact
+            # primary keys however the planner orders them, with no schema
+            # change. The iterated row set is identical to the inner join.
+            # Identity inspection reads only speech-affecting columns; the
+            # large provenance/speech-plan payloads stay deferred. Keep this
+            # column set in sync with AudioIdentityContext.for_segment and
+            # take_reuse_reason, or deferred access will regress into N+1.
+            segments = list(session.scalars(select(GenerationSegment).options(
+                load_only(
+                    GenerationSegment.id,
+                    GenerationSegment.plan_revision_id,
+                    GenerationSegment.status,
+                    GenerationSegment.language,
+                    GenerationSegment.voice,
+                    GenerationSegment.voice_id,
+                    GenerationSegment.text,
+                    GenerationSegment.optimized_text,
+                ),
+            ).where(
                 GenerationSegment.plan_revision_id.in_(ids),
-                GenerationSegment.removed.is_(False), GenerationSegment.status == "completed",
-                AudioTake.is_active.is_(True), AudioTake.status == "completed", Artifact.state != "deleted",
-            )):
+                GenerationSegment.removed.is_(False),
+                GenerationSegment.status == "completed",
+            )).all())
+            segments_by_id = {segment.id: segment for segment in segments}
+            takes: list[AudioTake] = []
+            segment_ids = list(segments_by_id)
+            for offset in range(0, len(segment_ids), 500):
+                takes.extend(session.scalars(select(AudioTake).where(
+                    AudioTake.generation_segment_id.in_(
+                        segment_ids[offset:offset + 500]
+                    ),
+                    AudioTake.is_active.is_(True),
+                    AudioTake.status == "completed",
+                )).all())
+            artifact_ids = list(
+                {take.artifact_id for take in takes if take.artifact_id}
+            )
+            artifacts_by_id: dict[str, Artifact] = {}
+            for offset in range(0, len(artifact_ids), 500):
+                for artifact in session.scalars(select(Artifact).where(
+                    Artifact.id.in_(artifact_ids[offset:offset + 500]),
+                    Artifact.state != "deleted",
+                )).all():
+                    artifacts_by_id[artifact.id] = artifact
+            for take in takes:
+                segment = segments_by_id.get(take.generation_segment_id)
+                artifact = (
+                    artifacts_by_id.get(take.artifact_id)
+                    if take.artifact_id
+                    else None
+                )
+                if segment is None or artifact is None:
+                    continue
                 values = counts[segment.plan_revision_id]
                 reason = take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment))
                 key = "reusable" if reason == "reusable" else "unknown" if reason == "audio_identity_unknown" else "settings_stale"

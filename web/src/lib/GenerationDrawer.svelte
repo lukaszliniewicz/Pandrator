@@ -85,6 +85,10 @@
     languagesForService,
     type VoiceDescriptor
   } from './voice-catalog';
+  import {
+    getTtsCatalogue,
+    getVoiceLibrary
+  } from './tts-catalogue-cache';
   import type {
     ComparisonDecisionRow,
     PlayableTake,
@@ -152,6 +156,7 @@
   let timer: number | undefined;
   let startedRunReconciliation: AbortController | undefined;
   let selectedRow = $state('');
+  let previewSegmentId = $state('');
   let selectedRows = $state<string[]>([]);
   let selectionAnchor = $state('');
   let viewMode = $state<'segments' | 'reading'>('segments');
@@ -888,8 +893,8 @@
     try {
       const [settings, services, voices] = await Promise.all([
         sessionApi.settings(sessionId, 'tts'),
-        sessionApi.ttsCatalogue(true),
-        sessionApi.voices()
+        getTtsCatalogue(true),
+        getVoiceLibrary()
       ]);
       ttsSettings = settings.effective ?? {};
       ttsCatalogue = services;
@@ -1502,11 +1507,25 @@
   }
 
   function togglePlaylistPlayback() {
+    // Starting the playlist takes over audibility: drop any mounted row
+    // preview so the previous take stops with its unmounted element.
+    if (!playback.active) previewSegmentId = '';
     playback.toggle(selectedRow);
   }
 
   function playOnly(item: GenerationSegment) {
+    // Controller playback (keyboard shortcut, reading view, popovers) also
+    // takes over: unmount the row preview so it stops.
+    previewSegmentId = '';
     return playback.playOnly(item);
+  }
+
+  function requestSegmentPreview(item: GenerationSegment) {
+    // Row preview takes over: stop playlist playback, then mount only this
+    // row's player. Switching rows unmounts the previous player, and its
+    // onDestroy pauses the old audio element.
+    playback.stop();
+    previewSegmentId = item.id;
   }
 
   function takeLabel(take: AudioTake) {
@@ -1947,6 +1966,12 @@
       return;
     }
     const index = payload.items.findIndex((item) => item.id === selectedRow);
+    // Native buttons and links (including their descendants, e.g. icons)
+    // keep their own Enter/Space activation: the row shortcuts below must
+    // not steal the keypress or cancel the native click. This matters for
+    // the deferred row preview, whose focus moves to the mounted player's
+    // transport button.
+    const onNativeControl = Boolean(target?.closest('button, a'));
     if (event.key === 'ArrowDown') {
       const nextIndex = Math.min(
         payload.items.length - 1,
@@ -1968,7 +1993,7 @@
         rowEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
       event.preventDefault();
-    } else if (event.key === ' ' && index >= 0) {
+    } else if (event.key === ' ' && index >= 0 && !onNativeControl) {
       const item = payload.items[index];
       patchSegment(item, {
         marked: !item.marked
@@ -1980,7 +2005,7 @@
         removed: !item.removed
       });
       event.preventDefault();
-    } else if (event.key === 'Enter' && index >= 0) {
+    } else if (event.key === 'Enter' && index >= 0 && !onNativeControl) {
       const item = payload.items[index];
       if (activeTake(item) && !item.removed) {
         void playOnly(item);
@@ -2026,6 +2051,19 @@
     speechPreviews = {};
     speechTarget = null;
     speechSelection = null;
+  });
+  let lastPreviewScope = '';
+  $effect(() => {
+    // Preview reset lives apart from the annotation clearing above: every
+    // payload replacement (including take adoptions and reloads) re-fires
+    // effects that read through the payload object, even when the revision
+    // ID is unchanged. Compare the previous/current primitive scope so a
+    // take switch keeps its mounted player instead of unmounting it.
+    const scope = `${payload.plan_revision_id ?? ''}|${selectedRunId}|${selectedRunVersionId}`;
+    if (scope !== untrack(() => lastPreviewScope)) {
+      lastPreviewScope = scope;
+      previewSegmentId = '';
+    }
   });
   $effect(() => {
     void filter;
@@ -2773,6 +2811,8 @@
               onmerge={mergeSpeechBlocks}
               onsplit={splitSpeechBlock}
               {topologyDisabled}
+              {previewSegmentId}
+              onpreviewrequest={requestSegmentPreview}
             />
           {:else}
             <GenerationReadingView

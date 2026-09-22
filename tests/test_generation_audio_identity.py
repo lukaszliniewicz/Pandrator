@@ -596,5 +596,250 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         self.assertEqual(["One"], calls)
 
 
+    def test_enabling_casting_stales_earlier_takes(self):
+        from pandrator.web.generation_audio_identity import take_reuse_reason
+
+        session_id, revision_id, segment_ids = self._create_case()
+        self._seed_takes(session_id, segment_ids, self._override())
+        current = self.client.get(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            headers=self.headers,
+        ).get_json()
+        changed = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/tts",
+            json={"value": {**current["effective"], "casting_enabled": True}},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, changed.status_code, changed.get_json())
+
+        history = self.client.get(
+            f"/api/v1/sessions/{session_id}/generation-plan/revisions",
+            headers=self.headers,
+        ).get_json()
+        item = next(row for row in history["items"] if row["id"] == revision_id)
+        self.assertEqual(0, item["reusable_segment_count"])
+        self.assertEqual(len(segment_ids), item["stale_segment_count"])
+        with self.database.session() as session:
+            snapshot, _ = self.services["workspace_settings"].resolve(session_id)
+            context = AudioIdentityContext(session, snapshot)
+            for segment_id in segment_ids:
+                segment = session.get(GenerationSegment, segment_id)
+                take = next(
+                    item
+                    for item in session.scalars(
+                        select(AudioTake).where(
+                            AudioTake.generation_segment_id == segment_id,
+                            AudioTake.is_active.is_(True),
+                        )
+                    )
+                )
+                artifact = session.get(Artifact, take.artifact_id)
+                self.assertNotEqual(
+                    "reusable",
+                    take_reuse_reason(
+                        segment, take, artifact, context.for_segment(segment)
+                    ),
+                )
+
+    def test_cast_reassignment_stales_frozen_takes(self):
+        from copy import deepcopy
+
+        from pandrator.web.generation_audio_identity import take_reuse_reason
+        from pandrator.web.generation_cast_runtime import freeze_cast_snapshot
+        from pandrator.web.generation_controls import (
+            get_generation_controls,
+            save_generation_controls,
+        )
+        from pandrator.web.speech_plan_workspace import performance_runtime_settings
+
+        session_id, revision_id, segment_ids = self._create_case(
+            [
+                {"text": "The night was cold and dark.", "speaker": "Scrooge"},
+                {"text": "Another quiet line.", "speaker": "Narrator"},
+            ],
+            name="cast-reassignment",
+        )
+        base = {
+            "tts": {
+                "service": "gemini",
+                "model": "gemini-2.5-flash-tts",
+                "voice": "Kore",
+                "casting_enabled": True,
+            }
+        }
+        with self.database.session() as session:
+            save_generation_controls(
+                session,
+                session_id,
+                expected_revision=0,
+                characters=[
+                    {
+                        "id": "c-scrooge",
+                        "display_name": "Scrooge",
+                        "voice_category": "male",
+                    }
+                ],
+                cast={
+                    "narrator": {"voice": "Kore"},
+                    "characters": {"c-scrooge": {"voice": "Puck"}},
+                    "source_speakers": {"Scrooge": {"voice": "Puck"}},
+                },
+            )
+        snapshot = self._resolved(session_id, base)
+        self.assertTrue(performance_runtime_settings(snapshot).get("casting_enabled"))
+        with self.database.session() as session:
+            frozen = deepcopy(snapshot)
+            freeze_cast_snapshot(
+                session, revision_id, frozen, performance_runtime_settings(snapshot)
+            )
+            context = AudioIdentityContext(session, frozen)
+            identities = {
+                segment.id: context.for_segment(segment)
+                for segment in session.scalars(
+                    select(GenerationSegment).where(
+                        GenerationSegment.id.in_(segment_ids)
+                    )
+                )
+            }
+        for segment_id in segment_ids:
+            artifact = self.services["artifacts"].register(
+                self._wave_path(segment_id),
+                kind="audio",
+                role="generation_take",
+                session_id=session_id,
+                metadata={IDENTITY_KEY: identities[segment_id]},
+            )
+            with self.database.session() as session:
+                segment = session.get(GenerationSegment, segment_id)
+                segment.status = "completed"
+                session.add(
+                    AudioTake(
+                        generation_segment_id=segment_id,
+                        artifact_id=artifact.id,
+                        status="completed",
+                        is_active=True,
+                        duration_ms=100,
+                    )
+                )
+        with self.database.session() as session:
+            controls = get_generation_controls(session, session_id)
+            save_generation_controls(
+                session,
+                session_id,
+                expected_revision=controls["revision"],
+                cast={
+                    "narrator": {"voice": "Kore"},
+                    "characters": {"c-scrooge": {"voice": "Fenrir"}},
+                    "source_speakers": {"Scrooge": {"voice": "Fenrir"}},
+                },
+            )
+        reassigned = self._resolved(session_id, base)
+        with self.database.session() as session:
+            frozen = deepcopy(reassigned)
+            freeze_cast_snapshot(
+                session, revision_id, frozen, performance_runtime_settings(reassigned)
+            )
+            context = AudioIdentityContext(session, frozen)
+            changed = {
+                segment.id: context.for_segment(segment)
+                for segment in session.scalars(
+                    select(GenerationSegment).where(
+                        GenerationSegment.id.in_(segment_ids)
+                    )
+                )
+            }
+        self.assertNotEqual(identities, changed)
+        with self.database.session() as session:
+            for segment_id, expect_reusable in (
+                (segment_ids[0], False),
+                (segment_ids[1], True),
+            ):
+                segment = session.get(GenerationSegment, segment_id)
+                take = session.scalar(
+                    select(AudioTake).where(
+                        AudioTake.generation_segment_id == segment_id,
+                        AudioTake.is_active.is_(True),
+                    )
+                )
+                artifact = session.get(Artifact, take.artifact_id)
+                self.assertEqual(
+                    "reusable",
+                    take_reuse_reason(
+                        segment, take, artifact, identities[segment_id]
+                    ),
+                    "unchanged cast must stay reusable (no false stale)",
+                )
+                self.assertEqual(
+                    expect_reusable,
+                    take_reuse_reason(segment, take, artifact, changed[segment_id])
+                    == "reusable",
+                    "reassigned character voice must stale only its own speaker",
+                )
+
+    def test_frozen_per_segment_bindings_survive_shared_identity_cache(self):
+        from copy import deepcopy
+
+        from pandrator.web.generation_cast_runtime import (
+            _binding_key,
+            freeze_cast_snapshot,
+            resolve_binding,
+        )
+        from pandrator.web.generation_controls import save_generation_controls
+        from pandrator.web.speech_plan_workspace import performance_runtime_settings
+
+        session_id, revision_id, segment_ids = self._create_case(
+            [
+                {"text": "First quiet line."},
+                {"text": "Second quiet line."},
+            ],
+            name="shared-cache",
+        )
+        base = {
+            "tts": {
+                "service": "gemini",
+                "model": "gemini-2.5-flash-tts",
+                "voice": "Kore",
+                "casting_enabled": True,
+            }
+        }
+        with self.database.session() as session:
+            save_generation_controls(
+                session,
+                session_id,
+                expected_revision=0,
+                characters=[],
+                cast={"narrator": {"voice": "Kore"}},
+            )
+        snapshot = self._resolved(session_id, base)
+        with self.database.session() as session:
+            frozen = deepcopy(snapshot)
+            settings = performance_runtime_settings(snapshot)
+            freeze_cast_snapshot(session, revision_id, frozen, settings)
+            # Simulate an in-place voice edit after the freeze: the frozen
+            # per-segment binding differs while the raw triple stays shared.
+            other = {"voice": "AltVoice"}
+            frozen["generation_control_snapshot"]["segments"][segment_ids[1]][
+                "voice_binding"
+            ] = other
+            frozen["generation_control_snapshot"]["resolved_bindings"][
+                _binding_key(other)
+            ] = resolve_binding(session, other, settings)
+            context = AudioIdentityContext(session, frozen)
+            segments = {
+                segment.id: segment
+                for segment in session.scalars(
+                    select(GenerationSegment).where(
+                        GenerationSegment.id.in_(segment_ids)
+                    )
+                )
+            }
+            first = context.for_segment(segments[segment_ids[0]])
+            second = context.for_segment(segments[segment_ids[1]])
+            self.assertNotEqual(first, second)
+            fresh = AudioIdentityContext(session, deepcopy(frozen))
+            self.assertEqual(second, fresh.for_segment(segments[segment_ids[1]]))
+            self.assertEqual(first, fresh.for_segment(segments[segment_ids[0]]))
+
+
 if __name__ == "__main__":
     unittest.main()

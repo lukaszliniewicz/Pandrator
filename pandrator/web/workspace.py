@@ -472,7 +472,7 @@ def normalize_subtitle_limit_override(
     return result
 
 
-def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, Any]:
+def adapt_runtime_settings(section: str, values: dict[str, Any], _service_config_cache=None) -> dict[str, Any]:
     """Adapt runtime aliases; a selected UI voice overrides a stale speaker."""
     result = deepcopy(values or {})
     for web_key, runtime_key in RUNTIME_SETTING_ALIASES.get(section, {}).items():
@@ -497,7 +497,7 @@ def adapt_runtime_settings(section: str, values: dict[str, Any]) -> dict[str, An
             result.get("service") or result.get("tts_service") or ""
         ).strip()
         selected = (
-            tts_handler.get_service_config(result, selected_value)
+            tts_handler.get_service_config(result, selected_value, _service_config_cache)
             if selected_value
             else None
         )

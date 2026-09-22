@@ -65,15 +65,30 @@
     customize: () => void openWorkflowCustomizer()
   };
   setContext(SESSION_CONTEXT, contextState);
+  // Declared before the initial reload(): loadSourceProfile() bumps this
+  // counter synchronously, so a later declaration would throw (TDZ).
+  let sourceProfileRequest = 0;
   reload();
+  // SvelteKit reuses this layout when navigating between /sessions/[id]
+  // pages, but the stores above capture page.params.id once at construction.
+  // Retarget them on id change; reset() discards in-flight loads for the old
+  // id via the resource epoch, and reload() fetches the new session.
+  const routeSessionId = $derived(page.params.id ?? '');
+  $effect(() => {
+    const id = routeSessionId;
+    const sessionRetargeted = sessionStore.retarget(id);
+    const workflowRetargeted = workflowStore.retarget(id);
+    if (sessionRetargeted || workflowRetargeted) void reload();
+  });
   async function loadSourceProfile() {
+    const request = ++sourceProfileRequest;
+    const id = page.params.id ?? '';
     try {
-      const settings = await sessionApi.settings(
-        page.params.id ?? '',
-        'output'
-      );
+      const settings = await sessionApi.settings(id, 'output');
+      if (request !== sourceProfileRequest) return;
       sourceProfile = String(settings.context?.source_profile ?? 'none');
     } catch {
+      if (request !== sourceProfileRequest) return;
       sourceProfile = 'none';
     }
   }
@@ -306,10 +321,10 @@
 {:else}<p class="text-red-500">
     {contextState.error || 'Session not found.'}
   </p>{/if}
-{#if Boolean(contextState.session) && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}<GenerationDrawerComponent
+{#if Boolean(contextState.session) && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}{#key page.params.id}<GenerationDrawerComponent
     sessionId={page.params.id ?? ''}
     workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
-  />{/if}
+  />{/key}{/if}
 
 <style>
   .session-tabs {

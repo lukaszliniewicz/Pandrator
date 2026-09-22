@@ -435,13 +435,14 @@ def _reference_registration_id(value: object) -> str:
 
 
 def resolve_audio_cpp_voice_reference(
-    session: Session, paths: DataPaths, settings: dict[str, Any]
+    session: Session, paths: DataPaths, settings: dict[str, Any],
+    _service_config_cache=None,
 ) -> tuple[str, Path, Artifact, VoiceSample] | None:
     """Select exactly the linked reference that audio.cpp synthesis will use."""
     from pandrator.logic import tts_handler
 
     registration_ids = {"audio_cpp"}
-    endpoint, _error = tts_handler.resolve_openai_audio_endpoint(settings)
+    endpoint, _error = tts_handler.resolve_openai_audio_endpoint(settings, _service_config_cache)
     if endpoint is not None and (
         str(endpoint.get("adapter") or "").strip().casefold().replace("-", "_")
         == "audio_cpp"

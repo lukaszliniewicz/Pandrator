@@ -3,7 +3,10 @@
   import { beforeNavigate, goto } from '$app/navigation';
   import { modalFocus } from './modal-focus';
   import { apiJson } from './api';
-  import { sessionApi } from './domain-api';
+  import {
+    getTtsCatalogue,
+    getVoiceLibrary
+  } from './tts-catalogue-cache';
   import { errorMessage } from './errors';
   import type { VoiceRecord, TtsService } from './api-models';
   import {
@@ -113,14 +116,14 @@
     error = '';
     message = '';
   }
-  async function load() {
+  async function load(force = false) {
     pending = true;
     error = '';
     try {
       const [result, library, catalogue] = await Promise.all([
         apiJson<GenerationControls>(path),
-        sessionApi.voices(),
-        sessionApi.ttsCatalogue()
+        getVoiceLibrary(force),
+        getTtsCatalogue(false, force)
       ]);
       if (!alive) return;
       voices = library.items;
@@ -467,7 +470,7 @@
             !dirty ||
             characters.some((item) => !item.display_name.trim())}
           onclick={() => void save()}>Save characters and cast</button
-        ><button class="btn" disabled={blocked} onclick={() => void load()}
+        ><button class="btn" disabled={blocked} onclick={() => void load(true)}
           >Refresh cast</button
         >{#if dirty}<span class="text-xs text-amber-700"
             >Unsaved character or cast changes</span

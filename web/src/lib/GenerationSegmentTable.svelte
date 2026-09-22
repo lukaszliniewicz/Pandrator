@@ -11,7 +11,7 @@
   import type { PlayableTake } from './generation-view-models';
   import type { SettingOption } from './settings-fields';
   import type { VoiceDescriptor } from './voice-catalog';
-  import AudioPlayer from './AudioPlayer.svelte';
+  import SegmentAudioPreview from './SegmentAudioPreview.svelte';
   import { tick } from 'svelte';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
@@ -57,7 +57,9 @@
     onselection,
     onpassage,
     topologyDisabled = false,
-    textMode = 'display'
+    textMode = 'display',
+    previewSegmentId = '',
+    onpreviewrequest
   }: {
     items: GenerationSegment[];
     selectedRows: string[];
@@ -90,6 +92,8 @@
       textLayer: 'display' | 'speech',
       cursor: number
     ) => unknown;
+    previewSegmentId?: string;
+    onpreviewrequest?: (item: GenerationSegment) => void;
     showPassageBoundaries?: boolean;
     showSpeechAnnotations?: boolean;
     speechPreviews?: Record<string, SpeechPreview>;
@@ -540,11 +544,12 @@
         </td>
         <td>
           {#if selectedTake}
-            <AudioPlayer
-              compact
-              preload="none"
-              src={`/api/v1/artifacts/${selectedTake.artifact_id}/content`}
-              label={`Segment ${item.ordinal + 1}`}
+            <SegmentAudioPreview
+              take={selectedTake}
+              segmentNumber={item.ordinal + 1}
+              takeLabel={ontakelabel(selectedTake)}
+              active={previewSegmentId === item.id}
+              onrequest={() => onpreviewrequest?.(item)}
             />
             <WaveformPeaks artifactId={selectedTake.artifact_id} />
             <select

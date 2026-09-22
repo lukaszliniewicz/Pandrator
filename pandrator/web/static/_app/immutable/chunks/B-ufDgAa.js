@@ -1,1 +1,0 @@
-import{D as o,O as v,B as y,P as f,Q as l,R as m,I as p,G as i,S as T,J as R}from"./Czch3PHs.js";import{B as A}from"./DxDpIpaq.js";function E(d,_,e){var s;o&&(s=R,v());var r=new A(d);y(()=>{var a=_()??null;if(o){var h=l(s),c=h===T,u=a!==null;if(c!==u){var t=m();p(t),r.anchor=t,i(!1),r.ensure(a,a&&(n=>e(n,a))),i(!0);return}}r.ensure(a,a&&(n=>e(n,a)))},f)}export{E as c};
