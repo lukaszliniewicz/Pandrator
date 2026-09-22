@@ -83,13 +83,21 @@
         label="Selected speech-plan version"
         {onselect}
       />
-      {#if selected}<p class="muted text-sm">
-          {selected.reusable_segment_count} reusable blocks · {selected.stale_segment_count}
-          missing or stale. {selected.summary}.
-        </p>{/if}
+      {#if selected}
+        {#if selected.audio_reuse_checked === false}<p
+            class="muted text-sm"
+            role="status"
+          >
+            Audio reuse not checked in this summary. Open the plan history or
+            review to inspect exact audio status. {selected.summary}.
+          </p>{:else}<p class="muted text-sm">
+            {selected.reusable_segment_count} reusable blocks · {selected.stale_segment_count}
+            missing or stale. {selected.summary}.
+          </p>{/if}
+      {/if}
       <AudioReuseNotice
-        settingsStale={selected?.audio_settings_stale_segment_count}
-        identityUnknown={selected?.audio_identity_unknown_segment_count}
+        settingsStale={selected?.audio_settings_stale_segment_count ?? undefined}
+        identityUnknown={selected?.audio_identity_unknown_segment_count ?? undefined}
       />
     {/if}
     {#if plan?.warning}<p class="text-sm text-amber-700" role="status">

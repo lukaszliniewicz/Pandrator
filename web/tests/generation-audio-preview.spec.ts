@@ -49,6 +49,34 @@ function silentWav() {
   return Buffer.concat([header, Buffer.alloc(samples * 2)]);
 }
 
+function trackPageErrors(page: Page) {
+  const errors: Error[] = [];
+  page.on('pageerror', (error) => errors.push(error));
+  return errors;
+}
+
+async function revealSegment(page: Page, segmentId: string, ordinal: number) {
+  // Virtualized rows outside the window are not mounted: scroll the drawer
+  // host near the target estimate, wait for the row to mount, then settle
+  // it into view before interacting.
+  const row = page.locator(`tbody tr[data-segment-id="${segmentId}"]`);
+  await page.evaluate((targetOrdinal: number) => {
+    const table = document.querySelector(
+      '[data-testid="generation-segment-table"]'
+    ) as HTMLElement | null;
+    let host: HTMLElement | null = table?.parentElement ?? null;
+    while (host) {
+      const overflowY = getComputedStyle(host).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') break;
+      host = host.parentElement;
+    }
+    if (host) host.scrollTop = Math.max(0, targetOrdinal * 300 - 300);
+  }, ordinal);
+  await expect(row).toBeAttached({ timeout: 8000 });
+  await row.scrollIntoViewIfNeeded();
+  return row;
+}
+
 async function mockCompletedCorpus(page: Page, sessionId: string, total: number) {
   // Stateful selection: production persists the chosen take server-side, so
   // the mocked select POST must be reflected by subsequent GETs. A stateless
@@ -163,30 +191,46 @@ test('per-row audio defers to one mounted player', () => {
   expect(preview).toContain('return () => current?.pause();');
   expect(preview).toContain('{#key take.artifact_id}');
   expect(preview).toContain("querySelector('button')");
+  // Second-pass virtualization: bounded DOM with loaded-data semantics.
+  expect(table).toContain('data-loaded-count={items.length}');
+  expect(table).toContain('data-rendered-count={visibleIndexes.length}');
+  expect(table).toContain('scrollToSegment');
+  expect(table).toContain('generation-virtual-window');
 });
 
 test('hundreds of playable rows mount a single audio element on demand', async ({
   page
 }) => {
+  const pageErrors = trackPageErrors(page);
   await signIn(page);
   const sessionId = await createAudiobookSession(page);
   await mockCompletedCorpus(page, sessionId, 150);
 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  // Loaded-data semantics: 100 rows loaded, only the viewport window
+  // mounted. DOM row count no longer equals loaded rows.
+  const table = page.getByTestId('generation-segment-table');
+  await expect(table).toHaveAttribute('data-loaded-count', '100');
+  await expect(table).toHaveAttribute('data-virtualized', 'true');
   const rows = page.locator('tbody tr[data-segment-id]');
-  await expect(rows).toHaveCount(100);
+  const rendered = await rows.count();
+  expect(rendered).toBeGreaterThan(0);
+  expect(rendered).toBeLessThan(100);
+  await expect(table).toHaveAttribute('data-rendered-count', String(rendered));
   const previewButtons = page.getByRole('button', {
     name: /Play audio for segment/
   });
-  await expect(previewButtons).toHaveCount(100);
-  // No eager media elements despite 100 playable rows.
+  await expect(previewButtons).toHaveCount(rendered);
+  // No eager media elements despite playable rows.
   await expect(page.locator('audio')).toHaveCount(0);
 
   // Pointer: clicking a row's Play mounts and plays exactly that take.
-  const rowPlay = (index: number) =>
-    rows.nth(index).getByRole('button', { name: /Play audio for segment/ });
-  await rowPlay(2).click();
+  const rowPlay = async (index: number) => {
+    const row = await revealSegment(page, `preview-segment-${index}`, index);
+    return row.getByRole('button', { name: /Play audio for segment/ });
+  };
+  await (await rowPlay(2)).click();
   const players = page.locator('audio');
   await expect(players).toHaveCount(1);
   await expect
@@ -209,7 +253,7 @@ test('hundreds of playable rows mount a single audio element on demand', async (
   const firstAudio = await page.evaluateHandle(() =>
     document.querySelector('audio')
   );
-  await rowPlay(5).click();
+  await (await rowPlay(5)).click();
   await expect(players).toHaveCount(1);
   await expect
     .poll(async () =>
@@ -227,11 +271,8 @@ test('hundreds of playable rows mount a single audio element on demand', async (
   // Wrong-take race: switching takes on the mounted row resets the player
   // to the new take; the old element stays paused and no second player
   // ever mounts.
-  const takeSelect = rows
-    .nth(5)
-    .locator('td')
-    .nth(3)
-    .getByRole('combobox');
+  const row5 = await revealSegment(page, 'preview-segment-5', 5);
+  const takeSelect = row5.locator('td').nth(3).getByRole('combobox');
   await takeSelect.selectOption('preview-take-5-b');
   await expect(takeSelect).toHaveValue('preview-take-5-b');
   await expect(players).toHaveCount(1);
@@ -243,7 +284,7 @@ test('hundreds of playable rows mount a single audio element on demand', async (
 
   // Keyboard: activating another row's Play mounts that take and moves
   // focus to its Pause transport.
-  await rowPlay(7).focus();
+  await (await rowPlay(7)).focus();
   await page.keyboard.press('Enter');
   await expect(players).toHaveCount(1);
   await expect
@@ -293,7 +334,9 @@ test('hundreds of playable rows mount a single audio element on demand', async (
 
   // Drawer shortcut: selecting another row, then Enter, plays via the
   // playlist controller and unmounts the row preview (no stacked audio).
-  await rows.nth(10).locator('td').nth(1).click();
+  const row10 = await revealSegment(page, 'preview-segment-10', 10);
+  await row10.locator('td').nth(1).click();
   await page.keyboard.press('Enter');
   await expect(players).toHaveCount(0);
+  expect(pageErrors).toEqual([]);
 });

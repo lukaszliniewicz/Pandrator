@@ -24,7 +24,7 @@
   } from '@lucide/svelte';
   import { jobApi, sessionApi } from './domain-api';
   import {
-    getTtsCatalogue,
+    getTtsCompactCatalogue,
     getVoiceLibrary
   } from './tts-catalogue-cache';
   import { isSourcePassageConflict } from './source-passages';
@@ -134,7 +134,7 @@
       return;
     const request = ++planRequest;
     try {
-      const value = await speechPlanState(session.id);
+      const value = await speechPlanState(session.id, { summary: true });
       if (request === planRequest) speechPlan = value;
     } catch (caught) {
       if (request === planRequest) error = errorMessage(caught);
@@ -178,7 +178,7 @@
     planBusy = true;
     error = '';
     try {
-      const current = await speechPlanState(session.id);
+      const current = await speechPlanState(session.id, { summary: true });
       speechPlan = current;
       if (!chosen || current.selected_revision_id !== chosen)
         throw new Error(
@@ -1482,7 +1482,7 @@
     const previousVoice = voiceName;
     try {
       const [services, voices] = await Promise.all([
-        getTtsCatalogue(true, force),
+        getTtsCompactCatalogue(true, force),
         getVoiceLibrary(force)
       ]);
       ttsCatalogue = services;
@@ -3335,7 +3335,8 @@
                   class="btn btn-sm btn-secondary border border-[var(--line)]"
                   disabled={planBusy ||
                     !speechPlan?.can_generate ||
-                    !selectedSpeechPlan?.stale_segment_count}
+                    (selectedSpeechPlan?.audio_reuse_checked !== false &&
+                      !selectedSpeechPlan?.stale_segment_count)}
                   onclick={() => void generateSelectedPlan(true)}
                   >Generate missing / stale only</button
                 >

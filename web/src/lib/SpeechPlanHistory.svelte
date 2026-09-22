@@ -4,22 +4,30 @@
   import { modalDialog } from './modal-dialog';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
   import RepairBatchPanel from './RepairBatchPanel.svelte';
-  import type { RepairBatch } from './repair-batches';
+  import { loadRepairBatch, type RepairBatch } from './repair-batches';
+  import { speechPlanHistory, speechPlanRevision } from './session-flow';
+  import {
+    createRevisionDetailLoader,
+    type DetailRequest
+  } from './speech-plan-history-detail';
 
   type Revision = {
     id: string;
     entry_id?: string;
+    history_revision_number?: number;
     is_repair_checkpoint?: boolean;
-    repair_batch?: RepairBatch;
+    repair_batch?: RepairBatch | null;
     revision_number: number;
     parent_revision_id: string | null;
     summary: string;
     origin: string;
     segment_count: number;
-    reusable_segment_count: number;
-    stale_segment_count: number;
-    audio_settings_stale_segment_count?: number;
-    audio_identity_unknown_segment_count?: number;
+    active_segment_count: number;
+    reusable_segment_count: number | null;
+    stale_segment_count: number | null;
+    audio_reuse_checked?: boolean;
+    audio_settings_stale_segment_count?: number | null;
+    audio_identity_unknown_segment_count?: number | null;
     source_artifact_id: string | null;
     repair_status?: string | null;
     repair_reason?: string | null;
@@ -50,6 +58,8 @@
   let open = $state(false);
   let busy = $state(false);
   let previewLoading = $state(false);
+  let detailLoading = $state(false);
+  let detailError = $state('');
   let error = $state('');
   let revisions = $state<Revision[]>([]);
   let selected = $state('');
@@ -70,13 +80,48 @@
 
   function chooseRevision(revision: Revision) {
     selectedEntry = revision.entry_id ?? revision.id;
-    return preview(revision.id);
+    selected = revision.id;
+    // Block preview and audio-reuse detail load independently; neither blocks
+    // the cheap summary list from staying interactive.
+    void preview(revision.id);
+    void loadRevisionDetail(revision);
   }
   const parentRevision = $derived(
     revisions.find((item) => item.id === current?.parent_revision_id)
   );
   const base = $derived(`/api/v1/sessions/${encodeURIComponent(sessionId)}`);
   let previewRequest = 0;
+  let historyRequest = 0;
+  const detailLoader = createRevisionDetailLoader<Revision>(
+    {
+      getItems: () => revisions,
+      setItems: (items) => (revisions = items),
+      setLoading: (value) => (detailLoading = value),
+      setError: (message) => (detailError = message),
+      setActiveRevisionId: (id) => (serverActiveRevisionId = id ?? null)
+    },
+    {
+      fetchRevision: (revisionId) => speechPlanRevision(sessionId, revisionId),
+      fetchBatch: (batchId) => loadRepairBatch(sessionId, batchId)
+    },
+    errorMessage
+  );
+
+  function loadRevisionDetail(revision: Revision) {
+    // Merge authoritative audio-reuse counts (and batch undo eligibility)
+    // into the summary rows without disturbing grouping decorations. The
+    // loader bumps its ticket first, so selecting an already-checked row
+    // invalidates any pending slow row before returning early.
+    const batch = revision.repair_batch;
+    const request: DetailRequest = {
+      entryKey: revision.entry_id ?? revision.id,
+      revisionId: revision.id,
+      needsAudio: !revision.audio_reuse_checked,
+      needsBatch: !!batch && batch.undo_checked === false,
+      batchId: batch && batch.undo_checked === false ? batch.id : null
+    };
+    void detailLoader.load(request);
+  }
 
   async function preview(revisionId: string, append = false) {
     selected = revisionId;
@@ -111,15 +156,16 @@
   async function loadHistory(append = false) {
     busy = true;
     error = '';
+    detailLoader.invalidate();
+    const ticket = ++historyRequest;
     try {
-      const query = new URLSearchParams({ limit: '50' });
-      if (append && nextRevision !== null)
-        query.set('before_revision_number', String(nextRevision));
-      const result = await apiJson<{
-        items: Revision[];
-        active_revision_id: string | null;
-        next_before_revision_number: number | null;
-      }>(`${base}/generation-plan/history?${query}`);
+      // Summary list only: cheap rows render first; the selected revision's
+      // exact audio detail follows independently via loadRevisionDetail.
+      const result = await speechPlanHistory(sessionId, {
+        summary: true,
+        before_revision_number: append ? nextRevision : null
+      });
+      if (ticket !== historyRequest) return;
       revisions = append ? [...revisions, ...result.items] : result.items;
       serverActiveRevisionId = result.active_revision_id;
       nextRevision = result.next_before_revision_number;
@@ -127,7 +173,7 @@
         const active =
           revisions.find((item) => item.id === result.active_revision_id) ??
           revisions[0];
-        if (active) await chooseRevision(active);
+        if (active) chooseRevision(active);
         else {
           selected = '';
           selectedEntry = '';
@@ -135,14 +181,19 @@
         }
       }
     } catch (caught) {
-      error = errorMessage(caught);
+      if (ticket === historyRequest) error = errorMessage(caught);
     } finally {
-      busy = false;
+      if (ticket === historyRequest) busy = false;
     }
   }
 
   async function restore(copy = true) {
-    if (!selected || selected === effectiveActiveRevisionId || previewLoading)
+    if (
+      !selected ||
+      selected === effectiveActiveRevisionId ||
+      previewLoading ||
+      detailLoading
+    )
       return;
     busy = true;
     try {
@@ -158,6 +209,8 @@
   function close() {
     open = false;
     previewRequest += 1;
+    historyRequest += 1;
+    detailLoader.invalidate();
   }
   function repairLabel(status: string) {
     return (
@@ -262,6 +315,9 @@
               >{revision.origin === 'automatic' ? 'Automatic' : 'Manual'} · {revision.segment_count}
               blocks</span
             >
+            {#if revision.audio_reuse_checked === false}<span
+                class="muted text-xs">Audio status not checked</span
+              >{/if}
             {#if revision.repair_status}<span
                 class="version-badge"
                 class:applied={revision.repair_status === 'applied'}
@@ -288,7 +344,7 @@
               <RepairBatchPanel
                 {sessionId}
                 batch={current.repair_batch}
-                disabled={disabled || busy || previewLoading}
+                disabled={disabled || busy || previewLoading || detailLoading}
                 onpreview={(revisionId) => void preview(revisionId)}
                 onundone={async (revisionId) => {
                   serverActiveRevisionId = revisionId;
@@ -328,30 +384,47 @@
                 </p>{/if}
             {/if}
             {#if !inspectingCheckpoint}
-              <p class="muted mt-3 text-xs">
-                {current.reusable_segment_count} reusable · {current.stale_segment_count}
-                missing or stale
-                {#if parentRevision}
-                  · Based on version {parentRevision.revision_number}{/if}
-              </p>
-              <AudioReuseNotice
-                settingsStale={current.audio_settings_stale_segment_count}
-                identityUnknown={current.audio_identity_unknown_segment_count}
-              />
+              {#if current.audio_reuse_checked}
+                <p class="muted mt-3 text-xs">
+                  {current.reusable_segment_count} reusable · {current.stale_segment_count}
+                  missing or stale
+                  {#if parentRevision}
+                    · Based on version {parentRevision.revision_number}{/if}
+                </p>
+                <AudioReuseNotice
+                  settingsStale={current.audio_settings_stale_segment_count ?? undefined}
+                  identityUnknown={current.audio_identity_unknown_segment_count ?? undefined}
+                />
+              {:else}
+                <p class="muted mt-3 text-xs" role="status">
+                  {#if detailLoading}Checking audio status…{:else}Audio status
+                    not checked for this version.{/if}
+                </p>
+              {/if}
             {/if}
+            {#if detailError}<p role="alert" class="mt-3 text-sm text-red-700">
+                {detailError}
+                <button
+                  type="button"
+                  class="btn mt-2"
+                  disabled={detailLoading}
+                  onclick={() => current && void loadRevisionDetail(current)}
+                  >Retry audio check</button
+                >
+              </p>{/if}
             <div class="mt-4 flex flex-wrap gap-2">
               {#if selected !== effectiveActiveRevisionId}
                 {#if onselect}<button
                     type="button"
                     class="btn btn-primary"
-                    disabled={busy || disabled || previewLoading}
+                    disabled={busy || disabled || previewLoading || detailLoading}
                     onclick={() => void restore(false)}
                     >Select this revision</button
                   >{/if}
                 <button
                   type="button"
                   class="btn"
-                  disabled={busy || disabled || previewLoading}
+                  disabled={busy || disabled || previewLoading || detailLoading}
                   onclick={() => void restore()}
                   >Restore as a new active revision</button
                 >
@@ -368,10 +441,8 @@
                 <button
                   type="button"
                   class="btn"
-                  disabled={busy ||
-                    disabled ||
-                    previewLoading ||
-                    current.stale_segment_count === 0}
+                  disabled={busy || disabled || previewLoading}
+                  title="The server calculates which blocks are missing or stale, even before audio status is checked."
                   onclick={async () => {
                     close();
                     await ongenerate(true);

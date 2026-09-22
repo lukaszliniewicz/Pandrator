@@ -86,7 +86,7 @@
     type VoiceDescriptor
   } from './voice-catalog';
   import {
-    getTtsCatalogue,
+    getTtsCompactCatalogue,
     getVoiceLibrary
   } from './tts-catalogue-cache';
   import type {
@@ -160,6 +160,31 @@
   let selectedRows = $state<string[]>([]);
   let selectionAnchor = $state('');
   let viewMode = $state<'segments' | 'reading'>('segments');
+  let segmentScrollRoot = $state<HTMLDivElement | null>(null);
+  let segmentTable = $state<{
+    scrollToSegment: (
+      id: string,
+      options?: {
+        align?: 'center' | 'nearest' | 'start' | 'end';
+        focus?: string | boolean;
+      }
+    ) => Promise<boolean>;
+  }>();
+
+  async function revealSegment(
+    id: string,
+    align: 'center' | 'nearest' = 'nearest'
+  ) {
+    await tick();
+    if (viewMode === 'segments' && segmentTable) {
+      return segmentTable.scrollToSegment(id, { align });
+    }
+    const row = document.querySelector<HTMLElement>(
+      `[data-segment-id="${CSS.escape(id)}"]`
+    );
+    row?.scrollIntoView({ block: align, behavior: 'auto' });
+    return Boolean(row);
+  }
   let textMode = $state<'display' | 'speech'>('display');
   let displayMenuOpen = $state(false);
   let showPassageBoundaries = $state(readPassageVisibility());
@@ -893,7 +918,7 @@
     try {
       const [settings, services, voices] = await Promise.all([
         sessionApi.settings(sessionId, 'tts'),
-        getTtsCatalogue(true),
+        getTtsCompactCatalogue(true),
         getVoiceLibrary()
       ]);
       ttsSettings = settings.effective ?? {};
@@ -1812,7 +1837,7 @@
       );
     }
     if (viewMode !== 'segments') viewMode = 'segments';
-    await tick();
+    await revealSegment(item.id, 'center');
     const itemIndex = payload.items.findIndex((row) => row.id === item.id);
     // Match offsets address the searched field, so prefer the textarea that
     // renders it. When the display layer shows the other field, fall back to
@@ -1980,8 +2005,7 @@
       const item = payload.items[nextIndex];
       if (item) {
         selectSegment(item, event);
-        const rowEl = document.querySelector(`[data-segment-id="${item.id}"]`);
-        rowEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        void revealSegment(item.id);
       }
       event.preventDefault();
     } else if (event.key === 'ArrowUp') {
@@ -1989,8 +2013,7 @@
       const item = payload.items[prevIndex];
       if (item) {
         selectSegment(item, event);
-        const rowEl = document.querySelector(`[data-segment-id="${item.id}"]`);
-        rowEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        void revealSegment(item.id);
       }
       event.preventDefault();
     } else if (event.key === ' ' && index >= 0 && !onNativeControl) {
@@ -2776,9 +2799,15 @@
             directions.
           </p>
         {/if}
-        <div class="min-h-[12rem] shrink-0 flex-1 overflow-auto">
+        <div
+          bind:this={segmentScrollRoot}
+          class="min-h-[12rem] shrink-0 flex-1 overflow-auto"
+        >
           {#if viewMode === 'segments'}
             <GenerationSegmentTable
+              bind:this={segmentTable}
+              scrollRoot={segmentScrollRoot}
+              activeSegmentId={activePlayingId}
               {showSpeechAnnotations}
               {speechPreviews}
               onspeech={inspectSpeech}

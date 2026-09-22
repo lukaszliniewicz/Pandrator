@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { speechServiceApi } from './admin-api';
+  import { getTtsCompactCatalogue } from './tts-catalogue-cache';
   import type { TtsService } from './api-models';
   import { errorMessage } from './errors';
   import { selectableTtsServices, serviceMatches } from './tts-provider-policy';
@@ -8,9 +9,11 @@
   let {
     value,
     onchange,
-    onloaded
+    onloaded,
+    compact = false
   }: {
     value: string;
+    compact?: boolean;
     onloaded?: (services: TtsService[]) => void;
     onchange: (value: string, resetSelection: boolean) => void;
   } = $props();
@@ -24,7 +27,11 @@
 
   onMount(async () => {
     try {
-      services = (await speechServiceApi.catalogue()).services;
+      services = (
+        await (compact
+          ? getTtsCompactCatalogue()
+          : speechServiceApi.catalogue())
+      ).services;
       onloaded?.(services);
     } catch (caught) {
       error = errorMessage(caught);

@@ -9,10 +9,13 @@ export type RepairBatch = {
   applied_count: number;
   rejected_count: number;
   status: string;
-  can_undo: boolean;
+  // Summary lists leave eligibility unchecked (null + undo_checked=false);
+  // only the authoritative batch-detail endpoint may enable undo.
+  can_undo: boolean | null;
   undo_disabled_reason: string | null;
-  expected_revision_id: string;
+  expected_revision_id: string | null;
   expected_state_hash: string | null;
+  undo_checked?: boolean;
 };
 export type RepairCheckpoint = {
   id: string;

@@ -8,6 +8,7 @@ def repair_batch_paths() -> dict:
     paging = [
         {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
         {"name": "before_revision_number", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+        {"name": "summary", "in": "query", "description": "When true, skip audio-reuse inspection and undo-guard evaluation: reuse counts are null with audio_reuse_checked=false and repair eligibility is null with undo_checked=false. Default full preserves the legacy payload.", "schema": {"type": "boolean", "default": False}},
     ]
 
     def read(operation_id: str, summary: str) -> dict:

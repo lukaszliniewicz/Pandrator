@@ -2334,7 +2334,108 @@ def build_openapi_document() -> dict:
                 )
             },
             "/api/v1/services/tts": {
-                "get": operation("listTtsServices", "TTS readiness and catalogues")
+                "get": {
+                    "operationId": "listTtsServices",
+                    "description": "TTS readiness and catalogues",
+                    "parameters": [
+                        {
+                            "name": "view",
+                            "in": "query",
+                            "required": False,
+                            "description": (
+                                "Full catalogue (default, legacy shape) or the "
+                                "slim compact projection for the session view."
+                            ),
+                            "schema": {
+                                "type": "string",
+                                "enum": ["full", "compact"],
+                                "default": "full",
+                            },
+                        },
+                        {
+                            "name": "refresh",
+                            "in": "query",
+                            "required": False,
+                            "description": "Probe providers and enrich catalogues.",
+                            "schema": {"type": "boolean", "default": False},
+                        },
+                        {
+                            "name": "service_id",
+                            "in": "query",
+                            "required": False,
+                            "description": (
+                                "Restrict the payload to one service "
+                                "(id or name, mutually exclusive with services)."
+                            ),
+                            "schema": {"type": "string", "maxLength": 64},
+                        },
+                        {
+                            "name": "services",
+                            "in": "query",
+                            "required": False,
+                            "description": (
+                                "Comma-separated service ids or names "
+                                "(at most 20, mutually exclusive with service_id)."
+                            ),
+                            "schema": {"type": "string", "maxLength": 1300},
+                        },
+                    ],
+                    "responses": {
+                        "200": {"description": "TTS readiness and catalogues"},
+                        "404": {"description": "Unknown TTS service selected"},
+                        "422": {"description": "Invalid catalogue view or filter"},
+                    },
+                }
+            },
+            "/api/v1/services/tts/{serviceId}": {
+                "get": {
+                    "operationId": "getTtsServiceDetail",
+                    "description": (
+                        "Full catalogue entry for one selected TTS service, "
+                        "identical to its full-collection entry."
+                    ),
+                    "parameters": [
+                        {
+                            "name": "serviceId",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string", "maxLength": 64},
+                        },
+                        {
+                            "name": "refresh",
+                            "in": "query",
+                            "required": False,
+                            "description": "Probe the provider and enrich its catalogue.",
+                            "schema": {"type": "boolean", "default": False},
+                        },
+                        {
+                            "name": "model",
+                            "in": "query",
+                            "required": False,
+                            "description": (
+                                "Restrict heavy per-model maps to one chosen "
+                                "model (mutually exclusive with models)."
+                            ),
+                            "schema": {"type": "string", "maxLength": 256},
+                        },
+                        {
+                            "name": "models",
+                            "in": "query",
+                            "required": False,
+                            "description": (
+                                "Comma-separated chosen models for the heavy "
+                                "per-model maps (at most 20, mutually "
+                                "exclusive with model)."
+                            ),
+                            "schema": {"type": "string", "maxLength": 5200},
+                        },
+                    ],
+                    "responses": {
+                        "200": {"description": "Selected TTS service detail"},
+                        "404": {"description": "Unknown TTS service or model"},
+                        "422": {"description": "Invalid service id or model filter"},
+                    },
+                }
             },
             "/api/v1/services/audio-cpp/catalogue": {
                 "get": {
@@ -3225,6 +3326,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/providers", "get", "app.read"),
         ("/api/v1/services/stt", "get", "app.read"),
         ("/api/v1/services/tts", "get", "app.read"),
+        ("/api/v1/services/tts/{serviceId}", "get", "app.read"),
         ("/api/v1/services/audio-cpp/catalogue", "get", "app.read"),
         ("/api/v1/voices", "get", "app.read"),
         (
@@ -3323,6 +3425,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/sessions/{sessionId}/sources/adopt-subtitles", "post", "adoptSubtitleSource", "SourceAttachRequest", "201"),
         ("/api/v1/sessions/{sessionId}/sources/align-subtitles", "post", "alignSubtitleSource", "SubtitleAlignRequest", "202"),
         ("/api/v1/sessions/{sessionId}/generation-plan/revisions", "get", "listSpeechPlanRevisions", None, "200"),
+        ("/api/v1/sessions/{sessionId}/generation-plan/revisions/{revisionId}", "get", "getSpeechPlanRevision", None, "200"),
         ("/api/v1/sessions/{sessionId}/generation-plan/topology/batch", "post", "reviseGenerationPlanTopologyBatch", "GenerationPlanBatchRequest", "201"),
     ]
     for path, method, name, schema, status in extra_operations:
@@ -3349,7 +3452,12 @@ def build_openapi_document() -> dict:
     history["parameters"] = [
         {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
         {"name": "before_revision_number", "in": "query", "schema": {"type": "integer", "minimum": 1}},
+        {"name": "summary", "in": "query", "description": "When true, skip audio-reuse inspection: reuse counts are null with audio_reuse_checked=false. Default full preserves the legacy payload.", "schema": {"type": "boolean", "default": False}},
     ]
+    plan_status = paths["/api/v1/sessions/{sessionId}/generation-plan/status"]["get"]
+    plan_status.setdefault("parameters", []).append(
+        {"name": "summary", "in": "query", "description": "When true, the embedded plan history skips audio-reuse inspection and undo-guard evaluation. Default full preserves the legacy payload.", "schema": {"type": "boolean", "default": False}},
+    )
     inspection = paths["/api/v1/sessions/{sessionId}/generation-segments"]["get"]
     inspection["parameters"].extend([
         {"name": "q", "in": "query", "description": "Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets.", "schema": {"type": "string", "maxLength": 4000}},

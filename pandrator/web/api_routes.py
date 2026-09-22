@@ -333,6 +333,59 @@ def _xtts_model_id_error(model_id: str) -> str:
     return ""
 
 
+def _tts_service_selection(args: Any) -> list[str] | None:
+    """Parse the TTS catalogue service filter query params.
+
+    Returns the raw selection (or None for the whole catalogue).
+    ``service_id`` and ``services`` are mutually exclusive; problems raise
+    ValueError for a 422 response. Unknown ids are reported by the catalogue
+    service as 404, never silently dropped.
+    """
+    from .tts_providers import MAX_TTS_SERVICE_FILTER_IDS
+
+    single = str(args.get("service_id", "") or "").strip()
+    multiple = str(args.get("services", "") or "").strip()
+    if single and multiple:
+        raise ValueError("Use service_id or services, not both.")
+    raw: list[str] = []
+    if single:
+        raw = [single]
+    elif multiple:
+        raw = [part.strip() for part in multiple.split(",")]
+    if not raw:
+        return None
+    if any(not part or len(part) > 64 for part in raw):
+        raise ValueError("Each TTS service id must be 1 to 64 characters.")
+    if len(raw) > MAX_TTS_SERVICE_FILTER_IDS:
+        raise ValueError(
+            f"Select at most {MAX_TTS_SERVICE_FILTER_IDS} TTS services per request."
+        )
+    return raw
+
+
+def _tts_model_selection(args: Any) -> list[str] | None:
+    """Parse the TTS service-detail model filter query params.
+
+    ``model`` selects one model, ``models`` a comma-separated list; both
+    together is a 422. Returns None when no filter was given. Entries are
+    validated for transport safety here; existence is checked against the
+    service catalogue (unknown models are a 404, never silent).
+    Model ids are case-sensitive provider identifiers and are not normalized.
+    """
+    single = str(args.get("model", "") or "").strip()
+    multiple = str(args.get("models", "") or "").strip()
+    if single and multiple:
+        raise ValueError("Use model or models, not both.")
+    if single:
+        return [single]
+    if not multiple:
+        return None
+    selected = [part.strip() for part in multiple.split(",")]
+    if any(not part or len(part) > 256 for part in selected):
+        raise ValueError("Each selected TTS model id must be 1 to 256 characters.")
+    return selected
+
+
 def _xtts_service_endpoint_base(catalogue: dict[str, Any]) -> tuple[str, str | None]:
     xtts_service = next(
         (
@@ -1223,9 +1276,57 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/services/tts")
     @require_auth
     def tts_services():
-        payload, revision = tts_catalogue.snapshot(
-            refresh=request.args.get("refresh", "").lower() in {"1", "true", "yes"}
+        from .tts_providers import TTS_CATALOGUE_VIEWS, TtsCatalogueServiceNotFoundError
+
+        view = str(request.args.get("view", "full") or "full").strip().lower()
+        if view not in TTS_CATALOGUE_VIEWS:
+            return error_response(
+                "validation_error",
+                "view must be 'full' or 'compact'.",
+                422,
+            )
+        try:
+            selection = _tts_service_selection(request.args)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        try:
+            payload, revision = tts_catalogue.snapshot(
+                refresh=request.args.get("refresh", "").lower() in {"1", "true", "yes"},
+                view=view,
+                service_ids=selection,
+            )
+        except TtsCatalogueServiceNotFoundError as error:
+            return error_response("tts_service_not_found", str(error), 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(payload)
+        response.headers["ETag"] = f'"{revision}"'
+        return response
+
+    @app.get("/api/v1/services/tts/<service_id>")
+    @require_auth
+    def tts_service_detail(service_id: str):
+        from .tts_providers import (
+            TtsCatalogueModelNotFoundError,
+            TtsCatalogueServiceNotFoundError,
         )
+
+        try:
+            selected_models = _tts_model_selection(request.args)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        try:
+            payload, revision = tts_catalogue.service_detail(
+                service_id,
+                refresh=request.args.get("refresh", "").lower() in {"1", "true", "yes"},
+                models=selected_models,
+            )
+        except TtsCatalogueServiceNotFoundError as error:
+            return error_response("tts_service_not_found", str(error), 404)
+        except TtsCatalogueModelNotFoundError as error:
+            return error_response("tts_model_not_found", str(error), 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         response = jsonify(payload)
         response.headers["ETag"] = f'"{revision}"'
         return response
@@ -3242,18 +3343,31 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/sessions/<session_id>/generation-plan/revisions")
     @require_auth
     def generation_plan_revisions(session_id: str):
-        from .generation_review import revision_history
+        from .generation_review import parse_summary_flag, revision_history
 
         try:
             result = revision_history(
                 database, session_id, limit=int(request.args.get("limit", 50)),
                 before_revision_number=int(request.args["before_revision_number"]) if "before_revision_number" in request.args else None,
+                include_audio_reuse=not parse_summary_flag(request.args.get("summary")),
             )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         return jsonify(result)
+
+    @app.get("/api/v1/sessions/<session_id>/generation-plan/revisions/<revision_id>")
+    @require_auth
+    def generation_plan_revision_detail(session_id: str, revision_id: str):
+        from .generation_review import revision_detail
+
+        try:
+            return jsonify(revision_detail(database, session_id, revision_id))
+        except KeyError:
+            return error_response("not_found", "Session or speech-plan revision not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan/topology/batch")
     @require_auth

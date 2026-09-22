@@ -301,7 +301,12 @@ def register_session_flow_routes(
     @require_auth
     def speech_plan_workspace_status(session_id):
         try:
-            return jsonify(speech_plan_status(services, session_id))
+            from .generation_review import parse_summary_flag
+
+            return jsonify(speech_plan_status(
+                services, session_id,
+                summary=parse_summary_flag(request.args.get("summary")),
+            ))
         except (KeyError, ValueError) as error:
             return failure(error)
 

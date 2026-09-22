@@ -1,5 +1,6 @@
 import { apiJson } from './api';
 import { invalidationBus } from './invalidation';
+import type { RepairBatch } from './repair-batches';
 
 export type SessionSourceItem = {
   artifact_id: string;
@@ -42,12 +43,7 @@ export type SpeechPlanRevision = {
   id: string;
   entry_id?: string;
   is_repair_checkpoint?: boolean;
-  repair_batch?: {
-    id: string;
-    applied_count: number;
-    attempt_count: number;
-    status: string;
-  } | null;
+  repair_batch?: RepairBatch | null;
   revision_number: number;
   summary: string;
   origin: string;
@@ -55,10 +51,11 @@ export type SpeechPlanRevision = {
   compatible: boolean;
   segment_count: number;
   active_segment_count: number;
-  reusable_segment_count: number;
-  stale_segment_count: number;
-  audio_settings_stale_segment_count?: number;
-  audio_identity_unknown_segment_count?: number;
+  reusable_segment_count: number | null;
+  stale_segment_count: number | null;
+  audio_reuse_checked?: boolean;
+  audio_settings_stale_segment_count?: number | null;
+  audio_identity_unknown_segment_count?: number | null;
   source_artifact_id: string | null;
 };
 export type SpeechPlanState = {
@@ -114,9 +111,60 @@ export const sourceState = (sessionId: string) =>
   apiJson<SessionSourceState>(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/sources/status`
   );
-export const speechPlanState = (sessionId: string) =>
+// Summary mode skips server-side audio-reuse inspection for a fast list path;
+// reuse counts arrive as null with audio_reuse_checked=false and must never be
+// rendered as 0. Default (no options) preserves the legacy full payload.
+export const speechPlanState = (
+  sessionId: string,
+  options?: { summary?: boolean }
+) =>
   apiJson<SpeechPlanState>(
-    `/api/v1/sessions/${encodeURIComponent(sessionId)}/generation-plan/status`
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/generation-plan/status${options?.summary ? '?summary=true' : ''}`
+  );
+
+export type SpeechPlanHistoryPage = {
+  items: SpeechPlanHistoryItem[];
+  active_revision_id: string | null;
+  next_before_revision_number: number | null;
+};
+
+// Grouped-history rows: full revision_history fields plus grouping decorations.
+// Optional fields stay optional so summary payloads (null reuse counts,
+// unchecked guards) and full payloads share one type.
+export type SpeechPlanHistoryItem = SpeechPlanRevision & {
+  parent_revision_id: string | null;
+  source_revision_id?: string | null;
+  action?: string;
+  reason?: string | null;
+  repair_status?: string | null;
+  repair_reason?: string | null;
+  source_generation_run_id?: string | null;
+  source_block_ordinal?: number | null;
+  restored_from_revision_id?: string | null;
+  history_revision_number?: number;
+  is_active?: boolean;
+  created_at?: string;
+};
+
+export const speechPlanHistory = (
+  sessionId: string,
+  options?: { summary?: boolean; before_revision_number?: number | null; limit?: number }
+) => {
+  const query = new URLSearchParams({
+    limit: String(options?.limit ?? 50)
+  });
+  if (options?.summary) query.set('summary', 'true');
+  if (options?.before_revision_number != null)
+    query.set('before_revision_number', String(options.before_revision_number));
+  return apiJson<SpeechPlanHistoryPage>(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/generation-plan/history?${query}`
+  );
+};
+
+// Authoritative on-demand detail for one selected revision (always full).
+export const speechPlanRevision = (sessionId: string, revisionId: string) =>
+  apiJson<{ revision: SpeechPlanRevision; active_revision_id: string | null }>(
+    `/api/v1/sessions/${encodeURIComponent(sessionId)}/generation-plan/revisions/${encodeURIComponent(revisionId)}`
   );
 
 // UI commands are separate from data invalidation and scoped to mounted consumers.

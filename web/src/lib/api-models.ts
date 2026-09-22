@@ -793,6 +793,26 @@ export type TtsCatalogue = {
   [key: string]: unknown;
 };
 
+export type TtsCompactCatalogue = {
+  view: 'compact';
+  revision?: number;
+  default_service?: string;
+  recommended_service?: string;
+  default_revision?: number;
+  manager?: Record<string, unknown>;
+  services: TtsService[];
+};
+
+export type TtsServiceDetailResponse = {
+  view: 'detail';
+  revision?: number;
+  default_service?: string;
+  recommended_service?: string;
+  default_revision?: number;
+  selected_models?: string[];
+  service: TtsService;
+};
+
 export type TtsDiscovery = Partial<TtsService> & {
   success?: boolean;
   languages?: string[];

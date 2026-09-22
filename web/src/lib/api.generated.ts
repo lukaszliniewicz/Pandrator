@@ -1357,6 +1357,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description TTS readiness and catalogues */
         get: operations["listTtsServices"];
         put?: never;
         post?: never;
@@ -1409,6 +1410,23 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["deleteXttsModel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/services/tts/{serviceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Full catalogue entry for one selected TTS service, identical to its full-collection entry. */
+        get: operations["getTtsServiceDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1713,6 +1731,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["listSpeechPlanRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-plan/revisions/{revisionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSpeechPlanRevision"];
         put?: never;
         post?: never;
         delete?: never;
@@ -10002,7 +10036,16 @@ export interface operations {
     };
     listTtsServices: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Full catalogue (default, legacy shape) or the slim compact projection for the session view. */
+                view?: "full" | "compact";
+                /** @description Probe providers and enrich catalogues. */
+                refresh?: boolean;
+                /** @description Restrict the payload to one service (id or name, mutually exclusive with services). */
+                service_id?: string;
+                /** @description Comma-separated service ids or names (at most 20, mutually exclusive with service_id). */
+                services?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10011,6 +10054,20 @@ export interface operations {
         responses: {
             /** @description TTS readiness and catalogues */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown TTS service selected */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid catalogue view or filter */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10124,6 +10181,47 @@ export interface operations {
                         object: string;
                     };
                 };
+            };
+        };
+    };
+    getTtsServiceDetail: {
+        parameters: {
+            query?: {
+                /** @description Probe the provider and enrich its catalogue. */
+                refresh?: boolean;
+                /** @description Restrict heavy per-model maps to one chosen model (mutually exclusive with models). */
+                model?: string;
+                /** @description Comma-separated chosen models for the heavy per-model maps (at most 20, mutually exclusive with model). */
+                models?: string;
+            };
+            header?: never;
+            path: {
+                serviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Selected TTS service detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown TTS service or model */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid service id or model filter */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -10768,6 +10866,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 before_revision_number?: number;
+                /** @description When true, skip audio-reuse inspection and undo-guard evaluation: reuse counts are null with audio_reuse_checked=false and repair eligibility is null with undo_checked=false. Default full preserves the legacy payload. */
+                summary?: boolean;
             };
             header?: never;
             path: {
@@ -10856,6 +10956,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 before_revision_number?: number;
+                /** @description When true, skip audio-reuse inspection and undo-guard evaluation: reuse counts are null with audio_reuse_checked=false and repair eligibility is null with undo_checked=false. Default full preserves the legacy payload. */
+                summary?: boolean;
             };
             header?: never;
             path: {
@@ -11001,6 +11103,8 @@ export interface operations {
             query?: {
                 limit?: number;
                 before_revision_number?: number;
+                /** @description When true, skip audio-reuse inspection: reuse counts are null with audio_reuse_checked=false. Default full preserves the legacy payload. */
+                summary?: boolean;
             };
             header?: never;
             path: {
@@ -11011,6 +11115,27 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description listSpeechPlanRevisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSpeechPlanRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+                revisionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description getSpeechPlanRevision */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11072,7 +11197,10 @@ export interface operations {
     };
     getSpeechPlanStatus: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, the embedded plan history skips audio-reuse inspection and undo-guard evaluation. Default full preserves the legacy payload. */
+                summary?: boolean;
+            };
             header?: never;
             path: {
                 sessionId: string;

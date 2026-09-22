@@ -131,8 +131,13 @@
     )
       close();
   }}
-  ontoggle={() => {
-    if (!menu.matches(':popover-open')) close();
+  ontoggle={(event) => {
+    // A queued close event may outlive its virtualized row and bind:this.
+    if (
+      event.currentTarget.isConnected &&
+      !event.currentTarget.matches(':popover-open')
+    )
+      close();
   }}
 >
   <p class="timing">

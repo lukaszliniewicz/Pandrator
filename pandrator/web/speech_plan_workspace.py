@@ -397,11 +397,14 @@ def planning_settings(services, session_id: str) -> dict[str, Any]:
     return settings
 
 
-def speech_plan_status(services, session_id: str) -> dict[str, Any]:
+def speech_plan_status(services, session_id: str, *, summary: bool = False) -> dict[str, Any]:
     source = selected_text(services, session_id)
     from .repair_batches import grouped_revision_history
 
-    history = grouped_revision_history(services.database, session_id, limit=100)
+    history = grouped_revision_history(
+        services.database, session_id, limit=100,
+        include_audio_reuse=not summary, include_undo_eligibility=not summary,
+    )
     # An all-rejected batch is an operation, not an additional selectable plan.
     # Explicitly selected internal checkpoints remain in the grouped result.
     seen: set[str] = set()

@@ -185,8 +185,14 @@
     )
       close();
   }}
-  ontoggle={() => {
-    if (!panel.matches(':popover-open')) close();
+  ontoggle={(event) => {
+    // Closing a virtualized row can queue this event after bind:this clears.
+    // Ignore detached popovers, including obsolete ones replaced by another row.
+    if (
+      event.currentTarget.isConnected &&
+      !event.currentTarget.matches(':popover-open')
+    )
+      close();
   }}
 >
   <header>

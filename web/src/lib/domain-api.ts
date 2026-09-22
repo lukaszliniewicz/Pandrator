@@ -46,7 +46,9 @@ import type {
   SubtitleEvidenceRecord,
   SubtitleEvidenceRoute,
   TtsCatalogue,
+  TtsCompactCatalogue,
   TtsDiscovery,
+  TtsServiceDetailResponse,
   XttsModelCatalogue,
   XttsModelDeletion,
   XttsModelUpload,
@@ -437,6 +439,40 @@ export const sessionApi = {
       'get',
       refresh ? { query: new URLSearchParams({ refresh: 'true' }) } : {}
     ),
+  ttsCatalogueCompact: (refresh = false) =>
+    typedApiJson<'/api/v1/services/tts', 'get', TtsCompactCatalogue>(
+      '/api/v1/services/tts',
+      'get',
+      {
+        query: new URLSearchParams({
+          view: 'compact',
+          ...(refresh ? { refresh: 'true' } : {})
+        })
+      }
+    ),
+  ttsServiceDetail: (
+    serviceId: string,
+    options?: { refresh?: boolean; models?: string[] | string }
+  ) => {
+    const query = new URLSearchParams();
+    if (options?.refresh) query.set('refresh', 'true');
+    const models =
+      options?.models == null
+        ? []
+        : Array.isArray(options.models)
+          ? options.models
+          : [options.models];
+    if (models.length > 1) query.set('models', models.join(','));
+    else if (models.length === 1) query.set('model', models[0]);
+    return typedApiJson<
+      '/api/v1/services/tts/{serviceId}',
+      'get',
+      TtsServiceDetailResponse
+    >('/api/v1/services/tts/{serviceId}', 'get', {
+      path: { serviceId },
+      query
+    });
+  },
   voices: () =>
     typedApiJson<'/api/v1/voices', 'get', ItemPage<VoiceRecord>>(
       '/api/v1/voices',

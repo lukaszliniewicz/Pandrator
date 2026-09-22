@@ -12830,10 +12830,63 @@
     },
     "/api/v1/services/tts": {
       "get": {
+        "description": "TTS readiness and catalogues",
         "operationId": "listTtsServices",
+        "parameters": [
+          {
+            "description": "Full catalogue (default, legacy shape) or the slim compact projection for the session view.",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Probe providers and enrich catalogues.",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Restrict the payload to one service (id or name, mutually exclusive with services).",
+            "in": "query",
+            "name": "service_id",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated service ids or names (at most 20, mutually exclusive with service_id).",
+            "in": "query",
+            "name": "services",
+            "required": false,
+            "schema": {
+              "maxLength": 1300,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "TTS readiness and catalogues"
+          },
+          "404": {
+            "description": "Unknown TTS service selected"
+          },
+          "422": {
+            "description": "Invalid catalogue view or filter"
           }
         },
         "security": [
@@ -13035,6 +13088,77 @@
             "description": "XTTS model removed"
           }
         }
+      }
+    },
+    "/api/v1/services/tts/{serviceId}": {
+      "get": {
+        "description": "Full catalogue entry for one selected TTS service, identical to its full-collection entry.",
+        "operationId": "getTtsServiceDetail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "serviceId",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Probe the provider and enrich its catalogue.",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Restrict heavy per-model maps to one chosen model (mutually exclusive with models).",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "maxLength": 256,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated chosen models for the heavy per-model maps (at most 20, mutually exclusive with model).",
+            "in": "query",
+            "name": "models",
+            "required": false,
+            "schema": {
+              "maxLength": 5200,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Selected TTS service detail"
+          },
+          "404": {
+            "description": "Unknown TTS service or model"
+          },
+          "422": {
+            "description": "Invalid service id or model filter"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/services/tts/{serviceId}/preview": {
@@ -13900,6 +14024,15 @@
             }
           },
           {
+            "description": "When true, skip audio-reuse inspection and undo-guard evaluation: reuse counts are null with audio_reuse_checked=false and repair eligibility is null with undo_checked=false. Default full preserves the legacy payload.",
+            "in": "query",
+            "name": "summary",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -14025,6 +14158,15 @@
             "schema": {
               "minimum": 1,
               "type": "integer"
+            }
+          },
+          {
+            "description": "When true, skip audio-reuse inspection and undo-guard evaluation: reuse counts are null with audio_reuse_checked=false and repair eligibility is null with undo_checked=false. Default full preserves the legacy payload.",
+            "in": "query",
+            "name": "summary",
+            "schema": {
+              "default": false,
+              "type": "boolean"
             }
           },
           {
@@ -14237,6 +14379,15 @@
             }
           },
           {
+            "description": "When true, skip audio-reuse inspection: reuse counts are null with audio_reuse_checked=false. Default full preserves the legacy payload.",
+            "in": "query",
+            "name": "summary",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -14248,6 +14399,47 @@
         "responses": {
           "200": {
             "description": "listSpeechPlanRevisions"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-plan/revisions/{revisionId}": {
+      "get": {
+        "operationId": "getSpeechPlanRevision",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revisionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "getSpeechPlanRevision"
           }
         },
         "security": [
@@ -14339,6 +14531,15 @@
       "get": {
         "operationId": "getSpeechPlanStatus",
         "parameters": [
+          {
+            "description": "When true, the embedded plan history skips audio-reuse inspection and undo-guard evaluation. Default full preserves the legacy payload.",
+            "in": "query",
+            "name": "summary",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
           {
             "in": "path",
             "name": "sessionId",

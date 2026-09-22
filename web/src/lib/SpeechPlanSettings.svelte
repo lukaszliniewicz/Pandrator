@@ -259,7 +259,9 @@
     saving = true;
     error = '';
     try {
-      const current = await speechPlanState(sessionId);
+      // Summary state is enough for this pre-check (selection/input/gating);
+      // the prepare POST re-validates everything authoritatively server-side.
+      const current = await speechPlanState(sessionId, { summary: true });
       if (
         current.selected_revision_id !== preparationPlanId ||
         current.current_input?.artifact_id !== preparationInputId

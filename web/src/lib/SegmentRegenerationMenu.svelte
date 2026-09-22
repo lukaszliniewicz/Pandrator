@@ -94,7 +94,14 @@
   tabindex="-1"
   aria-label={`Regeneration options for segment ${segmentNumber}`}
   class="regenerate-menu font-sans"
-  ontoggle={() => (expanded = menu.matches(':popover-open'))}
+  ontoggle={(event) => {
+    // The browser may deliver a queued close event after virtualization
+    // unmounts this row and Svelte clears bind:this. The event still owns
+    // its original element; do not dereference the cleared binding.
+    expanded =
+      event.currentTarget.isConnected &&
+      event.currentTarget.matches(':popover-open');
+  }}
   onkeydown={navigate}
 >
   <button

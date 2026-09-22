@@ -4,7 +4,7 @@
   import { modalFocus } from './modal-focus';
   import { apiJson } from './api';
   import {
-    getTtsCatalogue,
+    getTtsCompactCatalogue,
     getVoiceLibrary
   } from './tts-catalogue-cache';
   import { errorMessage } from './errors';
@@ -123,7 +123,7 @@
       const [result, library, catalogue] = await Promise.all([
         apiJson<GenerationControls>(path),
         getVoiceLibrary(force),
-        getTtsCatalogue(false, force)
+        getTtsCompactCatalogue(false, force)
       ]);
       if (!alive) return;
       voices = library.items;

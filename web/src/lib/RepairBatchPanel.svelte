@@ -64,7 +64,24 @@
     next = null;
     refreshed = null;
     loading = false;
+    // Summary lists leave undo eligibility unchecked (can_undo null). Fetch the
+    // authoritative batch detail without expanding, so undo stays disabled
+    // until the server has actually evaluated its guards.
+    if (batch.undo_checked === false) void refreshEligibility();
   });
+
+  async function refreshEligibility() {
+    const ticket = ++request;
+    const batchId = batch.id;
+    try {
+      const result = await loadRepairBatch(sessionId, batchId);
+      if (ticket !== request || batchId !== batch.id) return;
+      refreshed = result.repair_batch;
+    } catch {
+      // Keep the unchecked summary state; the expanded details path surfaces
+      // load errors when the user asks for them.
+    }
+  }
 
   async function details(append = false) {
     expanded = true;
@@ -148,12 +165,17 @@
       class="btn btn-secondary"
       type="button"
       disabled={disabled || undoing || !current.can_undo}
-      title={current.undo_disabled_reason ||
-        'Restore the pre-repair plan and selected audio as one new revision'}
+      title={current.undo_checked === false
+        ? 'Checking undo eligibility with the server…'
+        : current.undo_disabled_reason ||
+          'Restore the pre-repair plan and selected audio as one new revision'}
       onclick={() => void undo()}
       >{undoing ? 'Undoing repairs…' : 'Undo automatic repairs'}</button
     >
   </div>
+  {#if current.undo_checked === false}<p class="muted explanation" role="status">
+      Checking undo eligibility with the server…
+    </p>{/if}
   {#if current.undo_disabled_reason}<p class="muted explanation">
       {current.undo_disabled_reason}
     </p>{/if}

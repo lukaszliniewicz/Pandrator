@@ -227,13 +227,15 @@ def _batch_summary(session, session_id, active_id, batch, *, check_guard=True):
     }
 
 
-def grouped_revision_history(database, session_id: str, *, limit=50, before_revision_number=None):
+def grouped_revision_history(database, session_id: str, *, limit=50, before_revision_number=None, include_audio_reuse: bool = True, include_undo_eligibility: bool = True):
     limit = max(1, min(int(limit), 100))
     with database.session() as session:
         plan, rows, roots = _history_metadata(session, session_id)
         if plan is None:
             return {"items": [], "active_revision_id": None, "total": 0,
-                    "checkpoint_total": 0, "next_before_revision_number": None}
+                    "checkpoint_total": 0, "next_before_revision_number": None,
+                    "audio_reuse_checked": include_audio_reuse,
+                    "undo_checked": include_undo_eligibility}
         entries = _groups(plan, rows, roots)
         total = len(entries)
         if before_revision_number is not None:
@@ -241,13 +243,30 @@ def grouped_revision_history(database, session_id: str, *, limit=50, before_revi
         has_more = len(entries) > limit
         entries = entries[:limit]
         active_id = plan.active_revision_id
-        summaries = {
-            entry["entry_id"]: _batch_summary(session, session_id, active_id, entry["batch"])
-            for entry in entries if entry["batch"]
-        }
+        summaries = {}
+        for entry in entries:
+            if not entry["batch"]:
+                continue
+            summary = _batch_summary(
+                session, session_id, active_id, entry["batch"],
+                # Summary lists must not evaluate undo guards (repair_state_hash
+                # + idle checks). Eligibility is authoritative only from the
+                # batch-detail endpoint.
+                check_guard=include_undo_eligibility,
+            )
+            if include_undo_eligibility:
+                summary["undo_checked"] = True
+            else:
+                summary.update(
+                    can_undo=None, undo_disabled_reason=None,
+                    expected_revision_id=None, expected_state_hash=None,
+                    undo_checked=False,
+                )
+            summaries[entry["entry_id"]] = summary
     # Keep reuse/identity semantics identical to the original history endpoint.
     raw = revision_history(database, session_id, limit=100,
-                           revision_ids=list({entry["row"]["id"] for entry in entries}))
+                           revision_ids=list({entry["row"]["id"] for entry in entries}),
+                           include_audio_reuse=include_audio_reuse)
     details = {row["id"]: row for row in raw["items"]}
     items = []
     for entry in entries:
@@ -265,7 +284,9 @@ def grouped_revision_history(database, session_id: str, *, limit=50, before_revi
         items.append(item)
     return {"items": items, "active_revision_id": active_id, "total": total,
             "checkpoint_total": len(rows),
-            "next_before_revision_number": entries[-1]["sort_number"] if entries and has_more else None}
+            "next_before_revision_number": entries[-1]["sort_number"] if entries and has_more else None,
+            "audio_reuse_checked": include_audio_reuse,
+            "undo_checked": include_undo_eligibility}
 
 
 def repair_batch_detail(database, session_id, batch_id, *, limit=50, before_revision_number=None):
@@ -277,6 +298,7 @@ def repair_batch_detail(database, session_id, batch_id, *, limit=50, before_revi
         if batch is None:
             raise KeyError(batch_id)
         summary = _batch_summary(session, session_id, plan.active_revision_id, batch)
+        summary["undo_checked"] = True
         attempts = list(reversed(batch["attempts"]))
         if before_revision_number is not None:
             attempts = [row for row in attempts if row["revision_number"] < before_revision_number]

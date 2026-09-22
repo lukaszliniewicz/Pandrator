@@ -12,7 +12,8 @@
   import type { SettingOption } from './settings-fields';
   import type { VoiceDescriptor } from './voice-catalog';
   import SegmentAudioPreview from './SegmentAudioPreview.svelte';
-  import { tick } from 'svelte';
+  import { tick, onMount } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
   import SpeechAnnotationText from './SpeechAnnotationText.svelte';
@@ -24,6 +25,11 @@
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
   import WaveformPeaks from './WaveformPeaks.svelte';
+  import {
+    selectVirtualWindow,
+    slotHeights,
+    buildOffsets
+  } from './generation-virtual-window';
 
   let {
     items,
@@ -59,7 +65,15 @@
     topologyDisabled = false,
     textMode = 'display',
     previewSegmentId = '',
-    onpreviewrequest
+    onpreviewrequest,
+    scrollRoot = null,
+    overscan = 8,
+    estimatedRowHeight = 280,
+    boundaryRowHeight = 13,
+    virtualizeThreshold = 50,
+    activeSegmentId = '',
+    onshowallchange,
+    showAll = $bindable(false)
   }: {
     items: GenerationSegment[];
     selectedRows: string[];
@@ -113,6 +127,21 @@
     ) => void;
     topologyDisabled?: boolean;
     textMode?: 'display' | 'speech';
+    /** Explicit scroll host. Defaults to the closest scrollable ancestor. */
+    scrollRoot?: HTMLElement | null;
+    /** Rendered rows kept above/below the viewport on each side. */
+    overscan?: number;
+    /** Slot height estimate until a row is measured. */
+    estimatedRowHeight?: number;
+    /** Height folded into each slot for its boundary row. */
+    boundaryRowHeight?: number;
+    /** Item counts at or below this render fully (no virtualization). */
+    virtualizeThreshold?: number;
+    /** Playing row pinned alongside the preview row (playlist controller). */
+    activeSegmentId?: string;
+    onshowallchange?: (showAll: boolean) => void;
+    /** Accessible non-virtualized fallback; drawer may bind to own it. */
+    showAll?: boolean;
   } = $props();
 
   type CursorState = {
@@ -206,11 +235,384 @@
       }
     };
   }
+
+  // ---- Viewport virtualization (bounded DOM, variable heights) ----
+  //
+  // The drawer can load hundreds of segments; rendering every row costs
+  // tens of thousands of DOM nodes. Only the scrolled window plus overscan
+  // is mounted. Window math lives in generation-virtual-window.ts (unit
+  // tested under plain node); this component owns scroll listeners,
+  // measured row heights, and rendering with top/bottom spacer rows so the
+  // scrollbar and total counts keep loaded-data semantics.
+  let tableEl = $state<HTMLElement | null>(null);
+  let tbodyEl = $state<HTMLElement | null>(null);
+  let hostEl = $state<HTMLElement | null>(null);
+  let scrollPos = $state(0);
+  let viewportH = $state(0);
+  let focusedSegmentId = $state('');
+  let revealId = $state('');
+  // Reveal epoch: rapid ArrowDown/search calls overlap the async reveal
+  // below. Each call takes a token; stale calls bail before touching the
+  // viewport, and only the newest call may clear the pin.
+  let revealToken = 0;
+  let selectedSegmentId = $state('');
+  // SvelteMap: plain Map.set/delete is not reactive under Svelte 5 runes,
+  // so measurements must live in a reactive map for offsets to recompute.
+  const measured = new SvelteMap<string, number>();
+  let rowObserver: ResizeObserver | undefined;
+  // Actions run before onMount creates the observer: park nodes here so the
+  // first viewport still gets measured instead of staying estimated.
+  const pendingMeasureNodes = new Map<string, HTMLTableRowElement>();
+  let scrollRaf = 0;
+
+  const virtualEnabled = $derived(
+    items.length > virtualizeThreshold && !showAll
+  );
+
+  const indexById = $derived(
+    new Map(items.map((item, index) => [item.id, index] as const))
+  );
+
+  const pinnedIndexes = $derived.by(() => {
+    const ids = [
+      previewSegmentId,
+      activeSegmentId,
+      editingPassageId,
+      focusedSegmentId,
+      selectedSegmentId,
+      revealId
+    ];
+    const pinned = new Set<number>();
+    for (const id of ids) {
+      if (!id) continue;
+      const index = indexById.get(id);
+      if (index !== undefined) pinned.add(index);
+    }
+    return [...pinned];
+  });
+
+  const offsets = $derived(
+    buildOffsets(
+      slotHeights(
+        items.length,
+        (index) => measured.get(items[index].id),
+        estimatedRowHeight,
+        boundaryRowHeight
+      )
+    )
+  );
+
+  const selection = $derived(
+    selectVirtualWindow(
+      items.length,
+      offsets,
+      scrollPos,
+      viewportH,
+      overscan,
+      virtualEnabled ? pinnedIndexes : []
+    )
+  );
+
+  const visibleIndexes = $derived(
+    virtualEnabled ? selection.indexes : items.map((_, index) => index)
+  );
+
+  function findScrollHost(node: HTMLElement | null): HTMLElement | null {
+    let ancestor = node?.parentElement ?? null;
+    while (ancestor) {
+      const overflowY = getComputedStyle(ancestor).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') return ancestor;
+      ancestor = ancestor.parentElement;
+    }
+    return null;
+  }
+
+  function updateViewport() {
+    if (!tbodyEl) return;
+    const host = scrollRoot ?? hostEl;
+    if (host) {
+      const hostRect = host.getBoundingClientRect();
+      const bodyRect = tbodyEl.getBoundingClientRect();
+      scrollPos = Math.max(0, hostRect.top - bodyRect.top);
+      viewportH = host.clientHeight;
+    } else if (typeof window !== 'undefined') {
+      scrollPos = Math.max(0, -tbodyEl.getBoundingClientRect().top);
+      viewportH = window.innerHeight;
+    }
+  }
+
+  function handleViewportScroll() {
+    if (scrollRaf) return;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = 0;
+      updateViewport();
+    });
+  }
+
+  function observeRowNode(id: string, node: HTMLTableRowElement) {
+    node.dataset.measuredId = id;
+    if (rowObserver) rowObserver.observe(node, { box: 'border-box' });
+    else pendingMeasureNodes.set(id, node);
+  }
+
+  function forgetRowNode(node: HTMLTableRowElement) {
+    rowObserver?.unobserve(node);
+    const id = node.dataset.measuredId;
+    if (id) pendingMeasureNodes.delete(id);
+  }
+
+  function measureRow(node: HTMLTableRowElement, id: string) {
+    observeRowNode(id, node);
+    return {
+      update(next: string) {
+        if (node.dataset.measuredId !== next) {
+          forgetRowNode(node);
+          observeRowNode(next, node);
+        }
+      },
+      destroy() {
+        forgetRowNode(node);
+      }
+    };
+  }
+
+  function rowIdOf(element: Element | null): string {
+    const row = element?.closest?.('tr[data-segment-id]');
+    return row?.getAttribute('data-segment-id') ?? '';
+  }
+
+  function handleSelectionChange() {
+    // Pin the row holding a live text selection so scrolling cannot unmount
+    // it mid-select/copy. Textarea selections are not part of the document
+    // selection, so check the focused field first, then DOM ranges.
+    const active = document.activeElement as
+      HTMLTextAreaElement | HTMLInputElement | null;
+    if (
+      active &&
+      tableEl?.contains(active) &&
+      typeof active.selectionStart === 'number' &&
+      typeof active.selectionEnd === 'number' &&
+      active.selectionStart !== active.selectionEnd
+    ) {
+      const id = rowIdOf(active);
+      if (id) {
+        selectedSegmentId = id;
+        return;
+      }
+    }
+    const domSelection = document.getSelection();
+    if (
+      domSelection &&
+      !domSelection.isCollapsed &&
+      domSelection.rangeCount > 0 &&
+      tableEl?.contains(domSelection.anchorNode?.parentElement ?? null)
+    ) {
+      const id = rowIdOf(
+        domSelection.anchorNode instanceof Element
+          ? domSelection.anchorNode
+          : (domSelection.anchorNode?.parentElement ?? null)
+      );
+      if (id) {
+        selectedSegmentId = id;
+        return;
+      }
+    }
+    if (selectedSegmentId) selectedSegmentId = '';
+  }
+
+  function handleFocusIn(event: FocusEvent) {
+    const row = (event.target as HTMLElement | null)?.closest?.(
+      'tr[data-segment-id]'
+    );
+    const id = row?.getAttribute('data-segment-id');
+    if (id) focusedSegmentId = id;
+  }
+
+  function handleFocusOut(event: FocusEvent) {
+    const next = event.relatedTarget as HTMLElement | null;
+    if (!next || !tableEl?.contains(next)) focusedSegmentId = '';
+  }
+
+  function setShowAll(value: boolean) {
+    showAll = value;
+    onshowallchange?.(value);
+  }
+
+  // Reveal API for the drawer (keyboard arrows, playlist navigation):
+  // call scrollToSegment(id) BEFORE falling back to querySelector, because
+  // offscreen rows are not mounted until revealed. The target row is pinned
+  // while scrolling so measurement passes cannot unmount it mid-reveal.
+  // Returns false when the id is not loaded.
+  export async function scrollToSegment(
+    segmentId: string,
+    options: {
+      align?: 'center' | 'nearest' | 'start' | 'end';
+      focus?: string | boolean;
+    } = {}
+  ): Promise<boolean> {
+    const index = indexById.get(segmentId);
+    if (index === undefined) return false;
+    const { align = 'center', focus } = options;
+    const token = (revealToken += 1);
+    revealId = segmentId;
+    const current = () => token === revealToken;
+    try {
+      if (virtualEnabled) {
+        const host = scrollRoot ?? hostEl ?? findScrollHost(tableEl);
+        const rowTop = offsets[index];
+        const rowHeight = offsets[index + 1] - offsets[index];
+        const view = viewportH || 600;
+        let target: number;
+        if (align === 'start') target = rowTop;
+        else if (align === 'end') target = rowTop + rowHeight - view;
+        else if (align === 'nearest') {
+          const min = rowTop + rowHeight - view;
+          target =
+            scrollPos < min ? min : scrollPos > rowTop ? rowTop : scrollPos;
+        } else target = rowTop + rowHeight / 2 - view / 2;
+        if (host) host.scrollTop = Math.max(0, target);
+        else if (typeof window !== 'undefined')
+          window.scrollTo({
+            top: window.scrollY + target - scrollPos
+          });
+        updateViewport();
+        await tick();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        await tick();
+        // A newer reveal started while awaiting: stop before moving the
+        // viewport back or focusing a stale row.
+        if (!current()) return false;
+      }
+      const row = tbodyEl?.querySelector(
+        `tr[data-segment-id="${segmentId.replace(/"/g, '\\"')}"]`
+      );
+      if (!current()) return false;
+      (row as HTMLElement | null)?.scrollIntoView({
+        block:
+          align === 'center'
+            ? 'center'
+            : align === 'nearest'
+              ? 'nearest'
+              : align,
+        behavior: 'auto'
+      });
+      if (!current()) return Boolean(row);
+      if (typeof focus === 'string')
+        (row?.querySelector(focus) as HTMLElement | null)?.focus({
+          preventScroll: true
+        });
+      else if (focus) (row as HTMLElement | null)?.focus?.();
+      return Boolean(row);
+    } finally {
+      // Only the newest reveal clears the pin; a stale finally must not
+      // unmount the row a newer call just pinned.
+      if (current()) revealId = '';
+    }
+  }
+
+  // Profiler/test hook: ids currently mounted (window union pinned rows).
+  export function getRenderedSegmentIds(): string[] {
+    return visibleIndexes
+      .map((index) => items[index]?.id)
+      .filter((id): id is string => Boolean(id));
+  }
+
+  $effect(() => {
+    // Bound the measurement cache across corpus reloads.
+    const ids = new Set(items.map((item) => item.id));
+    if (measured.size > ids.size + 50) {
+      for (const key of measured.keys()) {
+        if (!ids.has(key)) measured.delete(key);
+      }
+    }
+  });
+
+  onMount(() => {
+    rowObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.measuredId;
+        if (!id) continue;
+        // Border-box: the spacer math must account for padding/border, not
+        // just content height.
+        const box = Array.isArray(entry.borderBoxSize)
+          ? entry.borderBoxSize[0]
+          : undefined;
+        const height = Math.round(
+          box?.blockSize ??
+            (entry.target as HTMLElement).getBoundingClientRect().height
+        );
+        if (height > 0 && Math.abs((measured.get(id) ?? 0) - height) > 1) {
+          measured.set(id, height);
+        }
+      }
+    });
+    // Actions parked rows here before the observer existed: pick them up so
+    // the first viewport measures instead of staying estimated.
+    for (const [id, node] of pendingMeasureNodes) {
+      if (node.isConnected) {
+        node.dataset.measuredId = id;
+        rowObserver.observe(node, { box: 'border-box' });
+      }
+    }
+    pendingMeasureNodes.clear();
+    document.addEventListener('selectionchange', handleSelectionChange);
+    updateViewport();
+    return () => {
+      if (scrollRaf) cancelAnimationFrame(scrollRaf);
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      pendingMeasureNodes.clear();
+      rowObserver?.disconnect();
+      rowObserver = undefined;
+    };
+  });
+
+  $effect(() => {
+    // Resolve lazily so late drawer layout still finds its scroll host.
+    if (!scrollRoot && !hostEl && tableEl) {
+      hostEl = findScrollHost(tableEl);
+    }
+  });
+
+  $effect(() => {
+    // Scroll/resize listeners follow the resolved host (explicit prop wins).
+    // Host layout changes (drawer panels opening, window zoom) do not fire
+    // window resize, so the host gets its own ResizeObserver.
+    const host = scrollRoot ?? hostEl;
+    host?.addEventListener('scroll', handleViewportScroll, { passive: true });
+    window.addEventListener('resize', handleViewportScroll);
+    const hostResize = new ResizeObserver(handleViewportScroll);
+    if (host) hostResize.observe(host);
+    if (!host)
+      window.addEventListener('scroll', handleViewportScroll, {
+        passive: true
+      });
+    updateViewport();
+    return () => {
+      host?.removeEventListener('scroll', handleViewportScroll);
+      window.removeEventListener('resize', handleViewportScroll);
+      if (!host) window.removeEventListener('scroll', handleViewportScroll);
+      hostResize.disconnect();
+    };
+  });
 </script>
 
-<table class="w-full table-fixed border-collapse text-sm">
+<table
+  bind:this={tableEl}
+  data-testid="generation-segment-table"
+  data-loaded-count={items.length}
+  data-rendered-count={visibleIndexes.length}
+  data-virtualized={virtualEnabled ? 'true' : 'false'}
+  aria-rowcount={items.length ? items.length * 2 : 1}
+  onfocusin={handleFocusIn}
+  onfocusout={handleFocusOut}
+  class="w-full table-fixed border-collapse text-sm"
+>
+  <caption class="sr-only">
+    Generation segments: showing {visibleIndexes.length} of {items.length} loaded
+    rows{virtualEnabled ? ' (virtualized)' : ''}.
+  </caption>
   <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]">
-    <tr>
+    <tr aria-rowindex={1}>
       <th class="w-12">Mark</th>
       <th class="w-14">#</th>
       <th class="text-left">Generation text and delivery</th>
@@ -218,14 +620,35 @@
       <th class="w-24">Status</th>
     </tr>
   </thead>
-  <tbody>
-    {#each items as item, itemIndex (item.id)}
+  <tbody bind:this={tbodyEl}>
+    {#if virtualEnabled && selection.topGap > 0}
+      <tr class="virtual-spacer" aria-hidden="true">
+        <td
+          colspan="5"
+          style="height: {Math.round(
+            selection.topGap
+          )}px; padding: 0; border: 0;"
+        ></td>
+      </tr>
+    {/if}
+    {#each visibleIndexes as vi (items[vi].id)}
+      {@const item = items[vi]}
+      {@const itemIndex = vi}
+      {@const gapHeight = virtualEnabled ? (selection.gaps.get(vi) ?? 0) : 0}
+      {#if gapHeight > 0}
+        <tr class="virtual-spacer" aria-hidden="true">
+          <td
+            colspan="5"
+            style="height: {Math.round(gapHeight)}px; padding: 0; border: 0;"
+          ></td>
+        </tr>
+      {/if}
       {@const selectedTake = onactivetake(item)}
       {@const hasPassages = Boolean(
         item.passage_structure?.layers[textMode].boundaries.length
       )}
       {#if itemIndex > 0}
-        <tr class="boundary-row">
+        <tr class="boundary-row" aria-rowindex={itemIndex * 2 + 1}>
           <td colspan="5">
             <SpeechBoundaryMarker
               left={items[itemIndex - 1]}
@@ -239,11 +662,13 @@
         </tr>
       {/if}
       <tr
+        use:measureRow={item.id}
         onclick={(event) => onselect(item, event)}
         class:selected={selectedRows.includes(item.id)}
         class:removed={item.removed}
         data-segment-id={item.id}
         data-segment-ordinal={item.ordinal}
+        aria-rowindex={itemIndex * 2 + 2}
       >
         <td>
           <input
@@ -595,7 +1020,37 @@
         </td>
       </tr>
     {/each}
+    {#if virtualEnabled && selection.bottomGap > 0}
+      <tr class="virtual-spacer" aria-hidden="true">
+        <td
+          colspan="5"
+          style="height: {Math.round(
+            selection.bottomGap
+          )}px; padding: 0; border: 0;"
+        ></td>
+      </tr>
+    {/if}
   </tbody>
+  {#if items.length > virtualizeThreshold}
+    <tfoot>
+      <tr>
+        <td colspan="5" class="border-0 py-2 text-center">
+          {#if showAll}
+            <button type="button" class="mini" onclick={() => setShowAll(false)}
+              >Virtualize rows (faster)</button
+            >
+          {:else}
+            <button type="button" class="mini" onclick={() => setShowAll(true)}
+              >Show all {items.length} loaded rows (enables find-in-page; slower)</button
+            >
+          {/if}
+          <span class="muted ml-2 text-xs"
+            >Showing {visibleIndexes.length} of {items.length} loaded</span
+          >
+        </td>
+      </tr>
+    </tfoot>
+  {/if}
 </table>
 
 <style>
@@ -674,6 +1129,10 @@
     height: 0.8rem;
     border-bottom: 0;
     padding: 0;
+  }
+  tr.virtual-spacer td {
+    line-height: 0;
+    font-size: 0;
   }
   tr.removed {
     opacity: 0.42;

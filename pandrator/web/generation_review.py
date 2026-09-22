@@ -31,6 +31,22 @@ PROJECTABLE_SEGMENT_FIELDS = set(COMPACT_SEGMENT_FIELDS) | {
 }
 
 
+def parse_summary_flag(raw: str | None) -> bool:
+    """Strict opt-in summary parsing for history/status query strings.
+
+    Absent means legacy full. Malformed values raise ValueError so routes
+    answer 422 instead of silently guessing full or summary.
+    """
+    if raw is None:
+        return False
+    normalized = raw.strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise ValueError("summary must be true or false.")
+
+
 def project_segments(payload: dict[str, Any], *, view: str = "full", fields: list[str] | None = None) -> dict[str, Any]:
     if view not in {"full", "compact", "provenance"}:
         raise ValueError("Segment view must be full, compact, or provenance.")
@@ -50,12 +66,15 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
     return {**payload, "items": rows, "view": view, "fields": selected}
 
 
-def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None, revision_ids: list[str] | None = None) -> dict[str, Any]:
-    from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
+def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None, revision_ids: list[str] | None = None, include_audio_reuse: bool = True) -> dict[str, Any]:
     from .workspace import WorkspaceSettingsService
 
-    snapshot, _ = WorkspaceSettingsService(database).resolve(session_id)
     limit = max(1, min(int(limit), 100))
+    snapshot = None
+    if include_audio_reuse:
+        from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
+
+        snapshot, _ = WorkspaceSettingsService(database).resolve(session_id)
     with database.session() as session:
         if session.get(SessionRecord, session_id) is None:
             raise KeyError(session_id)
@@ -82,67 +101,70 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 values["total"] += count
                 if not removed:
                     values["active"] += count
-            audio_identity = AudioIdentityContext(session, snapshot)
-            # Drive from the visible revision IDs: the three-table join lets
-            # SQLite lead with audio_takes via its status index and scan takes
-            # cross-session before filtering to these revisions. Segment-first
-            # IN queries stay on the plan_revision index and the take/artifact
-            # primary keys however the planner orders them, with no schema
-            # change. The iterated row set is identical to the inner join.
-            # Identity inspection reads only speech-affecting columns; the
-            # large provenance/speech-plan payloads stay deferred. Keep this
-            # column set in sync with AudioIdentityContext.for_segment and
-            # take_reuse_reason, or deferred access will regress into N+1.
-            segments = list(session.scalars(select(GenerationSegment).options(
-                load_only(
-                    GenerationSegment.id,
-                    GenerationSegment.plan_revision_id,
-                    GenerationSegment.status,
-                    GenerationSegment.language,
-                    GenerationSegment.voice,
-                    GenerationSegment.voice_id,
-                    GenerationSegment.text,
-                    GenerationSegment.optimized_text,
-                ),
-            ).where(
-                GenerationSegment.plan_revision_id.in_(ids),
-                GenerationSegment.removed.is_(False),
-                GenerationSegment.status == "completed",
-            )).all())
-            segments_by_id = {segment.id: segment for segment in segments}
-            takes: list[AudioTake] = []
-            segment_ids = list(segments_by_id)
-            for offset in range(0, len(segment_ids), 500):
-                takes.extend(session.scalars(select(AudioTake).where(
-                    AudioTake.generation_segment_id.in_(
-                        segment_ids[offset:offset + 500]
+            if include_audio_reuse:
+                from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
+
+                audio_identity = AudioIdentityContext(session, snapshot)
+                # Drive from the visible revision IDs: the three-table join lets
+                # SQLite lead with audio_takes via its status index and scan takes
+                # cross-session before filtering to these revisions. Segment-first
+                # IN queries stay on the plan_revision index and the take/artifact
+                # primary keys however the planner orders them, with no schema
+                # change. The iterated row set is identical to the inner join.
+                # Identity inspection reads only speech-affecting columns; the
+                # large provenance/speech-plan payloads stay deferred. Keep this
+                # column set in sync with AudioIdentityContext.for_segment and
+                # take_reuse_reason, or deferred access will regress into N+1.
+                segments = list(session.scalars(select(GenerationSegment).options(
+                    load_only(
+                        GenerationSegment.id,
+                        GenerationSegment.plan_revision_id,
+                        GenerationSegment.status,
+                        GenerationSegment.language,
+                        GenerationSegment.voice,
+                        GenerationSegment.voice_id,
+                        GenerationSegment.text,
+                        GenerationSegment.optimized_text,
                     ),
-                    AudioTake.is_active.is_(True),
-                    AudioTake.status == "completed",
+                ).where(
+                    GenerationSegment.plan_revision_id.in_(ids),
+                    GenerationSegment.removed.is_(False),
+                    GenerationSegment.status == "completed",
                 )).all())
-            artifact_ids = list(
-                {take.artifact_id for take in takes if take.artifact_id}
-            )
-            artifacts_by_id: dict[str, Artifact] = {}
-            for offset in range(0, len(artifact_ids), 500):
-                for artifact in session.scalars(select(Artifact).where(
-                    Artifact.id.in_(artifact_ids[offset:offset + 500]),
-                    Artifact.state != "deleted",
-                )).all():
-                    artifacts_by_id[artifact.id] = artifact
-            for take in takes:
-                segment = segments_by_id.get(take.generation_segment_id)
-                artifact = (
-                    artifacts_by_id.get(take.artifact_id)
-                    if take.artifact_id
-                    else None
+                segments_by_id = {segment.id: segment for segment in segments}
+                takes: list[AudioTake] = []
+                segment_ids = list(segments_by_id)
+                for offset in range(0, len(segment_ids), 500):
+                    takes.extend(session.scalars(select(AudioTake).where(
+                        AudioTake.generation_segment_id.in_(
+                            segment_ids[offset:offset + 500]
+                        ),
+                        AudioTake.is_active.is_(True),
+                        AudioTake.status == "completed",
+                    )).all())
+                artifact_ids = list(
+                    {take.artifact_id for take in takes if take.artifact_id}
                 )
-                if segment is None or artifact is None:
-                    continue
-                values = counts[segment.plan_revision_id]
-                reason = take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment))
-                key = "reusable" if reason == "reusable" else "unknown" if reason == "audio_identity_unknown" else "settings_stale"
-                values[key] = values.get(key, 0) + 1
+                artifacts_by_id: dict[str, Artifact] = {}
+                for offset in range(0, len(artifact_ids), 500):
+                    for artifact in session.scalars(select(Artifact).where(
+                        Artifact.id.in_(artifact_ids[offset:offset + 500]),
+                        Artifact.state != "deleted",
+                    )).all():
+                        artifacts_by_id[artifact.id] = artifact
+                for take in takes:
+                    segment = segments_by_id.get(take.generation_segment_id)
+                    artifact = (
+                        artifacts_by_id.get(take.artifact_id)
+                        if take.artifact_id
+                        else None
+                    )
+                    if segment is None or artifact is None:
+                        continue
+                    values = counts[segment.plan_revision_id]
+                    reason = take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment))
+                    key = "reusable" if reason == "reusable" else "unknown" if reason == "audio_identity_unknown" else "settings_stale"
+                    values[key] = values.get(key, 0) + 1
         items = []
         for revision in revisions:
             operation = dict(revision.operation_json or {})
@@ -158,6 +180,24 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             if batch:
                 summary += f" (batch {batch.get('index')}/{batch.get('count')})"
             values = counts.get(revision.id, {"total": 0, "active": 0, "reusable": 0})
+            if include_audio_reuse:
+                reuse_fields: dict[str, Any] = {
+                    "reusable_segment_count": values["reusable"],
+                    "stale_segment_count": values["active"] - values["reusable"],
+                    "audio_settings_stale_segment_count": values.get("settings_stale", 0),
+                    "audio_identity_unknown_segment_count": values.get("unknown", 0),
+                    "audio_reuse_checked": True,
+                }
+            else:
+                # Summary mode: reuse was not inspected. Emit nulls (never 0)
+                # so callers cannot mistake unchecked audio for fully stale.
+                reuse_fields = {
+                    "reusable_segment_count": None,
+                    "stale_segment_count": None,
+                    "audio_settings_stale_segment_count": None,
+                    "audio_identity_unknown_segment_count": None,
+                    "audio_reuse_checked": False,
+                }
             items.append({
                 "id": revision.id, "revision_number": revision.revision_number,
                 "parent_revision_id": revision.parent_revision_id,
@@ -173,10 +213,7 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 "source_block_ordinal": operation.get("source_block_ordinal"),
                 "restored_from_revision_id": operation.get("target_revision_id"),
                 "segment_count": values["total"], "active_segment_count": values["active"],
-                "reusable_segment_count": values["reusable"],
-                "stale_segment_count": values["active"] - values["reusable"],
-                "audio_settings_stale_segment_count": values.get("settings_stale", 0),
-                "audio_identity_unknown_segment_count": values.get("unknown", 0),
+                **reuse_fields,
                 "created_at": revision.created_at.isoformat(),
                 "speech_block_settings": {key: value for key, value in (revision.settings_json or {}).items() if key.startswith("speech_block_")},
             })
@@ -184,7 +221,22 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
             "items": items, "active_revision_id": plan.active_revision_id,
             "total": int(session.scalar(select(func.count()).select_from(GenerationPlanRevision).where(GenerationPlanRevision.plan_id == plan.id)) or 0),
             "next_before_revision_number": revisions[-1].revision_number if revisions and has_more else None,
+            "audio_reuse_checked": include_audio_reuse,
         }
+
+
+def revision_detail(database, session_id: str, revision_id: str) -> dict[str, Any]:
+    """Always-full single-revision inspection for on-demand detail views.
+
+    List endpoints may run in summary mode; this is the authoritative per-
+    revision read (audio reuse fully computed). Raises KeyError when the
+    revision does not belong to this session's plan.
+    """
+    result = revision_history(database, session_id, revision_ids=[revision_id])
+    for item in result["items"]:
+        if item["id"] == revision_id:
+            return {"revision": item, "active_revision_id": result["active_revision_id"]}
+    raise KeyError(revision_id)
 
 
 def source_references(segment: GenerationSegment) -> set[str]:

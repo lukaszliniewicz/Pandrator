@@ -10,6 +10,7 @@
     TriangleAlert
   } from '@lucide/svelte';
   import { sessionApi } from './domain-api';
+  import { getTtsServiceDetail } from './tts-catalogue-cache';
   import type { SettingsPayload, TtsService, VoiceRecord } from './api-models';
   import { onMount } from 'svelte';
   import { voiceApi } from './admin-api';
@@ -259,16 +260,58 @@
       )
   );
   const selectedModel = $derived(String(effectiveTts.model ?? ''));
-  const modelMetadata = $derived(
-    selectedTts?.model_catalog?.find((model) => model.id === selectedModel)
+  const modelDetailKey = $derived(
+    section === 'tts' && audioCpp && selectedTts?.id && selectedModel
+      ? JSON.stringify([selectedTts.id, selectedModel])
+      : ''
   );
+  let modelDetail = $state<TtsService | null>(null);
+  let modelDetailLoading = $state(false);
+  let modelDetailError = $state('');
+  let modelDetailRetry = $state(0);
+  let modelDetailRequest = 0;
+  const modelMetadata = $derived(
+    (modelDetail?.model_catalog ?? selectedTts?.model_catalog)?.find(
+      (model) => model.id === selectedModel
+    )
+  );
+  $effect(() => {
+    // A primitive selection key prevents ordinary form edits from fetching
+    // the catalogue again. Late responses never replace another model's
+    // validation rules. Only this model's detailed metadata is requested.
+    const key = modelDetailKey;
+    const retry = modelDetailRetry;
+    const request = ++modelDetailRequest;
+    modelDetail = null;
+    modelDetailError = '';
+    modelDetailLoading = Boolean(key);
+    if (!key) return;
+    const [serviceId, model] = JSON.parse(key) as [string, string];
+    void getTtsServiceDetail(serviceId, { models: model, force: retry > 0 })
+      .then((detail) => {
+        if (request === modelDetailRequest) modelDetail = detail.service;
+      })
+      .catch((caught) => {
+        if (request === modelDetailRequest)
+          modelDetailError = errorMessage(caught);
+      })
+      .finally(() => {
+        if (request === modelDetailRequest) modelDetailLoading = false;
+      });
+    return () => {
+      if (request === modelDetailRequest) modelDetailRequest += 1;
+    };
+  });
   const modelTuningError = $derived.by(() => {
     if (section !== 'tts' || !audioCpp) return '';
     const values = (
       effectiveTts.audio_cpp_model_settings as
         Record<string, Record<string, unknown>> | undefined
     )?.[selectedModel];
-    if (!values) return '';
+    if (!values || !Object.keys(values).length) return '';
+    if (modelDetailLoading) return 'Loading validation rules for this model.';
+    if (modelDetailError || !modelDetail)
+      return 'Model-specific settings cannot be validated. Retry loading model details.';
     for (const [key, spec] of Object.entries(
       modelMetadata?.request_parameters ?? {}
     )) {
@@ -719,6 +762,27 @@
   load();
 </script>
 
+{#snippet modelDetailStatus()}
+  {#if section === 'tts' && audioCpp && selectedModel}
+    {#if modelDetailLoading}
+      <p class="muted mt-4 text-xs" role="status">
+        Loading controls for the selected model…
+      </p>
+    {:else if modelDetailError}
+      <div class="mt-4 text-sm text-red-600" role="alert">
+        Could not load model details: {modelDetailError}
+        <button
+          type="button"
+          class="tool ml-2"
+          onclick={() => (modelDetailRetry += 1)}
+        >
+          Retry model details
+        </button>
+      </div>
+    {/if}
+  {/if}
+{/snippet}
+
 {#snippet panelActions()}
   {#if section === 'tts'}<a
       href="/providers?tab=speech&speech=external"
@@ -972,6 +1036,7 @@
           </div>
         {/if}
       </section>
+      {@render modelDetailStatus()}
       {#if section === 'tts' && audioCpp && modelMetadata?.catalogue_info}
         <div class="mt-4 rounded-xl border border-[var(--line)] p-3">
           <AudioCppModelDetails model={modelMetadata.catalogue_info} />
@@ -1008,6 +1073,7 @@
         {#each visible as [key, fallback]}
           <div>
             {#if section === 'tts' && key === 'service'}<TtsServiceSelect
+                compact
                 value={String(value(key, fallback) ?? '')}
                 onloaded={(services) => {
                   ttsServices = services;
@@ -1093,6 +1159,7 @@
           </div>
         {/each}
       </div>
+      {@render modelDetailStatus()}
       {#if section === 'tts' && audioCpp && modelMetadata?.catalogue_info}
         <div class="mt-4 rounded-xl border border-[var(--line)] p-3">
           <AudioCppModelDetails model={modelMetadata.catalogue_info} />

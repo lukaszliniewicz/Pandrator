@@ -14,18 +14,26 @@ def register_repair_batch_routes(app, context) -> None:
     base = "/api/v1/sessions/<session_id>/generation-plan"
 
     def paging():
+        from .generation_review import parse_summary_flag
+
         limit = int(request.args.get("limit", "50"))
         before = request.args.get("before_revision_number")
         before = int(before) if before is not None else None
         if not 1 <= limit <= 100 or (before is not None and before < 1):
             raise ValueError("Limit must be 1–100 and the revision cursor must be positive.")
-        return {"limit": limit, "before_revision_number": before}
+        summary = parse_summary_flag(request.args.get("summary"))
+        return {"limit": limit, "before_revision_number": before, "summary_flags": summary}
 
     @app.get(f"{base}/history", endpoint="generation.grouped_plan_history")
     @guards.require_scope("app.read")
     def grouped_history(session_id):
         try:
-            return jsonify(grouped_revision_history(services.database, session_id, **paging()))
+            paging_args = paging()
+            summary = paging_args.pop("summary_flags")
+            return jsonify(grouped_revision_history(
+                services.database, session_id, **paging_args,
+                include_audio_reuse=not summary, include_undo_eligibility=not summary,
+            ))
         except KeyError:
             return guards.error_response("not_found", "Session not found.", 404)
         except ValueError as error:
@@ -35,7 +43,9 @@ def register_repair_batch_routes(app, context) -> None:
     @guards.require_scope("app.read")
     def batch_detail(session_id, batch_id):
         try:
-            return jsonify(repair_batch_detail(services.database, session_id, batch_id, **paging()))
+            paging_args = paging()
+            paging_args.pop("summary_flags", None)  # Detail is always authoritative full.
+            return jsonify(repair_batch_detail(services.database, session_id, batch_id, **paging_args))
         except KeyError:
             return guards.error_response("not_found", "Session or repair batch not found.", 404)
         except ValueError as error:

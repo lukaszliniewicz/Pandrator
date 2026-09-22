@@ -76,6 +76,268 @@ def _dedupe_catalogue_values(values: Iterable[object]) -> list[str]:
     return result
 
 
+class TtsCatalogueServiceNotFoundError(ValueError):
+    """Raised when a TTS catalogue filter names an unknown service."""
+
+    def __init__(self, service_ids: Iterable[object]):
+        missing = [str(item) for item in service_ids]
+        super().__init__(
+            "Unknown TTS service(s): "
+            + ", ".join(missing)
+            + ". Use the full catalogue to list available services."
+        )
+        self.service_ids = missing
+
+
+# Slim per-service projection for the opt-in compact catalogue view.
+# Only dropdown/status/capability fields the session view needs; heavy
+# detail (model_catalog, voice_metadata, expressive capabilities, request
+# schemas, pricing, secret references) stays on the full/detail views.
+COMPACT_TTS_SERVICE_FIELDS = frozenset({
+    "id",
+    "name",
+    "description",
+    "adapter",
+    "kind",
+    "provider",
+    "source_url",
+    "api_base",
+    "connection_mode",
+    "manager_available",
+    "manager_component_id",
+    "manager_component_state",
+    "manager_supported_actions",
+    "manager_endpoint_read_only",
+    "managed_service_id",
+    "manager_service",
+    "online",
+    "available",
+    "availability_reason",
+    "models",
+    "default_model",
+    "voices",
+    "live_voices",
+    "voice_catalogues",
+    "model_catalog",
+    "model_voice_modes",
+    "voice_metadata",
+    "default_voice",
+    "default_voices",
+    "default_voices_by_language",
+    "generation_prompt_models",
+    "supports_voice_cloning",
+    "supports_voice_deletion",
+    "supports_dynamic_catalog",
+    "supports_model_upload",
+    "supports_prebuilt_voices",
+    "supports_batch_synthesis",
+    "supports_parallel_synthesis",
+    "batch_synthesis",
+    "voice_reference_text",
+    "credential_required",
+    "credential_configured",
+    "credential_source",
+    "credential_backend",
+    "credential_reference",
+    "catalogue_role",
+    "replacement_service_id",
+    "replacement_model_family",
+})
+
+TTS_CATALOGUE_VIEWS = ("full", "compact")
+
+MAX_TTS_SERVICE_FILTER_IDS = 20
+
+
+def _project_compact_service(service: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one service row onto the compact allowlist without defaults."""
+    return {key: service[key] for key in COMPACT_TTS_SERVICE_FIELDS if key in service}
+
+
+class TtsCatalogueModelNotFoundError(ValueError):
+    """Raised when a TTS service-detail filter names an unknown model."""
+
+    def __init__(self, service_id: str, model_ids: Iterable[object]):
+        missing = [str(item) for item in model_ids]
+        super().__init__(
+            f"Unknown model(s) for TTS service '{service_id}': "
+            + ", ".join(missing)
+            + "."
+        )
+        self.service_id = service_id
+        self.model_ids = missing
+
+
+# Lightweight per-model fields for the compact slim model_catalog entries.
+# Scalar or short language-list values only; never nested detail dicts.
+SLIM_MODEL_CATALOG_FIELDS = (
+    "id",
+    "label",
+    "family",
+    "voice_mode",
+    "supported_languages",
+    "languages",
+)
+
+MAX_TTS_DETAIL_MODEL_IDS = 20
+
+
+def _slim_model_catalog(service: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Build chooser-grade model entries covering every selectable model id.
+
+    Same precedence as the full builder (configured/discovered record wins
+    over static builtins), restricted to scalar or short language-list
+    fields: the service's own model_catalog rows overlay the audio.cpp
+    builtin index, so custom labels, language options and voice modes can
+    never silently differ from the full view. Non-audio.cpp and custom
+    providers keep whatever scalar metadata their own records carry. The
+    service's model_voice_modes map only fills a voice_mode no other source
+    provides. Full records (catalogue_info, request_parameters, per-model
+    detail) stay on the full/detail views and are hydrated per chosen model.
+    """
+    records: dict[str, Mapping[str, Any]] = {}
+    raw_catalog = service.get("model_catalog")
+    if isinstance(raw_catalog, list):
+        for item in raw_catalog:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if model_id and model_id not in records:
+                records[model_id] = item
+    models = service.get("models")
+    wanted = _dedupe_catalogue_values(
+        [
+            *(models if isinstance(models, list) else []),
+            str(service.get("default_model") or ""),
+            *records,
+        ]
+    )
+    voice_modes = (
+        service.get("model_voice_modes")
+        if isinstance(service.get("model_voice_modes"), dict)
+        else {}
+    )
+    builtin_light: dict[str, dict[str, Any]] = {}
+    if normalize_service_id(service.get("adapter")) == "audio_cpp":
+        for item in AUDIO_CPP_MODEL_CATALOG:
+            model_id = str(item.get("id") or "").strip()
+            if not model_id or model_id in builtin_light:
+                continue
+            builtin_light[model_id] = _slim_model_fields(item)
+    summaries: list[dict[str, Any]] = []
+    for model_id in wanted:
+        summary = dict(builtin_light.get(model_id, {"id": model_id}))
+        record = records.get(model_id)
+        if record is not None:
+            summary.update(_slim_model_fields(record))
+        summary["id"] = model_id
+        mode = voice_modes.get(model_id)
+        if isinstance(mode, str) and mode.strip() and "voice_mode" not in summary:
+            summary["voice_mode"] = mode.strip()
+        summaries.append(summary)
+    return summaries
+
+
+def _slim_model_fields(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Pick the retained scalar/language fields from one model record."""
+    fields: dict[str, Any] = {}
+    for key in SLIM_MODEL_CATALOG_FIELDS:
+        if key in {"id", "supported_languages", "languages"}:
+            continue
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            fields[key] = value.strip()
+    for key in ("supported_languages", "languages"):
+        value = item.get(key)
+        if isinstance(value, list):
+            fields[key] = [entry for entry in value if str(entry).strip()]
+    model_id = str(item.get("id") or "").strip()
+    fields["id"] = model_id
+    return fields
+
+
+def _filter_service_models(
+    service: dict[str, Any],
+    selected: Sequence[str],
+    *,
+    service_id: str,
+) -> dict[str, Any]:
+    """Restrict per-model detail maps to the selected models.
+
+    Id lists (``models``/``voices``) and service defaults stay whole as small
+    chooser context; only the heavy per-model maps are filtered. Matching is
+    exact and case-sensitive: model ids are provider identifiers, not slugs.
+    """
+    wanted = set(selected)
+    catalog = service.get("model_catalog")
+    known: set[str] = set()
+    if isinstance(catalog, list):
+        for item in catalog:
+            if isinstance(item, dict):
+                model_id = str(item.get("id") or "")
+                if model_id:
+                    known.add(model_id)
+    for key in ("models", "voice_catalogues", "model_voice_modes", "default_voices"):
+        value = service.get(key)
+        if isinstance(value, dict):
+            known.update(str(model_id) for model_id in value)
+        elif isinstance(value, list):
+            known.update(str(model_id) for model_id in value if str(model_id).strip())
+    voice_metadata_known = service.get("voice_metadata")
+    if isinstance(voice_metadata_known, dict):
+        known.update(
+            str(key).split(":", 1)[0] for key in voice_metadata_known if str(key).strip()
+        )
+    default_model = str(service.get("default_model") or "")
+    if default_model:
+        known.add(default_model)
+    missing = [model_id for model_id in selected if model_id not in known]
+    if missing:
+        raise TtsCatalogueModelNotFoundError(service_id, missing)
+    if isinstance(catalog, list):
+        service["model_catalog"] = [
+            item
+            for item in catalog
+            if isinstance(item, dict) and str(item.get("id") or "") in wanted
+        ]
+    voice_catalogues = service.get("voice_catalogues")
+    if isinstance(voice_catalogues, dict):
+        service["voice_catalogues"] = {
+            model_id: voices
+            for model_id, voices in voice_catalogues.items()
+            if str(model_id) in wanted
+        }
+    voice_metadata = service.get("voice_metadata")
+    if isinstance(voice_metadata, dict):
+        service["voice_metadata"] = {
+            key: item
+            for key, item in voice_metadata.items()
+            if str(key).split(":", 1)[0] in wanted
+        }
+    model_voice_modes = service.get("model_voice_modes")
+    if isinstance(model_voice_modes, dict):
+        service["model_voice_modes"] = {
+            model_id: mode
+            for model_id, mode in model_voice_modes.items()
+            if str(model_id) in wanted
+        }
+    default_voices = service.get("default_voices")
+    if isinstance(default_voices, dict):
+        service["default_voices"] = {
+            model_id: voice
+            for model_id, voice in default_voices.items()
+            if str(model_id) in wanted
+        }
+    generation_prompt_models = service.get("generation_prompt_models")
+    if isinstance(generation_prompt_models, list):
+        service["generation_prompt_models"] = [
+            model_id
+            for model_id in generation_prompt_models
+            if str(model_id) in wanted
+        ]
+    return service
+
+
 def _audio_cpp_static_model_catalog(service: dict[str, Any]) -> list[dict[str, Any]]:
     """Merge current built-in metadata into configured audio.cpp model rows."""
 
@@ -1759,7 +2021,210 @@ class TtsCatalogueService:
                 )
         return previews
 
-    def snapshot(self, *, refresh: bool = False) -> tuple[dict[str, Any], int]:
+    def snapshot(
+        self,
+        *,
+        refresh: bool = False,
+        view: str = "full",
+        service_ids: Sequence[str] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """Return the UI-facing TTS catalogue.
+
+        ``view="compact"`` is an opt-in slim projection for the session view:
+        it skips the audio.cpp static model-catalogue merge, the provider
+        profile deepcopy and the preview query, slims each service's
+        ``model_catalog`` to chooser-grade entries (id/label/family/
+        voice_mode/supported_languages) while keeping ``voice_metadata``
+        verbatim, and projects each service onto
+        :data:`COMPACT_TTS_SERVICE_FIELDS`. The default ``"full"`` view is
+        unchanged for legacy and MCP consumers. ``service_ids`` restricts
+        the payload to selected services (matched by id or name) before any
+        refresh probing happens.
+        """
+        if view not in TTS_CATALOGUE_VIEWS:
+            raise ValueError("Unknown TTS catalogue view. Use 'full' or 'compact'.")
+        selected = self._normalize_service_selection(service_ids)
+        compact = view == "compact"
+        (
+            services,
+            manager,
+            connection_value,
+            revision,
+            default_value,
+            default_revision,
+            resolved_credentials,
+        ) = self._build_services(refresh=refresh, selected=selected, compact=compact)
+        if compact:
+            payload = {
+                "view": "compact",
+                "revision": revision,
+                "default_service": str(
+                    default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
+                ),
+                "recommended_service": DEFAULT_TTS_SERVICE_ID,
+                "default_revision": default_revision,
+                "services": redact_inline_secrets(
+                    [_project_compact_service(service) for service in services]
+                ),
+                "manager": manager,
+            }
+            return payload, revision
+        payload = {
+            "value": redact_inline_secrets(connection_value),
+            "revision": revision,
+            "default_value": redact_inline_secrets(default_value),
+            "recommended_service": DEFAULT_TTS_SERVICE_ID,
+            "default_service": str(
+                default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
+            ),
+            "default_revision": default_revision,
+            "builtin_defaults": redact_inline_secrets(BUILTIN_DEFAULTS["tts"]),
+            "services": redact_inline_secrets(services),
+            "profiles": list_tts_provider_profiles(),
+            "previews": self._previews(),
+            "manager": manager,
+        }
+        return payload, revision
+
+    def service_detail(
+        self,
+        service_id: str,
+        *,
+        refresh: bool = False,
+        models: Sequence[str] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """Return the full catalogue entry for one selected service.
+
+        The returned ``service`` entry is identical to the matching entry of
+        the full collection view, so detail consumers can merge it over slim
+        compact rows. ``models`` optionally restricts the heavy per-model
+        maps (model_catalog, voice_catalogues, voice_metadata) to the chosen
+        models so callers never ship all 127 audio.cpp records; id lists and
+        defaults stay whole. Server-side limit: the full heavy catalogue is
+        still built and then filtered, so this pass wins transfer bytes, not
+        server build cost. Unknown ids raise
+        :class:`TtsCatalogueServiceNotFoundError`; unknown models raise
+        :class:`TtsCatalogueModelNotFoundError`.
+        """
+        normalized = normalize_service_id(service_id)
+        if not normalized or len(normalized) > 64:
+            raise ValueError("A TTS service id must be 1 to 64 characters.")
+        selected_models = self._normalize_model_selection(models)
+        (
+            services,
+            _manager,
+            _connection_value,
+            revision,
+            default_value,
+            default_revision,
+            _resolved_credentials,
+        ) = self._build_services(refresh=refresh, selected=[normalized], compact=False)
+        if not services:  # pragma: no cover - _build_services raises first
+            raise TtsCatalogueServiceNotFoundError([service_id])
+        service = services[0]
+        if selected_models is not None:
+            service = _filter_service_models(
+                service, selected_models, service_id=normalized
+            )
+        payload: dict[str, Any] = {
+            "view": "detail",
+            "revision": revision,
+            "default_service": str(
+                default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
+            ),
+            "recommended_service": DEFAULT_TTS_SERVICE_ID,
+            "default_revision": default_revision,
+            "service": redact_inline_secrets(service),
+        }
+        if selected_models is not None:
+            payload["selected_models"] = selected_models
+        return payload, revision
+
+    @staticmethod
+    def _normalize_model_selection(
+        models: Sequence[str] | None,
+    ) -> list[str] | None:
+        if models is None:
+            return None
+        selected: list[str] = []
+        for raw in models:
+            model_id = str(raw or "").strip()
+            if not model_id or len(model_id) > 256:
+                raise ValueError(
+                    "Each selected TTS model id must be 1 to 256 characters."
+                )
+            if model_id not in selected:
+                selected.append(model_id)
+        if not selected:
+            raise ValueError("Select at least one TTS model.")
+        if len(selected) > MAX_TTS_DETAIL_MODEL_IDS:
+            raise ValueError(
+                "Select at most "
+                f"{MAX_TTS_DETAIL_MODEL_IDS} TTS models per request."
+            )
+        return selected
+
+    def _normalize_service_selection(
+        self,
+        service_ids: Sequence[str] | None,
+    ) -> list[str] | None:
+        if service_ids is None:
+            return None
+        selected: list[str] = []
+        for raw in service_ids:
+            normalized = normalize_service_id(raw)
+            if not normalized or len(normalized) > 64:
+                raise ValueError(
+                    "Each TTS service filter id must be 1 to 64 characters."
+                )
+            if normalized not in selected:
+                selected.append(normalized)
+        if len(selected) > MAX_TTS_SERVICE_FILTER_IDS:
+            raise ValueError(
+                "Select at most "
+                f"{MAX_TTS_SERVICE_FILTER_IDS} TTS services per request."
+            )
+        return selected
+
+    @staticmethod
+    def _apply_service_selection(
+        services: list[dict[str, Any]],
+        selected: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        wanted = set(selected)
+        filtered = [
+            service
+            for service in services
+            if normalize_service_id(service.get("id") or service.get("name"))
+            in wanted
+            or normalize_service_id(service.get("name")) in wanted
+        ]
+        found = {
+            normalize_service_id(service.get("id") or service.get("name"))
+            for service in filtered
+        } | {
+            normalize_service_id(service.get("name")) for service in filtered
+        }
+        missing = [item for item in selected if item not in found]
+        if missing:
+            raise TtsCatalogueServiceNotFoundError(missing)
+        return filtered
+
+    def _build_services(
+        self,
+        *,
+        refresh: bool,
+        selected: Sequence[str] | None,
+        compact: bool,
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, Any],
+        dict[str, Any],
+        int,
+        dict[str, Any],
+        int,
+        list[ResolvedCredential],
+    ]:
         connection_value, revision, default_value, default_revision = self._settings()
         services = [
             dict(item)
@@ -1767,6 +2232,8 @@ class TtsCatalogueService:
                 {**default_value, **connection_value}
             )
         ]
+        if selected is not None:
+            services = self._apply_service_selection(services, selected)
         manager = self._project_manager(
             services,
             configured_provider_ids=configured_tts_provider_ids(
@@ -1789,7 +2256,8 @@ class TtsCatalogueService:
             strict=True,
         ):
             if normalize_service_id(service.get("adapter")) == "audio_cpp":
-                service["model_catalog"] = _audio_cpp_static_model_catalog(service)
+                if not compact:
+                    service["model_catalog"] = _audio_cpp_static_model_catalog(service)
             self._decorate_credentials(
                 service,
                 resolved_credential=resolved_credential,
@@ -1815,22 +2283,20 @@ class TtsCatalogueService:
                     normalize_service_id(service.get("id") or service.get("name"))
                 )
             )
-        payload = {
-            "value": redact_inline_secrets(connection_value),
-            "revision": revision,
-            "default_value": redact_inline_secrets(default_value),
-            "recommended_service": DEFAULT_TTS_SERVICE_ID,
-            "default_service": str(
-                default_value.get("service") or BUILTIN_DEFAULTS["tts"]["service"]
-            ),
-            "default_revision": default_revision,
-            "builtin_defaults": redact_inline_secrets(BUILTIN_DEFAULTS["tts"]),
-            "services": redact_inline_secrets(services),
-            "profiles": list_tts_provider_profiles(),
-            "previews": self._previews(),
-            "manager": manager,
-        }
-        return payload, revision
+        if compact:
+            # Slim after refresh so live discovered records feed the chooser
+            # with the same record-over-builtin precedence as the full view.
+            for service in services:
+                service["model_catalog"] = _slim_model_catalog(service)
+        return (
+            services,
+            manager,
+            connection_value,
+            revision,
+            default_value,
+            default_revision,
+            resolved_credentials,
+        )
 
     def discovery_api_key(self, service_id: str | None) -> str:
         if not service_id:
