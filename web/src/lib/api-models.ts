@@ -1,4 +1,6 @@
 import type { JobStatus } from './job-status';
+import type { AudioCppModelInfo } from './audio-cpp-catalogue';
+import type { PassageStructure } from './passage-structure';
 
 export type LoadState =
   'idle' | 'loading' | 'ready' | 'empty' | 'stale' | 'failed';
@@ -665,7 +667,7 @@ export type TtsRequestParameter = {
 };
 
 type TtsModel = {
-  catalogue_info?: import('./audio-cpp-catalogue').AudioCppModelInfo;
+  catalogue_info?: AudioCppModelInfo;
   family?: string;
   supported_languages?: string[];
   request_parameters?: Record<string, TtsRequestParameter>;
@@ -1066,7 +1068,7 @@ type SpeechBlockProvenance = {
 };
 
 export type GenerationSegment = {
-  passage_structure?: import('./passage-structure').PassageStructure;
+  passage_structure?: PassageStructure;
   search_matches?: { start: number; end: number }[];
   audio_reuse_reason?: string;
   has_reusable_take?: boolean;
@@ -1099,6 +1101,8 @@ export type GenerationSegment = {
 };
 
 export type GenerationSegmentPage = {
+  active_plan_revision_id?: string | null;
+  is_active_revision?: boolean;
   boundary_flag_count?: number;
   items: GenerationSegment[];
   next_cursor: number | null;

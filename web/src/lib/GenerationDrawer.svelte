@@ -73,6 +73,7 @@
   import GenerationReadingView from './GenerationReadingView.svelte';
   import SpeechPlanReviewDialog from './SpeechPlanReviewDialog.svelte';
   import SpeechPlanHistory from './SpeechPlanHistory.svelte';
+  import GenerationPlanReviewBar from './GenerationPlanReviewBar.svelte';
   import GenerationStartDialog from './GenerationStartDialog.svelte';
   import type { GenerationStartMode } from './generation-start';
   import {
@@ -1338,6 +1339,23 @@
       error = errorMessage(caught);
     } finally {
       loading = false;
+    }
+  }
+
+  async function settlePlanReviewEdits() {
+    const inspectedRevision = payload.plan_revision_id;
+    await editQueue.settledIds([]);
+    await tick();
+    if (
+      !inspectedRevision ||
+      selectedRunId ||
+      payload.plan_revision_id !== inspectedRevision ||
+      pendingSegmentUpdates > 0 ||
+      topologyBusy
+    ) {
+      throw new Error(
+        'The plan is still changing. Inspect the updated plan before marking it reviewed.'
+      );
     }
   }
 
@@ -2838,6 +2856,24 @@
             {regenerationNotice}
           </p>{/if}
 
+        {#if payload.plan_revision_id}
+          {#key `${sessionId}:${payload.plan_revision_id}:${selectedRunId}`}
+            <GenerationPlanReviewBar
+              {sessionId}
+              revisionId={payload.plan_revision_id}
+              current={!selectedRunId && payload.is_active_revision !== false}
+              refreshKey={payload}
+              blocked={loading ||
+                topologyBusy ||
+                pendingSegmentUpdates > 0 ||
+                ['queued', 'running', 'pausing', 'cancel_requested'].includes(
+                  run?.status ?? ''
+                )}
+              beforeReview={settlePlanReviewEdits}
+              onrefresh={() => load(true, false)}
+            />
+          {/key}
+        {/if}
         {#if !selectedRunId && payload.items.length}
           <p class="muted border-b border-[var(--line)] px-4 py-2 text-xs">
             Select speech text to edit its speaker, voice or delivery.

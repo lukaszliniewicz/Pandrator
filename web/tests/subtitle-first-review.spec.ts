@@ -689,12 +689,13 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
   await expect(
     page.getByRole('button', { name: 'Speech plans', exact: true })
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
-  await expect(page.locator('[data-generation-layout]')).toHaveAttribute(
-    'data-generation-layout',
-    'collapsed'
+  // Complete the review where the text is being inspected, without returning
+  // to the overview to approve it.
+  await page.getByTestId('drawer-mark-reviewed').click();
+  await expect(page.getByTestId('drawer-plan-review')).toContainText(
+    'Reviewed'
   );
-  await planCard.getByRole('button', { name: 'Mark reviewed' }).click();
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
   await expect(planCard.getByTestId('speech-plan-summary')).toContainText(
     'Reviewed'
   );

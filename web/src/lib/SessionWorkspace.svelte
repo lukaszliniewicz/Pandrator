@@ -3303,6 +3303,7 @@
         {/if}
         <WorkflowStageCard
           {stage}
+          sessionId={session.id}
           outputsOnly={outputHasInputPicker(stage.key)}
           onpreviewversion={previewVersion}
           {workspaceMode}

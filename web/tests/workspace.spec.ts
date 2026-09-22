@@ -600,6 +600,7 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   );
 
   await page.goto(`/sessions/${session.id}`);
+  await page.getByTestId('stage-disclosure-toggle').click();
   await page.getByTestId('stage-usage-details').locator('summary').click();
   await expect(page.getByLabel('Model google/gemini-3.6-flash')).toBeVisible();
   await expect(page.locator('body')).not.toContainText(
