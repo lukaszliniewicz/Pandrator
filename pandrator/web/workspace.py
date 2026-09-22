@@ -4181,6 +4181,8 @@ class GenerationService:
         operation: str = "generate",
         speech_plan_revision_id: str | None = None,
         stale_only: bool = False,
+        missing_only: bool = False,
+        expected_selection_hash: str | None = None,
     ) -> dict[str, Any]:
         """Resolve delivery settings and bind one immutable plan before queuing.
 
@@ -4191,8 +4193,14 @@ class GenerationService:
         requested_segment_ids = list(dict.fromkeys(str(value) for value in (segment_ids or []) if str(value)))
         run_override = dict(run_override or {})
         selected_segment_override = _secret_free(deepcopy(selected_segment_override or {}))
-        if stale_only and (requested_segment_ids or generation_run_id or operation != "generate" or selected_segment_override):
-            raise ValueError("Stale-only generation cannot be combined with selected segments, an older run, or alternate segment settings.")
+        if stale_only and missing_only:
+            raise ValueError("Stale-only and missing-only generation are mutually exclusive.")
+        automatic = stale_only or missing_only
+        if automatic and (requested_segment_ids or generation_run_id or operation != "generate" or selected_segment_override):
+            label = "Missing-only" if missing_only else "Stale-only"
+            raise ValueError(f"{label} generation cannot be combined with selected segments, an older run, or alternate segment settings.")
+        if expected_selection_hash and (requested_segment_ids or generation_run_id or operation != "generate" or selected_segment_override):
+            raise ValueError("A selection hash cannot be combined with selected segments, an older run, alternate segment settings, or a non-generate operation.")
         if selected_segment_override and not requested_segment_ids:
             raise ValueError("An alternate segment setting set requires one or more selected segments.")
         if selected_segment_override:
@@ -4213,40 +4221,40 @@ class GenerationService:
             )))
             if speech_plan_revision_id and speech_plan_revision_id != current_id:
                 raise RevisionConflict("The selected speech plan changed. Refresh the revision list before generating.")
-        if operation == "generate" and not requested_segment_ids and not speech_plan_revision_id and not stale_only and not reviewed and self.plan_refresher is not None:
+        if operation == "generate" and not requested_segment_ids and not speech_plan_revision_id and not automatic and not expected_selection_hash and not reviewed and self.plan_refresher is not None:
             self.plan_refresher(session_id, resolved_for_new[0])
             resolved_for_new = (resolved_for_new[0], stable_hash(resolved_for_new[0]))
         reusable_take_ids: dict[str, str] = {}
+        preserved_take_ids: dict[str, str] = {}
+        selection_hash: str | None = None
+        selection_mode = "all"
+        selection_state: dict[str, Any] | None = None
+        selection_settings_hash: str | None = None
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             bound_revision_id = plan.active_revision_id if plan else None
             if speech_plan_revision_id and speech_plan_revision_id != bound_revision_id:
                 raise RevisionConflict("The selected speech plan changed while generation was being prepared.")
-            if stale_only:
-                from .generation_audio_identity import (
-                    AudioIdentityContext,
-                    take_reuse_reason,
-                )
+            if automatic or expected_selection_hash:
+                from .generation_selection import compute_selection, resolve_mode
 
-                audio_identity = AudioIdentityContext(session, resolved_for_new[0])
-                rows = list(session.scalars(select(GenerationSegment).where(
-                    GenerationSegment.plan_revision_id == bound_revision_id,
-                    GenerationSegment.removed.is_(False),
-                ).order_by(GenerationSegment.ordinal)))
-                for segment in rows:
-                    take = session.scalar(select(AudioTake).join(Artifact, Artifact.id == AudioTake.artifact_id).where(
-                        AudioTake.generation_segment_id == segment.id,
-                        AudioTake.is_active.is_(True),
-                        AudioTake.status == "completed",
-                        Artifact.state != "deleted",
-                    ).order_by(AudioTake.created_at.desc()).limit(1))
-                    artifact = session.get(Artifact, take.artifact_id) if take else None
-                    if take is not None and take_reuse_reason(segment, take, artifact, audio_identity.for_segment(segment)) == "reusable":
-                        reusable_take_ids[segment.id] = take.id
+                selection_mode = resolve_mode(stale_only=stale_only, missing_only=missing_only)
+                selection = compute_selection(session, bound_revision_id, resolved_for_new[0], selection_mode)
+                selection_hash = selection["selection_hash"]
+                selection_state = selection["row_state"]
+                selection_settings_hash = stable_hash(resolved_for_new[0])
+                if expected_selection_hash and expected_selection_hash != selection_hash:
+                    raise RevisionConflict("The speech plan, audio selection, or settings changed. Refresh the preview before generating.")
+                if automatic:
+                    if not selection["generate_segment_ids"]:
+                        raise ValueError(selection["blocked_reason"] or "There are no speech blocks to generate.")
+                    requested_segment_ids.extend(selection["generate_segment_ids"])
+                    if selection_mode == "stale":
+                        reusable_take_ids = dict(selection["preserve_take_ids"])
                     else:
-                        requested_segment_ids.append(segment.id)
-                if not requested_segment_ids:
-                    raise ValueError("There are no missing or stale speech blocks to generate.")
+                        preserved_take_ids = dict(selection["preserve_take_ids"])
+                elif selection["total_count"] == 0:
+                    raise ValueError(selection["blocked_reason"] or "There are no speech blocks to generate.")
         prepared = {
             "requested_segment_ids": requested_segment_ids,
             "run_override": run_override,
@@ -4257,7 +4265,14 @@ class GenerationService:
             "speech_plan_revision_id": bound_revision_id,
             "explicit_speech_plan_revision_id": speech_plan_revision_id,
             "stale_only": stale_only,
+            "missing_only": missing_only,
+            "expected_selection_hash": expected_selection_hash,
+            "selection_mode": selection_mode,
+            "selection_hash": selection_hash,
+            "selection_state": selection_state,
+            "selection_settings_hash": selection_settings_hash,
             "reusable_take_ids": reusable_take_ids,
+            "preserved_take_ids": preserved_take_ids,
         }
         from .generation_audio_identity import plan_audio_identities
         from .generation_start_preparation import snapshot_guard
@@ -4286,6 +4301,8 @@ class GenerationService:
         operation: str = "generate",
         speech_plan_revision_id: str | None = None,
         stale_only: bool = False,
+        missing_only: bool = False,
+        expected_selection_hash: str | None = None,
     ) -> dict[str, Any]:
         prepared = self.prepare_start(
             session_id,
@@ -4296,9 +4313,69 @@ class GenerationService:
             operation=operation,
             speech_plan_revision_id=speech_plan_revision_id,
             stale_only=stale_only,
+            missing_only=missing_only,
+            expected_selection_hash=expected_selection_hash,
         )
         with self.database.immediate_session() as session:
             return self.start_in_session(session, session_id, prepared=prepared)
+
+    def preview_selection(
+        self,
+        session_id: str,
+        *,
+        run_override: dict[str, Any] | None = None,
+        selected_segment_override: dict[str, Any] | None = None,
+        segment_ids: list[str] | None = None,
+        generation_run_id: str | None = None,
+        operation: str = "generate",
+        speech_plan_revision_id: str | None = None,
+        stale_only: bool = False,
+        missing_only: bool = False,
+    ) -> dict[str, Any]:
+        """Read-only preflight for automatic generation modes.
+
+        Never refreshes the speech plan, never writes, never enqueues. Only
+        automatic ``generate`` selections are supported; targeted, regenerate,
+        and RVC combinations are rejected like in ``prepare_start``.
+        """
+        from .generation_selection import compute_selection, resolve_mode
+
+        run_override = dict(run_override or {})
+        requested = [str(value) for value in (segment_ids or []) if str(value)]
+        selected_override = dict(selected_segment_override or {})
+        if stale_only and missing_only:
+            raise ValueError("Stale-only and missing-only generation are mutually exclusive.")
+        if requested or generation_run_id or operation != "generate" or selected_override:
+            raise ValueError("Selection preview supports only automatic generate modes, not selected segments, an older run, or alternate segment settings.")
+        mode = resolve_mode(stale_only=stale_only, missing_only=missing_only)
+        resolved, _ = self.settings.resolve(session_id, run_override=run_override)
+        with self.database.session() as session:
+            plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            bound_revision_id = plan.active_revision_id if plan else None
+            if bound_revision_id is None:
+                raise ValueError("Create generation segments before starting audio generation.")
+            if speech_plan_revision_id and speech_plan_revision_id != bound_revision_id:
+                raise RevisionConflict("The selected speech plan changed. Refresh the revision list before generating.")
+            selection = compute_selection(session, bound_revision_id, resolved, mode)
+        public = {
+            key: selection[key]
+            for key in (
+                "mode",
+                "speech_plan_revision_id",
+                "selection_hash",
+                "total_count",
+                "generate_count",
+                "preserve_count",
+                "replace_count",
+                "missing_count",
+                "reasons",
+                "first_generate_ordinal",
+                "settings_summary",
+            )
+        }
+        if selection["blocked_reason"] is not None:
+            public["blocked_reason"] = selection["blocked_reason"]
+        return public
 
     @staticmethod
     def _canonical_regeneration_root(
@@ -4491,7 +4568,7 @@ class GenerationService:
                         "The selected output generation run does not match this session and plan."
                     )
                 source_run = output_run
-        elif requested_segment_ids and operation != "rvc" and not prepared.get("stale_only"):
+        elif requested_segment_ids and operation != "rvc" and not prepared.get("stale_only") and not prepared.get("missing_only"):
             source_run = session.scalar(
                 select(GenerationRun)
                 .where(
@@ -4552,6 +4629,20 @@ class GenerationService:
                 or stable_hash(snapshot) != prepared["snapshot_input_hash"]
                 or snapshot_guard(session, session_id, plan_revision_id) != prepared["snapshot_guard"]):
             raise RevisionConflict("Speech, cast, or voice references changed while generation was being prepared. Refresh and try again.")
+        if prepared.get("selection_state") is not None:
+            # Lightweight write-stage guard: recheck captured row/take/run
+            # state and fresh resolved settings without recompiling per-row
+            # audio identities under the lock. Identity-input drift
+            # (voices, cast, performance) is covered by the snapshot guard.
+            from .generation_selection import collect_row_state
+
+            fresh_resolved, _ = self.settings.resolve(session_id, run_override=dict(prepared["run_override"]))
+            if stable_hash(fresh_resolved) != prepared["selection_settings_hash"]:
+                raise RevisionConflict("The speech plan, audio selection, or settings changed while generation was being prepared. Refresh and try again.")
+            if collect_row_state(session, plan_revision_id) != prepared["selection_state"]:
+                raise RevisionConflict("The speech plan, audio selection, or settings changed while generation was being prepared. Refresh and try again.")
+            if prepared.get("expected_selection_hash") and prepared["expected_selection_hash"] != prepared["selection_hash"]:
+                raise RevisionConflict("The speech plan, audio selection, or settings changed since the preview. Refresh the preview before generating.")
         snapshot = deepcopy(prepared["frozen_snapshot"])
         auto_resume_source_id = None
         scheduling_run = source_run
@@ -4594,6 +4685,8 @@ class GenerationService:
         snapshot["generation_request_segment_ids"] = list(requested_segment_ids)
         if prepared.get("stale_only"):
             snapshot["stale_only"] = True
+        if prepared.get("missing_only"):
+            snapshot["missing_only"] = True
         settings_hash = stable_hash(snapshot)
         sequence_number = (
             int(
@@ -4626,11 +4719,21 @@ class GenerationService:
         )
         session.add(run)
         session.flush()
-        for segment_id, take_id in dict(prepared.get("reusable_take_ids") or {}).items():
+        preserved_items = dict(prepared.get("reusable_take_ids") or {})
+        preserved_items.update(dict(prepared.get("preserved_take_ids") or {}))
+        missing_only = bool(prepared.get("missing_only"))
+        for segment_id, take_id in preserved_items.items():
             source_take = session.get(AudioTake, take_id)
             segment = session.get(GenerationSegment, segment_id)
             artifact = session.get(Artifact, source_take.artifact_id) if source_take and source_take.artifact_id else None
-            if (source_take is None or segment is None or artifact is None
+            if missing_only:
+                if (source_take is None or segment is None or artifact is None
+                        or segment.plan_revision_id != plan_revision_id or segment.status != "completed"
+                        or source_take.generation_segment_id != segment_id
+                        or source_take.status != "completed" or not source_take.is_active
+                        or artifact.state == "deleted"):
+                    raise RevisionConflict("A preserved take changed while missing-only generation was being prepared.")
+            elif (source_take is None or segment is None or artifact is None
                     or segment.plan_revision_id != plan_revision_id or segment.status != "completed"
                     or source_take.generation_segment_id != segment_id
                     or source_take.status != "completed" or not source_take.is_active

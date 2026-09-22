@@ -11,7 +11,7 @@
 {#if settingsStale || identityUnknown}
   <div class="rounded-xl border border-amber-500/40 p-3 text-sm" role="status">
     <p class="font-semibold">
-      Audio needs regeneration; the speech plan is preserved.
+      Some recordings use earlier or unverified settings.
     </p>
     {#if settingsStale}
       <p class="mt-1">
@@ -23,13 +23,15 @@
     {#if identityUnknown}
       <p class="mt-1">
         {identityUnknown}
-        {identityUnknown === 1 ? 'older take lacks' : 'older takes lack'}
-        the settings evidence needed for automatic reuse.
+        {identityUnknown === 1 ? 'older take was' : 'older takes were'} made with
+        earlier settings, or {identityUnknown === 1 ? 'its' : 'their'} saved settings
+        could not be verified.
       </p>
     {/if}
     <p class="mt-1">
-      Use “Generate missing / stale only” to replace affected audio. Existing
-      takes remain available for playback and selection.
+      “Continue unfinished audio” deliberately keeps these recordings. Use
+      “Refresh changed audio…” to regenerate them with the current voice and
+      settings. Existing takes remain available for playback and selection.
     </p>
   </div>
 {/if}

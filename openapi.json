@@ -2703,6 +2703,20 @@
       "GenerationStartRequest": {
         "additionalProperties": false,
         "properties": {
+          "expected_selection_hash": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Selection Hash"
+          },
           "generation_run_id": {
             "anyOf": [
               {
@@ -2714,6 +2728,11 @@
             ],
             "default": null,
             "title": "Generation Run Id"
+          },
+          "missing_only": {
+            "default": false,
+            "title": "Missing Only",
+            "type": "boolean"
           },
           "operation": {
             "default": "generate",
@@ -14795,6 +14814,36 @@
         "responses": {
           "200": {
             "description": "Latest generation run"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-runs/preview": {
+      "post": {
+        "operationId": "previewGenerationRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Generation selection preview"
           }
         }
       }

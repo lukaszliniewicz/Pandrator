@@ -55,6 +55,7 @@
   } from './domain-api';
   import type {
     AudioTake,
+    GenerationRun,
     GenerationSegment,
     SpeechPlan,
     TtsCatalogue,
@@ -72,6 +73,8 @@
   import GenerationReadingView from './GenerationReadingView.svelte';
   import SpeechPlanReviewDialog from './SpeechPlanReviewDialog.svelte';
   import SpeechPlanHistory from './SpeechPlanHistory.svelte';
+  import GenerationStartDialog from './GenerationStartDialog.svelte';
+  import type { GenerationStartMode } from './generation-start';
   import {
     sessionFlowAction,
     notifySessionFlowChange,
@@ -153,6 +156,9 @@
   let filter = $state<SegmentFilter>('all');
   let error = $state('');
   let loading = $state(false);
+  let generationStartDialog = $state<{ mode: GenerationStartMode } | null>(
+    null
+  );
   let timer: number | undefined;
   let startedRunReconciliation: AbortController | undefined;
   let selectedRow = $state('');
@@ -1335,6 +1341,31 @@
     }
   }
 
+  function openGenerationStart(mode: GenerationStartMode) {
+    if (!payload.plan_revision_id) {
+      error = 'Select the active speech plan first.';
+      return;
+    }
+    error = '';
+    generationStartDialog = { mode };
+  }
+
+  async function handleGenerationStarted(
+    run: GenerationRun,
+    preview: { generate_count: number; preserve_count: number } | null
+  ) {
+    generationStartDialog = null;
+    generationStore.upsertRun(run);
+    if (preview !== null)
+      regenerationNotice = `Queued ${preview.generate_count} block${preview.generate_count === 1 ? '' : 's'}; keeping ${preview.preserve_count} recording${preview.preserve_count === 1 ? '' : 's'}.`;
+    // New generation is visible in the live Active mix while it runs;
+    // history remains an explicit comparison view.
+    selectedRunId = '';
+    expandIfCollapsed();
+    await load();
+    void reconcileStartedRun();
+  }
+
   function sourceSettingsForAlternate() {
     const snapshot = selectedRun?.settings_snapshot ?? {};
     const sourceTts =
@@ -2436,7 +2467,9 @@
               action: 'restore',
               target_revision_id: revisionId
             })}
-          ongenerate={(staleOnly) => start('generate', [], {}, staleOnly)}
+          ongenerate={async (staleOnly) => {
+            openGenerationStart(staleOnly ? 'refresh' : 'all');
+          }}
         />
         {#if payload.parent_revision_id && !selectedRunId}
           <button
@@ -2454,11 +2487,11 @@
       <div class="drawer-actions ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
           <button
-            onclick={() => start()}
+            onclick={() => openGenerationStart('continue')}
             disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
             class="action primary"
-            title="Start a new run from this speech plan using the current voice and settings"
-            ><Play size={14} /> New run</button
+            title="Choose what to generate from this speech plan using the current voice and settings"
+            ><Play size={14} /> Generate audio…</button
           >
         {/if}
         {#if run?.status === 'paused'}
@@ -2779,6 +2812,19 @@
               ? run.error_message
               : latestFailure?.error_message) ||
               'Open Activity & logs for details, then retry.'}
+            <p class="mt-2 text-[var(--ink)]">
+              Completed recordings are still available. Continue unfinished
+              audio keeps them and generates only missing, edited, or failed
+              blocks.
+            </p>
+            <button
+              type="button"
+              class="action mt-2"
+              disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
+              onclick={() => openGenerationStart('continue')}
+              data-testid="generation-recovery-continue"
+              >Continue unfinished audio…</button
+            >
           </div>
         {/if}
 
@@ -3445,6 +3491,19 @@
     ontoggleregenerate={(value) => (regenerateAfterReview = value)}
     onclose={() => (comparisonItem = null)}
     onsave={saveOptimizationReview}
+  />
+{/if}
+{#if generationStartDialog}
+  <GenerationStartDialog
+    {sessionId}
+    planRevisionId={payload.plan_revision_id}
+    initialMode={generationStartDialog.mode}
+    pausedRunLabel={run?.status === 'paused'
+      ? (run.label ?? 'paused run')
+      : null}
+    onclose={() => (generationStartDialog = null)}
+    onstarted={(started, preview) =>
+      void handleGenerationStarted(started, preview)}
   />
 {/if}
 

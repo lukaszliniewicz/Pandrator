@@ -1013,8 +1013,10 @@
               >Speech direction or context changed</span
             >
           {:else if item.audio_reuse_reason === 'audio_identity_unknown'}
-            <span class="mt-1 block text-xs text-[var(--warning)]"
-              >Older audio · regenerate to reuse</span
+            <span
+              class="mt-1 block text-xs text-[var(--warning)]"
+              title="Recording made with earlier settings, or its saved settings could not be verified. Continue unfinished audio keeps it; Refresh changed audio regenerates it with the current settings."
+              >Older audio · kept unless refreshed</span
             >
           {/if}
         </td>

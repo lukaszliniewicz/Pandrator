@@ -3772,6 +3772,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     operation=payload.operation,
                     speech_plan_revision_id=payload.speech_plan_revision_id,
                     stale_only=payload.stale_only,
+                    missing_only=payload.missing_only,
+                    expected_selection_hash=payload.expected_selection_hash,
                 )
             except KeyError:
                 abandon_generation_reservation()
@@ -3818,12 +3820,42 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 operation=payload.operation,
                 speech_plan_revision_id=payload.speech_plan_revision_id,
                 stale_only=payload.stale_only,
+                missing_only=payload.missing_only,
+                expected_selection_hash=payload.expected_selection_hash,
             )
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("generation_unavailable", str(error), 409)
         return jsonify(result), 202
+
+    @app.post("/api/v1/sessions/<session_id>/generation-runs/preview")
+    @require_auth
+    def generation_run_preview(session_id: str):
+        payload = GenerationStartRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        if rejected := inline_credential_error(payload.run_override):
+            return rejected
+        if rejected := inline_credential_error(payload.selected_segment_override):
+            return rejected
+        try:
+            result = generation.preview_selection(
+                session_id,
+                run_override=payload.run_override,
+                selected_segment_override=payload.selected_segment_override,
+                segment_ids=payload.segment_ids,
+                generation_run_id=payload.generation_run_id,
+                operation=payload.operation,
+                speech_plan_revision_id=payload.speech_plan_revision_id,
+                stale_only=payload.stale_only,
+                missing_only=payload.missing_only,
+            )
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("generation_unavailable", str(error), 409)
+        return jsonify(result), 200
 
     @app.post("/api/v1/generation-runs/<run_id>/pause")
     @require_auth

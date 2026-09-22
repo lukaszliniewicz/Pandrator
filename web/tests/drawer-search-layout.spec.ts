@@ -110,7 +110,7 @@ async function measure(page: Page): Promise<Box> {
     };
   });
   const newRun = await page
-    .getByRole('button', { name: 'New run' })
+    .getByRole('button', { name: 'Generate audio…' })
     .boundingBox()
     .catch(() => null);
   return { ...box, newRunRight: newRun ? newRun.x + newRun.width : null };

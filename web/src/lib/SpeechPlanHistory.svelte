@@ -392,8 +392,10 @@
                     · Based on version {parentRevision.revision_number}{/if}
                 </p>
                 <AudioReuseNotice
-                  settingsStale={current.audio_settings_stale_segment_count ?? undefined}
-                  identityUnknown={current.audio_identity_unknown_segment_count ?? undefined}
+                  settingsStale={current.audio_settings_stale_segment_count ??
+                    undefined}
+                  identityUnknown={current.audio_identity_unknown_segment_count ??
+                    undefined}
                 />
               {:else}
                 <p class="muted mt-3 text-xs" role="status">
@@ -417,7 +419,10 @@
                 {#if onselect}<button
                     type="button"
                     class="btn btn-primary"
-                    disabled={busy || disabled || previewLoading || detailLoading}
+                    disabled={busy ||
+                      disabled ||
+                      previewLoading ||
+                      detailLoading}
                     onclick={() => void restore(false)}
                     >Select this revision</button
                   >{/if}
@@ -436,7 +441,7 @@
                   onclick={async () => {
                     close();
                     await ongenerate(false);
-                  }}>Generate this revision</button
+                  }}>Regenerate everything…</button
                 >
                 <button
                   type="button"
@@ -446,7 +451,7 @@
                   onclick={async () => {
                     close();
                     await ongenerate(true);
-                  }}>Generate missing / stale only</button
+                  }}>Refresh changed audio…</button
                 >
               {/if}
             </div>

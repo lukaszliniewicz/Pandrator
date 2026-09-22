@@ -1851,6 +1851,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/generation-runs/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["previewGenerationRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/generation-segments": {
         parameters: {
             query?: never;
@@ -4824,10 +4840,20 @@ export interface components {
         /** GenerationStartRequest */
         GenerationStartRequest: {
             /**
+             * Expected Selection Hash
+             * @default null
+             */
+            expected_selection_hash?: string | null;
+            /**
              * Generation Run Id
              * @default null
              */
             generation_run_id?: string | null;
+            /**
+             * Missing Only
+             * @default false
+             */
+            missing_only?: boolean;
             /**
              * Operation
              * @default generate
@@ -11356,6 +11382,30 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Latest generation run */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewGenerationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Generation selection preview */
             200: {
                 headers: {
                     [name: string]: unknown;

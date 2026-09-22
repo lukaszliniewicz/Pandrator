@@ -780,6 +780,8 @@ class GenerationSegmentBatchUpdate(StrictModel):
 class GenerationStartRequest(StrictModel):
     speech_plan_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
     stale_only: bool = False
+    missing_only: bool = False
+    expected_selection_hash: str | None = Field(default=None, min_length=1, max_length=128)
     run_override: dict[str, Any] = Field(default_factory=dict)
     # This intentionally remains distinct from a normal run override.  It is
     # applied only to the requested segment set, after any saved per-segment

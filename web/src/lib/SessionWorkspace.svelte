@@ -67,6 +67,8 @@
   let audiobookCastPanel = $state<CastDraftController>();
   import SpeechPlanSettings from './SpeechPlanSettings.svelte';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
+  import GenerationStartDialog from './GenerationStartDialog.svelte';
+  import type { GenerationStartMode } from './generation-start';
   import {
     speechPlanState,
     sessionFlowAction,
@@ -119,6 +121,10 @@
   let planBusy = $state(false);
   let planSettingsOpen = $state(false);
   let planRequest = 0;
+  let generationStartDialog = $state<{ mode: GenerationStartMode } | null>(
+    null
+  );
+  let generationNotice = $state('');
   const selectedSpeechPlan = $derived(
     speechPlan?.items.find(
       (item) => item.id === speechPlan?.selected_revision_id
@@ -192,17 +198,31 @@
         );
       const serviceProblem = await generationServiceProblem();
       if (serviceProblem) throw new Error(serviceProblem);
-      await sessionFlowAction(session.id, 'generation-runs', {
-        operation: 'generate',
-        speech_plan_revision_id: chosen,
-        stale_only: staleOnly
-      });
-      await load();
+      // Full-run starts always go through the explicit choice dialog: the
+      // dialog previews the selection read-only and starts only on confirm.
+      // The stale entry point preselects refresh; the run entry point
+      // preselects continue so completed recordings are kept by default.
+      generationStartDialog = { mode: staleOnly ? 'refresh' : 'continue' };
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
       planBusy = false;
     }
+  }
+
+  async function handleGenerationStarted(
+    _run: unknown,
+    preview: {
+      generate_count: number;
+      preserve_count: number;
+    } | null
+  ) {
+    generationStartDialog = null;
+    generationNotice =
+      preview !== null
+        ? `Queued ${preview.generate_count} block${preview.generate_count === 1 ? '' : 's'}; keeping ${preview.preserve_count} recording${preview.preserve_count === 1 ? '' : 's'}.`
+        : '';
+    await load();
   }
   onMount(() =>
     invalidationBus.subscribe((change) => {
@@ -3272,7 +3292,7 @@
             workspaceMode === 'review' &&
             (planBusy || !speechPlan?.can_generate)}
           runLabel={stage.key === 'generate_audio' && workspaceMode === 'review'
-            ? 'Start new run from plan'
+            ? 'Generate audio…'
             : session.workflow_kind === 'media_edit' &&
                 stage.key === 'transcribe'
               ? hasAttachedCaptions
@@ -3337,10 +3357,26 @@
                     !speechPlan?.can_generate ||
                     (selectedSpeechPlan?.audio_reuse_checked !== false &&
                       !selectedSpeechPlan?.stale_segment_count)}
+                  onclick={() => void generateSelectedPlan(false)}
+                  >Generate audio…</button
+                >
+                <button
+                  class="btn btn-sm btn-secondary border border-[var(--line)]"
+                  disabled={planBusy ||
+                    !speechPlan?.can_generate ||
+                    (selectedSpeechPlan?.audio_reuse_checked !== false &&
+                      !selectedSpeechPlan?.stale_segment_count)}
                   onclick={() => void generateSelectedPlan(true)}
-                  >Generate missing / stale only</button
+                  >Refresh changed audio…</button
                 >
               </div>
+              {#if generationNotice}<p
+                  class="mt-2 text-sm"
+                  role="status"
+                  data-testid="generation-start-notice"
+                >
+                  {generationNotice}
+                </p>{/if}
             {/if}
           {/snippet}
         </WorkflowStageCard>
@@ -3379,6 +3415,16 @@
     await run(pending.stage, true, []);
   }}
 />
+
+{#if generationStartDialog}
+  <GenerationStartDialog
+    sessionId={session.id}
+    planRevisionId={speechPlan?.selected_revision_id ?? null}
+    initialMode={generationStartDialog.mode}
+    onclose={() => (generationStartDialog = null)}
+    onstarted={(run, preview) => void handleGenerationStarted(run, preview)}
+  />
+{/if}
 
 {#if settingsStage && !fullSettingsSection}
   <div

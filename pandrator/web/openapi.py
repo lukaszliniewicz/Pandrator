@@ -2961,6 +2961,14 @@ def build_openapi_document() -> dict:
                     "202",
                 ),
             },
+            "/api/v1/sessions/{sessionId}/generation-runs/preview": {
+                "post": operation(
+                    "previewGenerationRun",
+                    "Generation selection preview",
+                    "GenerationStartRequest",
+                    "200",
+                ),
+            },
             "/api/v1/generation-runs/{runId}": {
                 "delete": operation(
                     "deleteGenerationRun", "Generation run deleted", status="204"

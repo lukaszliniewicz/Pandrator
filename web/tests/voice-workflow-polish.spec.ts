@@ -676,7 +676,7 @@ test('phone generation controls and output actions stay inside their cards', asy
     await page.setViewportSize({ width, height: 844 });
     await expect(drawer).toBeVisible();
     const bounds = await drawer.boundingBox();
-    for (const name of ['Generation', 'Play playlist', 'New run']) {
+    for (const name of ['Generation', 'Play playlist', 'Generate audio…']) {
       const button = await drawer
         .getByRole('button', { name, exact: true })
         .boundingBox();
