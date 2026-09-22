@@ -1467,6 +1467,16 @@ def build_openapi_document() -> dict:
                 },
                 "post": {
                     "operationId": "uploadVoiceSample",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"multipart/form-data": {"schema": {
+                            "type": "object", "required": ["file"],
+                            "properties": {
+                                "file": {"type": "string", "format": "binary"},
+                                "noise_reduction": {"type": "string", "enum": ["none", "deepfilternet2"], "default": "none", "description": "Optional local microphone cleanup before normalization. The selected model downloads on first use; the original recording is retained."},
+                            },
+                        }}},
+                    },
                     "parameters": [
                         {
                             "name": "If-Match",
@@ -1521,6 +1531,16 @@ def build_openapi_document() -> dict:
             "/api/v1/voices/{voiceId}/samples/{sampleId}/replace": {
                 "post": {
                     "operationId": "replaceVoiceSample",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"multipart/form-data": {"schema": {
+                            "type": "object", "required": ["file"],
+                            "properties": {
+                                "file": {"type": "string", "format": "binary"},
+                                "noise_reduction": {"type": "string", "enum": ["none", "deepfilternet2"], "default": "none", "description": "Optional local cleanup of the replacement recording before normalization; preserves the raw upload."},
+                            },
+                        }}},
+                    },
                     "parameters": [
                         {
                             "name": "If-Match",

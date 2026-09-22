@@ -1,14 +1,57 @@
 import base64
 import json
+import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from pandrator.logic import tts_handler, tts_provider_profiles
+from pandrator.logic import audio_cpp_execution, tts_handler, tts_provider_profiles
 
 
 class TTSHandlerTests(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        lock_dir = tempfile.TemporaryDirectory(prefix="pandrator-tts-test-lock-")
+        self.addCleanup(lock_dir.cleanup)
+        lock_patch = patch.object(
+            audio_cpp_execution,
+            "_lock_path",
+            return_value=Path(lock_dir.name) / "audio-cpp.lock",
+        )
+        lock_patch.start()
+        self.addCleanup(lock_patch.stop)
+
+    def test_local_tts_cancellation_interrupts_native_lock_wait(self):
+        from pandrator.logic.cancellable_process import ProcessCancelled
+
+        held = threading.Event()
+        release = threading.Event()
+        cancel = threading.Event()
+
+        def native_work():
+            with audio_cpp_execution.local_audio_cpp_lock():
+                held.set()
+                release.wait(timeout=5)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            owner = pool.submit(native_work)
+            self.assertTrue(held.wait(timeout=2))
+            try:
+                with patch.object(tts_handler.requests, "post") as request:
+                    waiting = pool.submit(
+                        tts_handler.text_to_audio, "Test.", {"service": "audio_cpp"},
+                        cancel_event=cancel,
+                    )
+                    cancel.set()
+                    with self.assertRaises(ProcessCancelled):
+                        waiting.result(timeout=2)
+                    request.assert_not_called()
+            finally:
+                release.set()
+                owner.result(timeout=2)
+
     def test_litellm_speech_lazy_import_is_atomic_across_worker_threads(self):
         sentinel = object()
         started = threading.Event()

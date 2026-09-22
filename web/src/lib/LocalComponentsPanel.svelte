@@ -20,6 +20,12 @@
   import AudioCppModelDetails from './AudioCppModelDetails.svelte';
   import type { AudioCppModelInfo } from './audio-cpp-catalogue';
   import {
+    badgeLabelFor,
+    filterLocalGroups,
+    groupLocalModels,
+    resolveLocalModels
+  } from './local-model-groups';
+  import {
     MANAGER_TERMINAL_STATES,
     managerOperationStore,
     type ManagerOperation
@@ -147,21 +153,84 @@
   let compatibilityOpen = $state(false);
   let audioModelQuery = $state('');
   let audioRecommendedOnly = $state(true);
-  function visibleAudioModels(component: Component) {
-    const query = audioModelQuery.trim().toLowerCase();
-    return (component.definition.models ?? []).filter((model) => {
-      const matches =
-        `${model.id} ${model.label} ${model.model_info?.recommended_for ?? ''}`
-          .toLowerCase()
-          .includes(query);
-      return (
-        matches &&
-        (!audioRecommendedOnly ||
+  let audioExpandedGroups = $state<string[]>([]);
+  let audioExpandedSubgroups = $state<string[]>([]);
+  function audioEntries(component: Component) {
+    const selected = selectedModels(component);
+    return (component.definition.models ?? [])
+      .filter(
+        (model) =>
+          !audioRecommendedOnly ||
           !model.model_info ||
           model.model_info.recommended_for ||
-          selectedModels(component).includes(model.id))
-      );
-    });
+          selected.includes(model.id)
+      )
+      .map((model) => ({ ...(model.model_info ?? {}), ...model }));
+  }
+  function audioGroups(component: Component) {
+    const installedIds = component.inspection.installed_model_ids ?? [];
+    const groups = groupLocalModels(
+      resolveLocalModels(
+        audioEntries(component),
+        selectedModels(component),
+        [],
+        {
+          installedIds
+        }
+      )
+    );
+    const query = audioModelQuery.trim();
+    return query ? filterLocalGroups(groups, query) : groups;
+  }
+  function audioLeafCount(component: Component) {
+    return audioGroups(component).reduce(
+      (count, group) =>
+        count +
+        group.subgroups.reduce(
+          (inner, subgroup) => inner + subgroup.models.length,
+          0
+        ),
+      0
+    );
+  }
+  function audioSelectedKeys(component: Component) {
+    const selected = new Set(selectedModels(component));
+    const keys = new Set<string>();
+    for (const group of audioGroups(component)) {
+      for (const subgroup of group.subgroups) {
+        if (subgroup.models.some((model) => selected.has(model.id))) {
+          keys.add(`group:${group.id}`);
+          keys.add(`subgroup:${group.id}/${subgroup.id}`);
+        }
+      }
+    }
+    return keys;
+  }
+  function isAudioOpen(
+    component: Component,
+    kind: 'group' | 'subgroup',
+    key: string
+  ) {
+    if (audioModelQuery.trim()) return true;
+    const toggled =
+      kind === 'group' ? audioExpandedGroups : audioExpandedSubgroups;
+    const selected = audioSelectedKeys(component);
+    const selectedKey = kind === 'group' ? `group:${key}` : `subgroup:${key}`;
+    if (toggled.includes(key)) return !selected.has(selectedKey);
+    return selected.has(selectedKey);
+  }
+  function toggleAudio(kind: 'group' | 'subgroup', key: string) {
+    if (kind === 'group')
+      audioExpandedGroups = audioExpandedGroups.includes(key)
+        ? audioExpandedGroups.filter((item) => item !== key)
+        : [...audioExpandedGroups, key];
+    else
+      audioExpandedSubgroups = audioExpandedSubgroups.includes(key)
+        ? audioExpandedSubgroups.filter((item) => item !== key)
+        : [...audioExpandedSubgroups, key];
+  }
+  function audioRecord(component: Component, id: string) {
+    return (component.definition.models ?? []).find((model) => model.id === id);
   }
   let pendingPlan = $state<ManagerPlan | null>(null);
   const operation = $derived(managerOperationStore.operation);
@@ -1218,79 +1287,173 @@
                             /> Recommended and selected packages</label
                           >
                           <span class="muted"
-                            >{visibleAudioModels(component).length} of {component
+                            >{audioLeafCount(component)} of {component
                               .definition.models.length} packages</span
                           >
                         </div>
                         <div class="mt-3 grid gap-2">
-                          {#each visibleAudioModels(component) as model}
-                            <div
-                              class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
+                          {#each audioGroups(component) as group (group.id)}
+                            <section
+                              class="rounded-xl border border-[var(--line)] bg-[var(--paper)]"
                             >
-                              <label class="flex items-start gap-3">
-                                <input
-                                  type="checkbox"
-                                  class="mt-1"
-                                  checked={selectedModels(component).includes(
-                                    model.id
-                                  )}
-                                  disabled={busy}
-                                  onchange={() =>
-                                    toggleModel(component, model.id)}
+                              <button
+                                type="button"
+                                class="flex w-full items-center gap-2 p-3 text-left text-xs font-semibold"
+                                aria-expanded={isAudioOpen(
+                                  component,
+                                  'group',
+                                  group.id
+                                )}
+                                onclick={() => toggleAudio('group', group.id)}
+                              >
+                                <ChevronDown
+                                  size={14}
+                                  class={isAudioOpen(
+                                    component,
+                                    'group',
+                                    group.id
+                                  )
+                                    ? 'rotate-180'
+                                    : ''}
                                 />
-                                <span class="min-w-0 flex-1">
-                                  <span class="block text-xs font-semibold">
-                                    {model.label}
-                                    {#if model.model_info?.recommended_for}<span
-                                        class="mt-1 block font-normal text-[var(--accent)]"
-                                        >{model.model_info
-                                          .recommended_for}</span
-                                      >{/if}
-                                    {#if model.estimated_download_bytes}
-                                      <span class="muted font-normal">
-                                        · {formatBytes(
-                                          model.estimated_download_bytes
-                                        )}
-                                      </span>
-                                    {/if}
-                                  </span>
-                                  {#if model.description}
-                                    <span
-                                      class="muted mt-1 block text-xs leading-relaxed"
-                                    >
-                                      {model.description}
-                                    </span>
-                                  {/if}
-                                  {#if model.license_name}
-                                    <span
-                                      class="muted mt-1 block text-[.68rem] leading-relaxed"
-                                    >
-                                      License:
-                                      {#if model.license_url}
-                                        <a
-                                          href={model.license_url}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          class="underline decoration-dotted underline-offset-2"
-                                          >{model.license_name}</a
-                                        >
-                                      {:else}
-                                        {model.license_name}
-                                      {/if}
-                                      {#if model.usage_note}
-                                        · {model.usage_note}{/if}
-                                    </span>
-                                  {/if}
-                                </span>
-                              </label>
-                              {#if model.model_info}<div
-                                  class="mt-3 border-t border-[var(--line)] pt-3"
+                                <span class="min-w-0 flex-1 truncate"
+                                  >{group.label}</span
                                 >
-                                  <AudioCppModelDetails
-                                    model={model.model_info}
-                                  />
-                                </div>{/if}
-                            </div>
+                                <span class="muted font-normal"
+                                  >{group.total}</span
+                                >
+                              </button>
+                              {#if isAudioOpen(component, 'group', group.id)}
+                                <div class="grid gap-2 px-3 pb-3">
+                                  {#each group.subgroups as subgroup (subgroup.id)}
+                                    {@const subgroupKey = `${group.id}/${subgroup.id}`}
+                                    {#if subgroup.label}
+                                      <button
+                                        type="button"
+                                        class="flex w-full items-center gap-2 pt-1 text-left text-xs font-semibold"
+                                        aria-expanded={isAudioOpen(
+                                          component,
+                                          'subgroup',
+                                          subgroupKey
+                                        )}
+                                        onclick={() =>
+                                          toggleAudio('subgroup', subgroupKey)}
+                                      >
+                                        <ChevronDown
+                                          size={13}
+                                          class={isAudioOpen(
+                                            component,
+                                            'subgroup',
+                                            subgroupKey
+                                          )
+                                            ? 'rotate-180'
+                                            : ''}
+                                        />
+                                        <span class="min-w-0 flex-1 truncate"
+                                          >{subgroup.label}</span
+                                        >
+                                        {#if subgroup.detail}<span
+                                            class="muted truncate font-normal"
+                                            >{subgroup.detail}</span
+                                          >{/if}
+                                      </button>
+                                    {/if}
+                                    {#if !subgroup.label || isAudioOpen(component, 'subgroup', subgroupKey)}
+                                      {#each subgroup.models as leaf (leaf.id)}
+                                        {@const model = audioRecord(
+                                          component,
+                                          leaf.id
+                                        )}
+                                        {#if model}<div
+                                            class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
+                                          >
+                                            <label
+                                              class="flex items-start gap-3"
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                class="mt-1"
+                                                checked={selectedModels(
+                                                  component
+                                                ).includes(model.id)}
+                                                disabled={busy}
+                                                onchange={() =>
+                                                  toggleModel(
+                                                    component,
+                                                    model.id
+                                                  )}
+                                              />
+                                              <span class="min-w-0 flex-1">
+                                                <span
+                                                  class="block text-xs font-semibold"
+                                                >
+                                                  {model.label}
+                                                  <span
+                                                    class="ml-1 rounded-full border border-[var(--line)] px-1.5 py-px text-[.62rem] font-bold uppercase"
+                                                    title={leaf.badgeReason ||
+                                                      `Package state: ${badgeLabelFor(leaf.badge)}`}
+                                                    >{badgeLabelFor(
+                                                      leaf.badge
+                                                    )}</span
+                                                  >
+                                                  {#if model.model_info?.recommended_for}<span
+                                                      class="mt-1 block font-normal text-[var(--accent)]"
+                                                      >{model.model_info
+                                                        .recommended_for}</span
+                                                    >{/if}
+                                                  {#if model.estimated_download_bytes}
+                                                    <span
+                                                      class="muted font-normal"
+                                                    >
+                                                      · {formatBytes(
+                                                        model.estimated_download_bytes
+                                                      )}
+                                                    </span>
+                                                  {/if}
+                                                </span>
+                                                {#if model.description}
+                                                  <span
+                                                    class="muted mt-1 block text-xs leading-relaxed"
+                                                  >
+                                                    {model.description}
+                                                  </span>
+                                                {/if}
+                                                {#if model.license_name}
+                                                  <span
+                                                    class="muted mt-1 block text-[.68rem] leading-relaxed"
+                                                  >
+                                                    License:
+                                                    {#if model.license_url}
+                                                      <a
+                                                        href={model.license_url}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        class="underline decoration-dotted underline-offset-2"
+                                                        >{model.license_name}</a
+                                                      >
+                                                    {:else}
+                                                      {model.license_name}
+                                                    {/if}
+                                                    {#if model.usage_note}
+                                                      · {model.usage_note}{/if}
+                                                  </span>
+                                                {/if}
+                                              </span>
+                                            </label>
+                                            {#if model.model_info}<div
+                                                class="mt-3 border-t border-[var(--line)] pt-3"
+                                              >
+                                                <AudioCppModelDetails
+                                                  model={model.model_info}
+                                                />
+                                              </div>{/if}
+                                          </div>{/if}
+                                      {/each}
+                                    {/if}
+                                  {/each}
+                                </div>
+                              {/if}
+                            </section>
                           {/each}
                         </div>
                         {#if !modelSelectionValid(component)}

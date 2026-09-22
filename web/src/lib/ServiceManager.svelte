@@ -23,6 +23,7 @@
     TtsSettingsValue
   } from './api-models';
   import SettingField from './SettingField.svelte';
+  import LocalModelPicker from './LocalModelPicker.svelte';
   import CredentialStorageFields, {
     type CredentialBackendProfile
   } from './CredentialStorageFields.svelte';
@@ -156,6 +157,17 @@
         ].filter(Boolean)
       )
     )
+  );
+  const editingCatalog = $derived(editing?.model_catalog ?? []);
+  const showGroupedEditingModels = $derived(
+    editingCatalog.some((model) =>
+      Boolean(model.family ?? model.catalogue_info?.family)
+    )
+  );
+  const editingLoadedIds = $derived(
+    editingCatalog
+      .filter((model) => model.loaded === true)
+      .map((model) => model.id)
   );
 
   async function load() {
@@ -899,21 +911,34 @@
               >Enter one ID per line. Azure deployment names are kept exactly as
               entered.</small
             ></label
-          ><label class="mt-4 block text-sm font-semibold"
-            >Default model{#if modelChoices.length}<select
+          >{#if showGroupedEditingModels}<div class="mt-4">
+              <LocalModelPicker
+                id="service-default-model"
+                label="Default model"
                 value={selectedModel}
-                onchange={(event) => setDefaultModel(event.currentTarget.value)}
-                class="field"
-                >{#each modelChoices as model}<option value={model}
-                    >{model}</option
-                  >{/each}</select
-              >{:else}<input
-                value={selectedModel}
-                oninput={(event) => setDefaultModel(event.currentTarget.value)}
-                placeholder="Model ID"
-                class="field"
-              />{/if}</label
-          >{#if settingKeys.length}<details
+                catalog={editingCatalog}
+                listedIds={editing?.models ?? []}
+                loadedIds={editingLoadedIds}
+                modelVoiceModes={editing?.model_voice_modes ?? {}}
+                onchange={setDefaultModel}
+              />
+            </div>{:else}<label class="mt-4 block text-sm font-semibold"
+              >Default model{#if modelChoices.length}<select
+                  value={selectedModel}
+                  onchange={(event) =>
+                    setDefaultModel(event.currentTarget.value)}
+                  class="field"
+                  >{#each modelChoices as model}<option value={model}
+                      >{model}</option
+                    >{/each}</select
+                >{:else}<input
+                  value={selectedModel}
+                  oninput={(event) =>
+                    setDefaultModel(event.currentTarget.value)}
+                  placeholder="Model ID"
+                  class="field"
+                />{/if}</label
+            >{/if}{#if settingKeys.length}<details
               class="mt-5 border-t border-[var(--line)] pt-4"
               open
             >

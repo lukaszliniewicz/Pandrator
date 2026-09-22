@@ -19,6 +19,7 @@
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
   import AudioCppModelDetails from './AudioCppModelDetails.svelte';
+  import LocalModelPicker from './LocalModelPicker.svelte';
   import SettingField from './SettingField.svelte';
   import TtsServiceSelect from './TtsServiceSelect.svelte';
   import { settingApplies } from './settings-fields';
@@ -69,10 +70,12 @@
       'caption_alignment_fallback_coverage',
       'stt_engine',
       'stt_model_quantization',
+      'qwen_asr_model',
       'stt_compute_backend',
       'stt_compute_device',
       'stt_language',
       'stt_transcribe_style',
+      'transcription_vocal_isolation',
       'whisper_prompt',
       'moss_max_chunk_seconds',
       'moss_chunk_overlap_seconds',
@@ -356,6 +359,16 @@
         ...(selectedModel ? [selectedModel] : [])
       ])
     )
+  );
+  const showGroupedModels = $derived(
+    section === 'tts' &&
+      audioCpp &&
+      (selectedTts?.model_catalog ?? []).some((model) =>
+        Boolean(model.family ?? model.catalogue_info?.family)
+      )
+  );
+  const pickerLoadedIds = $derived(
+    modelMetadata?.loaded === true && selectedModel ? [selectedModel] : []
   );
   const voiceChoices = $derived.by(() => {
     const usesReferences = ['cloning', 'hybrid', 'optional_cloning'].includes(
@@ -1092,6 +1105,16 @@
                       set(field, '');
                   }
                 }}
+              />{:else if section === 'tts' && key === 'model' && showGroupedModels}
+              <LocalModelPicker
+                id="tts-model-picker"
+                label="Model"
+                value={selectedModel}
+                catalog={selectedTts?.model_catalog ?? []}
+                listedIds={selectedTts?.models ?? []}
+                loadedIds={pickerLoadedIds}
+                modelVoiceModes={selectedTts?.model_voice_modes ?? {}}
+                onchange={changeModel}
               />{:else if section === 'tts' && key === 'model' && modelChoices.length}
               <label class="block text-xs font-semibold"
                 >Model<select

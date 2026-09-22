@@ -127,6 +127,13 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "stt_lid_backend": "whisper",
         "stt_beam_size": 1,
         "parakeet_decoder": "tdt",
+        "qwen_asr_model": "qwen3_asr_0_6b",
+        "transcription_vocal_isolation": "off",
+        "qwen_asr_chunk_seconds": 30,
+        "qwen_asr_max_tokens": 512,
+        "qwen_asr_chunk_mode": "auto",
+        "qwen_asr_timeout_seconds": 3600,
+        "qwen_asr_clamp_timestamps": False,
         "moss_max_chunk_seconds": 120,
         "moss_chunk_overlap_seconds": 0.0,
         "moss_vad_enabled": False,
@@ -699,6 +706,67 @@ class RevisionConflict(ValueError):
     pass
 
 
+def validate_stt_settings(value: dict[str, Any]) -> None:
+    """Reject explicitly invalid Qwen3 ASR selections on the save path.
+
+    Only keys present in the submitted override are checked; absent keys
+    keep inheriting defaults. Present-but-invalid enum values fail here so
+    migration can never silently swap the model or skip preprocessing.
+    """
+
+    from pandrator.logic.dubbing.qwen_asr import (
+        QWEN3_ASR_MODELS,
+        QWEN3_CHUNK_MODES,
+        VOCAL_ISOLATION_CHOICES,
+    )
+
+    if not isinstance(value, dict):
+        raise ValueError("stt settings must be an object.")
+    model = value.get("qwen_asr_model")
+    if model is not None and model not in QWEN3_ASR_MODELS:
+        raise ValueError(
+            f"qwen_asr_model must be one of {', '.join(QWEN3_ASR_MODELS)}."
+        )
+    isolation = value.get("transcription_vocal_isolation")
+    if isolation is not None and isolation not in VOCAL_ISOLATION_CHOICES:
+        raise ValueError(
+            "transcription_vocal_isolation must be one of "
+            f"{', '.join(VOCAL_ISOLATION_CHOICES)}."
+        )
+    chunk_mode = value.get("qwen_asr_chunk_mode")
+    if chunk_mode is not None and chunk_mode not in QWEN3_CHUNK_MODES:
+        raise ValueError(
+            f"qwen_asr_chunk_mode must be one of {', '.join(QWEN3_CHUNK_MODES)}."
+        )
+    chunk_seconds = value.get("qwen_asr_chunk_seconds")
+    if chunk_seconds is not None:
+        if (
+            isinstance(chunk_seconds, bool)
+            or not isinstance(chunk_seconds, (int, float))
+            or not (chunk_seconds == 0 or 10 <= chunk_seconds <= 120)
+        ):
+            raise ValueError("qwen_asr_chunk_seconds must be 0 or 10-120.")
+    max_tokens = value.get("qwen_asr_max_tokens")
+    if max_tokens is not None:
+        if (
+            isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or not 32 <= max_tokens <= 4096
+        ):
+            raise ValueError("qwen_asr_max_tokens must be an integer 32-4096.")
+    timeout_seconds = value.get("qwen_asr_timeout_seconds")
+    if timeout_seconds is not None:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not 60 <= timeout_seconds <= 14400
+        ):
+            raise ValueError("qwen_asr_timeout_seconds must be 60-14400.")
+    clamp = value.get("qwen_asr_clamp_timestamps")
+    if clamp is not None and not isinstance(clamp, bool):
+        raise ValueError("qwen_asr_clamp_timestamps must be a boolean.")
+
+
 def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
     for suffix, minimum, maximum in (
         ("min_shortfall_ms", 100, 60000),
@@ -1171,6 +1239,8 @@ class WorkspaceSettingsService:
             from pandrator.logic.audiobook_chunking import validate_audiobook_chunking_settings
 
             validate_audiobook_chunking_settings(value)
+        if section == "stt":
+            validate_stt_settings(value)
         if section == "tts":
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]

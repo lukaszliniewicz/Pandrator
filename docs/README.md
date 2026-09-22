@@ -40,6 +40,7 @@ interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md)
 - [Speech directions, dialogue, and character voices](reference/generation-controls.md)
 - [Speech-text optimization and dispatch](reference/speech-optimization.md)
 - [Voiceover repair history and undo](guides/repair-history.md)
+- [Local model groups, Qwen transcription, and audio preprocessing](reference/local-audio-tools.md)
 
 The document reference covers upload lineage, PDF layout/OCR, EPUB structure,
 cleanup, narration preparation, and generation segments. The subtitle reference

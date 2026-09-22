@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 import regex
 
 from ..cancellable_process import ProcessCancelled, run_cancellable
+from ..audio_cpp_execution import native_audio_cpp_guard
 from .languages import normalize_language_code
 from .text_units import infer_cjk_language, subtitle_units
 
@@ -484,13 +485,14 @@ def run_batch(
         try:
             check_cancelled(cancel_event)
             if run_func is subprocess.run:
-                run_cancellable(
-                    command,
-                    cancel_event=cancel_event,
-                    check=True,
-                    capture_output=True,
-                    cwd=str(executable.parent),
-                )
+                with native_audio_cpp_guard(command, cancel_event):
+                    run_cancellable(
+                        command,
+                        cancel_event=cancel_event,
+                        check=True,
+                        capture_output=True,
+                        cwd=str(executable.parent),
+                    )
             else:
                 run_func(
                     command, check=True, capture_output=True, cwd=str(executable.parent)

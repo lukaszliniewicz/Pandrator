@@ -543,7 +543,59 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
             "language_detection": True,
         }
     from pandrator.logic.dubbing import qwen_alignment
+    from pandrator.logic.dubbing import qwen_asr as qwen_recognizer
 
+    try:
+        from pandrator.logic import audio_cpp_assets
+
+        audio_cpp_tools = audio_cpp_assets.availability()
+    except Exception as error:
+        audio_cpp_tools = {
+            "runtime": {
+                "minimum_version": "0.8.1",
+                "observed_version": None,
+                "version_verified": False,
+                "executable": None,
+                "available": False,
+                "reason": f"audio.cpp asset helper unavailable: {error}",
+            },
+            "models": {},
+        }
+    qwen_caps = qwen_recognizer.capabilities()
+    # Recognizer entry: the frontend distinguishes recognizer coverage from
+    # pipeline constraints with these keys (see qwen_asr.capabilities()).
+    model_capabilities["qwen3"] = {
+        "kind": "recognizer",
+        "available": bool(qwen_caps.get("available")),
+        "installed": any(
+            isinstance(info, dict) and bool(info.get("cached"))
+            for model_id, info in (
+                audio_cpp_tools.get("models", {}).items()
+                if isinstance(audio_cpp_tools, dict)
+                else []
+            )
+            if model_id in set(qwen_recognizer.QWEN3_ASR_MODELS)
+        ),
+        "download_on_demand": bool(qwen_caps.get("available")),
+        "default": False,
+        "models": list(qwen_recognizer.QWEN3_ASR_MODELS),
+        "default_model": qwen_recognizer.DEFAULT_QWEN3_ASR_MODEL,
+        "word_timing": qwen_caps.get("word_timing"),
+        "diarization": False,
+        "supported_languages": list(qwen_recognizer.QWEN3_ASR_LANGUAGE_CODES),
+        "recognizer_languages": list(qwen_recognizer.QWEN3_ASR_LANGUAGE_CODES),
+        "alignment_languages": list(qwen_recognizer.alignment_languages()),
+        "timed_supported_languages": list(
+            qwen_recognizer.timed_supported_languages()
+        ),
+        "transcript_only_languages": list(
+            qwen_recognizer.transcript_only_languages()
+        ),
+        "requires_explicit_language_for_timestamps": True,
+        "timing_fallback": qwen_recognizer.TIMING_FALLBACK,
+        "language_detection": True,
+        "reason": str(qwen_caps.get("reason") or ""),
+    }
     stt = {
         "crispasr": crispasr.installed,
         "version": crispasr.version,
@@ -552,7 +604,10 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         "default_engine": default_engine,
         "default_model_quantization": default_quantization,
         "models": model_capabilities,
-        "forced_aligners": [qwen_alignment.capabilities()],
+        "forced_aligners": [
+            {**qwen_alignment.capabilities(), "kind": "forced_aligner"}
+        ],
+        "audio_cpp_tools": audio_cpp_tools,
     }
     services = {
         "xtts": _exists(paths, "xtts2_api/run.bat", "xtts2_api/pixi.toml"),

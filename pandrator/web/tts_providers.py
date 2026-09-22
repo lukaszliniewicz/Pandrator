@@ -988,7 +988,7 @@ class AudioCppAdapter(LegacyTtsAdapter):
 
         size = max(1, min(32, int(batch_size or 1)))
         request_session = self._session_for(batch_settings)
-        with tts_handler.audio_cpp_endpoint_lock(batch_settings):
+        with tts_handler.audio_cpp_endpoint_lock(batch_settings, options.get("cancel_event")):
             for start in range(0, len(items), size):
                 for item in items[start : start + size]:
                     try:

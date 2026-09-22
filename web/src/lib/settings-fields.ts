@@ -43,6 +43,9 @@ export const LANGUAGE_OPTIONS: SettingOption[] = [
   option('bn', 'Bengali'),
   option('ur', 'Urdu'),
   option('zh', 'Chinese'),
+  option('yue', 'Cantonese'),
+  option('fil', 'Filipino'),
+  option('mk', 'Macedonian'),
   option('ja', 'Japanese'),
   option('ko', 'Korean'),
   option('vi', 'Vietnamese'),
@@ -72,7 +75,23 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('whisper', 'Whisper large-v3'),
     option('parakeet', 'Parakeet 0.6B v3'),
     option('moss', 'MOSS Transcribe-Diarize 0.9B'),
+    option('qwen3', 'Qwen3 ASR · local · separate word alignment'),
     option('azure_mai_transcribe_1_5', 'Azure Speech · MAI-Transcribe-1.5')
+  ],
+  qwen_asr_model: [
+    option('qwen3_asr_0_6b', 'Qwen3 ASR 0.6B · Q8 · 1.15 GB'),
+    option('qwen3_asr_1_7b', 'Qwen3 ASR 1.7B · Q8 · 2.47 GB')
+  ],
+  transcription_vocal_isolation: [
+    option('off', 'Off · original audio'),
+    option('bs_roformer', 'BS-RoFormer · 173 MB first-use download'),
+    option('mel_band_roformer', 'Mel-RoFormer · 252 MB first-use download')
+  ],
+  qwen_asr_chunk_mode: [
+    option('auto', 'Automatic'),
+    option('vad', 'Speech-aware chunks'),
+    option('fixed', 'Fixed chunks'),
+    option('none', 'No native chunking')
   ],
   caption_alignment_method: [
     option('ctc', 'Local forced alignment · recommended'),
@@ -331,6 +350,12 @@ const SETTING_ORDER: Record<string, string[]> = {
     'third_prompt'
   ],
   stt: [
+    'transcription_vocal_isolation',
+    'qwen_asr_model',
+    'qwen_asr_chunk_seconds',
+    'qwen_asr_max_tokens',
+    'qwen_asr_chunk_mode',
+    'qwen_asr_clamp_timestamps',
     'caption_alignment_method',
     'caption_alignment_ctc_model',
     'caption_alignment_padding_ms',
@@ -531,7 +556,7 @@ export function compareSettingOrder(
   );
 }
 
-const STT_LOCAL_ENGINES = new Set(['whisper', 'parakeet', 'moss']);
+const STT_LOCAL_ENGINES = new Set(['whisper', 'parakeet', 'moss', 'qwen3']);
 const STT_LOCAL_KEYS = new Set([
   'stt_model_quantization',
   'stt_compute_backend',
@@ -737,6 +762,21 @@ export function settingApplies(
   const moss = engine === 'moss';
   const nonMossLocal = engine === 'whisper' || engine === 'parakeet';
 
+  if (key === 'transcription_vocal_isolation') return true;
+  if (key.startsWith('qwen_asr_')) return engine === 'qwen3';
+  if (
+    engine === 'qwen3' &&
+    ([
+      'stt_model_quantization',
+      'stt_chunk_seconds',
+      'stt_chunk_overlap_seconds',
+      'stt_lid_backend',
+      'stt_hotwords',
+      'crispasr_vad_enabled'
+    ].includes(key) ||
+      STT_VAD_DETAIL_KEYS.has(key))
+  )
+    return false;
   if (key === 'caption_alignment_method') return true;
   if (
     [
@@ -982,6 +1022,12 @@ export function settingLabel(key: string): string {
     moss_chunk_overlap_seconds: 'MOSS chunk overlap (seconds)',
     moss_vad_enabled: 'Use VAD before MOSS diarization',
     moss_ctc_alignment_enabled: 'Align each MOSS turn to timed units',
+    qwen_asr_model: 'Qwen3 recognition model',
+    qwen_asr_chunk_seconds: 'Qwen audio chunk length (seconds)',
+    qwen_asr_max_tokens: 'Qwen maximum transcript tokens per chunk',
+    qwen_asr_chunk_mode: 'Qwen native chunking',
+    qwen_asr_clamp_timestamps: 'Keep Qwen timestamps within audio bounds',
+    transcription_vocal_isolation: 'Vocal isolation before transcription',
     moss_ctc_aligner_model: 'MOSS forced aligner',
     moss_ctc_padding_seconds: 'MOSS turn CTC padding (seconds)',
     caption_alignment_method: 'Attached-caption alignment method',

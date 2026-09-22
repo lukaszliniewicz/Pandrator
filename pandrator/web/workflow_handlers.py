@@ -114,6 +114,16 @@ logger = logging.getLogger(__name__)
 CLAUSE_PAUSE_RATIO = 1 / 3
 GENERATION_SEGMENT_POLICY_VERSION = 5
 
+VOICE_NOISE_REDUCTION_NONE = "none"
+VOICE_NOISE_REDUCTION_DEEPFILTERNET2 = "deepfilternet2"
+VOICE_NOISE_REDUCTION_OPTIONS = (
+    VOICE_NOISE_REDUCTION_NONE,
+    VOICE_NOISE_REDUCTION_DEEPFILTERNET2,
+)
+# DeepFilterNet2 expects wideband input; the cleaned result is still reduced
+# to the mono 24 kHz PCM voice-sample format by the existing FFmpeg step.
+VOICE_CLEANUP_INPUT_SAMPLE_RATE = 48000
+
 
 def _media_edit_token_count(text: str) -> int:
     """Count authoritative lexical tokens using media-edit normalization."""
@@ -3436,7 +3446,10 @@ class WorkflowHandlers:
             write_diagnostics,
         )
         from pandrator.logic.dubbing.crispasr import CrispASRError, run_vad_export
-        from pandrator.logic.dubbing.transcription import extract_audio
+        from pandrator.logic.dubbing.transcription import (
+            apply_vocal_isolation,
+            extract_audio,
+        )
         from pandrator.logic.media_edit import (
             MediaWord,
             align_cues_to_words,
@@ -3467,6 +3480,28 @@ class WorkflowHandlers:
         )
         duration_ms = validate_normalized_wav(normalized_path)
         progress(0.18, "Source audio normalized")
+        # Attached-caption transcription settings may request vocal isolation.
+        # Alignment evidence (VAD + CTC/Qwen) uses the isolated derivative;
+        # the normalized original stays the export source and the ASR-fallback
+        # leg below re-applies isolation internally from that original.
+        alignment_audio_path, isolation_provenance = apply_vocal_isolation(
+            normalized_path,
+            operation_dir,
+            normalized_path.stem,
+            options,
+            cancel_event=cancel_event,
+            progress=progress,
+            ffmpeg_executable=ffmpeg_executable,
+        )
+        isolation_record: dict[str, Any] | None = None
+        if isolation_provenance is not None:
+            duration_ms = validate_normalized_wav(alignment_audio_path)
+            isolation_record = {
+                "transcription_vocal_isolation": isolation_provenance.get("method"),
+                "vocal_isolation_model": isolation_provenance.get("model"),
+                "vocal_isolation_status": isolation_provenance.get("status"),
+                "original_audio_retained": str(normalized_path),
+            }
         _caption_record, caption_path = self.artifacts.resolve(caption_artifact.id)
         cues = parse_caption_text(caption_path.read_text(encoding="utf-8-sig"))
         # Caption alignment owns its VAD policy.  It must remain enabled (or
@@ -3493,7 +3528,7 @@ class WorkflowHandlers:
             vad_path = operation_dir / "vad-segments.json"
             try:
                 vad_path = run_vad_export(
-                    normalized_path,
+                    alignment_audio_path,
                     vad_path,
                     options,
                     executable=crispasr_executable,
@@ -3540,7 +3575,7 @@ class WorkflowHandlers:
 
         try:
             alignment = align_caption_cues(
-                normalized_path,
+                alignment_audio_path,
                 cues,
                 options,
                 vad_spans=vad_spans,
@@ -3703,7 +3738,14 @@ class WorkflowHandlers:
             parent_ids=[source_artifact.id, caption_artifact.id]
             + ([vad_artifact.id] if vad_artifact else []),
             settings=persisted_settings,
-            metadata=diagnostics.as_dict(),
+            metadata={
+                **diagnostics.as_dict(),
+                **(
+                    {"vocal_isolation": isolation_record}
+                    if isolation_record is not None
+                    else {}
+                ),
+            },
         )
         evidence_ids.append(diagnostics_artifact.id)
         for artifact in (raw_asr_srt_artifact, raw_asr_words_artifact):
@@ -3730,6 +3772,8 @@ class WorkflowHandlers:
             "raw_asr_word_timestamps_artifact_id": raw_asr_words_artifact.id if raw_asr_words_artifact else None,
             "evidence_artifact_ids": list(dict.fromkeys(evidence_ids)),
         }
+        if isolation_record is not None:
+            metadata["vocal_isolation"] = isolation_record
         aligned_payload = media_cues_to_transcript(
             aligned_cues,
             language=str(options.get("original_language") or options.get("stt_language") or ""),
@@ -5812,6 +5856,15 @@ class WorkflowHandlers:
         replace_sample_id = str(payload.get("replace_sample_id") or "") or None
         expected_raw = payload.get("expected_voice_revision")
         expected_revision = int(expected_raw) if expected_raw is not None else None
+        noise_reduction = (
+            str(payload.get("noise_reduction") or VOICE_NOISE_REDUCTION_NONE)
+            .strip()
+            .lower()
+        )
+        if noise_reduction not in VOICE_NOISE_REDUCTION_OPTIONS:
+            raise ValueError(
+                "noise_reduction must be 'none' or 'deepfilternet2'."
+            )
         reviewed_transcript = str(payload.get("reviewed_transcript") or "").strip()
         transcript = reviewed_transcript or str(payload.get("unreviewed_transcript") or "").strip()
         transcript_language = (
@@ -5853,25 +5906,123 @@ class WorkflowHandlers:
                     raise ValueError("Voice sample not found.")
         voice_dir = self.paths.voices / voice_id
         voice_dir.mkdir(parents=True, exist_ok=True)
-        destination = voice_dir / f"sample-{source_artifact.id}-{uuid.uuid4().hex}.wav"
-        progress(0.1, "Normalizing recording")
-        command = [
-            str(payload.get("ffmpeg_executable") or "ffmpeg"),
-            "-y",
-            "-i",
-            str(source_path),
-            "-ac",
-            "1",
-            "-ar",
-            "24000",
-            "-c:a",
-            "pcm_s16le",
-            str(destination),
-        ]
-        subprocess.run(command, check=True, capture_output=True, text=True)
-        if cancel_event.is_set():
-            destination.unlink(missing_ok=True)
-            return {}
+        ffmpeg_executable = str(payload.get("ffmpeg_executable") or "ffmpeg")
+        normalize_source_path = source_path
+        cleanup_report: dict[str, Any] | None = None
+        cleanup_temporary: list[Path] = []
+        try:
+            if noise_reduction == VOICE_NOISE_REDUCTION_DEEPFILTERNET2:
+                progress(0.05, "Preparing audio for DeepFilterNet2 cleanup")
+                resampled = (
+                    self.paths.temporary
+                    / f"voice-clean-{source_artifact.id}-{uuid.uuid4().hex}-48k.wav"
+                )
+                cleanup_temporary.append(resampled)
+                subprocess.run(
+                    [
+                        ffmpeg_executable,
+                        "-y",
+                        "-i",
+                        str(source_path),
+                        "-ac",
+                        "1",
+                        "-ar",
+                        str(VOICE_CLEANUP_INPUT_SAMPLE_RATE),
+                        "-c:a",
+                        "pcm_s16le",
+                        str(resampled),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if cancel_event.is_set():
+                    return {}
+                # Imported lazily so the default path never requires the
+                # cleanup dependency or its model download.
+                from pandrator.logic.audio_cpp_processing import clean_voice_sample
+
+                cleaned = (
+                    self.paths.temporary
+                    / f"voice-clean-{source_artifact.id}-{uuid.uuid4().hex}-cleaned.wav"
+                )
+                cleanup_temporary.append(cleaned)
+                progress(0.15, "Cleaning background noise with DeepFilterNet2")
+
+                def _cleanup_progress(phase: str, current: int, total: int) -> None:
+                    try:
+                        fraction = float(current) / max(1, int(total))
+                    except (TypeError, ValueError):
+                        fraction = 0.0
+                    fraction = max(0.0, min(1.0, fraction))
+                    if str(phase) == "clean":
+                        progress(
+                            0.15 + 0.5 * fraction,
+                            "Cleaning background noise with DeepFilterNet2",
+                        )
+                    else:
+                        progress(
+                            0.65 + 0.05 * fraction,
+                            "Installing cleaned voice audio",
+                        )
+
+                cleanup_report = clean_voice_sample(
+                    source=resampled,
+                    destination=cleaned,
+                    settings={"model": VOICE_NOISE_REDUCTION_DEEPFILTERNET2},
+                    cancel_event=cancel_event,
+                    progress=_cleanup_progress,
+                )
+                if cancel_event.is_set():
+                    return {}
+                if not cleaned.is_file():
+                    raise RuntimeError(
+                        "DeepFilterNet2 cleanup did not produce cleaned audio."
+                    )
+                normalize_source_path = cleaned
+            destination = voice_dir / f"sample-{source_artifact.id}-{uuid.uuid4().hex}.wav"
+            progress(
+                0.8 if cleanup_report is not None else 0.1, "Normalizing recording"
+            )
+            command = [
+                ffmpeg_executable,
+                "-y",
+                "-i",
+                str(normalize_source_path),
+                "-ac",
+                "1",
+                "-ar",
+                "24000",
+                "-c:a",
+                "pcm_s16le",
+                str(destination),
+            ]
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            if cancel_event.is_set():
+                destination.unlink(missing_ok=True)
+                return {}
+        finally:
+            for temporary in cleanup_temporary:
+                temporary.unlink(missing_ok=True)
+        sample_metadata: dict[str, Any] | None = (
+            {"sample_provenance": sample_provenance}
+            if sample_provenance is not None
+            else None
+        )
+        if cleanup_report is not None:
+            reduction_metadata: dict[str, Any] = {
+                "method": VOICE_NOISE_REDUCTION_DEEPFILTERNET2
+            }
+            if isinstance(cleanup_report, dict):
+                for key, value in cleanup_report.items():
+                    if str(key) == "output_path":
+                        continue
+                    if value is None or isinstance(value, (str, int, float, bool)):
+                        reduction_metadata[str(key)] = value
+            sample_metadata = {
+                **(sample_metadata or {}),
+                "noise_reduction": reduction_metadata,
+            }
         prepared = self.artifacts.prepare_registration(destination)
         removable: list[Path] = []
         with self.database.session() as session:
@@ -5888,11 +6039,7 @@ class WorkflowHandlers:
                 kind="audio",
                 role="voice_sample",
                 parent_ids=[source_artifact.id],
-                metadata=(
-                    {"sample_provenance": sample_provenance}
-                    if sample_provenance is not None
-                    else None
-                ),
+                metadata=sample_metadata,
                 _prepared=prepared,
             )
             if replace_sample_id:

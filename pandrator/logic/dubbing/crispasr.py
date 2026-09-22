@@ -195,6 +195,17 @@ class CrispASRError(RuntimeError):
 def normalize_engine(value: str | None) -> str:
     normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     if normalized in {
+        "qwen3",
+        "qwen",
+        "qwen3_asr",
+        "qwen_3",
+        "qwen_3_asr",
+    }:
+        # Owned by qwen_asr.py (audio.cpp recognizer). Pass through so
+        # callers can route before CrispASR command construction, which
+        # rejects it explicitly below.
+        return "qwen3"
+    if normalized in {
         "moss",
         "moss_diarize",
         "moss_transcribe_diarize",
@@ -489,6 +500,11 @@ def build_command(
     vad_model_path: str | os.PathLike[str] | None = None,
 ) -> list[str]:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
+    if engine == "qwen3":
+        raise CrispASRError(
+            "stt_engine='qwen3' is an audio.cpp recognizer owned by "
+            "qwen_asr.py; CrispASR cannot build this command."
+        )
     language = validate_stt_language(
         engine,
         settings.get("stt_language") or settings.get("whisper_language"),

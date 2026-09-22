@@ -147,10 +147,48 @@ WHISPER_LARGE_V3_LANGUAGE_CODES = (
 )
 
 
+# Source: Qwen/Qwen3-ASR model card (Qwen3-ASR-0.6B / 1.7B): 30 languages.
+# Deliberately distinct from the 11-language forced-aligner coverage owned
+# by qwen_alignment.LANGUAGES. Do NOT merge these lists.
+QWEN3_ASR_LANGUAGE_CODES = (
+    "zh",
+    "en",
+    "yue",
+    "ar",
+    "de",
+    "fr",
+    "es",
+    "pt",
+    "id",
+    "it",
+    "ko",
+    "ru",
+    "th",
+    "vi",
+    "ja",
+    "tr",
+    "hi",
+    "ms",
+    "nl",
+    "sv",
+    "da",
+    "fi",
+    "pl",
+    "cs",
+    "fil",
+    "fa",
+    "el",
+    "hu",
+    "mk",
+    "ro",
+)
+
+
 _SUPPORTED_LANGUAGES: dict[str, tuple[str, ...] | None] = {
     "whisper": WHISPER_LARGE_V3_LANGUAGE_CODES,
     "parakeet": PARAKEET_V3_LANGUAGE_CODES,
     "moss": None,
+    "qwen3": QWEN3_ASR_LANGUAGE_CODES,
 }
 _LANGUAGE_ALIASES = {"nb": "no", "iw": "he", "jv": "jw"}
 _COMPACT_REGION_ALIASES = {"ptbr": "pt", "zhcn": "zh"}
@@ -207,6 +245,7 @@ def validate_stt_language(canonical_engine: str, language: str | None) -> str:
 
 __all__ = [
     "PARAKEET_V3_LANGUAGE_CODES",
+    "QWEN3_ASR_LANGUAGE_CODES",
     "WHISPER_LARGE_V3_LANGUAGE_CODES",
     "normalize_stt_language",
     "supported_stt_languages",

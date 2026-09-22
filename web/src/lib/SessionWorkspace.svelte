@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { sttLanguageProblem } from './stt-language-policy';
+  import {
+    sttLanguageProblem,
+    qwenTimedLanguageProblem
+  } from './stt-language-policy';
+  import QwenTranscriptionControls from './QwenTranscriptionControls.svelte';
+  import VocalIsolationControl from './VocalIsolationControl.svelte';
+  import LocalModelPicker from './LocalModelPicker.svelte';
   import {
     hasPrebuiltVoices,
     selectableTtsServices,
@@ -325,6 +331,8 @@
   let reasoningEffort = $state('');
   let backend = $state('llm');
   let sttEngine = $state('whisper');
+  let qwenAsrModel = $state('qwen3_asr_0_6b');
+  let transcriptionVocalIsolation = $state('off');
   let captionAlignmentMethod = $state<'ctc' | 'ctc_asr_fallback' | 'asr'>(
     'ctc'
   );
@@ -604,6 +612,7 @@
     const normalized = String(value ?? '').toLowerCase();
     if (normalized.includes('azure') && normalized.includes('mai'))
       return 'azure_mai_transcribe_1_5';
+    if (normalized.includes('qwen')) return 'qwen3';
     if (normalized.includes('moss')) return 'moss';
     return normalized.includes('parakeet') ? 'parakeet' : 'whisper';
   };
@@ -613,7 +622,10 @@
         service.id.replaceAll('-', '_') === engine.replaceAll('-', '_')
     );
   const sttLanguageIssue = $derived(
-    sttLanguageProblem(capabilities, sttEngine, originalLanguage)
+    sttLanguageProblem(capabilities, sttEngine, originalLanguage) ||
+      (sttEngine === 'qwen3'
+        ? qwenTimedLanguageProblem(capabilities, originalLanguage)
+        : '')
   );
   const sttOptionLabel = (engineId: string, label: string, timing: string) => {
     const info = capabilities?.stt?.models?.[engineId] ?? {};
@@ -1111,6 +1123,10 @@
       hasSavedSttModel
         ? (saved.stt_engine ?? saved.stt_backend)
         : preferredSttEngine
+    );
+    qwenAsrModel = String(saved.qwen_asr_model ?? 'qwen3_asr_0_6b');
+    transcriptionVocalIsolation = String(
+      saved.transcription_vocal_isolation ?? 'off'
     );
     const savedCaptionAlignmentMethod = String(
       saved.caption_alignment_method ?? 'ctc'
@@ -2592,6 +2608,8 @@
       stageSettings[key] = {
         stt_engine: sttEngine,
         stt_backend: sttEngine,
+        qwen_asr_model: qwenAsrModel,
+        transcription_vocal_isolation: transcriptionVocalIsolation,
         caption_alignment_method: captionAlignmentMethod,
         caption_alignment_ctc_model: captionAlignmentCtcModel,
         caption_alignment_padding_ms: captionAlignmentPaddingMs,
@@ -3719,6 +3737,7 @@
             </fieldset>
           {/if}
           {#if settingsStage.key === 'transcribe'}
+            <VocalIsolationControl bind:value={transcriptionVocalIsolation} />
             {#if session.workflow_kind === 'media_edit'}<div
                 class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"
               >
@@ -3996,6 +4015,7 @@
                     : 'Recognition model'}
                 /><select
                   bind:value={sttEngine}
+                  aria-label={hasAttachedCaptions ? 'Fallback recognition model' : 'Recognition model'}
                   onchange={() =>
                     (sttQuantization = String(
                       capabilities?.stt?.models?.[sttEngine]?.precision ?? 'f16'
@@ -4039,6 +4059,20 @@
                       'MOSS Transcribe-Diarize 0.9B',
                       'native speakers + CTC words'
                     )}</option
+                  ><option
+                    value="qwen3"
+                    disabled={Boolean(
+                      sttLanguageProblem(
+                        capabilities,
+                        'qwen3',
+                        originalLanguage
+                      )
+                    )}
+                    >{sttOptionLabel(
+                      'qwen3',
+                      'Qwen3 ASR',
+                      'separate word alignment'
+                    )}</option
                   >{#each sttCatalogue.services as service}<option
                       value={service.id}
                       >{service.name} · cloud word timestamps</option
@@ -4047,7 +4081,9 @@
                 ><span class="muted mt-1 block text-xs"
                   >{isCloudStt(sttEngine)
                     ? 'The selected connection runs remotely; audio is sent to its configured provider.'
-                    : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
+                    : sttEngine === 'qwen3'
+                      ? 'Qwen3 runs through audio.cpp; recognition and alignment models download only when needed.'
+                      : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
                 ></label
               >
               {#if sttLanguageIssue}<p
@@ -4122,6 +4158,13 @@
                     specialist terms.</span
                   ></label
                 >
+              {:else if sttEngine === 'qwen3'}
+                <QwenTranscriptionControls
+                  bind:model={qwenAsrModel}
+                  bind:language={originalLanguage}
+                  bind:backend={sttComputeBackend}
+                  {capabilities}
+                />
               {:else}
                 <label class="text-sm font-semibold"
                   ><ParameterLabel
@@ -5254,18 +5297,31 @@
                 >Manage services</button
               >
             </div>
-            <label class="text-sm font-semibold"
-              >{selectedTtsServiceId === 'kobold_qwen'
-                ? 'Voice type'
-                : 'Model'}<select
+            {#if selectedTtsServiceId === 'audio_cpp' && selectedTtsService?.model_catalog?.some( (item) => Boolean(item.family) )}
+              <LocalModelPicker
+                id="session-tts-model"
+                label="TTS model"
                 value={ttsModel}
-                onchange={(event) => chooseTtsModel(event.currentTarget.value)}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                aria-label="TTS model"
-                >{#each ttsModels as item}<option value={item}>{item}</option
-                  >{/each}</select
-              ></label
-            >
+                catalog={selectedTtsService.model_catalog}
+                listedIds={ttsModels}
+                modelVoiceModes={selectedTtsService.model_voice_modes ?? {}}
+                onchange={chooseTtsModel}
+              />
+            {:else}
+              <label class="text-sm font-semibold"
+                >{selectedTtsServiceId === 'kobold_qwen'
+                  ? 'Voice type'
+                  : 'Model'}<select
+                  value={ttsModel}
+                  onchange={(event) =>
+                    chooseTtsModel(event.currentTarget.value)}
+                  class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  aria-label="TTS model"
+                  >{#each ttsModels as item}<option value={item}>{item}</option
+                    >{/each}</select
+                ></label
+              >
+            {/if}
             {#if supportsXttsModelUpload}
               <section
                 class="rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-4"

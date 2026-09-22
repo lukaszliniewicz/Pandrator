@@ -35,6 +35,7 @@ from .retry_utils import (
     wait_for_retry,
 )
 from .audio_cpp_parameters import validate_audio_cpp_model_options
+from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     AUDIO_CPP_MODEL_VOICE_MODES,
@@ -1958,7 +1959,7 @@ def _audio_cpp_endpoint_lock_for(base_url: str) -> RLock:
 
 
 @contextmanager
-def audio_cpp_endpoint_lock(tts_settings: dict):
+def audio_cpp_endpoint_lock(tts_settings: dict, cancel_event=None):
     """Serialize synthesis requests to one audio.cpp endpoint across jobs."""
     endpoint, _error = resolve_openai_audio_endpoint(tts_settings)
     if (
@@ -1967,8 +1968,10 @@ def audio_cpp_endpoint_lock(tts_settings: dict):
     ):
         yield
         return
-    with _audio_cpp_endpoint_lock_for(str(endpoint.get("base_url") or "")):
-        yield
+    base_url = str(endpoint.get("base_url") or "")
+    with local_tts_audio_cpp_guard(base_url, cancel_event):
+        with _audio_cpp_endpoint_lock_for(base_url):
+            yield
 
 
 def _coerce_bool(value, default: bool) -> bool:
@@ -7167,7 +7170,7 @@ def text_to_audio(
             endpoint is not None
             and _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER
         ):
-            with audio_cpp_endpoint_lock(tts_settings):
+            with audio_cpp_endpoint_lock(tts_settings, cancel_event):
                 return text_to_audio(
                     text,
                     tts_settings,

@@ -21209,6 +21209,34 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "noise_reduction": {
+                    "default": "none",
+                    "description": "Optional local microphone cleanup before normalization. The selected model downloads on first use; the original recording is retained.",
+                    "enum": [
+                      "none",
+                      "deepfilternet2"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "202": {
             "description": "Queued"
@@ -21401,6 +21429,34 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "noise_reduction": {
+                    "default": "none",
+                    "description": "Optional local cleanup of the replacement recording before normalization; preserves the raw upload.",
+                    "enum": [
+                      "none",
+                      "deepfilternet2"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "202": {
             "description": "Replacement queued"

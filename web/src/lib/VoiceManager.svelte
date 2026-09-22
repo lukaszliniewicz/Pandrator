@@ -118,6 +118,20 @@
   let recordingBlob = $state<Blob | null>(null);
   let recordingUrl = $state('');
   let savingRecording = $state(false);
+  let cleanupNoise = $state(false);
+  let recordingJobId = $state<string | null>(null);
+  let cancelingRecording = $state(false);
+  let saveRecordingAborted = false;
+  // Intent vs outcome: saveRecordingAborted records that Cancel was pressed.
+  // saveCancelError records a failed server-cancel call so the save loop can
+  // report it truthfully instead of claiming the save was canceled.
+  let saveCancelError = '';
+  // Uncertain-save tracking: voice/denoise for the in-flight job so a retry
+  // after a polling timeout re-checks the same job instead of uploading a
+  // duplicate. Cleared together with recordingJobId once the outcome is known
+  // or the local recording is explicitly replaced/discarded.
+  let pendingSaveVoiceId: string | null = null;
+  let pendingSaveDenoise = false;
   let playbackAudio: HTMLAudioElement;
   let playingKey = $state('');
   let tourOpen = $state(false);
@@ -516,10 +530,13 @@
     recordingUrl = '';
     recordingBlob = null;
     chunks = [];
+    // A replaced/discarded local recording no longer matches a previously
+    // uncertain job, so a later Save must not resume polling it as a retry.
+    pendingSaveVoiceId = null;
   }
 
   async function startRecording() {
-    if (!canRecord || recording || stopping) return;
+    if (!canRecord || recording || stopping || savingRecording) return;
     error = '';
     notice = '';
     stopPlayback();
@@ -582,7 +599,7 @@
   }
 
   function discard() {
-    if (recording || stopping) return;
+    if (recording || stopping || savingRecording) return;
     stopPlayback();
     clearRecording();
     notice = '';
@@ -591,34 +608,148 @@
   async function saveRecording() {
     if (!selected || selected.bundled || !recordingBlob || savingRecording)
       return;
+    // A previous attempt may have timed out while its job kept running. Its
+    // ID is retained, so resume by re-checking that exact job instead of
+    // starting a duplicate upload.
+    const resumingUncertain =
+      recordingJobId !== null && pendingSaveVoiceId !== null;
+    const voiceId =
+      resumingUncertain && pendingSaveVoiceId
+        ? pendingSaveVoiceId
+        : selected.id;
+    const expectedRevision = selected.revision;
+    const blob = recordingBlob;
+    const denoise = resumingUncertain ? pendingSaveDenoise : cleanupNoise;
     savingRecording = true;
+    saveRecordingAborted = false;
+    saveCancelError = '';
+    cancelingRecording = false;
     error = '';
-    const body = new FormData();
-    const extension = recordingBlob.type.includes('ogg')
-      ? 'ogg'
-      : recordingBlob.type.includes('mp4')
-        ? 'm4a'
-        : 'webm';
-    body.set('file', recordingBlob, `recording.${extension}`);
-    body.set('expected_revision', String(selected.revision));
+    notice = resumingUncertain
+      ? 'Checking the previous save job before retrying. No duplicate upload was started.'
+      : denoise
+        ? 'Cleaning background noise on the job worker. The model downloads once on first use and stays on this machine.'
+        : '';
+    let jobId: string | null = resumingUncertain ? recordingJobId : null;
+    if (!resumingUncertain) {
+      const body = new FormData();
+      const extension = blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('mp4')
+          ? 'm4a'
+          : 'webm';
+      body.set('file', blob, `recording.${extension}`);
+      body.set('expected_revision', String(expectedRevision));
+      if (denoise) body.set('noise_reduction', 'deepfilternet2');
+      try {
+        const job = await voiceApi.uploadSample(
+          voiceId,
+          expectedRevision,
+          body
+        );
+        jobId = job.id;
+        recordingJobId = job.id;
+        pendingSaveVoiceId = voiceId;
+        pendingSaveDenoise = denoise;
+        if (saveRecordingAborted) {
+          // Cancel arrived while the upload was still in flight, so there
+          // was no job ID to cancel yet. Cancel the exact returned job now
+          // that it is known instead of pretending the save already stopped.
+          try {
+            await jobApi.cancel(jobId);
+          } catch (caught) {
+            saveCancelError = errorMessage(caught);
+          }
+        }
+      } catch (caught) {
+        recordingJobId = null;
+        pendingSaveVoiceId = null;
+        report(caught);
+        savingRecording = false;
+        cancelingRecording = false;
+        return;
+      }
+    }
+    const pollingJobId = jobId as string;
     try {
-      const job = await voiceApi.uploadSample(
-        selected.id,
-        selected.revision,
-        body
-      );
-      await waitJob(job.id);
+      await waitJob(pollingJobId);
+      recordingJobId = null;
+      pendingSaveVoiceId = null;
       clearRecording();
       await loadVoices();
-      if (selected) await choose(selected);
-      if (!(await maybePublishRequestedVoice()))
-        notice = providerNeedsReviewedTranscript
-          ? `The sample is ready. Review its transcript before using it with ${providerTarget?.name ?? 'this provider'}.`
-          : 'The normalized voice sample was saved.';
+      const refreshed = voices.find((voice) => voice.id === voiceId) ?? null;
+      if (refreshed && selected?.id === voiceId) {
+        await choose(refreshed);
+        if (!(await maybePublishRequestedVoice()))
+          notice =
+            saveRecordingAborted || saveCancelError
+              ? 'The save finished before the cancellation could stop it.'
+              : providerNeedsReviewedTranscript
+                ? `The sample is ready. Review its transcript before using it with ${providerTarget?.name ?? 'this provider'}.`
+                : denoise
+                  ? 'The cleaned voice sample was saved. The original upload is preserved with it; play the saved sample below to compare.'
+                  : 'The normalized voice sample was saved.';
+      } else if (refreshed) {
+        notice = denoise
+          ? `The cleaned sample was saved to ${refreshed.name}.`
+          : `The sample was saved to ${refreshed.name}.`;
+      } else {
+        notice = 'The sample was saved, but the voice is no longer available.';
+      }
     } catch (caught) {
-      report(caught);
+      const message = errorMessage(caught);
+      if (message.includes('still running')) {
+        // Outcome uncertain: the job may still complete server-side. Keep
+        // the job ID so the next Save re-checks it, keep the raw recording
+        // for retry, and point at Activity instead of inviting a blind retry.
+        error = `${message} Your recording is still available locally.`;
+      } else if (
+        saveRecordingAborted &&
+        !saveCancelError &&
+        /cancel|interrupt/i.test(message)
+      ) {
+        // The server confirmed the cancellation; only now is it honest to
+        // say the save was canceled. The raw recording stays for retry.
+        error = '';
+        notice = 'Save canceled. Your recording is still available locally.';
+        recordingJobId = null;
+        pendingSaveVoiceId = null;
+      } else if (saveRecordingAborted && saveCancelError) {
+        // The cancel call itself failed: never report a clean cancellation.
+        report(
+          new Error(
+            `Cancel failed: ${saveCancelError} The save then ended with: ${message} Your recording is still available locally. Check Activity & logs for the job outcome.`
+          )
+        );
+        recordingJobId = null;
+        pendingSaveVoiceId = null;
+      } else {
+        // Covers job failures and a cancel request that lost the race in a
+        // non-success way: report what the server actually said. The raw
+        // recording is retained for retry in all of these paths.
+        report(caught);
+        recordingJobId = null;
+        pendingSaveVoiceId = null;
+      }
     } finally {
       savingRecording = false;
+      cancelingRecording = false;
+    }
+  }
+
+  async function cancelSavingRecording() {
+    if (!savingRecording || cancelingRecording) return;
+    cancelingRecording = true;
+    // Record intent only. The save loop cancels the exact job once its ID is
+    // known (including when Cancel arrives during the upload) and only
+    // reports cancellation after the server confirms it.
+    saveRecordingAborted = true;
+    try {
+      if (recordingJobId) await jobApi.cancel(recordingJobId);
+    } catch (caught) {
+      // Never swallow this into a false "canceled": the save loop reports
+      // the failed cancel truthfully once the job settles.
+      saveCancelError = errorMessage(caught);
     }
   }
 
@@ -713,7 +844,9 @@
         throw new Error(job.error_message || `Job ${job.status}`);
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    throw new Error('The operation is still running. Check the job queue.');
+    throw new Error(
+      `The operation is still running as job ${id}. Check Activity & logs before retrying.`
+    );
   }
 
   async function transcribe(sample: Sample) {
@@ -1541,10 +1674,40 @@
                   disabled={selected.bundled || savingRecording}
                   class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 font-semibold text-white disabled:opacity-50"
                   ><Save size={16} />
-                  {savingRecording ? 'Normalizing…' : 'Save sample'}</button
+                  {savingRecording
+                    ? cleanupNoise
+                      ? 'Cleaning…'
+                      : 'Normalizing…'
+                    : 'Save sample'}</button
                 >
+                {#if savingRecording}<button
+                    onclick={cancelSavingRecording}
+                    disabled={cancelingRecording}
+                    class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                    >{cancelingRecording ? 'Canceling…' : 'Cancel save'}</button
+                  >{/if}
               {/if}
             </div>
+            {#if recordingUrl}<div class="mt-3 max-w-xl">
+                <label
+                  class="flex cursor-pointer items-start gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-xs font-semibold"
+                  ><input
+                    type="checkbox"
+                    bind:checked={cleanupNoise}
+                    disabled={savingRecording}
+                    class="mt-0.5 accent-[var(--accent)]"
+                  /><span
+                    >Clean background noise with DeepFilterNet2<span
+                      class="muted mt-0.5 block font-normal"
+                      >Optional and off by default. The model downloads once on
+                      first use and stays on this machine. Cleanup runs as a
+                      server job, not live in the browser: preview the raw
+                      recording above, then compare it with the saved sample
+                      below.</span
+                    ></span
+                  ></label
+                >
+              </div>{/if}
             {#if !capabilities?.ffmpeg?.available}<p
                 class="mt-2 text-xs text-[var(--warning)]"
               >

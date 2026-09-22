@@ -22,6 +22,7 @@ from .crispasr import (
 )
 from .stt_languages import (
     PARAKEET_V3_LANGUAGE_CODES,
+    QWEN3_ASR_LANGUAGE_CODES,
     WHISPER_LARGE_V3_LANGUAGE_CODES,
     normalize_stt_language,
 )
@@ -38,7 +39,16 @@ from .stt_provider_profiles import (
 STT_BACKEND_WHISPERX = STT_ENGINE_WHISPER
 STT_BACKEND_PARAKEET_ONNX = STT_ENGINE_PARAKEET
 
+# Qwen3 ASR is an audio.cpp recognizer, not a CrispASR engine. It is owned
+# by qwen_asr.py and must never fall through to crispasr.normalize_engine
+# (which defaults unknown names to whisper).
+STT_ENGINE_QWEN3 = "qwen3"
+STT_ENGINE_QWEN3_ALIASES = frozenset(
+    {"qwen3", "qwen", "qwen3_asr", "qwen3-asr", "qwen_3", "qwen_3_asr"}
+)
+
 STT_BACKEND_LABELS = {engine: model.label for engine, model in MODELS.items()}
+STT_BACKEND_LABELS[STT_ENGINE_QWEN3] = "Qwen3 ASR (audio.cpp recognizer)"
 STT_BACKEND_LABELS.update(
     {
         profile["id"]: str(profile.get("label") or profile.get("name") or profile["id"])
@@ -52,6 +62,8 @@ def normalize_stt_backend(raw_value: str | None) -> str:
     )
     if normalized in CLOUD_STT_ENGINE_IDS:
         return normalized
+    if normalized in STT_ENGINE_QWEN3_ALIASES:
+        return STT_ENGINE_QWEN3
     return normalize_engine(raw_value)
 
 
@@ -152,6 +164,26 @@ def detect_stt_backend_statuses(**kwargs) -> dict[str, STTBackendStatus]:
         )
         for engine in MODELS
     }
+    try:
+        from . import qwen_asr
+
+        qwen_caps = qwen_asr.capabilities()
+        statuses[STT_ENGINE_QWEN3] = STTBackendStatus(
+            STT_ENGINE_QWEN3,
+            STT_BACKEND_LABELS[STT_ENGINE_QWEN3],
+            bool(qwen_caps.get("available")),
+            str(qwen_caps.get("reason") or "audio.cpp audiocpp_cli ready")
+            if qwen_caps.get("available")
+            else str(qwen_caps.get("reason") or "Qwen3 ASR unavailable"),
+            word_timing=str(qwen_caps.get("word_timing") or ""),
+        )
+    except Exception as error:
+        statuses[STT_ENGINE_QWEN3] = STTBackendStatus(
+            STT_ENGINE_QWEN3,
+            STT_BACKEND_LABELS[STT_ENGINE_QWEN3],
+            False,
+            f"Qwen3 ASR probe failed: {error}",
+        )
     for profile in list_stt_provider_profiles():
         statuses[profile["id"]] = STTBackendStatus(
             profile["id"],
@@ -225,6 +257,20 @@ def language_options_for_backend(backend: str) -> tuple[STTLanguageOption, ...]:
         # Crisp's MOSS pipeline owns automatic language selection, so there is
         # no useful forced-language choice to expose here.
         return (STTLanguageOption("Automatic", "auto"),)
+    if normalized == STT_ENGINE_QWEN3:
+        from .qwen_asr import QWEN3_ASR_LANGUAGE_LABELS
+
+        options = [STTLanguageOption("Automatic", "auto")]
+        options.extend(
+            STTLanguageOption(
+                LANGUAGE_DISPLAY_NAMES.get(
+                    code, QWEN3_ASR_LANGUAGE_LABELS.get(code, code.upper())
+                ),
+                code,
+            )
+            for code in QWEN3_ASR_LANGUAGE_CODES
+        )
+        return tuple(options)
     return tuple(
         STTLanguageOption(LANGUAGE_DISPLAY_NAMES.get(code, code.upper()), code)
         for code in WHISPER_LARGE_V3_LANGUAGE_CODES

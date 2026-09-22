@@ -194,6 +194,16 @@ def migrate_dubbing_payload(
     migrated.setdefault("stt_transcribe_style", "readability")
     migrated.setdefault("stt_lid_backend", "whisper")
     migrated.setdefault("stt_beam_size", 1)
+    # Qwen3 ASR recognizer (audio.cpp, owned by qwen_asr.py). Transcript-only
+    # covers 30 languages; precise word timing additionally needs a validated
+    # source language in the timed pipeline set. Vocal isolation defaults off.
+    migrated.setdefault("qwen_asr_model", "qwen3_asr_0_6b")
+    migrated.setdefault("transcription_vocal_isolation", "off")
+    migrated.setdefault("qwen_asr_chunk_seconds", 30)
+    migrated.setdefault("qwen_asr_max_tokens", 512)
+    migrated.setdefault("qwen_asr_chunk_mode", "auto")
+    migrated.setdefault("qwen_asr_timeout_seconds", 3600)
+    migrated.setdefault("qwen_asr_clamp_timestamps", False)
     migrated.setdefault("parakeet_decoder", "tdt")
     migrated.setdefault("moss_max_chunk_seconds", 120.0)
     migrated.setdefault("moss_chunk_overlap_seconds", 0.0)
@@ -272,6 +282,80 @@ def migrate_dubbing_payload(
     # second-pass regroup. Defaults keep legacy payloads on passage planning
     # with regroup off; stored invalid values are normalized, never widened.
     from .passage_regroup import REGROUP_SPEC, normalize_generation_mode
+    from .qwen_asr import (
+        QWEN3_ASR_MODELS,
+        QWEN3_CHUNK_MODES,
+        QwenASRError,
+        normalize_qwen_asr_language,
+        normalize_qwen_asr_model,
+        normalize_vocal_isolation,
+    )
+
+    raw_model = migrated.get("qwen_asr_model")
+    if raw_model in (None, ""):
+        # Truly legacy/absent value: fall back to the default recognizer.
+        migrated["qwen_asr_model"] = QWEN3_ASR_MODELS[0]
+    else:
+        # An explicitly present model selection must be valid; never
+        # silently substitute a different model for an API/job request.
+        try:
+            migrated["qwen_asr_model"] = normalize_qwen_asr_model(raw_model)
+        except (ValueError, QwenASRError) as error:
+            raise ValueError(f"Invalid qwen_asr_model {raw_model!r}.") from error
+    raw_isolation = migrated.get("transcription_vocal_isolation")
+    if raw_isolation in (None, ""):
+        migrated["transcription_vocal_isolation"] = "off"
+    else:
+        # An explicitly requested preprocessing method that is invalid
+        # must fail loudly, never silently skip to "off".
+        try:
+            migrated["transcription_vocal_isolation"] = normalize_vocal_isolation(
+                raw_isolation
+            )
+        except (ValueError, QwenASRError) as error:
+            raise ValueError(
+                f"Invalid transcription_vocal_isolation {raw_isolation!r}."
+            ) from error
+    chunk_mode = str(migrated.get("qwen_asr_chunk_mode") or "auto").strip().lower()
+    migrated["qwen_asr_chunk_mode"] = (
+        chunk_mode if chunk_mode in QWEN3_CHUNK_MODES else "auto"
+    )
+    try:
+        chunk_seconds = float(migrated.get("qwen_asr_chunk_seconds", 30))
+    except (TypeError, ValueError):
+        chunk_seconds = 30.0
+    if not math.isfinite(chunk_seconds) or chunk_seconds < 0:
+        chunk_seconds = 30.0
+    migrated["qwen_asr_chunk_seconds"] = (
+        0.0 if chunk_seconds == 0 else max(10.0, min(120.0, chunk_seconds))
+    )
+    try:
+        max_tokens = int(migrated.get("qwen_asr_max_tokens", 512))
+    except (TypeError, ValueError):
+        max_tokens = 512
+    migrated["qwen_asr_max_tokens"] = max(32, min(4096, max_tokens))
+    try:
+        timeout_seconds = float(migrated.get("qwen_asr_timeout_seconds", 3600))
+    except (TypeError, ValueError):
+        timeout_seconds = 3600.0
+    if not math.isfinite(timeout_seconds):
+        timeout_seconds = 3600.0
+    migrated["qwen_asr_timeout_seconds"] = max(60.0, min(14400.0, timeout_seconds))
+    clamp = migrated.get("qwen_asr_clamp_timestamps", False)
+    migrated["qwen_asr_clamp_timestamps"] = (
+        clamp if isinstance(clamp, bool) else str(clamp).strip().lower() in {"1", "true", "yes", "on"}
+    )
+    # Validate the Qwen language early (before any model resolution) when
+    # selected; other engines keep their own coverage validation.
+    if normalize_stt_backend(
+        migrated.get("stt_engine") or migrated.get("stt_backend")
+    ) == "qwen3":
+        try:
+            normalize_qwen_asr_language(
+                migrated.get("stt_language") or migrated.get("whisper_language")
+            )
+        except (ValueError, QwenASRError):
+            migrated["stt_language"] = "auto"
 
     for regroup_key, spec in REGROUP_SPEC.items():
         if regroup_key == "speech_block_generation_mode":
@@ -375,6 +459,13 @@ def normalize_dubbing_state(
         "stt_lid_backend",
         "stt_beam_size",
         "parakeet_decoder",
+        "qwen_asr_model",
+        "transcription_vocal_isolation",
+        "qwen_asr_chunk_seconds",
+        "qwen_asr_max_tokens",
+        "qwen_asr_chunk_mode",
+        "qwen_asr_timeout_seconds",
+        "qwen_asr_clamp_timestamps",
         "moss_max_chunk_seconds",
         "moss_chunk_overlap_seconds",
         "moss_vad_enabled",

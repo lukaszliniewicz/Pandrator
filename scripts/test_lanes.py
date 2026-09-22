@@ -16,6 +16,10 @@ FAST_LANE = "fast-xdist"
 # has been assigned to exactly one lane.
 TEST_LANES: dict[str, tuple[str, ...]] = {
     FAST_LANE: (
+        "tests/test_audio_cpp_assets.py",
+        "tests/test_audio_cpp_execution.py",
+        "tests/test_audio_cpp_processing.py",
+        "tests/test_qwen_asr_transcription.py",
         "tests/test_appimage_utils.py",
         "tests/test_audio_evidence.py",
         "tests/test_audio_variant_handler.py",
@@ -133,6 +137,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_state_db_handler.py",
     ),
     "web-01-serial": (
+        "tests/test_audio_cpp_job_resources.py",
+        "tests/test_web_voice_cleanup.py",
         "tests/test_web_dispatch.py",
         "tests/test_web_dispatch_context.py",
         "tests/test_web_source_cleaning_dispatch.py",

@@ -75,13 +75,10 @@ def test_key_semantics_and_known_caveats_are_explained():
 def test_items_follow_setting_section_and_default_insertion_order():
     names = [
         f"{item['section']}.{item['name']}"
-        for item in _items(
-            names=[
-                name
-                for section in DOCUMENTED_SECTIONS
-                for name in BUILTIN_DEFAULTS[section]
-            ]
-        )
+        # The full registry now exceeds the endpoint's 300-item response cap.
+        for section in SETTING_SECTIONS
+        if section in DOCUMENTED_SECTIONS
+        for item in _items(sections=[section], names=list(BUILTIN_DEFAULTS[section]))
     ]
     expected = [
         f"{section}.{name}"

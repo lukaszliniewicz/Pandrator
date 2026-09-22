@@ -173,7 +173,7 @@ from .source_resolution import resolve_media_source
 from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
-from .stt_resources import stt_resource_keys
+from .stt_resources import audio_cpp_resource_keys, stt_resource_keys
 from .voice_library import (
     ensure_bundled_voice,
     is_bundled_voice,
@@ -331,6 +331,22 @@ def _xtts_model_id_error(model_id: str) -> str:
     if any(ord(character) < 32 for character in model_id):
         return "model_id must not contain control characters."
     return ""
+
+
+VOICE_SAMPLE_NOISE_REDUCTION_OPTIONS = ("none", "deepfilternet2")
+
+
+def _voice_sample_noise_reduction(form: Any) -> str | None:
+    """Parse the microphone cleanup flag before any file or job side effect.
+
+    Returns the normalized value, or None when the flag is unknown so the
+    caller can reject the request before anything is saved or queued.
+    """
+
+    raw = str(form.get("noise_reduction") or "none").strip().lower()
+    if raw not in VOICE_SAMPLE_NOISE_REDUCTION_OPTIONS:
+        return None
+    return raw
 
 
 def _tts_service_selection(args: Any) -> list[str] | None:
@@ -7253,6 +7269,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/voices/<voice_id>/samples")
     @require_auth
     def voice_sample_upload(voice_id: str):
+        noise_reduction = _voice_sample_noise_reduction(request.form)
+        if noise_reduction is None:
+            return error_response(
+                "validation_error",
+                "noise_reduction must be 'none' or 'deepfilternet2'.",
+                422,
+            )
         incoming = request.files.get("file")
         if incoming is None or not incoming.filename:
             return error_response(
@@ -7298,13 +7321,24 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "source_artifact_id": source_artifact.id,
                 "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
                 "expected_voice_revision": expected_revision,
+                "noise_reduction": noise_reduction,
             },
+            resource_keys=[f"voice:{voice_id}"] + (
+                audio_cpp_resource_keys() if noise_reduction == "deepfilternet2" else []
+            ),
         )
         return jsonify(_job_payload(job)), 202
 
     @app.post("/api/v1/voices/<voice_id>/samples/<sample_id>/replace")
     @require_auth
     def voice_sample_replace(voice_id: str, sample_id: str):
+        noise_reduction = _voice_sample_noise_reduction(request.form)
+        if noise_reduction is None:
+            return error_response(
+                "validation_error",
+                "noise_reduction must be 'none' or 'deepfilternet2'.",
+                422,
+            )
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
             expected_revision = int(raw_etag)
@@ -7352,7 +7386,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "source_artifact_id": source_artifact.id,
                 "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
                 "expected_voice_revision": expected_revision,
+                "noise_reduction": noise_reduction,
             },
+            resource_keys=[f"voice:{voice_id}"] + (
+                audio_cpp_resource_keys() if noise_reduction == "deepfilternet2" else []
+            ),
         )
         return jsonify(_job_payload(job)), 202
 

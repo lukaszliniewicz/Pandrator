@@ -166,17 +166,24 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "third_prompt": "Supplies the third speech-optimization pass when multi-stage processing is enabled.",
     },
     "stt": {
-        "stt_engine": "Selects the speech-to-text engine: local CrispASR Whisper, Parakeet, or MOSS, or the supported Azure MAI-Transcribe-1.5 cloud profile.",
-        "stt_model_quantization": "Selects the quantized model file used by local CrispASR engines; the available files depend on the selected engine, and cloud STT does not use a local model file.",
-        "stt_compute_backend": "Selects the accelerator backend for local CrispASR inference; auto lets CrispASR choose, while CPU, CUDA, Vulkan, and Metal target specific local runtimes.",
-        "stt_language": "Supplies the transcript language to local Whisper and to Azure cloud STT; auto lets the engine detect or omit a locale where supported.",
-        "stt_compute_device": "Selects the non-CPU local accelerator index passed to CrispASR; it is ignored for auto/CPU execution and for remote cloud STT.",
-        "whisper_prompt": "Provides an optional initial prompt to local CrispASR Whisper decoding to bias vocabulary and style; Parakeet, MOSS, and Azure cloud STT do not consume it.",
-        "stt_threads": "Sets the local CrispASR worker-thread count; zero leaves thread selection to CrispASR, and cloud STT does not use it.",
+        "stt_engine": "Selects the speech-to-text engine: local CrispASR Whisper, Parakeet, or MOSS, local audio.cpp Qwen3 ASR, or the supported Azure MAI-Transcribe-1.5 cloud profile. Qwen3 is a recognizer; its word timestamps come from the separate Qwen3 forced aligner where the source language is supported.",
+        "stt_model_quantization": "Selects the quantized model file used by local CrispASR engines; the available files depend on the selected engine. Qwen3 ASR does not use this control; it uses qwen_asr_model instead. Cloud STT does not use a local model file.",
+        "stt_compute_backend": "Selects the accelerator backend for local CrispASR inference; auto lets CrispASR choose, while CPU, CUDA, Vulkan, and Metal target specific local runtimes. Qwen3 ASR reuses this backend for its audio.cpp session.",
+        "stt_language": "Supplies the transcript language to local Whisper, Qwen3 ASR (30 languages, including Polish and Dutch), and Azure cloud STT; auto lets the engine detect or omit a locale where supported. Qwen3 word timestamps additionally need an explicit, validated source language in the timed pipeline set.",
+        "qwen_asr_model": "Selects the Qwen3 ASR recognizer checkpoint: qwen3_asr_0_6b (compact) or qwen3_asr_1_7b (larger). Qwen3 ASR only; other engines ignore this setting.",
+        "transcription_vocal_isolation": "Optionally isolates vocals (BS-RoFormer or Mel-Band RoFormer) on a transcription-only derivative before speech recognition; the original audio is retained for playback and export. Off by default; an explicitly selected method that fails raises instead of silently transcribing the mix.",
+        "qwen_asr_chunk_seconds": "Sets the Qwen3 ASR pre-chunk window in seconds (0 for a single native-chunked pass); bounded pre-chunks keep each request inside the qwen_asr_max_tokens budget. Qwen3 ASR only.",
+        "qwen_asr_max_tokens": "Sets the Qwen3 ASR maximum decode tokens per request; the runtime requires a budget proportional to the chunk window so long chunks cannot truncate silently. Qwen3 ASR only.",
+        "qwen_asr_chunk_mode": "Selects the Qwen3 ASR model-side chunking strategy. Auto (default) resolves to none with bounded outer chunks or fixed for single-pass runs, both avoiding the unbundled Silero VAD path. Explicit fixed or none are VAD-free; explicit vad needs an operator-provided Silero VAD model. Qwen3 ASR only.",
+        "qwen_asr_timeout_seconds": "Bounds each Qwen3 ASR native call in seconds; expiry stops the child and fails loudly instead of hanging. Qwen3 ASR only.",
+        "qwen_asr_clamp_timestamps": "Keeps repaired Qwen3 forced-aligner word spans inside each local audio chunk; off preserves the existing timestamp repair behavior. Qwen3 ASR word timestamps only.",
+        "stt_compute_device": "Selects the non-CPU local accelerator index passed to CrispASR and Qwen3 ASR audio.cpp sessions; it is ignored for auto/CPU execution and for remote cloud STT.",
+        "whisper_prompt": "Provides an optional initial prompt to local CrispASR Whisper decoding to bias vocabulary and style; Parakeet, MOSS, Qwen3 ASR, and Azure cloud STT do not consume it.",
+        "stt_threads": "Sets the local CrispASR and Qwen3 ASR worker-thread count; zero leaves thread selection to the runtime, and cloud STT does not use it.",
         "stt_chunk_seconds": "Sets the local CrispASR audio window length before transcription; a non-positive value lets MOSS use its bounded 120-second context fallback, while Azure cloud chunking uses provider-specific settings.",
         "stt_chunk_overlap_seconds": "Sets overlap between non-MOSS local CrispASR chunks so neighboring windows can be stitched; MOSS uses its separate overlap control and Azure cloud STT ignores this local setting.",
-        "stt_hotwords": "Provides comma- or line-separated terms for local CrispASR hotword biasing and Azure's phrase list; empty input sends no vocabulary hints.",
-        "stt_transcribe_style": "Chooses Azure MAI-Transcribe-1.5's readability or verbatim transcription style; this provider-only control is ignored by local CrispASR engines.",
+        "stt_hotwords": "Provides comma- or line-separated terms for local CrispASR hotword biasing and Azure's phrase list; Qwen3 ASR does not consume hotwords. Empty input sends no vocabulary hints.",
+        "stt_transcribe_style": "Chooses Azure MAI-Transcribe-1.5's readability or verbatim transcription style; this provider-only control is ignored by local CrispASR and Qwen3 ASR engines.",
         "stt_lid_backend": "Selects the local CrispASR language-identification backend; the default Whisper path is omitted from the command, and non-default backend names are passed through to CrispASR.",
         "stt_beam_size": "Sets the local CrispASR beam-search width for non-MOSS engines; values above one are passed as a beam-search option, while MOSS and Azure cloud STT do not use it.",
         "parakeet_decoder": "Selects the decoder variant passed to local Parakeet; CTC and MAES are optional alternatives to the default TDT decoder, and other engines ignore this setting.",
@@ -447,7 +454,36 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
     },
     "stt": {
         "stt_engine": {
-            "choices": ["whisper", "parakeet", "moss", "azure_mai_transcribe_1_5"]
+            "choices": ["whisper", "parakeet", "moss", "qwen3", "azure_mai_transcribe_1_5"]
+        },
+        "qwen_asr_model": {
+            "choices": ["qwen3_asr_0_6b", "qwen3_asr_1_7b"],
+            "applicability": "Qwen3 ASR recognizer only; CrispASR engines use stt_model_quantization and cloud STT uses no local model.",
+        },
+        "transcription_vocal_isolation": {
+            "choices": ["off", "bs_roformer", "mel_band_roformer"],
+            "applicability": "Transcription preprocessing only; the original audio is retained for playback and export.",
+        },
+        "qwen_asr_chunk_seconds": {
+            "minimum": 0,
+            "maximum": 120,
+            "unit": "seconds",
+            "applicability": "Qwen3 ASR only; 0 selects a single native-chunked pass.",
+        },
+        "qwen_asr_max_tokens": {
+            "minimum": 32,
+            "maximum": 4096,
+            "applicability": "Qwen3 ASR only; must cover the chunk window (minimum scales with qwen_asr_chunk_seconds).",
+        },
+        "qwen_asr_chunk_mode": {
+            "choices": ["auto", "fixed", "vad", "none"],
+            "applicability": "Qwen3 ASR model-side chunking only.",
+        },
+        "qwen_asr_timeout_seconds": {
+            "minimum": 60,
+            "maximum": 14400,
+            "unit": "seconds",
+            "applicability": "Qwen3 ASR native calls only.",
         },
         "stt_model_quantization": {
             "applicability": "Local CrispASR engines only; available choices depend on the selected engine."

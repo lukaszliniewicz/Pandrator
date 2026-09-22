@@ -15496,7 +15496,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    /**
+                     * @description Optional local microphone cleanup before normalization. The selected model downloads on first use; the original recording is retained.
+                     * @default none
+                     * @enum {string}
+                     */
+                    noise_reduction?: "none" | "deepfilternet2";
+                };
+            };
+        };
         responses: {
             /** @description Queued */
             202: {
@@ -15612,7 +15625,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                    /**
+                     * @description Optional local cleanup of the replacement recording before normalization; preserves the raw upload.
+                     * @default none
+                     * @enum {string}
+                     */
+                    noise_reduction?: "none" | "deepfilternet2";
+                };
+            };
+        };
         responses: {
             /** @description Replacement queued */
             202: {
