@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { beforeNavigate, goto } from '$app/navigation';
   import { modalFocus } from './modal-focus';
   import { apiJson } from './api';
@@ -25,6 +25,7 @@
     standalone = false,
     navigationManaged = false,
     sessionVoice = '',
+    initialOpen = false,
     onchanged
   }: {
     sessionId: string;
@@ -34,12 +35,14 @@
     standalone?: boolean;
     navigationManaged?: boolean;
     sessionVoice?: string;
+    initialOpen?: boolean;
     onchanged?: (characters: Character[]) => void;
   } = $props();
   let loaded = $state(false);
   let pending = $state(false);
   let error = $state('');
   let message = $state('');
+  let open = $state(untrack(() => initialOpen));
   let revision = $state(0);
   let characters = $state<Character[]>([]);
   let cast = $state<Cast>({
@@ -90,6 +93,25 @@
   const dirty = $derived(
     loaded && JSON.stringify({ characters, cast }) !== baseline
   );
+  const defaultVoices = $derived(
+    loaded ? characters.filter((item) => !cast.characters[item.id]).length : 0
+  );
+  const invalidNames = $derived(
+    characters.filter((item) => !item.display_name.trim()).length
+  );
+  function hasVoiceBinding(value: VoiceBinding | null | undefined) {
+    return Boolean(
+      value && (value.voice || value.voice_id || value.voice_description)
+    );
+  }
+  const narratorStatus = $derived(
+    hasVoiceBinding(cast.narrator)
+      ? 'narrator override'
+      : hasVoiceBinding(inheritedSession)
+        ? 'session voice'
+        : 'no narrator'
+  );
+  const hasConflict = $derived(message.includes('changed elsewhere'));
   const blocked = $derived(busy || pending);
   const path = $derived(
     `/sessions/${encodeURIComponent(sessionId)}/generation-controls`
@@ -142,7 +164,7 @@
         loaded = true;
       } else if (revision !== result.revision)
         message =
-          'The saved dictionary changed elsewhere. Your draft is preserved; discard it to load the newer version.';
+          'The saved cast changed elsewhere. Your draft is preserved; discard it to load the newer version.';
       onchanged?.(result.characters);
     } catch (caught) {
       if (alive) error = errorMessage(caught);
@@ -222,16 +244,58 @@
   }}
 />
 
+{#if error}<p
+    data-testid="cast-error"
+    role="alert"
+    class="text-sm text-red-700"
+  >
+    {error}
+    <button
+      type="button"
+      class="underline underline-offset-2"
+      disabled={pending}
+      onclick={() => void load(true)}>Retry loading cast</button
+    >
+  </p>{/if}
+{#if message}<p data-testid="cast-message" role="status" class="text-sm muted">
+    {message}
+  </p>{/if}
+{#if loaded && !open && (dirty || hasConflict || invalidNames > 0)}
+  <div data-testid="cast-collapsed-hint" class="muted text-xs">
+    {#if dirty}Unsaved character or cast changes. Open Characters and cast to
+      save or discard.{:else if hasConflict}The saved cast changed elsewhere.
+      Open Characters and cast to review.{:else}Some characters need a name.
+      Open Characters and cast to review.{/if}
+    <button
+      type="button"
+      class="underline underline-offset-2"
+      onclick={() => (open = true)}
+    >
+      Review cast changes
+    </button>
+  </div>
+{/if}
+
 <details
-  open={standalone}
+  data-testid="cast-disclosure"
+  bind:open
   class="speech-controls border-t border-[var(--line)] pt-4 sm:rounded-xl sm:border sm:p-4"
   ontoggle={(event) => {
     if (event.currentTarget.open && !loaded && !pending) void load();
   }}
 >
-  <summary class="cursor-pointer font-semibold"
+  <summary data-testid="cast-summary" class="cursor-pointer font-semibold"
     >Characters and cast <span class="muted ml-2 text-xs"
-      >Narrator · characters · dialogue defaults</span
+      >{#if !loaded}Open to load the cast{:else}{characters.length}
+        {characters.length === 1 ? 'character' : 'characters'} ·
+        {narratorStatus}{#if defaultVoices > 0}
+          · {defaultVoices}
+          {defaultVoices === 1
+            ? 'uses a default voice'
+            : 'use default voices'}{/if}{#if invalidNames > 0}
+          · {invalidNames} need{invalidNames === 1 ? 's' : ''} a name{/if}{#if dirty}
+          · unsaved changes{/if}{#if hasConflict}
+          · update available{/if}{/if}</span
     ></summary
   >
   <div class="mt-4 space-y-4">
@@ -240,8 +304,6 @@
       help recognition; casting decides how that character sounds. Unknown is
       separate from androgynous.
     </p>
-    {#if error}<p role="alert" class="text-sm text-red-700">{error}</p>{/if}
-    {#if message}<p role="status" class="text-sm muted">{message}</p>{/if}
     {#if loaded}
       <div class="grid gap-4 sm:grid-cols-2">
         <CastVoiceField
@@ -487,7 +549,7 @@
     {:else}<p class="muted text-sm">
         {pending
           ? 'Loading characters and voices…'
-          : 'Open this panel to load the dictionary.'}
+          : 'Open this panel to load the cast.'}
       </p>{/if}
   </div>
 </details>

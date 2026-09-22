@@ -3111,12 +3111,14 @@
         >
           <button
             onclick={() => (workspaceMode = 'review')}
+            aria-pressed={workspaceMode === 'review'}
             class:mode-active={workspaceMode === 'review'}
             class="mode-choice">Review each stage</button
           ><button
             onclick={() => (workspaceMode = 'automatic')}
+            aria-pressed={workspaceMode === 'automatic'}
             class:mode-active={workspaceMode === 'automatic'}
-            class="mode-choice">Generate automatically</button
+            class="mode-choice">Automatic workflow</button
           >
         </div>{/if}
     </div>
@@ -3168,29 +3170,45 @@
         ><Play size={17} /> Generate audio segments</button
       >
     </section>
-  {:else}
-    <div
-      class="mb-6 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm"
-    >
-      <strong>Review mode:</strong>
-      <span class="muted"
-        >run each ready transformation, inspect its artifact, and proceed when
-        satisfied. Downstream cards unlock only when their selected prerequisite
-        exists.</span
-      >
-    </div>
   {/if}
-  {#if outcome?.pipeline}<div
-      class="mb-6 flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4"
+  <details
+    class="mb-5 rounded-xl border border-[var(--line)] px-4 py-3 text-sm"
+    data-testid="session-workflow-help"
+  >
+    <summary class="cursor-pointer font-semibold"
+      >Workflow steps &amp; help</summary
     >
-      {#each outcome.pipeline as stage, index}<span
-          class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-xs font-semibold"
-          >{stage.title}</span
-        >{#if index < outcome.pipeline.length - 1}<ChevronRight
-            class="muted"
-            size={14}
-          />{/if}{/each}
-    </div>{/if}
+    <p class="muted mt-3">
+      {#if session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
+        Choosing this mode does not start a job. Use Generate audio segments to
+        prepare missing steps and record audio. Review and export remain
+        separate.
+      {:else}
+        Run a step, review its result, then continue. A later step becomes
+        available when its input is ready.
+      {/if}
+    </p>
+    {#if outcome?.pipeline?.length}
+      <ol
+        class="mt-3 flex flex-wrap items-center gap-2"
+        aria-label="Workflow steps"
+      >
+        {#each outcome.pipeline as stage, index}
+          <li class="flex items-center gap-2">
+            <span
+              class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-xs font-semibold"
+              >{stage.title}</span
+            >
+            {#if index < outcome.pipeline.length - 1}<ChevronRight
+                class="muted"
+                size={14}
+                aria-hidden="true"
+              />{/if}
+          </li>
+        {/each}
+      </ol>
+    {/if}
+  </details>
 
   {#if error}<div
       class="mb-5 flex items-start gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"
@@ -3350,15 +3368,6 @@
                   disabled={!speechPlan?.selected_revision_id}
                   onclick={() => openSpeechPlanEditor(session.id)}
                   >Review selected plan</button
-                >
-                <button
-                  class="btn btn-sm btn-secondary border border-[var(--line)]"
-                  disabled={planBusy ||
-                    !speechPlan?.can_generate ||
-                    (selectedSpeechPlan?.audio_reuse_checked !== false &&
-                      !selectedSpeechPlan?.stale_segment_count)}
-                  onclick={() => void generateSelectedPlan(false)}
-                  >Generate audio…</button
                 >
                 <button
                   class="btn btn-sm btn-secondary border border-[var(--line)]"

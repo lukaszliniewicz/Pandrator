@@ -414,49 +414,52 @@
               </span>
             {/if}
             {#if stage.usage || (costAware && stage.run_metrics)}
-              <span
-                class="muted"
-                title={stage.usage
-                  ? `${stage.usage.total_tokens.toLocaleString()} tokens (${stage.usage.input_tokens.toLocaleString()} input, ${stage.usage.output_tokens.toLocaleString()} output${stage.usage.cached_input_tokens ? `, ${stage.usage.cached_input_tokens.toLocaleString()} cached` : ''})`
-                  : 'This run did not report metered provider usage.'}
-              >
-                Cost
-                <strong class="text-[var(--ink)]"
+              <span class="muted"
+                >Cost <strong class="text-[var(--ink)]"
                   >{formatCost(stage.usage?.cost_usd ?? null)}</strong
-                >
-              </span>
-              {#if stage.usage}
-                <span class="muted tabular-nums">
-                  Input
-                  <strong class="text-[var(--ink)]"
-                    >{stage.usage.input_tokens.toLocaleString()}</strong
-                  >
-                </span>
-                <span class="muted tabular-nums">
-                  Output
-                  <strong class="text-[var(--ink)]"
-                    >{stage.usage.output_tokens.toLocaleString()}</strong
-                  >
-                </span>
-                {#if stage.usage.cached_input_tokens}
-                  <span class="muted tabular-nums">
-                    Cached
-                    <strong class="text-[var(--ink)]"
-                      >{stage.usage.cached_input_tokens.toLocaleString()}</strong
-                    >
-                  </span>
-                {/if}
-              {/if}
-              {#if stage.usage?.model_id}
-                <span
-                  class="muted max-w-full truncate"
-                  title={stage.usage.model_id}
-                  aria-label={`Model ${modelDisplayName(stage.usage.model_id)}`}
-                  >{modelDisplayName(stage.usage.model_id)}</span
-                >
-              {/if}
+                ></span
+              >
             {/if}
           </div>
+          {#if stage.usage}
+            <details
+              class="muted mt-2 text-xs"
+              data-testid="stage-usage-details"
+            >
+              <summary class="cursor-pointer">Token &amp; model details</summary
+              >
+              <dl class="mt-2 flex flex-wrap gap-x-4 gap-y-2 tabular-nums">
+                <div>
+                  <dt>Input tokens</dt>
+                  <dd class="font-semibold text-[var(--ink)]">
+                    {stage.usage.input_tokens.toLocaleString()}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Output tokens</dt>
+                  <dd class="font-semibold text-[var(--ink)]">
+                    {stage.usage.output_tokens.toLocaleString()}
+                  </dd>
+                </div>
+                {#if stage.usage.cached_input_tokens}<div>
+                    <dt>Cached input tokens</dt>
+                    <dd class="font-semibold text-[var(--ink)]">
+                      {stage.usage.cached_input_tokens.toLocaleString()}
+                    </dd>
+                  </div>{/if}
+                {#if stage.usage.model_id}<div class="min-w-0 max-w-full">
+                    <dt>Model</dt>
+                    <dd
+                      class="break-words font-semibold text-[var(--ink)]"
+                      title={stage.usage.model_id}
+                      aria-label={`Model ${modelDisplayName(stage.usage.model_id)}`}
+                    >
+                      {modelDisplayName(stage.usage.model_id)}
+                    </dd>
+                  </div>{/if}
+              </dl>
+            </details>
+          {/if}
         {/if}
 
         {#if inputControls}<div class="my-3">

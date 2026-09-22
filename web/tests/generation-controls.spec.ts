@@ -21,7 +21,7 @@ async function setup(page: Page) {
   const sid = (await created.json()).id;
   const revision = 'accepted-dialogue';
   await page.route(
-    `**/api/v1/sessions/${sid}/generation-plan/status`,
+    `**/api/v1/sessions/${sid}/generation-plan/status*`,
     (route) =>
       route.fulfill({
         json: {
@@ -326,10 +326,11 @@ async function openAudiobookCast(page: Page) {
   const card = page.getByRole('region', { name: 'Audiobook voices' });
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   const cast = card.locator('details.speech-controls');
+  await cast.locator(':scope > summary').click();
   await expect(
     cast.getByRole('button', { name: 'Add character', exact: true })
   ).toBeVisible();
-  return cast;
+  return card;
 }
 
 test('catalog selection assigns a managed reference to a character', async ({

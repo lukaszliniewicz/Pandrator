@@ -68,6 +68,7 @@
         {service}
         {model}
         {sessionVoice}
+        initialOpen
         standalone
       />{:else if !error}<p class="muted text-sm">
         Loading casting settings…

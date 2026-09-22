@@ -43,6 +43,7 @@
   let setup = $state<Setup | null>(null);
   let pending = $state(false);
   let error = $state('');
+  let helpOpen = $state(false);
   const draft = $derived(castPanel?.draftState());
   const selected = $derived(
     plan?.items.find((item) => item.id === plan.selected_revision_id)
@@ -156,29 +157,44 @@
         Save or discard the cast changes before switching voice mode.
       </p>{/if}
     {#if setup.mode === 'multi_voice'}
-      <ol class="steps mt-5" aria-label="Multiple-voice audiobook steps">
-        <li>
-          <span>1</span>
-          <div>
-            <strong>Prepare narration</strong>
-            <p>Group sentences for the selected model.</p>
-          </div>
-        </li>
-        <li>
-          <span>2</span>
-          <div>
-            <strong>Identify speakers</strong>
-            <p>Keep reporting clauses in the narrator’s voice.</p>
-          </div>
-        </li>
-        <li>
-          <span>3</span>
-          <div>
-            <strong>Cast &amp; review</strong>
-            <p>Assign voices, check the plan, then generate.</p>
-          </div>
-        </li>
-      </ol>
+      <details
+        data-testid="cast-help"
+        bind:open={helpOpen}
+        class="muted mt-5 rounded-xl border border-[var(--line)] p-3 text-sm"
+      >
+        <summary
+          data-testid="cast-help-summary"
+          class="cursor-pointer font-semibold text-[var(--ink)]"
+          >How multiple voices work</summary
+        >
+        <ol class="steps mt-3" aria-label="Multiple-voice audiobook steps">
+          <li>
+            <span>1</span>
+            <div>
+              <strong>Prepare narration</strong>
+              <p>Group sentences for the selected model.</p>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <strong>Identify speakers</strong>
+              <p>Keep reporting clauses in the narrator’s voice.</p>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <strong>Cast &amp; review</strong>
+              <p>Assign voices, check the plan, then generate.</p>
+            </div>
+          </li>
+        </ol>
+        <p class="mt-3 text-xs leading-relaxed">
+          The spoken words stay unchanged. Extra delivery notes are optional and
+          depend on the chosen model.
+        </p>
+      </details>
       {#if !setup.configured}<div
           class="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
         >
@@ -191,8 +207,7 @@
           >
         </div>{/if}
       <p class="muted my-4 text-sm">
-        Speaker annotation preserves the spoken words. Delivery instructions are
-        optional and depend on the chosen model.
+        Cast the narrator and characters below, then generate.
       </p>
       <GenerationCastPanel
         bind:this={castPanel}
@@ -227,15 +242,12 @@
       class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4"
     >
       <p class="muted min-w-0 flex-1 text-xs leading-relaxed">
-        {#if setup.segmentation}New preparation: {setup.segmentation.mode ===
-          'manual'
-            ? 'custom'
-            : 'model-aware'} length, up to
+        {#if setup.segmentation}Narration groups complete sentences, up to
           <strong
             >{setup.segmentation.target_chars.toLocaleString()} characters</strong
-          >.{:else}Preparation groups complete sentences within the model’s
-          narration budget.{/if} Paragraphs and chapters keep natural breaks. Existing
-        reviewed plans stay unchanged.
+          >.{:else}Narration groups complete sentences within the model’s
+          budget.{/if} Paragraphs and chapters keep natural breaks. Reviewed plans
+        stay unchanged.
       </p>
       <button
         class="btn btn-secondary"

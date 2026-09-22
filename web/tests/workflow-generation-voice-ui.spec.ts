@@ -439,7 +439,7 @@ test('generation settings make source, availability, voice language, and reuse c
 
   await page
     .getByLabel('Workspace mode')
-    .getByRole('button', { name: 'Generate automatically' })
+    .getByRole('button', { name: 'Automatic workflow' })
     .click();
   await page.getByRole('button', { name: 'Generate audio segments' }).click();
   await expect.poll(() => generationRunPayload).not.toBeNull();

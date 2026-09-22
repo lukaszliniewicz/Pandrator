@@ -674,16 +674,33 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
     await page.request.get(`${endpoint}/generation-runs`)
   ).json();
   expect(runs.items).toHaveLength(0);
+  // Preparing a plan can reveal its drawer automatically. Return to the card
+  // before exercising its explicit Review action.
+  if (
+    (await page
+      .locator('[data-generation-layout]')
+      .getAttribute('data-generation-layout')) !== 'collapsed'
+  ) {
+    await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  }
   await planCard
     .getByRole('button', { name: 'Review plan', exact: true })
     .click();
   await expect(
     page.getByRole('button', { name: 'Speech plans', exact: true })
   ).toBeVisible();
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await expect(page.locator('[data-generation-layout]')).toHaveAttribute(
+    'data-generation-layout',
+    'collapsed'
+  );
   await planCard.getByRole('button', { name: 'Mark reviewed' }).click();
+  await expect(planCard.getByTestId('speech-plan-summary')).toContainText(
+    'Reviewed'
+  );
   await expect(
-    planCard.getByRole('button', { name: 'Reviewed', exact: true })
-  ).toBeDisabled();
+    planCard.getByRole('button', { name: 'Mark reviewed', exact: true })
+  ).toHaveCount(0);
   await page.route(`**${endpoint}/generation-runs`, async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     await route.fulfill({
@@ -699,17 +716,22 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
       item.method() === 'POST' &&
       item.url().endsWith(`${endpoint}/generation-runs`)
   );
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
   await expect(page.locator('[data-generation-layout]')).toHaveAttribute(
     'data-generation-layout',
     'collapsed'
   );
   await generationCard(page)
-    .getByRole('button', { name: 'Generate selected plan', exact: true })
+    .getByRole('button', { name: 'Generate audio…', exact: true })
     .click();
+  const dialog = page.getByTestId('generation-start-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('generation-start-submit')).toBeEnabled();
+  await dialog.getByTestId('generation-start-submit').click();
   const body = (await request).postDataJSON();
   expect(body.speech_plan_revision_id).toBe(plans.selected_revision_id);
   expect(body.stale_only).toBe(false);
+  expect(body.missing_only).toBe(true);
+  expect(body.expected_selection_hash).toBeTruthy();
 });
 
 test('the Generate picker selects an older speech plan without copying a revision', async ({

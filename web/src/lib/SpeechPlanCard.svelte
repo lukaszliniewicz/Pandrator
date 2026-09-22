@@ -55,8 +55,7 @@
     <div class="min-w-0 flex-1">
       <h2 class="text-lg font-semibold">Speech plan</h2>
       <p class="muted mt-1 text-sm">
-        Prepare the speech blocks, review their wording and boundaries, then
-        generate audio separately.
+        Arrange the text into speech blocks before recording audio.
       </p>
     </div>
     {#if selected?.reviewed}<span
@@ -84,20 +83,32 @@
         {onselect}
       />
       {#if selected}
-        {#if selected.audio_reuse_checked === false}<p
-            class="muted text-sm"
-            role="status"
+        <p class="text-sm" data-testid="speech-plan-summary">
+          <strong
+            >{selected.active_segment_count ?? selected.segment_count} included blocks</strong
           >
-            Audio reuse not checked in this summary. Open the plan history or
-            review to inspect exact audio status. {selected.summary}.
-          </p>{:else}<p class="muted text-sm">
-            {selected.reusable_segment_count} reusable blocks · {selected.stale_segment_count}
-            missing or stale. {selected.summary}.
-          </p>{/if}
+          <span class="muted">
+            · {selected.reviewed ? 'Reviewed' : 'Not reviewed'}</span
+          >
+        </p>
+        <p class="muted text-sm" data-testid="speech-plan-next-action">
+          {#if selected.reviewed && plan?.can_generate}
+            Use Generate audio to choose whether to continue, refresh, or record
+            everything.
+          {:else if selected.reviewed}
+            Plan reviewed. Check the generation step below for any remaining
+            requirements.
+          {:else}
+            Open Review plan to check the text and voices, then mark it
+            reviewed.
+          {/if}
+        </p>
       {/if}
       <AudioReuseNotice
-        settingsStale={selected?.audio_settings_stale_segment_count ?? undefined}
-        identityUnknown={selected?.audio_identity_unknown_segment_count ?? undefined}
+        settingsStale={selected?.audio_settings_stale_segment_count ??
+          undefined}
+        identityUnknown={selected?.audio_identity_unknown_segment_count ??
+          undefined}
       />
     {/if}
     {#if plan?.warning}<p class="text-sm text-amber-700" role="status">
@@ -116,7 +127,7 @@
         ><Settings2 size={16} /> Block settings</button
       >
       <button
-        class="btn"
+        class={selected ? 'btn btn-secondary' : 'btn btn-primary'}
         disabled={busy || !plan?.can_prepare || Boolean(plan?.blocked_reason)}
         onclick={() => void onprepare()}
         >{#if busy}<LoaderCircle
@@ -133,20 +144,46 @@
           onclick={() => openSpeechPlanEditor(sessionId)}
           ><Eye size={16} /> Review plan</button
         >
-        <button
-          class="btn"
-          disabled={busy || selected.reviewed || Boolean(plan?.blocked_reason)}
-          onclick={() => void onreview()}
-          ><Check size={16} />
-          {selected.reviewed ? 'Reviewed' : 'Mark reviewed'}</button
-        >
+        {#if !selected.reviewed}
+          <button
+            class="btn btn-secondary"
+            disabled={busy || Boolean(plan?.blocked_reason)}
+            onclick={() => void onreview()}
+            ><Check size={16} /> Mark reviewed</button
+          >
+        {/if}
       {/if}
     </div>
-    <p class="muted text-xs">
-      Preparation does not start speech synthesis. Any LLM rewriting belongs in
-      the speech-text stage before this review; generation uses the selected
-      plan’s wording.
-    </p>
+    <details class="text-sm" data-testid="speech-plan-details">
+      <summary class="cursor-pointer font-semibold"
+        >Plan details &amp; help</summary
+      >
+      <div class="muted mt-2 space-y-2 text-xs leading-relaxed">
+        {#if selected}
+          <p>{selected.summary}</p>
+          {#if selected.audio_reuse_checked !== false && typeof selected.reusable_segment_count === 'number' && typeof selected.stale_segment_count === 'number'}
+            <p>
+              {selected.reusable_segment_count} recordings match the current settings
+              · {selected.stale_segment_count} blocks have missing, changed or unverified
+              audio.
+            </p>
+          {:else}
+            <p>
+              Recording compatibility has not been checked yet. Generate audio
+              previews exactly what will be kept or replaced before you confirm.
+            </p>
+          {/if}
+        {/if}
+        <p>
+          A speech plan divides the chosen text into blocks. Preparing a new
+          version keeps older versions in history and does not record audio.
+        </p>
+        <p>
+          Make any rewriting changes in the speech-text step first. Generation
+          reads the selected plan's wording.
+        </p>
+      </div>
+    </details>
     {#if selected}
       {#key `${sessionId}:${selected.id}`}
         <PerformancePanel
