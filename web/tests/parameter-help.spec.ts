@@ -26,6 +26,13 @@ test('technical setting names expose pipeline help on hover and keyboard focus',
   const help = sttSection.getByRole('button', { name: 'About STT Engine' });
   const tooltip = help.getByRole('tooltip', { includeHidden: true });
   await expect(help).toBeVisible();
+  // Route component styles can arrive after the controls mount on a cold load.
+  // Hover only once those styles have placed the trigger beside its label.
+  await expect(help).toHaveCSS('cursor', 'help');
+  await expect(sttSection.getByLabel('STT Engine', { exact: true })).toHaveCSS(
+    'height',
+    '44px'
+  );
 
   await help.hover();
   // Browsers can deliver a queued scroll event after scrolling the trigger into view.

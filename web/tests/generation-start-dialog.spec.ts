@@ -486,6 +486,9 @@ test('a paused run stays distinct from starting a new run', async ({
     }
   );
   await page.goto(`/sessions/${sessionId}`);
+  // Cold Windows CI loads can still be fetching route chunks after navigation.
+  // Give bootstrap its own budget before asserting the paused-run controls.
+  await expect(page.locator('.app-shell')).toBeVisible({ timeout: 30_000 });
   const resume = page
     .locator('.generation-drawer')
     .getByRole('button', { name: 'Resume previous run' });
