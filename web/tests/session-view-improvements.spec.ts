@@ -45,6 +45,9 @@ test('audiobook rows expose compact options and merge adjacent segments', async 
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
   const table = page.getByTestId('generation-segment-table');
   await expect(table.locator('tbody tr[data-segment-id]')).toHaveCount(2);
+  // Initial review metadata expands the bar above these rows. Wait for it
+  // before measuring or clicking a row that would otherwise move mid-click.
+  await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
   await expect(table.locator('.boundary-row')).toHaveCount(0);
   await expect(
     page.locator('.session-shell > a[href="/sessions"]')
