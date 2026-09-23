@@ -199,6 +199,9 @@ def _powershell(script: str) -> dict:
         capture_output=True,
         text=True,
         timeout=30,
+        # A pwsh -> Python -> powershell.exe launch otherwise forwards Core
+        # modules that Windows PowerShell cannot load (including Get-Acl).
+        env={key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"},
     )
     return json.loads(result.stdout)
 

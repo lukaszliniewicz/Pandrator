@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 declare global {
   interface Window {
+    __exportTestEventSourceCount?: () => number;
     __emitExportTestEvent?: (
       type: string,
       payload: Record<string, unknown>
@@ -41,7 +42,15 @@ async function installEvents(page: Page) {
       for (const source of sources) source.emit(type, payload);
       return sources.size;
     };
+    window.__exportTestEventSourceCount = () => sources.size;
   });
+}
+
+async function waitForEvents(page: Page) {
+  // Authentication loads a snapshot before connecting the live event stream.
+  await expect
+    .poll(() => page.evaluate(() => window.__exportTestEventSourceCount?.()))
+    .toBe(1);
 }
 
 async function sessionFixture(page: Page, workflowKind = 'voiceover') {
@@ -98,6 +107,7 @@ test('an older HTTP snapshot preserves newer live export progress and other jobs
   await page.goto(`/sessions/${session.id}/output`);
   await snapshotRequest;
   try {
+    await waitForEvents(page);
     await page.evaluate((sid) => {
       window.__emitExportTestEvent?.('job.progress', {
         job_id: 'new-live-export',
@@ -149,6 +159,7 @@ for (const kind of ['export.create', 'export.variant']) {
       page.getByRole('button', { name: 'Create export' })
     ).toBeVisible();
     await expect(page.getByText('Export activity')).toHaveCount(0);
+    await waitForEvents(page);
     // Keep HTTP snapshots consistent with the persisted state behind the event.
     Object.assign(job, {
       status: 'running',

@@ -154,7 +154,7 @@ async function editor(
   await page.goto(`/sessions/${session.id}/edit`);
   await expect(
     page.getByRole('button', { name: 'Render', exact: true })
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 20_000 });
   if (action === 'render') {
     await page.getByRole('button', { name: 'Render', exact: true }).click();
     await page

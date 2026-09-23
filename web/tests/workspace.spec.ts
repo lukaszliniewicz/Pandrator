@@ -2323,6 +2323,9 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   const regenerationOptions = page.getByRole('button', {
     name: 'Regeneration options'
   });
+  // The arriving plan review bar shifts the rows. Wait for initial plan/row
+  // loading to finish before clicking a row action.
+  await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
   await page
     .getByRole('button', { name: 'Regenerate segment 1', exact: true })
     .click();

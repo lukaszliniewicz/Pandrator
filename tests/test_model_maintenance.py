@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack, closing
 from pathlib import Path
 
 from pandrator.web.database import Database, upgrade_database
@@ -35,7 +36,7 @@ def _create_manager_database(root: Path, *, state: str, component_id: str) -> Pa
             }
         ]
     }
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.executescript(
             """
             CREATE TABLE plans (
@@ -71,7 +72,7 @@ def _create_application_database(path: Path) -> None:
 
 def _create_minimal_application_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             """
             CREATE TABLE jobs (
@@ -103,7 +104,7 @@ class ModelMaintenanceGuardTests(unittest.TestCase):
             ensure_app_job_allowed(database)
 
     def test_web_rejects_audio_cpp_operation_and_caller_rollback_removes_job(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as cleanup:
             base = Path(directory) / "Pandrator"
             database_path = base / "data" / "pandrator.sqlite3"
             _create_application_database(database_path)
@@ -113,14 +114,14 @@ class ModelMaintenanceGuardTests(unittest.TestCase):
                 component_id="audio_cpp",
             )
             database = Database(database_path)
-            self.addCleanup(database.dispose)
+            cleanup.callback(database.dispose)
             queue = JobQueue(database)
 
             with self.assertRaisesRegex(ValueError, "audio.cpp model maintenance"):
                 with database.session() as session:
                     queue.enqueue_in_session(session, "noop", {})
 
-            with sqlite3.connect(database_path) as connection:
+            with closing(sqlite3.connect(database_path)) as connection, connection:
                 count = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
             self.assertEqual(0, count)
 
@@ -157,7 +158,7 @@ class ModelMaintenanceGuardTests(unittest.TestCase):
                 state="succeeded",
                 component_id="xtts",
             )
-            with sqlite3.connect(manager_database) as connection:
+            with closing(sqlite3.connect(manager_database)) as connection, connection:
                 connection.execute(
                     "INSERT INTO operations(operation_id, plan_id, state, updated_at) "
                     "VALUES (?, ?, ?, ?)",
@@ -177,7 +178,7 @@ class ModelMaintenanceGuardTests(unittest.TestCase):
                 state="succeeded",
                 component_id="xtts",
             )
-            with sqlite3.connect(manager_database) as connection:
+            with closing(sqlite3.connect(manager_database)) as connection, connection:
                 connection.execute(
                     "INSERT INTO plans(plan_id, plan_json) VALUES (?, ?)",
                     ("malformed-history", "not json"),
@@ -218,7 +219,7 @@ class ModelMaintenanceGuardTests(unittest.TestCase):
             layout = WorkspaceLayout.from_value(directory)
             application_database = layout.data / "pandrator.sqlite3"
             _create_minimal_application_database(application_database)
-            with sqlite3.connect(application_database) as connection:
+            with closing(sqlite3.connect(application_database)) as connection, connection:
                 connection.execute(
                     "INSERT INTO jobs(id, kind, status, created_at) VALUES (?, ?, ?, ?)",
                     ("job-1", "noop", "queued", 1.0),
@@ -228,8 +229,8 @@ class ModelMaintenanceGuardTests(unittest.TestCase):
                 ensure_application_quiescent_for_model_maintenance(layout)
             self.assertEqual("application_busy", raised.exception.code)
 
-            with sqlite3.connect(application_database) as first:
-                with sqlite3.connect(application_database) as second:
+            with closing(sqlite3.connect(application_database)) as first, first:
+                with closing(sqlite3.connect(application_database)) as second, second:
                     first.execute("BEGIN IMMEDIATE")
                     first.execute(
                         "UPDATE jobs SET status='running' WHERE id='job-1'"

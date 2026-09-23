@@ -190,11 +190,13 @@ class TailExportTests(unittest.TestCase):
         from pandrator.web.auth import BootstrapTokenStore
 
         bootstrap = BootstrapTokenStore()
-        token = bootstrap.issue()
         self.app = create_app(
             data_root=self.temp.name, testing=True, bootstrap_tokens=bootstrap
         )
+        self.addCleanup(self.app.extensions["pandrator"]["database"].dispose)
         self.client = self.app.test_client()
+        # Start the token lifetime after potentially slow app setup.
+        token = bootstrap.issue()
         self.headers = {
             "X-CSRF-Token": self.client.post(
                 "/api/v1/auth/bootstrap", json={"token": token}
