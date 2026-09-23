@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +13,15 @@ from typing import Callable
 
 from .export_inputs import ExportInputs, MediaExportSelection
 from .export_subtitles import subtitle_track_details
+from .export_video_commands import (
+    VideoEncodingOptions,
+    check_video_cancelled,
+    render_burned_subtitle_video,
+    render_soft_subtitle_video,
+    render_transcoded_video,
+    render_web_video,
+    run_video_command,
+)
 from .models import Artifact, new_id
 from .workflow_output_context import OutputWorkflowContext
 
@@ -127,9 +135,7 @@ def _prepare_video_audio(
                 f"Extending the final video frame by {tail_extension_ms} ms "
                 "to cover the voiceover tail",
             )
-            subprocess.run(
-                tail_command, check=True, capture_output=True, text=True
-            )
+            run_video_command(tail_command, cancel_event)
             working_video = tail_video
         _audio_record, audio_path = context._resolve_input(dubbing_audio.id)
         audio_video = (
@@ -161,7 +167,7 @@ def _prepare_video_audio(
                 shortest=not preserve_audio_tail,
             )
             progress(0.4, "Using the selected mixed soundtrack")
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        run_video_command(command, cancel_event)
         progress(0.58, "Media audio track ready")
         working_video = audio_video
         audio_parent_ids.append(dubbing_audio.id)
@@ -182,15 +188,7 @@ def render_video_export(
     from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
     from pandrator.logic.dubbing.srt_utils import srt_to_vtt
     from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
-    from pandrator.logic.dubbing.video_muxing import (
-        build_add_subtitles_command,
-        build_multi_soft_subtitle_command,
-        build_video_transcode_command,
-        build_web_optimized_remux_command,
-        normalize_video_resolution,
-    )
-    from pandrator.logic.dubbing_handler import resolve_ffmpeg_for_burned_subtitles
-    from pandrator.web.capabilities import ffmpeg_video_encoder_ids
+    from pandrator.logic.dubbing.video_muxing import normalize_video_resolution
 
     session_id = inputs.session_id
     settings = inputs.settings
@@ -208,6 +206,7 @@ def render_video_export(
             item, record=record, settings=settings, track_count=len(selected_subtitles)
         )
 
+    check_video_cancelled(cancel_event)
     progress(0.35, "Preparing source media")
     _media_record, media_path = context._resolve_input(upload_media.id)
     ffmpeg_executable = str(
@@ -269,6 +268,15 @@ def render_video_export(
         # the user's chosen bitrate is not lost to a second encode.
         render_audio_codec = (
             video_audio_codec if audio_mode == "source" else "copy"
+        )
+        encoding = VideoEncodingOptions(
+            ffmpeg_executable=ffmpeg_executable,
+            encoder=video_encoder,
+            quality=settings.get("burn_video_quality", 18),
+            speed=str(settings.get("burn_video_speed") or "balanced"),
+            resolution=output_video_resolution,
+            audio_codec=render_audio_codec,
+            audio_bitrate=video_audio_bitrate,
         )
         variant = (
             f"_{subtitle_mode}"
@@ -346,104 +354,11 @@ def render_video_export(
                     0.58 + 0.06 * (index / len(selected_subtitles)),
                     f"Prepared selectable subtitle track {index} of {len(selected_subtitles)}",
                 )
-            if (
-                user_video_transcode
-                and video_encoder
-                not in ffmpeg_video_encoder_ids(ffmpeg_executable)
-            ):
-                raise RuntimeError(
-                    f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
-                )
-            command = build_multi_soft_subtitle_command(
-                str(working_video),
-                tracks,
-                str(render_destination),
-                ffmpeg_executable=ffmpeg_executable,
-                transcode_video=user_video_transcode,
-                video_encoder=video_encoder,
-                video_resolution=output_video_resolution,
-                video_quality=settings.get("burn_video_quality", 18),
-                video_speed=str(
-                    settings.get("burn_video_speed") or "balanced"
-                ),
-                audio_codec=render_audio_codec,
-                audio_bitrate=video_audio_bitrate,
-            )
-            progress(
-                0.65,
-                "Transcoding media with selectable subtitles"
-                if user_video_transcode
-                else "Rendering web-optimized media with selectable subtitles",
-            )
-            try:
-                subprocess.run(
-                    command, check=True, capture_output=True, text=True
-                )
-            except subprocess.CalledProcessError as remux_error:
-                if user_video_transcode:
-                    raise
-                if video_encoder not in ffmpeg_video_encoder_ids(
-                    ffmpeg_executable
-                ):
-                    detail = (
-                        str(remux_error.stderr or remux_error.stdout or "")
-                        .strip()
-                        .splitlines()
-                    )
-                    reason = (
-                        detail[-1]
-                        if detail
-                        else "FFmpeg could not stream-copy the source into MP4."
-                    )
-                    raise RuntimeError(
-                        "Selectable-subtitle MP4 remuxing failed and the selected "
-                        f"{video_encoder} fallback encoder is unavailable: {reason}"
-                    ) from remux_error
-                progress(
-                    0.68,
-                    "Stream-copy subtitle mux was unavailable; transcoding a web-compatible MP4",
-                )
-                command = build_multi_soft_subtitle_command(
-                    str(working_video),
-                    tracks,
-                    str(render_destination),
-                    ffmpeg_executable=ffmpeg_executable,
-                    transcode_video=True,
-                    video_encoder=video_encoder,
-                    video_resolution="source",
-                    video_quality=settings.get("burn_video_quality", 18),
-                    video_speed=str(
-                        settings.get("burn_video_speed") or "balanced"
-                    ),
-                    audio_codec="aac",
-                    audio_bitrate=video_audio_bitrate,
-                )
-                try:
-                    subprocess.run(
-                        command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                    )
-                except subprocess.CalledProcessError as transcode_error:
-                    detail = (
-                        str(
-                            transcode_error.stderr
-                            or transcode_error.stdout
-                            or ""
-                        )
-                        .strip()
-                        .splitlines()
-                    )
-                    reason = (
-                        detail[-1]
-                        if detail
-                        else "FFmpeg returned a non-zero exit status."
-                    )
-                    raise RuntimeError(
-                        f"Selectable-subtitle fallback with {video_encoder} failed: {reason}"
-                    ) from transcode_error
-                video_transcode = True
+            video_transcode = render_soft_subtitle_video(
+                working_video, tracks, render_destination, encoding,
+                transcode_video=user_video_transcode, progress=progress,
+                cancel_event=cancel_event,
+            ) or video_transcode
         elif subtitle_mode == "burned" and selected_subtitles:
             subtitle_paths = [
                 finalized_subtitle_paths[item.id]
@@ -474,179 +389,23 @@ def render_video_export(
                     parent_ids=[item.id for item in selected_subtitles],
                     settings=settings,
                 )
-            burn_ffmpeg = resolve_ffmpeg_for_burned_subtitles()
-            if not burn_ffmpeg:
-                raise RuntimeError(
-                    "Burned subtitles require an FFmpeg build with the subtitles/libass filter. Install or select Pandrator's bundled FFmpeg, or use soft subtitles."
-                )
-            if video_encoder not in ffmpeg_video_encoder_ids(burn_ffmpeg):
-                raise RuntimeError(
-                    f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
-                )
-            command = build_add_subtitles_command(
-                str(working_video),
-                str(burn_path),
-                str(render_destination),
-                subtitle_mode="burned",
-                subtitle_language=str(
-                    settings.get("target_language") or "und"
-                ),
-                ffmpeg_executable=burn_ffmpeg,
-                video_encoder=video_encoder,
-                video_resolution=output_video_resolution,
-                video_quality=settings.get("burn_video_quality", 18),
-                video_speed=str(
-                    settings.get("burn_video_speed") or "balanced"
-                ),
-                audio_codec=render_audio_codec,
-                audio_bitrate=video_audio_bitrate,
+            render_burned_subtitle_video(
+                working_video, burn_path, render_destination, encoding,
+                language=str(settings.get("target_language") or "und"),
+                progress=progress, cancel_event=cancel_event,
             )
-            progress(0.65, "Rendering burned subtitles into video")
-            try:
-                subprocess.run(
-                    command, check=True, capture_output=True, text=True
-                )
-            except subprocess.CalledProcessError as error:
-                detail = (
-                    str(error.stderr or error.stdout or "")
-                    .strip()
-                    .splitlines()
-                )
-                reason = (
-                    detail[-1]
-                    if detail
-                    else "FFmpeg returned a non-zero exit status."
-                )
-                raise RuntimeError(
-                    f"Burned-subtitle transcoding with {video_encoder} failed: {reason}"
-                ) from error
         elif user_video_transcode:
-            if video_encoder not in ffmpeg_video_encoder_ids(
-                ffmpeg_executable
-            ):
-                raise RuntimeError(
-                    f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
-                )
-            command = build_video_transcode_command(
-                str(working_video),
-                str(render_destination),
-                ffmpeg_executable=ffmpeg_executable,
-                video_encoder=video_encoder,
-                video_resolution=output_video_resolution,
-                video_quality=settings.get("burn_video_quality", 18),
-                video_speed=str(
-                    settings.get("burn_video_speed") or "balanced"
-                ),
-                audio_codec=render_audio_codec,
-                audio_bitrate=video_audio_bitrate,
+            render_transcoded_video(
+                working_video, render_destination, encoding,
+                progress=progress, cancel_event=cancel_event,
             )
-            progress(0.65, "Transcoding video output")
-            try:
-                subprocess.run(
-                    command, check=True, capture_output=True, text=True
-                )
-            except subprocess.CalledProcessError as error:
-                detail = (
-                    str(error.stderr or error.stdout or "")
-                    .strip()
-                    .splitlines()
-                )
-                reason = (
-                    detail[-1]
-                    if detail
-                    else "FFmpeg returned a non-zero exit status."
-                )
-                raise RuntimeError(
-                    f"Video transcoding with {video_encoder} failed: {reason}"
-                ) from error
         else:
-            if tail_extension_ms > 0:
-                progress(
-                    0.65,
-                    f"Optimizing frozen-tail media for web playback (+{tail_extension_ms} ms)",
-                )
-            else:
-                progress(
-                    0.65,
-                    "Optimizing media for web playback without video transcoding",
-                )
-            command = build_web_optimized_remux_command(
-                str(working_video),
-                str(render_destination),
-                ffmpeg_executable=ffmpeg_executable,
-                audio_codec=render_audio_codec,
-                audio_bitrate=video_audio_bitrate,
-            )
-            try:
-                subprocess.run(
-                    command, check=True, capture_output=True, text=True
-                )
-            except subprocess.CalledProcessError as remux_error:
-                # A source codec/container combination may not be
-                # legal inside MP4 even though stream-copy is the
-                # preferred web-optimization path. Fall back to a
-                # standards-friendly transcode only when remuxing
-                # cannot produce the export.
-                if video_encoder not in ffmpeg_video_encoder_ids(
-                    ffmpeg_executable
-                ):
-                    detail = (
-                        str(remux_error.stderr or remux_error.stdout or "")
-                        .strip()
-                        .splitlines()
-                    )
-                    reason = (
-                        detail[-1]
-                        if detail
-                        else "FFmpeg could not stream-copy the source into MP4."
-                    )
-                    raise RuntimeError(
-                        "Web-optimized MP4 remuxing failed and the selected "
-                        f"{video_encoder} fallback encoder is unavailable: {reason}"
-                    ) from remux_error
-                progress(
-                    0.68,
-                    "Stream-copy remux was unavailable; transcoding a web-compatible MP4",
-                )
-                command = build_video_transcode_command(
-                    str(working_video),
-                    str(render_destination),
-                    ffmpeg_executable=ffmpeg_executable,
-                    video_encoder=video_encoder,
-                    video_resolution="source",
-                    video_quality=settings.get("burn_video_quality", 18),
-                    video_speed=str(
-                        settings.get("burn_video_speed") or "balanced"
-                    ),
-                    audio_codec="aac",
-                    audio_bitrate=video_audio_bitrate,
-                )
-                try:
-                    subprocess.run(
-                        command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                    )
-                except subprocess.CalledProcessError as transcode_error:
-                    detail = (
-                        str(
-                            transcode_error.stderr
-                            or transcode_error.stdout
-                            or ""
-                        )
-                        .strip()
-                        .splitlines()
-                    )
-                    reason = (
-                        detail[-1]
-                        if detail
-                        else "FFmpeg returned a non-zero exit status."
-                    )
-                    raise RuntimeError(
-                        f"Web-compatible video fallback with {video_encoder} failed: {reason}"
-                    ) from transcode_error
-                video_transcode = True
+            video_transcode = render_web_video(
+                working_video, render_destination, encoding,
+                tail_extension_ms=tail_extension_ms, progress=progress,
+                cancel_event=cancel_event,
+            ) or video_transcode
+        check_video_cancelled(cancel_event)
         os.replace(render_destination, destination)
         if tail_extension_ms > 0:
             progress(
@@ -668,6 +427,12 @@ def render_video_export(
         }
         for item in video_track_artifacts
     ]
+    # A cancellation arriving during promotion/cleanup must not publish the file.
+    try:
+        check_video_cancelled(cancel_event)
+    except InterruptedError:
+        destination.unlink(missing_ok=True)
+        raise
     # Registration follows cleanup so only durable output is published.
     return context.artifacts.register(
         destination,

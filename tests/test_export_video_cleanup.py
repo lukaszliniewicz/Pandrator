@@ -55,6 +55,9 @@ class VideoExportCleanupTests(unittest.TestCase):
             "video_tail_extension_policy": "extend",
         }
         self.failure_stage = None
+        self.cancel_stage = None
+        self.cancel_event = threading.Event()
+        self.cancel_on_ready = False
         self.command_outputs = []
         self.enterContext(mock.patch.dict("os.environ", {
             "PANDRATOR_FFMPEG_EXE": "ffmpeg",
@@ -69,7 +72,9 @@ class VideoExportCleanupTests(unittest.TestCase):
         self.enterContext(mock.patch(
             "pandrator.web.soundtrack_export.probe_soundtrack_media", side_effect=self.probe
         ))
-        self.enterContext(mock.patch("subprocess.run", side_effect=self.run_media_command))
+        self.enterContext(mock.patch(
+            "pandrator.web.export_video_commands.run_cancellable", side_effect=self.run_media_command
+        ))
 
     def probe(self, path):
         is_video = Path(path) == self.source_path
@@ -85,24 +90,30 @@ class VideoExportCleanupTests(unittest.TestCase):
         destination = Path(command[-1])
         self.command_outputs.append(destination)
         destination.write_bytes(b"rendered or partial media")
+        if self.cancel_stage and f"-{self.cancel_stage}-" in destination.name:
+            self.cancel_event.set()
         if self.failure_stage and f"-{self.failure_stage}-" in destination.name:
             raise subprocess.CalledProcessError(1, command, stderr="injected encoder failure")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     def export(self):
+        def progress(value, _detail):
+            if self.cancel_on_ready and value == 0.9:
+                self.cancel_event.set()
+
         return self.handlers.export(
             {"session_id": self.session.id, "settings": self.settings},
-            lambda *_: None,
-            threading.Event(),
+            progress,
+            self.cancel_event,
         )
 
-    def assert_clean(self, *, published=False):
+    def assert_clean(self, *, published=False, expect_commands=True):
         self.assertEqual([], [
             str(path.relative_to(self.output_dir))
             for path in self.output_dir.rglob("*")
             if path.name.startswith(".")
         ])
-        self.assertTrue(self.command_outputs, "The test must reach media preparation")
+        self.assertEqual(expect_commands, bool(self.command_outputs))
         for output in self.command_outputs:
             self.assertFalse(output.exists(), str(output))
         self.assertEqual(b"original source video", self.source_path.read_bytes())
@@ -113,6 +124,41 @@ class VideoExportCleanupTests(unittest.TestCase):
         with self.database.session() as session:
             exports = list(session.scalars(select(Artifact).where(Artifact.kind == "export")))
         self.assertEqual(1 if published else 0, len(exports))
+        if not published:
+            self.assertEqual([], list((self.output_dir / "video").glob("*.mp4")))
+
+    def test_precanceled_video_never_starts_rendering(self):
+        self.cancel_event.set()
+        with self.assertRaises(InterruptedError):
+            self.export()
+        self.assert_clean(expect_commands=False)
+
+    def test_cancel_after_tail_never_starts_audio_replacement(self):
+        self.cancel_stage = "tail"
+        with self.assertRaises(InterruptedError):
+            self.export()
+        self.assertEqual(1, len(self.command_outputs))
+        self.assert_clean()
+
+    def test_cancel_after_audio_replacement_never_starts_final_render(self):
+        self.cancel_stage = "audio"
+        with self.assertRaises(InterruptedError):
+            self.export()
+        self.assertEqual(2, len(self.command_outputs))
+        self.assert_clean()
+
+    def test_cancel_after_final_render_never_promotes_video(self):
+        self.cancel_stage = "render"
+        with self.assertRaises(InterruptedError):
+            self.export()
+        self.assertEqual(3, len(self.command_outputs))
+        self.assert_clean()
+
+    def test_cancel_before_registration_removes_unpublished_video(self):
+        self.cancel_on_ready = True
+        with self.assertRaises(InterruptedError):
+            self.export()
+        self.assert_clean()
 
     def add_subtitle(self):
         path = self.session_dir / "source.srt"
