@@ -1,7 +1,8 @@
 # Whole-app decomposition and correctness plan
 
-Status: proposed sequence; the next executable unit is **S1** below. This planning
-pass changes documentation only. Source baseline: `10fb2bb5` (2026-09-23).
+Status: **S1 complete; S2 next** (2026-09-23). The approved sequence was committed
+as `bf987e13`; S1 implementation is committed on `main` as `292f4eec`.
+Planning source baseline: `10fb2bb5` (2026-09-23).
 Update this file as units finish; do not select a new area solely because it is
 large or interesting. This is internal engineering working material, not a
 release promise or a claim that the remaining app has been audited.
@@ -119,19 +120,19 @@ phase 7 is their decomposition order, not permission to ignore a current hazard.
 
 ## Issue register: evidence, not presumed defects
 
-All open entries below need bounded reproduction. No new runtime defect was
-proven during this planning pass.
+These entries began as questions during planning. S1 reproduction results are
+recorded below; the other open entries still need bounded reproduction.
 
 | ID | Current evidence / uncertainty | Check and intended invariant | Unit |
 | --- | --- | --- | --- |
-| R1 | `generation_scheduling.release_interrupted_run` transfers permission to a waiting sibling only when the completing child is canceled. Tests cover cancellation with a sibling and failure without one. | Exercise failure with a valid queued/running sibling; determine whether the parent can restart before replacement work finishes. User pause must still dominate. | S1 |
-| R2 | `clear_regeneration_baton` removes the job marker only if it matches the supplied source ID. Legacy nested lineage is supported, but current tests primarily check root selection. | Follow nested interruption/revocation through both durable run flags and job markers; prevent stale ownership or duplicate resume. A stale marker alone is not proof of an unwanted resume because the durable flag is checked. | S1 |
+| R1 | Fixed in `292f4eec`: a resumed older replacement could wait behind the current owner; that owner's failure or success requeued the parent too early. Also, cancellation could transfer permission to an already-running sibling whose loaded payload lacked the marker, leaving the parent paused. | Terminal outcomes now transfer permission to remaining active replacements; terminal cleanup reads durable ownership. Real worker tests cover queued/running siblings, unchanged/edited plans and explicit pause. | S1 closed |
+| R2 | Fixed in `292f4eec`: revocation via a different output ancestor left a stale job marker in current edit-copy and legacy nested chains. Durable permission checks already prevented that stale marker from resuming the parent. | Revocation removes the child's marker regardless of ancestor ID. Tests separately prove explicit pause cannot be undone and no new job is queued. | S1 closed |
 | R3 | `normalize_voice_recording` removes cleanup intermediates in `finally`; its final destination has explicit cleanup for only selected failures. Request-side upload cleanup is already fixed. | Inject final FFmpeg partial-write, registration and transaction failures; original reference stays intact, unpublished output does not remain, no dangling sample/artifact record. | S2 |
 | R4 | Video export checks cancellation before artifact registration; job completion is a separate operation. Existing video tests cover pre-registration cancellation and ordinary success, not durable cancel/lease loss during or after registration. | Trace the commit boundary and record artifact, selection, job and lease outcomes. Distinguish cancellation before publication from cancellation after committed output; define the completion rule before changing it. | S3 |
 | R5 | Direct `WorkflowService.resolve_stage` uses separate settings, selection and queue operations. Planned workflows have stale-state tests; equivalent direct-run protection was not established here. | Change source/settings at the handoff boundary. A queued run must use one coherent explicit input snapshot or reject stale preparation, never silently mix versions. | S4 |
 | R6 | Multipart voice upload accepts `expected_revision` in the form, while OpenAPI describes required If-Match. | Clarify the contract and generated client/schema coverage when that endpoint is next changed; retain both working input paths. This does not currently invalidate the documented header path. | F3 / contract backlog |
 
-## Next executable unit: S1
+## S1 execution contract (completed)
 
 **Outcome:** establish whether regeneration completion/failure/cancellation can
 lose or duplicate permission to resume an interrupted run, and fix only confirmed
@@ -210,10 +211,11 @@ performance tuning, provider/model expansion or release/deployment work in this 
 
 ## Evidence and future progress record
 
-This plan uses source inspection, AST spans, existing test coverage and current
-Git history. Tests were mapped, not rerun for this documentation pass. Earlier
-slice checks are historical results, not a new whole-app certification. The main
-UI was inspected in source only, not exercised in a browser during planning.
+The initial plan used source inspection, AST spans, existing test coverage and
+Git history. Tests were mapped, not rerun for that documentation-only pass;
+implementation verification is recorded per unit below. Earlier slice checks
+are historical results, not a new whole-app certification. The main UI was
+inspected in source only, not exercised in a browser during planning.
 
 Evidence collection used the deep-researcher profile (configured GPT-6 Sol/high)
 and researcher profile (configured GPT-6 Luna/max); model identity was not separately
@@ -222,3 +224,59 @@ reported at runtime. The parent owns this ordering and the next-unit protocol.
 For each completed unit, append: ID; commit(s); specific outcome; checks/results;
 remaining limitation; next unit. If priorities change, record why. Keep proposals
 and confirmed defects visibly distinct.
+
+### S1 complete — 2026-09-23 — `292f4eec`
+
+- Starting checkpoint: `main` at `bf987e13`, clean; all earlier work committed.
+- Reproduction: 18 new parameterized cases. Before production changes, the
+  16-case queued/running-sibling matrix had 6 failures and 10 passes; the two
+  nested-marker cases both failed their cleanup assertion, after passing the
+  durable revocation/no-extra-job assertions.
+- The queued-sibling ordering is created through generation services and a real
+  Worker: pause the first replacement, create the second, resume the first behind
+  it, then finish/fail/cancel the second. Running-sibling transfer is triggered
+  by canceling the queued owner inside the earlier worker's fake synthesis call.
+  Only the legacy database shape is seeded directly, because current APIs flatten
+  it. No live providers or user databases are involved.
+- Production changes: terminal outcomes transfer permission to remaining active
+  replacements; the worker's final cleanup reads durable permission after any
+  in-flight transfer; revocation always removes that child's marker. No output
+  lineage, original segment selection, schemas or queue contracts are changed.
+- Verification: 64 distinct focused tests passed across the final runs. The
+  three-file run below passed 63 and exposed one unrealistic older fixture:
+  it invoked a terminal callback while both children were still queued, expecting
+  the parent to resume. That fixture now marks the replacements terminal, and
+  its individual rerun passed. All 18 new cases passed in the three-file run.
+- Quality: repository-wide Ruff, Vulture, test-lane manifest, documentation and
+  whitespace checks passed. Basedpyright reported 0 new errors/warnings/notes;
+  scratch-baseline comparison removed one optional-member diagnostic in the
+  worker wrapper, with no additions. Committed baseline: 1,267 -> 1,266 entries.
+- Bounded read-only research (GPT-6 Luna/max configured) confirmed the legacy
+  guards; patch review (GPT-6 Sol/high configured) found no material production
+  issue and independently identified the older fixture mismatch. These are
+  configured profile identities, not separately verified runtime model reports.
+- Scope remains S1. No S2 cleanup or wider decomposition changes are included.
+- Limits: disposable SQLite databases, Linux, fake TTS; no live-provider,
+  Windows, browser, full-project suite or deployment qualification was claimed.
+  Cancellation/lease loss at artifact publication remains S3.
+- Next unit: **S2**, final voice-worker destination cleanup under partial FFmpeg
+  writes, registration failures and transaction failures (R3). No reprioritization.
+
+Commands (repository root; tool binaries from `.pixi/envs/default/bin`):
+
+```bash
+python -m pytest -q tests/test_generation_edit_audio.py tests/test_web_generation_regeneration.py tests/test_web_job_concurrency.py --tb=short
+python -m pytest -q tests/test_web_generation_regeneration.py::GenerationRegenerationTests::test_repeated_default_regeneration_replaces_single_root_baton --tb=short
+ruff check .
+ruff check tests/test_web_generation_regeneration.py
+vulture
+python scripts/test_lanes.py check
+python scripts/check_types.py --baselinefile /tmp/pandrator-s1-type-baseline.json
+python scripts/check_docs.py
+git diff --check
+```
+
+The scratch type baseline was copied from the committed baseline before checking;
+only its inspected reduction was copied back. Pre-fix regression runs selected
+the three new parameterized tests in `test_generation_edit_audio.py` and preserved
+the failing assertions before product changes.
