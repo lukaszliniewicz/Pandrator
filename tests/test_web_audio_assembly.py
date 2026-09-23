@@ -5,6 +5,7 @@ import threading
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest import mock
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
@@ -1125,6 +1126,85 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             assembly = session.get(OutputAssembly, queued["id"])
             self.assertEqual("canceled", assembly.status)
             self.assertIsNone(assembly.artifact_id)
+
+    def test_assembly_canceled_before_registration_removes_rendered_output(self):
+        self._plan_with_takes()
+        queued = self.generation.create_assembly(self.record.id)
+        canceled = threading.Event()
+        reported = []
+
+        def cancel_before_registration(value, detail=None):
+            reported.append(value)
+            if value == 0.96:
+                canceled.set()
+
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]},
+            cancel_before_registration,
+            canceled,
+        )
+
+        self.assertEqual({}, result)
+        self.assertIn(0.96, reported)
+        self.assertNotIn(1.0, reported)
+        destination = self.session_dir / "assemblies" / f"assembly-{queued['id']}.wav"
+        self.assertFalse(destination.exists())
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertEqual("canceled", assembly.status)
+            self.assertIsNone(assembly.artifact_id)
+            self.assertIsNone(session.scalar(select(Artifact.id).where(
+                Artifact.session_id == self.record.id,
+                Artifact.role == "assembled_audio",
+            )))
+
+    def test_assembly_canceled_after_registration_retains_only_a_stale_artifact(self):
+        self._assert_assembly_invalidated_after_registration("cancel")
+
+    def test_assembly_plan_changed_after_registration_retains_only_a_stale_artifact(self):
+        self._assert_assembly_invalidated_after_registration("replace_plan")
+
+    def _assert_assembly_invalidated_after_registration(self, invalidation):
+        self._plan_with_takes()
+        queued = self.generation.create_assembly(self.record.id)
+        canceled = threading.Event()
+        handlers = WorkflowHandlers(self.database, self.paths)
+        register = handlers.artifacts.register
+        registered = []
+        reported = []
+
+        def register_then_invalidate(*args, **kwargs):
+            artifact = register(*args, **kwargs)
+            registered.append(artifact.id)
+            if invalidation == "cancel":
+                canceled.set()
+            else:
+                self.generation.create_plan(
+                    self.record.id,
+                    source_revision_id=None,
+                    segments=[{"text": "A new plan before publication."}],
+                )
+            return artifact
+
+        with mock.patch.object(
+            handlers.artifacts, "register", side_effect=register_then_invalidate
+        ):
+            result = handlers.assemble_generation_output(
+                {"output_assembly_id": queued["id"]},
+                lambda value, _detail=None: reported.append(value),
+                canceled,
+            )
+
+        self.assertEqual({}, result)
+        self.assertEqual(1, len(registered))
+        self.assertNotIn(1.0, reported)
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertEqual("canceled", assembly.status)
+            self.assertEqual(registered[0], assembly.artifact_id)
+            artifact = session.get(Artifact, registered[0])
+            self.assertEqual("stale", artifact.state)
+            self.assertTrue(self.paths.managed_path(artifact.relative_path).is_file())
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from unittest import mock
 
 from sqlalchemy import select
 
@@ -176,6 +177,44 @@ class ExportAssemblyPlanSelectionTests(unittest.TestCase):
                 (created.settings_json or {}).get("plan_revision_id"),
                 self.revision_p1,
             )
+
+    def test_variant_canceled_during_inline_assembly_never_starts_export(self):
+        canceled = threading.Event()
+        assembly_ids = []
+
+        def cancel_assembly(payload, _progress, cancel_event):
+            self.assertIs(canceled, cancel_event)
+            assembly_ids.append(payload["output_assembly_id"])
+            cancel_event.set()
+            return {}
+
+        with (
+            mock.patch.object(
+                self.handlers, "assemble_generation_output", side_effect=cancel_assembly
+            ),
+            mock.patch.object(self.handlers, "export") as export,
+        ):
+            result = self.handlers.handler_registry["export.variant"](
+                {
+                    "session_id": self.record.id,
+                    "settings": {
+                        "generation_run_id": self.run_old_id,
+                        "export_mode": "audio",
+                        "audio_mode": "dubbing_only",
+                    },
+                    "resolved_settings_snapshot": {},
+                },
+                lambda *_args: None,
+                canceled,
+            )
+
+        self.assertEqual({}, result)
+        export.assert_not_called()
+        self.assertEqual(1, len(assembly_ids))
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_ids[0])
+            self.assertEqual(self.run_old_id, assembly.generation_run_id)
+            self.assertEqual(self.revision_p1, assembly.settings_json["plan_revision_id"])
 
 
 if __name__ == "__main__":
