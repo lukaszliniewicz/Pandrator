@@ -266,6 +266,7 @@ def export(
             produced.append(render_video_export(
                 context, inputs, media_selection, output_dir=output_dir,
                 export_name=export_name, progress=progress, cancel_event=cancel_event,
+                job_id=payload.get("_job_id"), lease_generation=payload.get("_lease_generation"),
             ))
         else:
             # Preserve the historical behavior for SRT/audio-only sessions:

@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import Callable
 
 from .export_inputs import ExportInputs, MediaExportSelection
+from .export_publication import publish_video_export
 from .export_subtitles import subtitle_track_details
 from .export_video_commands import (
     VideoEncodingOptions,
@@ -183,6 +184,8 @@ def render_video_export(
     export_name: str,
     progress: Callable[[float, str | None], None],
     cancel_event: threading.Event,
+    job_id: str | None = None,
+    lease_generation: int | None = None,
 ) -> Artifact:
     """Render one video and clean all transient files even if preparation fails."""
     from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
@@ -284,9 +287,7 @@ def render_video_export(
             else ""
         )
         video_dir.mkdir(parents=True, exist_ok=True)
-        destination = context.artifacts.next_available_path(
-            video_dir / f"{export_name}{variant}.mp4"
-        )
+        requested_destination = video_dir / f"{export_name}{variant}.mp4"
         render_destination = (
             scratch_dir / f".{record.storage_key}-render-{new_id()}.mp4"
         )
@@ -406,7 +407,6 @@ def render_video_export(
                 cancel_event=cancel_event,
             ) or video_transcode
         check_video_cancelled(cancel_event)
-        os.replace(render_destination, destination)
         if tail_extension_ms > 0:
             progress(
                 0.9,
@@ -414,60 +414,53 @@ def render_video_export(
             )
         else:
             progress(0.9, "Rendered media output ready")
-    subtitle_track_metadata = [
-        {
-            "artifact_id": item.id,
-            "language": str(
-                (item.metadata_json or {}).get("language") or "und"
-            ),
-            "title": str(
-                (item.metadata_json or {}).get("title") or "Subtitles"
-            ),
-            "default": bool((item.metadata_json or {}).get("default")),
-        }
-        for item in video_track_artifacts
-    ]
-    # A cancellation arriving during promotion/cleanup must not publish the file.
-    try:
-        check_video_cancelled(cancel_event)
-    except InterruptedError:
-        destination.unlink(missing_ok=True)
-        raise
-    # Registration follows cleanup so only durable output is published.
-    return context.artifacts.register(
-        destination,
-        kind="export",
-        role="export",
-        session_id=session_id,
-        parent_ids=audio_parent_ids
-        + [item.id for item in selected_subtitles]
-        + [item.id for item in video_track_artifacts],
-        settings=settings,
-        metadata={
-            "audio_mode": audio_mode,
-            "subtitle_mode": subtitle_mode,
-            "video_resolution": output_video_resolution,
-            "video_transcoded": video_transcode,
-            "video_encoder": video_encoder if video_transcode else None,
-            "tail_extension_ms": tail_extension_ms,
-            "audio_bitrate": (
-                video_audio_bitrate
-                if audio_mode in {"dubbed", "mixed"}
-                or render_audio_codec == "aac"
-                else None
-            ),
-            "subtitle_tracks": subtitle_track_metadata,
-            "mix": {
-                "source_gain_db": settings.get(
-                    "mix_source_gain_db", 0.0
+        subtitle_track_metadata = [
+            {
+                "artifact_id": item.id,
+                "language": str(
+                    (item.metadata_json or {}).get("language") or "und"
                 ),
-                "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
-                "voice_lufs": settings.get("mix_voice_lufs", -16.0),
-                "ducking": settings.get("mix_ducking", "strong"),
-                "attack_ms": settings.get("mix_attack_ms", 25),
-                "release_ms": settings.get("mix_release_ms", 350),
+                "title": str(
+                    (item.metadata_json or {}).get("title") or "Subtitles"
+                ),
+                "default": bool((item.metadata_json or {}).get("default")),
             }
-            if audio_mode == "mixed"
-            else None,
-        },
-    )
+            for item in video_track_artifacts
+        ]
+        return publish_video_export(
+            context, render_destination, requested_destination,
+            cancel_event=cancel_event, job_id=job_id, lease_generation=lease_generation,
+            session_id=session_id,
+            parent_ids=audio_parent_ids
+            + [item.id for item in selected_subtitles]
+            + [item.id for item in video_track_artifacts],
+            settings=settings,
+            metadata={
+                "output_settings": inputs.output_settings_snapshot,
+                "audio_mode": audio_mode,
+                "subtitle_mode": subtitle_mode,
+                "video_resolution": output_video_resolution,
+                "video_transcoded": video_transcode,
+                "video_encoder": video_encoder if video_transcode else None,
+                "tail_extension_ms": tail_extension_ms,
+                "audio_bitrate": (
+                    video_audio_bitrate
+                    if audio_mode in {"dubbed", "mixed"}
+                    or render_audio_codec == "aac"
+                    else None
+                ),
+                "subtitle_tracks": subtitle_track_metadata,
+                "mix": {
+                    "source_gain_db": settings.get(
+                        "mix_source_gain_db", 0.0
+                    ),
+                    "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
+                    "voice_lufs": settings.get("mix_voice_lufs", -16.0),
+                    "ducking": settings.get("mix_ducking", "strong"),
+                    "attack_ms": settings.get("mix_attack_ms", 25),
+                    "release_ms": settings.get("mix_release_ms", 350),
+                }
+                if audio_mode == "mixed"
+                else None,
+            },
+        )
