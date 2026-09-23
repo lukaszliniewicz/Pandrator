@@ -366,13 +366,19 @@ class MediaEditWorkflowTests(unittest.TestCase):
             },
         }
 
-        with mock.patch(
-            "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
-        ) as media_has_audio_stream:
+        with (
+            mock.patch(
+                "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
+            ) as media_has_audio_stream,
+            mock.patch.object(self.handlers, "_resolve_input") as resolve_input,
+            mock.patch.object(self.handlers.artifacts, "register") as register,
+        ):
             with self.assertRaisesRegex(ValueError, "selected media edit changed"):
                 self.handlers.export(payload, self._progress, mock.sentinel.cancel)
 
         media_has_audio_stream.assert_not_called()
+        resolve_input.assert_not_called()
+        register.assert_not_called()
 
     def test_worker_rejects_a_queued_export_after_the_edit_revision_changes(self):
         edited_media = self._rendered_media()
@@ -403,9 +409,13 @@ class MediaEditWorkflowTests(unittest.TestCase):
             plan.active_revision_id = newer_revision_id
             session.get(Artifact, edited_media.id).state = "current"
 
-        with mock.patch(
-            "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
-        ) as media_has_audio_stream:
+        with (
+            mock.patch(
+                "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
+            ) as media_has_audio_stream,
+            mock.patch.object(self.handlers, "_resolve_input") as resolve_input,
+            mock.patch.object(self.handlers.artifacts, "register") as register,
+        ):
             with self.assertRaisesRegex(ValueError, "media-edit revision changed"):
                 self.handlers.export(
                     queued.payload,
@@ -414,6 +424,8 @@ class MediaEditWorkflowTests(unittest.TestCase):
                 )
 
         media_has_audio_stream.assert_not_called()
+        resolve_input.assert_not_called()
+        register.assert_not_called()
 
     def test_subtitle_only_voiceover_export_does_not_require_a_render(self):
         self._convert_to_voiceover()
