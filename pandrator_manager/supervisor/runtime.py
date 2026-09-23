@@ -616,8 +616,10 @@ class ProcessSupervisor:
         if runtime.process is not None:
             try:
                 runtime.process.wait(timeout=5)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise RuntimeError(
+                    f"Could not confirm exit of managed PID {runtime.identity.pid}."
+                ) from error
         if runtime.log_handle:
             runtime.log_handle.close()
             runtime.log_handle = None
@@ -908,7 +910,6 @@ class ProcessSupervisor:
                 ):
                     self.store.save_service(self._service_snapshot(runtime, health))
                     continue
-                self._runtime.pop(service_id, None)
                 if not exited:
                     self._terminate(runtime)
                 else:
@@ -917,6 +918,7 @@ class ProcessSupervisor:
                     # before the restart can contend with its port.
                     self._cleanup_owned_family(runtime, None)
                     self._close_runtime_handles(runtime)
+                self._runtime.pop(service_id, None)
                 self._schedule_restart(
                     runtime.spec,
                     runtime.restart_count,

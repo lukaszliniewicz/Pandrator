@@ -174,6 +174,18 @@ def wait_for_process_exit(pid: int, *, timeout_seconds: float = 5) -> bool:
 
 
 class SupervisorIntegrationTests(unittest.TestCase):
+    def _cleanup_owned_test_process(self, supervisor, runtime, process, service_id):
+        try:
+            if service_id in supervisor._runtime:
+                supervisor.stop(service_id)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            self.assertIsNotNone(process.wait(timeout=5))
+            if runtime.log_handle is not None:
+                runtime.log_handle.close()
+                runtime.log_handle = None
+
     def test_legacy_process_identity_payload_remains_valid(self):
         identity = ProcessIdentity.model_validate(
             {
@@ -542,6 +554,128 @@ class SupervisorIntegrationTests(unittest.TestCase):
             finally:
                 runtime.identity = original_identity
                 supervisor.stop(spec.service_id)
+
+    def test_stop_retains_runtime_when_exit_cannot_be_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-test",
+            )
+            spec = fake_http_spec(directory, port=free_port())
+            supervisor.register(spec)
+            supervisor.start(spec.service_id)
+            runtime = supervisor._runtime[spec.service_id]
+            process = runtime.process
+            log_handle = runtime.log_handle
+            persisted_identity = application.store.list_services()[0].process
+            self.assertIsNotNone(process)
+            self.assertIsNotNone(log_handle)
+
+            try:
+                with (
+                    mock.patch.object(supervisor, "_cleanup_owned_family"),
+                    mock.patch.object(
+                        process,
+                        "wait",
+                        side_effect=subprocess.TimeoutExpired(
+                            cmd=process.args,
+                            timeout=5,
+                        ),
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Could not confirm exit of managed PID",
+                    ) as failure:
+                        supervisor.stop(spec.service_id)
+
+                self.assertIsInstance(
+                    failure.exception.__cause__, subprocess.TimeoutExpired
+                )
+                self.assertIs(supervisor._runtime[spec.service_id], runtime)
+                self.assertIs(runtime.log_handle, log_handle)
+                self.assertFalse(log_handle.closed)
+                self.assertNotIn(spec.service_id, supervisor._pending)
+                self.assertEqual(
+                    application.store.list_services()[0].process,
+                    persisted_identity,
+                )
+            finally:
+                self._cleanup_owned_test_process(
+                    supervisor,
+                    runtime,
+                    process,
+                    spec.service_id,
+                )
+
+    def test_monitor_retains_runtime_when_exit_cannot_be_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            application = create_application(directory)
+            supervisor = ProcessSupervisor(
+                application.context,
+                application.store,
+                manager_instance_id="manager-test",
+            )
+            bad_marker = Path(directory) / "unhealthy"
+            spec = fake_http_spec(
+                directory,
+                port=free_port(),
+                bad_marker=bad_marker,
+                restart=RestartPolicy(
+                    maximum_restarts=1,
+                    base_backoff_seconds=0,
+                    maximum_backoff_seconds=0,
+                    health_failure_threshold=1,
+                ),
+            )
+            supervisor.register(spec)
+            supervisor.start(spec.service_id)
+            runtime = supervisor._runtime[spec.service_id]
+            process = runtime.process
+            log_handle = runtime.log_handle
+            persisted_identity = application.store.list_services()[0].process
+            self.assertIsNotNone(process)
+            self.assertIsNotNone(log_handle)
+            bad_marker.write_text("", encoding="utf-8")
+
+            try:
+                with (
+                    mock.patch.object(supervisor, "_cleanup_owned_family"),
+                    mock.patch.object(
+                        process,
+                        "wait",
+                        side_effect=subprocess.TimeoutExpired(
+                            cmd=process.args,
+                            timeout=5,
+                        ),
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Could not confirm exit of managed PID",
+                    ) as failure:
+                        supervisor.monitor_once()
+
+                self.assertIsInstance(
+                    failure.exception.__cause__, subprocess.TimeoutExpired
+                )
+                self.assertIs(supervisor._runtime[spec.service_id], runtime)
+                self.assertIs(runtime.log_handle, log_handle)
+                self.assertFalse(log_handle.closed)
+                self.assertNotIn(spec.service_id, supervisor._pending)
+                self.assertEqual(
+                    application.store.list_services()[0].process,
+                    persisted_identity,
+                )
+            finally:
+                self._cleanup_owned_test_process(
+                    supervisor,
+                    runtime,
+                    process,
+                    spec.service_id,
+                )
 
     def test_new_manager_instance_adopts_a_surviving_owned_service(self):
         with tempfile.TemporaryDirectory() as directory:

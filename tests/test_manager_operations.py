@@ -597,6 +597,8 @@ class OperationEngineTests(unittest.TestCase):
         )
         self.assertTrue(created)
         real_stop = supervisor.stop
+        owned_runtime = None
+        owned_process = None
         try:
             with mock.patch.object(
                 supervisor,
@@ -624,9 +626,26 @@ class OperationEngineTests(unittest.TestCase):
                 )
             )
         finally:
-            engine.shutdown()
-            if "fixture.service" in supervisor._runtime:
-                real_stop("fixture.service")
+            owned_runtime = supervisor._runtime.get("fixture.service")
+            if owned_runtime is not None:
+                owned_process = owned_runtime.process
+            try:
+                engine.shutdown()
+            finally:
+                try:
+                    if "fixture.service" in supervisor._runtime:
+                        real_stop("fixture.service")
+                finally:
+                    if owned_process is not None:
+                        if owned_process.poll() is None:
+                            owned_process.kill()
+                        self.assertIsNotNone(owned_process.wait(timeout=5))
+                    if (
+                        owned_runtime is not None
+                        and owned_runtime.log_handle is not None
+                    ):
+                        owned_runtime.log_handle.close()
+                        owned_runtime.log_handle = None
 
     def test_slot_removal_blocks_a_concurrent_runtime_start(self):
         application = create_application(

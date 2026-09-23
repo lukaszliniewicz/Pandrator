@@ -499,6 +499,12 @@ test('intermediate assemblies can be removed without touching final exports', as
   ).toBeVisible();
 
   await page.reload();
+  // Wait for the output route to finish loading before checking persisted state.
+  await expect(page.getByText('Completed audio and video exports')).toBeVisible(
+    {
+      timeout: 30_000
+    }
+  );
   await expect(page.getByText('Intermediate audio assemblies')).toHaveCount(0);
   await expect(
     page.getByRole('link', { name: 'Download final-voiceover.mp4' })

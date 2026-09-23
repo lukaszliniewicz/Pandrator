@@ -53,7 +53,8 @@ serve(
     app,
     host="127.0.0.1",
     port=8098,
-    threads=8,
+    # Match the production CLI default: event streams also occupy worker threads.
+    threads=12,
     connection_limit=512,
     channel_timeout=15,
     cleanup_interval=5,

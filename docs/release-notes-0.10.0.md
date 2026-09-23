@@ -67,6 +67,8 @@ their effect. Vocal events are distinct from a background sound-effects workflow
 - Plan review waits for refreshed speech rows and their review status, keeping
   the approval button unavailable while the inspected content is loading.
 - Live export progress survives older HTTP snapshots arriving afterward.
+- Manager retains process ownership and recovery state when a service's exit
+  cannot be confirmed, instead of reporting it stopped or starting a replacement.
 - A simpler session workflow, casting controls, mobile navigation, and completed
   stage folding keep active work visible.
 - Video export measures an overlong audio tail and asks whether to extend the
