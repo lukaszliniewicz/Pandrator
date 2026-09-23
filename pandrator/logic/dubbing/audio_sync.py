@@ -312,11 +312,11 @@ def alignment_adjustment(
     could let accumulated drift grow when a later clip was also longer than its
     subtitle window. This calculation accounts for both conditions together.
 
-    Gentle slowdown is ON by default, like catch-up speedup: when speech is
-    substantially shorter than its own cue span it is stretched down to a
-    0.9x floor for naturalness. Blocks carrying playback delay (drift) are
-    never slowed, and speech is never stretched across the gap before the
-    next block -- the stretch target is capped at the block's own cue span.
+    Gentle slowdown is ON by default, like catch-up speedup: when speech has
+    room left in its own cue after carried drift and any start delay, it is
+    stretched down to a 0.9x floor for naturalness. Speech is never stretched
+    across the gap before the next block; the stretch target is capped at the
+    block's remaining own cue span.
     """
     duration = max(0, int(audio_duration_ms))
     window = max(1, int(window_duration_ms))
@@ -346,16 +346,16 @@ def alignment_adjustment(
         start_delay = min(max(0, int(delay_start_ms)), int(slack * 0.7))
     if (
         allow_slowdown
-        and drift == 0
         and duration > 0
         and speed_factor == 1.0
         and speech_window_duration_ms is not None
     ):
         speech_window = int(speech_window_duration_ms)
         if speech_window > 0:
-            remaining_target = min(available, speech_window) - start_delay
-            remaining_slack = remaining_target - duration
-            if remaining_slack >= 500 and remaining_slack >= remaining_target * 0.05:
+            remaining_target = (
+                min(available, max(0, speech_window - drift)) - start_delay
+            )
+            if remaining_target - duration > 1:
                 speed_factor = min(
                     1.0,
                     max(SLOWDOWN_FLOOR, duration / max(1, remaining_target - 1)),
@@ -574,7 +574,10 @@ def _align_audio_blocks_streaming(
                     cancel_event=cancel_event,
                 )
                 candidate_duration = _streaming_audio_duration_ms(candidate)
-                speech_limit = min(adjustment.available_ms, speech_window_duration)
+                speech_limit = min(
+                    adjustment.available_ms,
+                    max(0, speech_window_duration - adjustment.drift_ms),
+                )
                 if candidate_duration + adjustment.start_delay_ms <= speech_limit:
                     processed_path = candidate
                     processed_duration = candidate_duration
@@ -793,7 +796,10 @@ def align_audio_blocks(
                     ffmpeg_executable=ffmpeg_executable,
                     run_func=run_func,
                 )
-            speech_limit = min(adjustment.available_ms, speech_window_duration)
+            speech_limit = min(
+                adjustment.available_ms,
+                max(0, speech_window_duration - adjustment.drift_ms),
+            )
             if len(processed_candidate) + adjustment.start_delay_ms <= speech_limit:
                 processed_audio = processed_candidate
             else:

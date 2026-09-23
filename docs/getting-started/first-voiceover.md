@@ -72,11 +72,14 @@ window. Review any speed-up, allowed start delay, and gaps between generated
 sentences.
 
 **Allow gentle voiceover slowdown (down to 0.9×)** in the session's audio
-settings is a separate option, off by default. It preserves pitch and only uses
-space within the block's own cue span. It skips small differences (less than
-half a second or 5%) and any block already carrying delay. The existing maximum
-catch-up speed remains in effect. Slowdown is applied during assembly, leaving
-the generated take unchanged.
+settings is enabled by default. It preserves pitch and gives the start delay
+priority, then slows speech proportionately using the room still available
+within the block's own cue span, down to a minimum speed of 0.9×. For example,
+5 seconds of speech in a 6-second cue keeps its 700 ms start delay and plays
+at approximately 0.944× when the maximum start delay is 800 ms. Playback that
+starts late can still slow down if it finishes within its own cue and before
+the next block. The existing maximum catch-up speed remains in effect.
+Slowdown is applied during assembly, leaving the generated take unchanged.
 
 Choose deliberately among:
 

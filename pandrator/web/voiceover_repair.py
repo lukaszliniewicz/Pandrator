@@ -270,7 +270,8 @@ def advance_timing(
             processed = _streaming_audio_duration_ms(destination)
             if factor < 1:
                 if processed + adjustment.start_delay_ms > min(
-                    adjustment.available_ms, group.end_ms - start
+                    adjustment.available_ms,
+                    max(0, group.end_ms - start - adjustment.drift_ms),
                 ):
                     processed = duration
                 break

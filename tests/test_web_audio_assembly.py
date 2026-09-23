@@ -652,9 +652,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event()
         )
 
-        self.assertEqual(2500, result["duration_ms"])
+        # Both short takes can now slow down. Their transformed sample counts
+        # need not land on whole milliseconds; allow rounding across two clips.
+        self.assertAlmostEqual(2500, result["duration_ms"], delta=2)
         artifact, output_path = artifacts.resolve(result["artifact_id"])
-        self.assertEqual(2500, len(AudioSegment.from_file(output_path)))
+        self.assertAlmostEqual(2500, len(AudioSegment.from_file(output_path)), delta=2)
         self.assertEqual(
             [500, 2000],
             [item["target_start_ms"] for item in artifact.metadata_json["takes"]],

@@ -320,7 +320,7 @@ Wrong.
         self.assertGreater(caught_up.speed_factor, 1.0)
         self.assertEqual(0, caught_up.start_delay_ms)
 
-    def test_optional_slowdown_is_bounded_and_requires_its_eligibility_window(self):
+    def test_optional_slowdown_uses_remaining_own_cue_room(self):
         baseline = audio_sync.alignment_adjustment(
             1000,
             3000,
@@ -370,18 +370,20 @@ Wrong.
             allow_slowdown=True,
             speech_window_duration_ms=1499,
         )
-        self.assertEqual(1.0, tiny_shortfall.speed_factor)
+        self.assertEqual(0.9, tiny_shortfall.speed_factor)
 
-        carried_drift = audio_sync.alignment_adjustment(
-            1000,
-            3000,
-            1,
-            delay_start_ms=0,
-            max_speed_factor=1.0,
-            allow_slowdown=True,
-            speech_window_duration_ms=3000,
-        )
-        self.assertEqual(1.0, carried_drift.speed_factor)
+        for drift_ms in (1, 400):
+            with self.subTest(drift_ms=drift_ms):
+                carried_drift = audio_sync.alignment_adjustment(
+                    1000,
+                    3000,
+                    drift_ms,
+                    delay_start_ms=0,
+                    max_speed_factor=1.0,
+                    allow_slowdown=True,
+                    speech_window_duration_ms=3000,
+                )
+                self.assertEqual(0.9, carried_drift.speed_factor)
 
         zero_duration = audio_sync.alignment_adjustment(
             0,
@@ -418,7 +420,33 @@ Wrong.
         self.assertEqual(500, decision.start_delay_ms)
         self.assertEqual(0.9, decision.speed_factor)
 
-    def test_optional_slowdown_reverts_if_measured_audio_crosses_own_cue_end(self):
+    def test_slowdown_uses_remaining_room_after_start_delay(self):
+        decision = audio_sync.alignment_adjustment(
+            5000,
+            6000,
+            0,
+            delay_start_ms=800,
+            max_speed_factor=1.0,
+            allow_slowdown=True,
+            speech_window_duration_ms=6000,
+        )
+
+        self.assertEqual(700, decision.start_delay_ms)
+        self.assertAlmostEqual(5000 / 5299, decision.speed_factor)
+
+        milder = audio_sync.alignment_adjustment(
+            950,
+            1000,
+            0,
+            delay_start_ms=0,
+            max_speed_factor=1.0,
+            allow_slowdown=True,
+            speech_window_duration_ms=1000,
+        )
+        self.assertAlmostEqual(950 / 999, milder.speed_factor)
+        self.assertGreater(milder.speed_factor, 0.9)
+
+    def test_optional_slowdown_reverts_if_measured_audio_crosses_remaining_own_cue(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir, "source.wav")
             Sine(440).to_audio_segment(duration=1000).export(source, format="wav").close()
@@ -446,7 +474,62 @@ Wrong.
             self.assertEqual(1.0, diagnostics["blocks"][0]["requested_speed_factor"])
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
-    def test_optional_slowdown_does_not_change_mixed_long_short_long_speedup_repair(self):
+    def test_slowdown_measurement_rejects_candidate_past_drift_adjusted_cue_in_both_backends(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sources = []
+            for index, duration in enumerate((1200, 1000, 1000), start=1):
+                source = Path(temp_dir, f"source-{index}.wav")
+                Sine(440).to_audio_segment(duration=duration).export(source, format="wav").close()
+                sources.append(source)
+            blocks = [
+                audio_sync.AudioAlignmentBlock("first", "First", 0, 1000, [sources[0]], [1]),
+                audio_sync.AudioAlignmentBlock("second", "Second", 1000, 3000, [sources[1]], [2]),
+                audio_sync.AudioAlignmentBlock("third", "Third", 5000, 6000, [sources[2]], [3]),
+            ]
+
+            for backend in ("pydub", "streaming"):
+                with self.subTest(backend=backend):
+                    diagnostics = {}
+                    if backend == "pydub":
+                        patcher = patch.object(
+                            audio_sync,
+                            "_speed_up_audio_segment",
+                            return_value=AudioSegment.silent(duration=1900),
+                        )
+                    else:
+                        def write_oversized_candidate(_source, destination, _factor, **_kwargs):
+                            AudioSegment.silent(duration=1900).export(
+                                destination, format="wav"
+                            ).close()
+
+                        patcher = patch.object(
+                            audio_sync,
+                            "_speed_up_wav_streaming",
+                            side_effect=write_oversized_candidate,
+                        )
+
+                    with patcher:
+                        output = audio_sync.align_audio_blocks(
+                            blocks,
+                            temp_dir,
+                            delay_start_ms=0,
+                            speed_up_percent=100,
+                            sentence_gap_ms=0,
+                            output_path=Path(temp_dir, f"rejected-{backend}.wav"),
+                            diagnostics=diagnostics,
+                            backend=backend,
+                            allow_slowdown=True,
+                        )
+
+                    second = diagnostics["blocks"][1]
+                    self.assertEqual(200, second["drift_before_ms"])
+                    self.assertEqual(1000, second["processed_audio_ms"])
+                    self.assertEqual(1.0, second["requested_speed_factor"])
+                    self.assertEqual(0, diagnostics["slowed_block_count"])
+                    self.assertEqual(6000, len(AudioSegment.from_wav(output)))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
+    def test_optional_slowdown_keeps_long_block_speedups_and_recovers_final_drift(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             sources = []
             for index, duration in enumerate((1200, 300, 1200), start=1):
@@ -486,18 +569,21 @@ Wrong.
             self.assertEqual(results[False][0], results[True][0])
             disabled_details = results[False][1]["blocks"]
             enabled_details = results[True][1]["blocks"]
-            self.assertEqual(
-                [item["requested_speed_factor"] for item in disabled_details],
-                [item["requested_speed_factor"] for item in enabled_details],
-            )
-            self.assertEqual(0, results[True][1]["slowed_block_count"])
+            self.assertEqual(1, results[True][1]["slowed_block_count"])
             self.assertEqual(
                 results[False][1]["final_drift_ms"],
                 results[True][1]["final_drift_ms"],
             )
             self.assertGreater(enabled_details[1]["drift_before_ms"], 0)
             self.assertGreater(enabled_details[0]["effective_speed_factor"], 1.0)
+            self.assertLess(enabled_details[1]["effective_speed_factor"], 1.0)
             self.assertGreater(enabled_details[2]["effective_speed_factor"], 1.0)
+            self.assertEqual(
+                [disabled_details[0]["requested_speed_factor"],
+                 disabled_details[2]["requested_speed_factor"]],
+                [enabled_details[0]["requested_speed_factor"],
+                 enabled_details[2]["requested_speed_factor"]],
+            )
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg qualification requires ffmpeg")
     def test_real_optional_slowdown_preserves_pitch_and_own_cue_boundary_in_both_backends(self):
@@ -538,9 +624,9 @@ Wrong.
                 aligned = AudioSegment.from_wav(output)
                 first_detail = diagnostics["blocks"][0]
 
-                self.assertEqual(4000, len(aligned))
-                self.assertEqual(1, diagnostics["slowed_block_count"])
-                self.assertEqual(1, diagnostics["speed_adjusted_block_count"])
+                self.assertLessEqual(abs(len(aligned) - 4000), 2)
+                self.assertEqual(2, diagnostics["slowed_block_count"])
+                self.assertEqual(2, diagnostics["speed_adjusted_block_count"])
                 self.assertEqual(0.9, diagnostics["configured_min_speed_factor"])
                 self.assertLessEqual(
                     first_detail["processed_audio_ms"] + first_detail["start_delay_ms"],
@@ -995,9 +1081,7 @@ class DubbingSlowdownDefaultTests(unittest.TestCase):
                     .default
                 )
 
-    def test_no_slowdown_while_catching_up_with_accumulated_delay(self):
-        # Short speech must not be stretched while playback carries delay:
-        # catch-up (drift recovery) takes precedence over naturalness.
+    def test_slowdown_accounts_for_accumulated_delay_within_own_cue(self):
         for drift_ms in (1, 400):
             with self.subTest(drift_ms=drift_ms):
                 decision = audio_sync.alignment_adjustment(
@@ -1008,7 +1092,7 @@ class DubbingSlowdownDefaultTests(unittest.TestCase):
                     max_speed_factor=1.0,
                     speech_window_duration_ms=2000,
                 )
-                self.assertEqual(1.0, decision.speed_factor)
+                self.assertEqual(0.9, decision.speed_factor)
 
     def test_no_slowdown_when_audio_needs_catch_up_speed(self):
         decision = audio_sync.alignment_adjustment(
@@ -1022,24 +1106,40 @@ class DubbingSlowdownDefaultTests(unittest.TestCase):
         self.assertGreater(decision.speed_factor, 1.0)
 
     def test_slowdown_preserves_own_cue_gap_before_next_block(self):
-        # The next block starts far later (window 4000ms) but the block's
-        # own cue span is only 2000ms: stretched speech must fit the own
-        # span, never the gap before the next block.
+        # The next block starts far later, but carried drift reduces the
+        # 4000ms own cue to 3600ms of remaining room.
         decision = audio_sync.alignment_adjustment(
-            1000,
-            4000,
+            3500,
+            6000,
+            400,
+            delay_start_ms=0,
+            max_speed_factor=1.0,
+            speech_window_duration_ms=4000,
+        )
+        self.assertAlmostEqual(3500 / 3599, decision.speed_factor)
+        self.assertGreaterEqual(decision.speed_factor, 0.9)
+
+    def test_slowdown_respects_next_start_and_needs_remaining_own_cue_room(self):
+        overlapping_next_cue = audio_sync.alignment_adjustment(
+            550,
+            600,
             0,
             delay_start_ms=0,
             max_speed_factor=1.0,
-            speech_window_duration_ms=2000,
+            speech_window_duration_ms=1000,
         )
-        self.assertEqual(0.9, decision.speed_factor)
-        self.assertLessEqual(
-            int(math.ceil(1000 / decision.speed_factor))
-            + decision.start_delay_ms,
-            2000,
+        self.assertAlmostEqual(550 / 599, overlapping_next_cue.speed_factor)
+        self.assertGreater(overlapping_next_cue.speed_factor, 0.9)
+
+        insufficient_own_room = audio_sync.alignment_adjustment(
+            800,
+            5000,
+            200,
+            delay_start_ms=0,
+            max_speed_factor=1.0,
+            speech_window_duration_ms=500,
         )
-        self.assertGreaterEqual(decision.speed_factor, 0.9)
+        self.assertEqual(1.0, insufficient_own_room.speed_factor)
 
     def test_explicit_false_disables_slowdown_for_short_speech(self):
         decision = audio_sync.alignment_adjustment(

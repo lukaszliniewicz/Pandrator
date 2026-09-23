@@ -343,7 +343,7 @@ before being fitted to the shared timing window. Relevant assembly defaults:
 | --- | --- | --- |
 | `synchronization_delay_ms` | `800` | Maximum allowed start delay when fitting generated speech. |
 | `synchronization_speed` | `1.2` | Maximum speed-up factor used to fit a block. |
-| `synchronization_slowdown_enabled` | `false` | Allow pitch-preserving slowdown to a minimum of 0.9× within the block's own cue span, only with zero incoming delay. Requires at least 500 ms and 5% of spare time after start delay. |
+| `synchronization_slowdown_enabled` | `true` | Preserve start-delay priority, then apply proportionate pitch-preserving slowdown down to 0.9× within the remaining own-cue time. Account for incoming playback delay and the next block's start; slowdown must fit both boundaries. |
 | `synchronization_sentence_gap_ms` | `100` | Minimum generated gap retained between aligned sentence blocks. |
 | `audio_verification_mode` | `off` | Optional signal-level checks for suspicious generated audio. |
 | `sentence_silence_ms` | `250` | Narration pause after a sentence; timed subtitle blocks normally derive timing from the source instead. |
