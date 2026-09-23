@@ -166,7 +166,7 @@ test('voiceover scope selector targets cue text or TTS text only', async ({
   await ttsRadio.click();
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
   await page.getByLabel('Replace in generation segments').fill('VOICEWORD');
-  await page.getByRole('button', { name: 'Replace', exact: true }).click();
+  await replaceAndWaitForSave(page, sessionId);
   await expect(page.getByText('No matches')).toBeVisible();
 
   let saved = await segmentTexts(page, sessionId);
@@ -182,7 +182,7 @@ test('voiceover scope selector targets cue text or TTS text only', async ({
   await find.fill('cueword');
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
   await page.getByLabel('Replace in generation segments').fill('CUEWORD');
-  await page.getByRole('button', { name: 'Replace', exact: true }).click();
+  await replaceAndWaitForSave(page, sessionId);
   await page.screenshot({
     path: test.info().outputPath('voiceover-scope-replace.png')
   });
@@ -194,6 +194,21 @@ test('voiceover scope selector targets cue text or TTS text only', async ({
     'VOICEWORD'
   );
 });
+
+async function replaceAndWaitForSave(page: Page, sessionId: string) {
+  // The editor updates optimistically; persisted text is safe to read only
+  // after the PATCH has committed.
+  const [saved] = await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/api/v1/sessions/${sessionId}/generation-segments` &&
+        response.request().method() === 'PATCH'
+    ),
+    page.getByRole('button', { name: 'Replace', exact: true }).click()
+  ]);
+  expect(saved.ok()).toBeTruthy();
+}
 
 test('Escape closes search and lifts the list filter', async ({ page }) => {
   await signIn(page);

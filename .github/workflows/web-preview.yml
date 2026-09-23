@@ -20,7 +20,7 @@ jobs:
     if: ${{ !inputs.skip_python }}
     name: Python tests (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 35 }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +50,7 @@ jobs:
             os: windows-latest
             lanes: fast-xdist
           # Windows SQLite/filesystem tests take substantially longer than Linux.
-          # Keep web lanes separate so one job stays below the timeout.
+          # Keep web lanes separate and allow headroom for native filesystem I/O.
           - name: windows-web-01
             os: windows-latest
             lanes: web-01-serial

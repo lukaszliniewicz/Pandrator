@@ -18,6 +18,8 @@ Python tests use explicit lanes in `scripts/test_lanes.py`; its manifest check
 requires every test file exactly once. Keep Windows web lanes in separate CI
 jobs: measured SQLite/filesystem test times are substantially higher there.
 Use JUnit timings when rebalancing lanes, and preserve full coverage on each OS.
+Backend jobs allow 45 minutes on Windows and 35 on Linux; a successful native
+Windows lane reached 34 minutes, so the job budget includes execution headroom.
 Windows browser projects run in two Playwright shards for the same reason.
 Browser assertions allow 20 seconds on Windows (8 seconds elsewhere), because
 native CI traces repeatedly show cold-page hydration exceeding the shorter

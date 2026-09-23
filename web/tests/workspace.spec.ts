@@ -65,6 +65,7 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await page.getByRole('button', { name: 'Review', exact: true }).click();
   await page.getByLabel('Session name').fill(sessionName);
   await page.getByRole('button', { name: 'Create workspace' }).click();
+  await page.waitForURL(/\/sessions\/[^/?]+$/);
   await expect(page.getByRole('heading', { name: sessionName })).toBeVisible({
     timeout: 20_000
   });
@@ -120,6 +121,9 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
   );
 
   await page.getByRole('button', { name: 'Create workspace' }).click();
+  // The wizard first commits its settings and attachments, then navigates.
+  // Give the destination its own bounded readiness wait after that work.
+  await page.waitForURL(/\/sessions\/[^/?]+$/);
   await expect(page.getByRole('heading', { name: sessionName })).toBeVisible({
     timeout: 20_000
   });
