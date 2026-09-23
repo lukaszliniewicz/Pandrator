@@ -15,6 +15,10 @@ on:
       - "web/package.json"
       - "web/package-lock.json"
       - "web/src/lib/api.generated.ts"
+      - "web/src/lib/local-model-groups.ts"
+      - "web/src/lib/audio-cpp-catalogue.ts"
+      - "web/scripts/build-manager-model-groups.mjs"
+      - "pandrator_manager/recovery_ui/static/model-groups.js"
   workflow_dispatch:
 
 permissions:
@@ -46,3 +50,5 @@ jobs:
           python scripts/generate_web_contract.py
           npm --prefix web run generate-api
           git diff --exit-code -- openapi.json web/src/lib/api.generated.ts
+      - name: Verify standalone Manager uses current model grouping
+        run: npm --prefix web run check:manager-models

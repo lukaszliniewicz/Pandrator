@@ -346,6 +346,20 @@ Pandrator and source-backed engines are downloaded into staging, checked, and
 activated side by side. Manager updates use the project-signed release
 channel.
 
+## Shared model browser
+
+The standalone Manager groups audio.cpp packages with the same helpers as the
+main application: families, Qwen model sizes and voice variants, Pocket languages,
+and individual quantizations. Recommendation reasons come from the shared curated
+catalogue. The default filter retains recommended, selected and installed
+packages; searching and filtering never change the installation selection.
+
+`recovery_ui/static/model-groups.js` is a committed browser bundle generated from
+`web/src/lib/local-model-groups.ts`. After editing the shared helpers, run
+`npm --prefix web run build:manager-models`. CI checks bundle freshness with
+`npm --prefix web run check:manager-models`; frozen Manager packages include the
+bundle and do not need Node.js at runtime.
+
 ## Getting help
 
 Use [GitHub Issues](https://github.com/lukaszliniewicz/Pandrator/issues) for

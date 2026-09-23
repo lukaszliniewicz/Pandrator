@@ -550,13 +550,13 @@ function controlsFor(component) {
     const raw =
       options.models ?? component.inspection.resolved?.options?.models;
     let configured = Array.isArray(raw)
-      ? raw.map(String).filter((item) => supported.has(item))
+      ? [...new Set(raw.map(String).filter(Boolean))]
       : [];
     if (!configured.length) {
       const preferred = "qwen3_tts_1_7b_customvoice_q8_0";
       configured = supported.has(preferred)
         ? [preferred]
-        : [component.definition.models[0].id];
+        : component.definition.models.slice(0, 1).map((model) => model.id);
     }
     options.models = configured;
   }
@@ -802,6 +802,20 @@ function renderGuidedSetup() {
     const target = snapshot.components.find(
       (item) => item.definition.id === choice?.component,
     );
+    const model = target?.definition.models.find(
+      (item) => item.id === choice?.model,
+    );
+    if (model && choice.component === "audio_cpp") {
+      button.querySelector("small").textContent =
+        `${model.label} · ${target.definition.label}`;
+      let reason = button.querySelector(".setup-recommendation");
+      if (!reason) {
+        reason = text("span", "", "setup-recommendation");
+        button.append(reason);
+      }
+      reason.textContent = model.model_info?.recommended_for || "";
+      reason.hidden = !reason.textContent;
+    }
     button.disabled =
       Boolean(activeOperation) ||
       Boolean(
@@ -845,6 +859,8 @@ function renderGuidedSetup() {
       summary.append(
         text("p", `${model.label}. ${modelPurpose(model)}.`, "meta"),
       );
+      if (model.model_info?.recommended_for)
+        summary.append(text("p", model.model_info.recommended_for, "meta"));
       if (model.estimated_download_bytes)
         summary.append(
           text(
@@ -903,9 +919,23 @@ function makeModelList(definition, component, state, nodes) {
     nodes.modelStatuses = new Map();
   }
   const selectedModels = new Set(state?.options?.models || []);
+  const packages = definition.id === "audio_cpp";
+  const models = [...(definition.models || [])];
+  if (packages) {
+    const known = new Set(models.map((model) => model.id));
+    for (const id of selectedModels) {
+      if (!known.has(id))
+        models.push({
+          id,
+          label: id,
+          description:
+            "Saved package absent from the current catalogue. Deselect it to remove it from your selection.",
+        });
+    }
+  }
+  const rows = new Map();
 
-  for (const item of definition.models || []) {
-    const packages = definition.id === "audio_cpp";
+  for (const item of models) {
     const row = document.createElement(packages ? "label" : "div");
     row.className = `model-row${packages ? " model-choice" : ""}`;
 
@@ -922,9 +952,7 @@ function makeModelList(definition, component, state, nodes) {
       } else {
         current.delete(item.id);
       }
-      state.options.models = (definition.models || [])
-        .map((m) => m.id)
-        .filter((id) => current.has(id));
+      state.options.models = [...current];
       updateComponentCard(component);
       updateSelectionSummary();
     });
@@ -935,6 +963,37 @@ function makeModelList(definition, component, state, nodes) {
     if (modelPurpose(item))
       content.append(text("strong", modelPurpose(item), "model-purpose"));
     content.append(text("span", item.label, "model-name"));
+    if (packages) {
+      content.append(text("code", item.id, "model-package-id"));
+      const info = item.model_info;
+      if (info?.recommended_for)
+        content.append(
+          text(
+            "p",
+            `Recommended for: ${info.recommended_for}`,
+            "model-recommendation",
+          ),
+        );
+      if (info?.supported_languages?.length) {
+        const languageNames = new Intl.DisplayNames(["en"], {
+          type: "language",
+        });
+        content.append(
+          text(
+            "p",
+            info.supported_languages
+              .map((code) => {
+                try {
+                  return languageNames.of(code) || code;
+                } catch {
+                  return code;
+                }
+              })
+              .join(", "),
+          ),
+        );
+      }
+    }
     if (packages && nodes) {
       const status = text("span", "", "model-install-state");
       nodes.modelStatuses.set(item.id, status);
@@ -967,8 +1026,134 @@ function makeModelList(definition, component, state, nodes) {
     if (packages) row.append(checkbox);
     row.append(content);
     root.append(row);
+    rows.set(item.id, row);
   }
+  if (packages) buildModelBrowser(root, models, rows, component, state, nodes);
   return root;
+}
+
+function buildModelBrowser(root, models, rows, component, state, nodes) {
+  const { resolveLocalModels, groupLocalModels, filterLocalGroups } =
+    PandratorModelGroups;
+  const groups = groupLocalModels(
+    resolveLocalModels(
+      models.map((model) => ({
+        ...model.model_info,
+        ...model,
+      })),
+    ),
+  );
+  clear(root);
+  const toolbar = document.createElement("div");
+  toolbar.className = "model-browser-tools";
+  const searchLabel = text("label", "Find a package");
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Family, variant, language or quantization";
+  searchLabel.append(search);
+  const filterLabel = document.createElement("label");
+  filterLabel.className = "model-browser-filter";
+  const recommended = document.createElement("input");
+  recommended.type = "checkbox";
+  recommended.checked = true;
+  filterLabel.append(
+    recommended,
+    document.createTextNode("Recommended and selected packages"),
+  );
+  const count = text("p", "", "meta");
+  count.setAttribute("aria-live", "polite");
+  toolbar.append(
+    searchLabel,
+    filterLabel,
+    text(
+      "small",
+      "Installed packages stay visible in this filter. Clear it to browse every package.",
+    ),
+    count,
+  );
+  root.append(toolbar);
+  const branches = [];
+  function branch(label, ids, className) {
+    const details = document.createElement("details");
+    details.className = className;
+    const summary = text("summary", label);
+    const counts = text("span", "", "model-group-count");
+    summary.append(counts);
+    details.append(summary);
+    branches.push({ details, counts, ids, wasOpen: false });
+    return details;
+  }
+  for (const group of groups) {
+    const family = branch(
+      group.label,
+      group.subgroups.flatMap((subgroup) =>
+        subgroup.models.map((model) => model.id),
+      ),
+      "model-family",
+    );
+    for (const subgroup of group.subgroups) {
+      const container = subgroup.label
+        ? branch(
+            [subgroup.label, subgroup.detail].filter(Boolean).join(" · "),
+            subgroup.models.map((model) => model.id),
+            "model-variant",
+          )
+        : document.createElement("div");
+      for (const model of subgroup.models) container.append(rows.get(model.id));
+      family.append(container);
+    }
+    root.append(family);
+  }
+  const empty = text(
+    "p",
+    "No packages match. Try another search or clear the recommended filter.",
+    "meta",
+  );
+  root.append(empty);
+  let searching = false;
+  let latestComponent = component;
+  const refresh = (currentComponent = latestComponent) => {
+    latestComponent = currentComponent;
+    const selected = new Set(state.options.models || []);
+    const installed = new Set(installedModels(currentComponent));
+    const matches = new Set(
+      filterLocalGroups(groups, search.value).flatMap((group) =>
+        group.subgroups.flatMap((subgroup) =>
+          subgroup.models.map((model) => model.id),
+        ),
+      ),
+    );
+    const visible = new Set(
+      models
+        .filter(
+          (model) =>
+            matches.has(model.id) &&
+            (!recommended.checked ||
+              !model.model_info ||
+              model.model_info.recommended_for ||
+              selected.has(model.id) ||
+              installed.has(model.id)),
+        )
+        .map((model) => model.id),
+    );
+    for (const [id, row] of rows) row.hidden = !visible.has(id);
+    const nextSearching = Boolean(search.value.trim());
+    for (const item of branches) {
+      const shown = item.ids.filter((id) => visible.has(id));
+      item.details.hidden = !shown.length;
+      item.counts.textContent = ` ${shown.length} ${shown.length === 1 ? "package" : "packages"} · ${item.ids.filter((id) => selected.has(id)).length} selected · ${item.ids.filter((id) => installed.has(id)).length} installed`;
+      if (nextSearching && !searching) item.wasOpen = item.details.open;
+      if (nextSearching) item.details.open = true;
+      else if (searching) item.details.open = item.wasOpen;
+    }
+    searching = nextSearching;
+    count.textContent = `${visible.size} of ${models.length} packages`;
+    empty.hidden = Boolean(visible.size);
+  };
+  search.addEventListener("input", () => refresh());
+  recommended.addEventListener("change", () => refresh());
+  if (nodes) nodes.refreshModelBrowser = refresh;
+  refresh();
 }
 
 function buildComponentDetails(component, nodes) {
@@ -1382,6 +1567,7 @@ function updateComponentCard(component) {
               : "Not installed";
     }
   }
+  nodes.refreshModelBrowser?.(component);
   const problems = [...(inspection.problems || [])];
   if (
     definition.id === "audio_cpp" &&

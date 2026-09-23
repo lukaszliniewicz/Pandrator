@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "build": "npm run build:manager-models && vite build",
+    "check": "npm run check:manager-models && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "dead-code": "cross-env KNIP_DISABLE_RAW_TRANSFER=1 knip",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -15,7 +15,9 @@
     "lint:fix": "eslint . --fix",
     "quality": "npm run format:check && npm run lint && npm run check && npm run dead-code",
     "test:a11y": "playwright test tests/accessibility.spec.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "build:manager-models": "node scripts/build-manager-model-groups.mjs",
+    "check:manager-models": "node scripts/build-manager-model-groups.mjs --check"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
@@ -27,6 +29,7 @@
     "@tailwindcss/vite": "^4.1.18",
     "@types/node": "^26.1.2",
     "cross-env": "^10.1.0",
+    "esbuild": "0.28.1",
     "eslint": "^10.8.0",
     "eslint-plugin-svelte": "^3.22.0",
     "globals": "^17.8.0",

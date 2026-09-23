@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { resolve } from 'node:path';
+import type { AudioCppModelInfo } from '../src/lib/audio-cpp-catalogue';
 
 type RuntimeService = {
   id: string;
@@ -43,7 +44,7 @@ type ManagerComponent = {
       license_url?: string | null;
       usage_note?: string;
       estimated_download_bytes?: number | null;
-      model_info?: import('../src/lib/audio-cpp-catalogue').AudioCppModelInfo;
+      model_info?: AudioCppModelInfo;
     }>;
     languages: string[];
     estimated_download_bytes: number;
@@ -62,6 +63,7 @@ type ManagerComponent = {
     state: string;
     installed_version?: string | null;
     installed_revision?: string | null;
+    installed_model_ids?: string[];
     problems: string[];
     evidence: string[];
     resolved: {
@@ -166,6 +168,12 @@ async function installManagerFixture(page: Page) {
     route.fulfill({
       contentType: 'text/javascript',
       path: resolve(managerStatic, 'app.js')
+    })
+  );
+  await page.route('**/recovery/model-groups.js', (route) =>
+    route.fulfill({
+      contentType: 'text/javascript',
+      path: resolve(managerStatic, 'model-groups.js')
     })
   );
   await page.route('**/v1/**', async (route) => {
@@ -295,6 +303,7 @@ test('manager shows and controls a running optional engine', async ({
   );
 
   await page.getByRole('tab', { name: 'Activity' }).click();
+  await page.getByText('Advanced service details', { exact: true }).click();
   const serviceRow = page.locator('.service-row').filter({ hasText: 'Kokoro' });
   await expect(serviceRow.getByText('Stopped', { exact: true })).toBeVisible();
   await expect(
@@ -620,9 +629,10 @@ test('Pandrator installs selected audio.cpp models and mutes absent compatibilit
   await audioCard.screenshot({
     path: testInfo.outputPath('audio-model-installation.png')
   });
+  await audioCard.getByRole('button', { name: /^FireRedTTS3/ }).click();
   await audioCard
     .getByRole('checkbox', { name: /FireRedTTS3 Base Q8_0/ })
-    .check();
+    .click();
   await audioCard.getByRole('button', { name: 'Install locally' }).click();
   await expect.poll(() => planRequests.length).toBe(1);
   expect(planRequests[0]).toMatchObject({
@@ -743,3 +753,131 @@ test('Pandrator reviews eligible local updates as one exact batch plan', async (
     Object.keys(planRequests[0].desired as Record<string, unknown>)
   ).toEqual(['kokoro', 'fish_speech']);
 });
+
+for (const width of [1280, 390]) {
+  test(`standalone Manager groups packages and preserves selections at ${width}px`, async ({
+    page
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 950 });
+    await installManagerFixture(page);
+    const audio = component('audio_cpp', 'audio.cpp', 'tts.audio_cpp');
+    const ids = [
+      'qwen3_tts_1_7b_base_q8_0',
+      'qwen3_tts_1_7b_base_f16',
+      'qwen3_tts_1_7b_customvoice_q8_0',
+      'qwen3_tts_1_7b_voicedesign_q8_0',
+      'pocket_tts_english_q8_0',
+      'pocket_tts_german_q8_0'
+    ];
+    audio.definition.models = ids.map((id, index) => ({
+      id,
+      label: id,
+      model_info: {
+        id,
+        label: id,
+        family: id.startsWith('qwen') ? 'qwen3_tts' : 'pocket_tts',
+        supported_languages: id.includes('german') ? ['de'] : ['en'],
+        recommended_for: index === 0 ? 'Multilingual cloned narration' : ''
+      }
+    }));
+    audio.desired.options.models = [ids[0], ids[2], 'retired_saved_package'];
+    audio.inspection.installed_model_ids = [ids[1]];
+    await page.route('**/v1/components', (route) =>
+      fulfillJson(route, { items: [audio] })
+    );
+    const plans: Array<Record<string, unknown>> = [];
+    await page.route('**/v1/plans', async (route) => {
+      plans.push(route.request().postDataJSON());
+      await fulfillJson(route, {
+        id: 'test-plan',
+        digest: 'test-digest',
+        kind: 'update',
+        tasks: [],
+        warnings: [],
+        confirmations: [],
+        estimated_download_bytes: 0,
+        estimated_disk_bytes: 0
+      });
+    });
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto('/recovery');
+    await page
+      .locator('#provider-catalogue')
+      .evaluate((element: HTMLDetailsElement) => {
+        element.open = true;
+      });
+    await page.locator('.component-section').evaluateAll((elements) =>
+      elements.forEach((element) => {
+        (element as HTMLDetailsElement).open = true;
+      })
+    );
+    const card = page.locator('[data-component-id="audio_cpp"]');
+    await card.locator(':scope > summary').click();
+    await expect(
+      card.getByText('4 of 7 packages', { exact: true })
+    ).toBeVisible();
+    const family = card
+      .locator('.model-family')
+      .filter({ has: page.locator('summary', { hasText: 'Qwen3-TTS' }) });
+    await family.locator(':scope > summary').click();
+    const base = family
+      .locator('.model-variant')
+      .filter({ hasText: '1.7B Base' });
+    await base.locator('summary').click();
+    await expect(
+      base.getByText('Recommended for: Multilingual cloned narration')
+    ).toBeVisible();
+    await expect(
+      base.getByText('Removal proposed', { exact: true })
+    ).toBeVisible();
+    await expect(
+      base.getByRole('checkbox', { name: new RegExp(ids[0]) })
+    ).toBeChecked();
+    await base.getByRole('checkbox', { name: new RegExp(ids[1]) }).check();
+    await card.getByLabel('Recommended and selected packages').uncheck();
+    await card.getByLabel('Find a package').fill('German');
+    await expect(
+      card.getByRole('checkbox', { name: new RegExp(ids[5]) })
+    ).toBeVisible();
+    await expect(
+      card.getByRole('checkbox', { name: new RegExp(ids[0]) })
+    ).not.toBeVisible();
+    await card.getByRole('checkbox', { name: new RegExp(ids[5]) }).check();
+    await card.getByLabel('Find a package').fill('');
+    await card.getByLabel('Recommended and selected packages').check();
+    await expect(
+      card.getByText('5 of 7 packages', { exact: true })
+    ).toBeVisible();
+    await page
+      .getByRole('button', { name: 'Refresh manager status', exact: true })
+      .click();
+    await expect(
+      base.getByRole('checkbox', { name: new RegExp(ids[1]) })
+    ).toBeChecked();
+    await card.getByLabel('Find a package').fill('retired_saved_package');
+    await expect(
+      card.getByRole('checkbox', { name: /retired_saved_package/ })
+    ).toBeChecked();
+    await card
+      .getByRole('checkbox', { name: /retired_saved_package/ })
+      .uncheck();
+    await card.getByLabel('Find a package').fill('');
+    await card.screenshot({
+      path: testInfo.outputPath(`manager-models-${width}.png`)
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
+    ).toBe(true);
+    await card.getByRole('button', { name: 'Review model changes' }).click();
+    await expect.poll(() => plans.length).toBe(1);
+    expect(plans[0]).toMatchObject({
+      desired: {
+        audio_cpp: { options: { models: [ids[0], ids[2], ids[1], ids[5]] } }
+      }
+    });
+    expect(errors).toEqual([]);
+  });
+}

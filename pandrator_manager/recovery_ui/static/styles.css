@@ -860,6 +860,73 @@ summary:focus-visible,
   gap: 0.55rem;
 }
 
+.model-list [hidden] {
+  display: none !important;
+}
+
+.model-browser-tools,
+.model-browser-tools > label:first-child {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.model-browser-tools input[type="search"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+}
+
+.model-browser-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.model-family,
+.model-variant {
+  min-width: 0;
+  padding: 0.65rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5rem;
+}
+
+.model-family > summary,
+.model-variant > summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.model-family[open] > summary,
+.model-variant[open] > summary {
+  margin-bottom: 0.65rem;
+}
+
+.model-family > .model-variant + .model-variant {
+  margin-top: 0.5rem;
+}
+
+.model-group-count,
+.model-package-id {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: normal;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.model-row .model-recommendation {
+  color: var(--accent);
+}
+
+.model-row .model-name {
+  overflow-wrap: anywhere;
+}
+
 .model-row {
   padding-bottom: 0.5rem;
   border-bottom: 1px solid var(--line-soft);
