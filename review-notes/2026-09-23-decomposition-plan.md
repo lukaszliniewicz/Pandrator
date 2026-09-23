@@ -1,9 +1,10 @@
 # Whole-app decomposition and correctness plan
 
-Status: **Phase 1 complete; W1 next** (2026-09-23). The approved sequence was
+Status: **Phase 1 and W1 complete; W2 next** (2026-09-23). The approved sequence was
 committed as `bf987e13`; S1 and S2 implementations are committed on `main` as
 `292f4eec` and `050d1133` respectively; S3 is committed as `60fdc2c7`,
-and S4 as `93c325ee`.
+and S4 as `93c325ee`. W1 is committed as `6bf8e877` (save races) and
+`1c0199f4` (settings ownership and type debt).
 Planning source baseline: `10fb2bb5` (2026-09-23).
 Update this file as units finish; do not select a new area solely because it is
 large or interesting. This is internal engineering working material, not a
@@ -59,8 +60,8 @@ functions are not comparable to a single algorithm of the same size.
 | MCP | Server factory: 3,346 lines / 120 nested functions; application client: 2,873 / 137 methods | Domain tool registration over shared transport policy; preserve schemas and bounded downloads |
 | Main UI | SessionWorkspace: 6,175; GenerationDrawer: 3,712 | Complete settings and interaction features, with one owner for edits, requests and playback |
 
-The current type baseline contains **1,267 diagnostics**, including **43 import-cycle
-entries**. These are not counts of proven runtime bugs or independent cycles.
+At the planning baseline, the type baseline contained **1,267 diagnostics**,
+including **43 import-cycle entries**. These are not counts of proven runtime bugs or independent cycles.
 The installer has substantial baseline debt too: workflows 185 entries, runtime
 166 and components 89. Address debt in touched responsibilities; do not scatter
 casts or suppressions across the repository to chase a zero counter.
@@ -134,6 +135,8 @@ recorded below; the other open entries still need bounded reproduction.
 | R5 | Fixed in `93c325ee`: direct stages and continuation could queue old settings with a newly selected source; multi-section settings resolution could also mix committed versions. | Explicit SQLite read snapshot covers settings sections, service connections and stage input selection. Concurrent edits commit normally and apply to subsequent runs; prepared input stays immutable through enqueue. Planned workflows retain their stale-state rejection. | S4 closed |
 | R6 | Multipart voice upload accepts `expected_revision` in the form, while OpenAPI describes required If-Match. | Clarify the contract and generated client/schema coverage when that endpoint is next changed; retain both working input paths. This does not currently invalidate the documented header path. | F3 / contract backlog |
 | R7 | Source-level inconsistency: `retire_sample_artifact` preserves files shared by other sample rows but marks their common artifact deleted first. The schema permits sharing; creation by a normal supported API sequence was not established. | During voice-worker extraction, check supported import/legacy/bundled cases before changing retirement semantics. Current sample APIs normalize to a unique destination; artifact registration reuses IDs by path, not content hash. No shared user data was inspected or runtime defect claimed here. | G1 / bounded evidence backlog |
+| R8 | Fixed in `6bf8e877`: standalone settings replacements could both accept the same revision, losing an update. | Immediate transaction owns revision check, mutation, history and response snapshot. Competing-writer regression proves one success and one conflict. | W1 closed |
+| R9 | Fixed in `6bf8e877`: standalone settings update/patch could return another writer's values with the earlier revision. | Capture response before commit; a later committed edit remains visible to the next read without contaminating the saved response. | W1 closed |
 
 ## S1 execution contract (completed)
 
@@ -509,3 +512,97 @@ validation, revisions/history and S4's supplied-session boundary. Keep write
 transactions intact and retain a compatibility facade where needed. Verify the
 existing settings/workflow tests plus focused defects found in that boundary;
 do not combine W2 source/outcome ownership or generic route relocation into W1.
+
+### W1 complete — 2026-09-23 — `1c0199f4`
+
+- Starting checkpoint: clean `main` at `10aec9d8`; the user's request to commit
+  everything was already satisfied before this unit began.
+- Owned boundary: settings defaults, validation, normalization, hashing and
+  secret-free snapshots; `WorkspaceSettingsService` reads/writes/resolution and
+  its non-UI import callers. Preserve default/global/service/session/Run Now
+  precedence, PUT replacement versus shallow PATCH merge, revisions/history,
+  provider switching, caller-owned transactions and S4 read snapshots. Outcome,
+  source-library, generation and route bodies stay in their existing owners.
+- Reproduced three failures before changing production behavior: two standalone
+  replacements both accepted revision 1 and overwrote each other; standalone
+  update and patch could return revision 1 with another writer's revision-2
+  values. Tests use disposable databases, a coordinated pair of real writer
+  threads, and an injected real commit between the first commit and its response.
+- Fix `6bf8e877`: standalone replacement begins an immediate transaction before
+  the revision read. Update and patch capture their complete response inside the
+  transaction that saves it. Supplied-session paths keep the caller's transaction;
+  idempotent HTTP paths already provided an immediate transaction. All three
+  regressions passed after the fix, separately from the structural move.
+- Extraction: `settings_policy.py` owns defaults, aliases, normalizers, validators,
+  recursive merge/secret removal and stable hashing. `workspace_settings.py` owns
+  persistence and effective settings resolution. The 37 production consumer
+  changes are imports only. Compatibility exports retain the exact same class,
+  exception, function and constant objects under the old `workspace` names.
+  Neither new settings module imports the workspace facade. Workspace falls
+  from 5,621 to 4,258 lines; the new modules are 643 and 767 lines respectively.
+- Mechanical evidence: moved declarations initially matched their pre-extraction
+  ASTs exactly; all 37 consumer bodies match after excluding imports, and the
+  nine remaining workspace definitions are unchanged. Final settings-service
+  refinements bind mapping values once before `isinstance` checks, eliminating
+  ten inherited type diagnostics without casts, ignores or baseline relocation.
+- Acceptance: 278 settings/defaults/normalization/planning tests passed initially.
+  Following the type refinements, all 150 settings API, workspace parity, workflow
+  plan and workflow-handler tests passed: **349 distinct tests** across both
+  runs. Existing tests exercise provider defaults, aliases, credential exclusion,
+  validation, idempotency, revisions/history and the S4 concurrent-read cases.
+  Ruff, Vulture, test-lane, documentation and whitespace checks passed.
+- Type result: Basedpyright reported 0 errors/warnings/notes; the reviewed
+  baseline falls from 1,266 to 1,251 entries, with cycle reports falling from
+  43 to 38. Three cycle reports now attributed to
+  `performance_plans.py` describe existing generation dependencies, not new
+  settings dependencies. Their five directed edges were individually verified
+  with `git show 10aec9d8` and AST inspection. The reviewed baseline adjustment
+  records that reporting change; no moved settings diagnostics were added.
+- Reviewer configured GPT-6 Sol/high found no material transaction or compatibility
+  regression. Researcher configured GPT-6 Luna/max supplied caller/patch mappings
+  and original import-edge evidence. Parent selected boundaries, reproduced and
+  fixed the races, implemented the extraction and accepted the result.
+- Limits: focused Linux/disposable-data verification, not Windows/live-provider,
+  browser or full-project qualification. Existing generation cycles remain for
+  later generation ownership work. No push or deployment.
+- Next unit: **W2**, outcome/source-library ownership. Preserve attachment and
+  artifact identities, revisions, selected-source provenance and transaction
+  boundaries; inspect their supported lifecycle before extracting services.
+
+Type-report evidence (line references at `10aec9d8`):
+
+- `performance_plans -> speech_plan_workspace`: module import at 37–41.
+- `speech_plan_workspace -> performance_plans`: local imports at 321, 326 and 370.
+- `performance_plans -> workspace`: `adopt_plan` imports assembly invalidation at
+  853 (the former exception import at 42 is now removed).
+- `workspace -> performance_plans`: assembly preparation imports snapshot capture
+  at 5543.
+- `workspace -> speech_plan_workspace`: segment editing, topology and preparation
+  imports at 3044, 3119, 4016, 4028 and 4373.
+
+These unchanged edges establish the two-node performance/speech and
+performance/workspace cycles and the three-node performance/workspace/speech
+cycle. They are recorded transparently instead of widening W1 into generation
+refactoring or restoring an unnecessary facade import to alter checker traversal.
+
+Commands (repository root; `.pixi/envs/default/bin` tools):
+
+```bash
+python -m pytest -q tests/test_web_settings_api.py -k 'reply_matches or competing_settings' --tb=short
+python -m pytest -q tests/test_web_settings_api.py tests/test_web_parity_workspace.py tests/test_web_workflow_plans.py tests/test_web_parameter_definitions.py tests/test_tts_default_migration.py tests/test_tts_voice_aliases.py tests/test_video_tail_extension.py tests/test_passage_regroup.py tests/test_cjk_text_pipeline.py --tb=short
+python -m pytest -q tests/test_web_settings_api.py tests/test_web_parity_workspace.py tests/test_web_workflow_plans.py tests/test_web_workflow_handlers.py --tb=short
+ruff check .
+vulture
+python scripts/test_lanes.py check
+python scripts/check_types.py --baselinefile /tmp/pandrator-w1-type-baseline.json
+python scripts/check_docs.py
+git diff --check
+```
+
+The first command recorded three baseline failures and then three passes. Import
+and definition parity checks used Python AST comparisons and direct identity
+assertions against the compatibility exports. Type checks first exposed ten moved
+settings diagnostics and three existing-cycle reports; settings diagnostics were
+corrected before the final check. An intermediate scratch-baseline construction
+omitted seven unchanged performance-plan entries; those were restored before the
+final run, not treated as fixes or new debt.
