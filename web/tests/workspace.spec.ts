@@ -2113,10 +2113,22 @@ test('alternate regeneration sends one selected-only setting set and returns to 
 }) => {
   const posted: Array<Record<string, unknown>> = [];
   const runId = 'source-run';
-  const planRevisionId = 'alternate-plan';
+  let generationStarted = false;
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
+  await signIn(page);
+  const sessionId = await createGenerationPlan(page, [
+    { text: 'First alternate sentence.' },
+    { text: 'Keep this active take.' }
+  ]);
+  const plan = await page.request.get(
+    `/api/v1/sessions/${sessionId}/generation-segments`
+  );
+  const planPayload = await plan.json();
+  const segments = planPayload.items as Array<{ id: string }>;
+  const planRevisionId = planPayload.plan_revision_id as string;
   const sourceRun = {
     id: runId,
-    session_id: 'mock-session',
+    session_id: sessionId,
     plan_revision_id: planRevisionId,
     sequence_number: 1,
     operation: 'generate',
@@ -2133,17 +2145,6 @@ test('alternate regeneration sends one selected-only setting set and returns to 
       rvc: { enabled: false }
     }
   };
-  let generationStarted = false;
-  await page.route('**/api/v1/events?after=*', (route) => route.abort());
-  await signIn(page);
-  const sessionId = await createGenerationPlan(page, [
-    { text: 'First alternate sentence.' },
-    { text: 'Keep this active take.' }
-  ]);
-  const plan = await page.request.get(
-    `/api/v1/sessions/${sessionId}/generation-segments`
-  );
-  const segments = (await plan.json()).items as Array<{ id: string }>;
   const rows = [
     {
       id: segments[0].id,

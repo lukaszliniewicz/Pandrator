@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import shutil
 import threading
 import wave
@@ -280,7 +281,7 @@ def test_missing_runtime_reports_reason_without_downloading(settings, monkeypatc
 def test_resolve_executable_prefers_workspace_pointer(workspace, tmp_path):
     slot = tmp_path / "slot"
     slot.mkdir()
-    binary = slot / "audiocpp_cli"
+    binary = slot / ("audiocpp_cli.exe" if os.name == "nt" else "audiocpp_cli")
     binary.write_bytes(b"x")
     binary.chmod(0o755)
     pointer = workspace / "Pandrator/services/audio_cpp"

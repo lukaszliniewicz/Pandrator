@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-async function seed(page: Page) {
+async function seed(page: Page, prefix = 'Scrooge') {
   await page.goto('/voices');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -9,7 +9,7 @@ async function seed(page: Page) {
   ).toBeVisible();
   const auth = await (await page.request.get('/api/v1/auth/status')).json();
   const headers = { 'X-CSRF-Token': auth.csrf_token };
-  const name = `Scrooge ${crypto.randomUUID()}`;
+  const name = `${prefix} ${crypto.randomUUID()}`;
   const response = await page.request.post('/api/v1/voices', {
     headers,
     data: {
@@ -96,7 +96,10 @@ test('catalog profiles, dirty-state protection and collections persist', async (
 test('phone filters are usable without horizontal overflow and restore focus', async ({
   page
 }) => {
-  const { name } = await seed(page);
+  const { name } = await seed(
+    page,
+    'VeryLongVoiceNameWithoutWordBreaks'.repeat(2)
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByLabel('Search voices').fill(name);
   await expect(page.getByRole('button', { name, exact: true })).toBeVisible();

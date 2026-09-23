@@ -673,6 +673,12 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
   const { session, endpoint } = await setup(page);
   // Only availability is simulated; the generation POST is intercepted below.
   await page.route('**/api/v1/services/tts**', async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith('/discover')) {
+      // Availability includes discovery: CI has no live local TTS endpoint.
+      return route.fulfill({
+        json: { success: true, models: [], voices: [], languages: [] }
+      });
+    }
     const response = await route.fetch();
     const payload = await response.json();
     if (Array.isArray(payload.services)) {

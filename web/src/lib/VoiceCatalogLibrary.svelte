@@ -1124,7 +1124,7 @@
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0">
                   <button
-                    class="break-words text-left text-lg font-semibold hover:text-[var(--accent)]"
+                    class="max-w-full text-left text-lg font-semibold [overflow-wrap:anywhere] hover:text-[var(--accent)]"
                     onclick={(event) => openDetail(voice, event.currentTarget)}
                     >{voice.name}</button
                   >

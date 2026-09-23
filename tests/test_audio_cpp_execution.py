@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -317,8 +318,8 @@ def test_gpu_oversize_response_fails_closed(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "error",
     [
-        urllib.error.URLError(ConnectionRefusedError(111, "refused")),
-        ConnectionRefusedError(111, "refused"),
+        urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused")),
+        ConnectionRefusedError(errno.ECONNREFUSED, "refused"),
     ],
 )
 def test_connection_refused_allows_stopped_service(monkeypatch, tmp_path, error):

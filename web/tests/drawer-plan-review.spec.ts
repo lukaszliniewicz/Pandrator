@@ -43,7 +43,8 @@ async function createPlan(page: Page) {
 async function openDrawer(page: Page, id: string) {
   await page.goto(`/sessions/${id}`);
   const drawer = page.locator('[data-generation-layout]');
-  await expect(drawer).toBeVisible();
+  // Wait for cold page hydration before testing the drawer interactions.
+  await expect(drawer).toBeVisible({ timeout: 20_000 });
   if ((await drawer.getAttribute('data-generation-layout')) === 'collapsed') {
     await page.getByRole('button', { name: 'Generation', exact: true }).click();
   }

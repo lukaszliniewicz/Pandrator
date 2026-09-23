@@ -179,6 +179,8 @@ test('selected artifact summaries do not display an undefined version', async ({
   ]);
   await page.goto(`/sessions/${id}`);
   const segment = card(page, 'Segment narration');
+  // Cold module loads can exceed the interaction timeout on Windows CI.
+  await expect(segment).toBeVisible({ timeout: 20_000 });
   await expect(segment).toContainText('Selected ·');
   await expect(segment).not.toContainText('undefined');
 });

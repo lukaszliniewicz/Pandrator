@@ -177,7 +177,9 @@ def test_native_batch_uses_one_unicode_json_sequence_and_isolates_bad_output(
         calls.append(command)
         assert "--text" not in command
         sequence = json.loads(
-            Path(command[command.index("--request-sequence") + 1]).read_text()
+            Path(command[command.index("--request-sequence") + 1]).read_text(
+                encoding="utf-8"
+            )
         )
         assert len(sequence["requests"]) == 2
         assert all(row["language"] == "Japanese" for row in sequence["requests"])
@@ -333,7 +335,7 @@ def test_moss_qwen_failure_retains_native_turns(tmp_path, monkeypatch):
         executable="unused",
         run_func=subprocess.run,
     )
-    updated = json.loads(metadata.read_text())
+    updated = json.loads(metadata.read_text(encoding="utf-8"))
     assert updated["transcription"][0]["text"] == "日本語です。"
     assert updated["transcription"][0]["offsets"] == {"from": 1000, "to": 3000}
     assert updated["pandrator_forced_alignment"]["failed_turns"] == 1

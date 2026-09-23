@@ -170,7 +170,10 @@ async function loadAll(page: Page, total: number) {
       (await table.getAttribute('data-loaded-count')) ?? '0'
     );
     if (loaded >= total) return;
-    await page.getByRole('button', { name: 'Load more' }).click();
+    // Let virtual rows mount and measure after scrolling, before pointer-down.
+    const loadMore = page.getByRole('button', { name: 'Load more' });
+    await loadMore.scrollIntoViewIfNeeded();
+    await loadMore.click();
     await expect(table).toHaveAttribute(
       'data-loaded-count',
       String(Math.min(total, loaded + 100))
@@ -201,11 +204,17 @@ test('600 loaded rows render a bounded window with loaded counts', async ({
 
   // Visible accessible fallback: show-all mounts everything for
   // find-in-page, then virtualizes again without losing loaded rows.
-  await page.getByRole('button', { name: /Show all 600 loaded rows/ }).click();
+  const showAll = page.getByRole('button', {
+    name: /Show all 600 loaded rows/
+  });
+  await showAll.scrollIntoViewIfNeeded();
+  await showAll.click();
   await expect(table).toHaveAttribute('data-virtualized', 'false');
   await expect(segmentRows(page)).toHaveCount(600);
   await expect(table).toHaveAttribute('data-loaded-count', '600');
-  await page.getByRole('button', { name: /Virtualize rows/ }).click();
+  const virtualize = page.getByRole('button', { name: /Virtualize rows/ });
+  await virtualize.scrollIntoViewIfNeeded();
+  await virtualize.click();
   await expect(table).toHaveAttribute('data-virtualized', 'true');
   expect(await segmentRows(page).count()).toBeLessThanOrEqual(60);
   expect(pageErrors).toEqual([]);

@@ -657,6 +657,9 @@ test('Create export sends an explicit voiceover-only contract when no source is 
 
   await page.goto(`/sessions/${session.id}/output`);
   await expect(page.getByText('This source has no soundtrack')).toBeVisible();
+  await expect(
+    page.getByRole('combobox', { name: 'Audio version' })
+  ).toHaveValue('voiceover-only-run');
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(page.getByText(/Export voiceove was submitted/)).toBeVisible();
 

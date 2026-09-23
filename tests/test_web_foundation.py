@@ -1297,11 +1297,12 @@ class WebApiTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         prepare_web_test_data_root(self.temporary.name)
         self.bootstrap = BootstrapTokenStore()
-        self.token = self.bootstrap.issue()
         self.app = create_app(
             data_root=self.temporary.name, testing=True, bootstrap_tokens=self.bootstrap
         )
         self.client = self.app.test_client()
+        # Start token lifetime after potentially slow app setup.
+        self.token = self.bootstrap.issue()
 
     def tearDown(self):
         self.app.extensions["pandrator"]["database"].dispose()
