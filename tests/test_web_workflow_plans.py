@@ -9,7 +9,9 @@ from sqlalchemy import func, select
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
+    AppSetting,
     Artifact,
     GenerationPlan,
     GenerationPlanRevision,
@@ -19,6 +21,7 @@ from pandrator.web.models import (
     Provider,
     SessionRecord,
     SessionSetting,
+    SessionSource,
     SessionStageSelection,
     SourceAsset,
     WorkflowExecutionPlan,
@@ -29,6 +32,7 @@ from pandrator.web.workflow_plans import (
     canonical_digest,
 )
 from pandrator.web.workflows import ResolvedWorkflowStage
+from pandrator.web.workspace import WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -161,6 +165,144 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             return db_session.scalar(
                 select(func.count()).select_from(Job)
             )
+
+    def _assert_direct_run_snapshot(self, stage_key, last_section):
+        session_id, original_source, _ = self._ready_session()
+        _, replacement_source, replacement_asset = self._ready_session()
+        database = self.extension["database"]
+        original_get = WorkspaceSettingsService.get_in_session
+        changed = False
+
+        def replace_after_settings(service, db_session, target, section):
+            nonlocal changed
+            result = original_get(service, db_session, target, section)
+            if target == session_id and section == last_section and not changed:
+                changed = True
+                # Commit on a separate connection between settings resolution
+                # and input selection. Both changes become visible together.
+                with database.session() as writer:
+                    writer.add(SessionSetting(
+                        session_id=session_id, section="text",
+                        value_json={"max_sentence_length": 999},
+                    ))
+                    attachment = writer.scalar(select(SessionSource).where(
+                        SessionSource.session_id == session_id,
+                    ))
+                    attachment.source_asset_id = replacement_asset
+                    attachment.revision += 1
+            return result
+
+        with patch.object(WorkspaceSettingsService, "get_in_session", replace_after_settings):
+            response = self.client.post(
+                f"/api/v1/sessions/{session_id}/stages/{stage_key}/run",
+                json={}, headers=self.headers,
+            )
+        self.assertEqual(202, response.status_code, response.get_json())
+        payload = response.get_json()["payload_json"]
+        self.assertEqual(original_source, payload["source_artifact_id"])
+        self.assertEqual(200, payload["settings"]["max_sentence_length"])
+        # The concurrent edit committed; a subsequent run must see all of it.
+        following = self.client.post(
+            f"/api/v1/sessions/{session_id}/stages/{stage_key}/run",
+            json={}, headers=self.headers,
+        )
+        self.assertEqual(202, following.status_code, following.get_json())
+        self.assertEqual(replacement_source, following.get_json()["payload_json"]["source_artifact_id"])
+        self.assertEqual(999, following.get_json()["payload_json"]["settings"]["max_sentence_length"])
+
+    def test_direct_run_captures_settings_and_source_from_one_snapshot(self):
+        self._assert_direct_run_snapshot("clean_source", "text")
+
+    def test_direct_continuation_captures_settings_and_source_from_one_snapshot(self):
+        self._assert_direct_run_snapshot("generate_audio", "tts")
+
+    def test_settings_resolution_captures_sections_and_connections_together(self):
+        session_id, _, _ = self._ready_session()
+        database = self.extension["database"]
+        original_get = WorkspaceSettingsService.get_in_session
+        with database.session() as writer:
+            writer.merge(AppSetting(key="services.tts", value_json={"service": "kokoro"}))
+
+        def replace_after_text(service, db_session, target, section):
+            result = original_get(service, db_session, target, section)
+            if target == session_id and section == "text":
+                with database.session() as writer:
+                    writer.add_all([
+                        SessionSetting(session_id=session_id, section="text", value_json={"max_sentence_length": 999}),
+                        SessionSetting(session_id=session_id, section="audio", value_json={"sentence_silence_ms": 999}),
+                    ])
+                    connection = writer.get(AppSetting, "services.tts")
+                    connection.value_json = {"service": "silero"}
+                    connection.revision += 1
+            return result
+
+        service = WorkspaceSettingsService(database)
+        with patch.object(WorkspaceSettingsService, "get_in_session", replace_after_text):
+            resolved, digest = service.resolve(session_id, ["text", "audio", "tts"])
+        self.assertEqual(200, resolved["text"]["max_sentence_length"])
+        self.assertEqual(250, resolved["audio"]["sentence_silence_ms"])
+        self.assertEqual("kokoro", resolved["tts"]["service"])
+        following, following_digest = service.resolve(session_id, ["text", "audio", "tts"])
+        self.assertEqual(999, following["text"]["max_sentence_length"])
+        self.assertEqual(999, following["audio"]["sentence_silence_ms"])
+        self.assertEqual("silero", following["tts"]["service"])
+        self.assertNotEqual(digest, following_digest)
+
+    def test_direct_run_keeps_captured_settings_when_queue_handoff_changes_them(self):
+        session_id, source_id, _ = self._ready_session()
+        original_enqueue = JobQueue.enqueue
+
+        def update_before_enqueue(queue, *args, **kwargs):
+            with queue.database.session() as writer:
+                writer.add(SessionSetting(
+                    session_id=session_id, section="text",
+                    value_json={"max_sentence_length": 999},
+                ))
+            return original_enqueue(queue, *args, **kwargs)
+
+        with patch.object(JobQueue, "enqueue", update_before_enqueue):
+            response = self.client.post(
+                f"/api/v1/sessions/{session_id}/stages/generate_audio/run",
+                json={"text": {"max_sentence_length": 321}}, headers=self.headers,
+            )
+        self.assertEqual(202, response.status_code, response.get_json())
+        payload = response.get_json()["payload_json"]
+        self.assertEqual(source_id, payload["source_artifact_id"])
+        self.assertEqual(321, payload["settings"]["max_sentence_length"])
+        self.assertEqual(321, payload["resolved_settings_snapshot"]["text"]["max_sentence_length"])
+        self.assertEqual(321, payload["stage_settings"]["prepare_text"]["max_sentence_length"])
+        with self.extension["database"].session() as reader:
+            self.assertEqual(999, reader.get(SessionSetting, (session_id, "text")).value_json["max_sentence_length"])
+            self.assertEqual(payload, reader.get(Job, response.get_json()["id"]).payload_json)
+
+    def test_plan_still_rejects_edits_committed_during_snapshot_resolution(self):
+        session_id, _, _ = self._ready_session()
+        database = self.extension["database"]
+        original_get = WorkspaceSettingsService.get_in_session
+        changed = False
+
+        def update_once(service, db_session, target, section):
+            nonlocal changed
+            result = original_get(service, db_session, target, section)
+            if target == session_id and not changed:
+                changed = True
+                with database.session() as writer:
+                    writer.add(SessionSetting(
+                        session_id=session_id, section="text",
+                        value_json={"max_sentence_length": 999},
+                    ))
+            return result
+
+        with patch.object(WorkspaceSettingsService, "get_in_session", update_once):
+            response = self.client.post(
+                f"/api/v1/sessions/{session_id}/workflow-plans",
+                json={"target_stage": "generate_audio"}, headers=self.headers,
+            )
+        self.assertEqual(409, response.status_code, response.get_json())
+        self.assertEqual("planning_conflict", response.get_json()["error"]["code"])
+        self.assertEqual(0, self._job_count())
+        with database.session() as reader:
+            self.assertEqual(0, reader.scalar(select(func.count()).select_from(WorkflowExecutionPlan)))
 
     def test_plan_is_reviewable_canonical_and_execute_once(self):
         session_id, _artifact_id, _asset_id = self._ready_session()

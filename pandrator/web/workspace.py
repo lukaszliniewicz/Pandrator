@@ -1381,9 +1381,23 @@ class WorkspaceSettingsService:
         sections: list[str] | None = None,
         run_override: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
+        with self.database.snapshot_session() as session:
+            return self.resolve_in_session(session, session_id, sections, run_override)
+
+    def resolve_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        sections: list[str] | None = None,
+        run_override: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        """Resolve sections and service connections from the caller's snapshot."""
         requested = sections or list(SETTING_SECTIONS)
         override = run_override or {}
-        snapshots = {section: self.get(session_id, section) for section in requested}
+        snapshots = {
+            section: self.get_in_session(session, session_id, section)
+            for section in requested
+        }
         resolved = {
             section: _merge(
                 snapshots[section]["effective"],
@@ -1393,13 +1407,12 @@ class WorkspaceSettingsService:
             for section in requested
         }
         if "tts" in resolved:
-            with self.database.session() as session:
-                connections = session.get(AppSetting, "services.tts")
-                connection_value = (
-                    connections.value_json
-                    if connections and isinstance(connections.value_json, dict)
-                    else {}
-                )
+            connections = session.get(AppSetting, "services.tts")
+            connection_value = (
+                connections.value_json
+                if connections and isinstance(connections.value_json, dict)
+                else {}
+            )
             from pandrator.logic import tts_handler
 
             snapshot = snapshots["tts"]
@@ -1478,13 +1491,12 @@ class WorkspaceSettingsService:
                 if voice:
                     resolved["tts"]["voice"] = voice
         if "stt" in resolved:
-            with self.database.session() as session:
-                connections = session.get(AppSetting, "services.stt")
-                connection_value = (
-                    connections.value_json
-                    if connections and isinstance(connections.value_json, dict)
-                    else {}
-                )
+            connections = session.get(AppSetting, "services.stt")
+            connection_value = (
+                connections.value_json
+                if connections and isinstance(connections.value_json, dict)
+                else {}
+            )
             snapshot = snapshots["stt"]
             selection_seed = _merge(
                 snapshot["builtin"],

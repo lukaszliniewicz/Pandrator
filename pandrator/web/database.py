@@ -60,6 +60,26 @@ class Database:
             session.close()
 
     @contextmanager
+    def snapshot_session(self) -> Iterator[Session]:
+        """Read one SQLite snapshot; finish it before opening a queue writer.
+
+        SQLite's legacy transaction mode does not issue BEGIN for SELECTs.
+        Explicit BEGIN keeps all reads on the first observed database version,
+        while WAL still lets concurrent writers commit. Never write here.
+        """
+        connection = self.engine.connect()
+        session: Session | None = None
+        try:
+            connection.exec_driver_sql("BEGIN")
+            session = Session(bind=connection, expire_on_commit=False, future=True)
+            yield session
+        finally:
+            if session is not None:
+                session.close()
+            connection.rollback()
+            connection.close()
+
+    @contextmanager
     def immediate_session(self) -> Iterator[Session]:
         """Begin a short SQLite write transaction before reading mutable state."""
         connection = self.engine.connect()

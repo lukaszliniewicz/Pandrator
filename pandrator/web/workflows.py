@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session
 
 from .artifact_selection import (
     STAGE_OUTPUT_ROLES,
@@ -1633,7 +1634,21 @@ class WorkflowService:
         *,
         continuation: bool = False,
     ) -> ResolvedWorkflowStage:
-        """Resolve exact queue input without enqueuing work."""
+        """Capture coherent queue input; later edits affect only future runs."""
+        with self.database.snapshot_session() as session:
+            return self._resolve_stage_in_session(
+                session, session_id, stage_key, settings, continuation=continuation,
+            )
+
+    def _resolve_stage_in_session(
+        self,
+        session: Session,
+        session_id: str,
+        stage_key: str,
+        settings: dict[str, Any] | None,
+        *,
+        continuation: bool,
+    ) -> ResolvedWorkflowStage:
 
         # Resolve persisted defaults before the run is enqueued.  The resulting
         # snapshot is immutable job input: later settings edits affect only
@@ -1697,7 +1712,8 @@ class WorkflowService:
             for section in requested_sections
             if isinstance(run_values.get(section), dict)
         }
-        resolved, settings_hash = WorkspaceSettingsService(self.database).resolve(
+        resolved, settings_hash = WorkspaceSettingsService(self.database).resolve_in_session(
+            session,
             session_id,
             requested_sections,
             structured_override,
@@ -1772,229 +1788,228 @@ class WorkflowService:
                     "tts", resolved_stage_settings[key]
                 )
 
-        with self.database.session() as session:
-            record = session.get(SessionRecord, session_id)
-            if record is None:
-                raise KeyError(session_id)
-            media_edit_plan = (
-                session.scalar(
-                    select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+        record = session.get(SessionRecord, session_id)
+        if record is None:
+            raise KeyError(session_id)
+        media_edit_plan = (
+            session.scalar(
+                select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)
+            )
+            if record.workflow_kind in {"media_edit", "voiceover"}
+            else None
+        )
+        active_media_edit_revision = (
+            session.get(MediaEditPlanRevision, media_edit_plan.active_revision_id)
+            if media_edit_plan is not None and media_edit_plan.active_revision_id
+            else None
+        )
+        all_artifacts = list(
+            session.scalars(
+                select(Artifact)
+                .where(Artifact.session_id == session_id)
+                .order_by(Artifact.created_at.desc())
+            ).all()
+        )
+        primary_source = resolve_primary_source(session, session_id)
+        attached_sources = (
+            [primary_source.artifact] if primary_source.artifact else []
+        )
+        attached_ids = {artifact.id for artifact in attached_sources}
+        attached_source_ids = _attached_source_artifact_ids(session, session_id)
+        all_artifacts = [
+            *attached_sources,
+            *(
+                artifact
+                for artifact in all_artifacts
+                if artifact.id not in attached_ids
+            ),
+        ]
+        definition = next(
+            (
+                item
+                for item in self.definitions(record, all_artifacts)
+                if item.key == stage_key
+            ),
+            None,
+        )
+        if (
+            definition is None
+            or not definition.executable
+            or not definition.job_kind
+        ):
+            raise ValueError(f"Stage '{stage_key}' cannot be run directly.")
+        prerequisite_roles = definition.prerequisite_roles
+        outcome = session.scalar(
+            select(OutcomePlan).where(OutcomePlan.session_id == session_id)
+        )
+        transformations = workflow_transformations(session, session_id, outcome, self.database)
+        inputs = (
+            (outcome.value_json or {}).get("inputs", {})
+            if outcome and isinstance(outcome.value_json, dict)
+            else {}
+        )
+        if (
+            stage_key == "translate"
+            and str(inputs.get("translation") or "correction") != "correction"
+        ):
+            prerequisite_roles = (
+                ("media_edit_subtitles",)
+                if record.workflow_kind == "media_edit"
+                else ("transcription", "upload")
+            )
+        elif stage_key in {"optimize_document", "generate_audio"}:
+            if stage_key == "generate_audio" and bool(
+                transformations.get("llm_tts_document_optimization")
+            ):
+                prerequisite_roles = ("tts_optimized",)
+            elif record.workflow_kind == "audiobook":
+                prerequisite_roles = ("prepared_text",)
+            else:
+                prerequisite_roles = {
+                    "translation": ("translation",),
+                    "correction": ("correction",),
+                    "media_edit": ("media_edit_subtitles",),
+                    "source": ("transcription", "upload"),
+                }.get(
+                    str(inputs.get("generation") or "translation"),
+                    prerequisite_roles,
                 )
-                if record.workflow_kind in {"media_edit", "voiceover"}
-                else None
+        selections = selected_artifacts(session, session_id, all_artifacts)
+        by_role: dict[str, Artifact] = {}
+        for selected in selections.values():
+            if self._matches_active_media_edit_revision(
+                selected, active_media_edit_revision
+            ):
+                by_role.setdefault(selected.role, selected)
+        for attached in attached_sources:
+            by_role.setdefault("upload", attached)
+        for candidate in all_artifacts:
+            if (
+                candidate.state == "current"
+                and self._matches_active_media_edit_revision(
+                    candidate, active_media_edit_revision
+                )
+            ):
+                by_role.setdefault(candidate.role, candidate)
+        source = None
+        if requested_source_artifact_id:
+            requested = session.get(Artifact, requested_source_artifact_id)
+            allowed_requested_roles = (
+                {
+                    "media_edit_subtitles",
+                    "transcription",
+                    "correction",
+                    "upload",
+                }
+                if stage_key == "translate"
+                else set(prerequisite_roles)
             )
-            active_media_edit_revision = (
-                session.get(MediaEditPlanRevision, media_edit_plan.active_revision_id)
-                if media_edit_plan is not None and media_edit_plan.active_revision_id
-                else None
-            )
-            all_artifacts = list(
-                session.scalars(
-                    select(Artifact)
-                    .where(Artifact.session_id == session_id)
-                    .order_by(Artifact.created_at.desc())
-                ).all()
-            )
-            primary_source = resolve_primary_source(session, session_id)
-            attached_sources = (
-                [primary_source.artifact] if primary_source.artifact else []
-            )
-            attached_ids = {artifact.id for artifact in attached_sources}
-            attached_source_ids = _attached_source_artifact_ids(session, session_id)
-            all_artifacts = [
-                *attached_sources,
-                *(
-                    artifact
-                    for artifact in all_artifacts
-                    if artifact.id not in attached_ids
-                ),
-            ]
-            definition = next(
+            if (
+                requested is None
+                or requested.state == "deleted"
+                or requested.role not in allowed_requested_roles
+                or (
+                    requested.session_id != session_id
+                    and requested.id not in attached_source_ids
+                )
+                or not self._usable_input(
+                    definition, requested, record.workflow_kind
+                )
+                or not self._matches_active_media_edit_revision(
+                    requested, active_media_edit_revision
+                )
+            ):
+                if explicit_requested_source:
+                    raise ValueError(
+                        f"The selected artifact cannot be used by stage '{stage_key}'."
+                    )
+            else:
+                source = requested
+        if source is None:
+            source = next(
                 (
-                    item
-                    for item in self.definitions(record, all_artifacts)
-                    if item.key == stage_key
+                    by_role[role]
+                    for role in prerequisite_roles
+                    if role in by_role
+                    and self._usable_input(
+                        definition, by_role[role], record.workflow_kind
+                    )
                 ),
                 None,
             )
-            if (
-                definition is None
-                or not definition.executable
-                or not definition.job_kind
-            ):
-                raise ValueError(f"Stage '{stage_key}' cannot be run directly.")
-            prerequisite_roles = definition.prerequisite_roles
-            outcome = session.scalar(
-                select(OutcomePlan).where(OutcomePlan.session_id == session_id)
+        # The primary automatic-generation action is allowed to enqueue
+        # before its exact derived input exists: workflow.continue creates
+        # those missing prerequisites in order. Individual stage controls
+        # remain locked by snapshot.status == unavailable.
+        if source is None and stage_key == "generate_audio":
+            source = next(
+                (artifact for artifact in attached_sources),
+                None,
             )
-            transformations = workflow_transformations(session, session_id, outcome, self.database)
-            inputs = (
-                (outcome.value_json or {}).get("inputs", {})
-                if outcome and isinstance(outcome.value_json, dict)
-                else {}
-            )
-            if (
-                stage_key == "translate"
-                and str(inputs.get("translation") or "correction") != "correction"
-            ):
-                prerequisite_roles = (
-                    ("media_edit_subtitles",)
-                    if record.workflow_kind == "media_edit"
-                    else ("transcription", "upload")
-                )
-            elif stage_key in {"optimize_document", "generate_audio"}:
-                if stage_key == "generate_audio" and bool(
-                    transformations.get("llm_tts_document_optimization")
-                ):
-                    prerequisite_roles = ("tts_optimized",)
-                elif record.workflow_kind == "audiobook":
-                    prerequisite_roles = ("prepared_text",)
-                else:
-                    prerequisite_roles = {
-                        "translation": ("translation",),
-                        "correction": ("correction",),
-                        "media_edit": ("media_edit_subtitles",),
-                        "source": ("transcription", "upload"),
-                    }.get(
-                        str(inputs.get("generation") or "translation"),
-                        prerequisite_roles,
-                    )
-            selections = selected_artifacts(session, session_id, all_artifacts)
-            by_role: dict[str, Artifact] = {}
-            for selected in selections.values():
-                if self._matches_active_media_edit_revision(
-                    selected, active_media_edit_revision
-                ):
-                    by_role.setdefault(selected.role, selected)
-            for attached in attached_sources:
-                by_role.setdefault("upload", attached)
-            for candidate in all_artifacts:
-                if (
-                    candidate.state == "current"
-                    and self._matches_active_media_edit_revision(
-                        candidate, active_media_edit_revision
-                    )
-                ):
-                    by_role.setdefault(candidate.role, candidate)
-            source = None
-            if requested_source_artifact_id:
-                requested = session.get(Artifact, requested_source_artifact_id)
-                allowed_requested_roles = (
-                    {
-                        "media_edit_subtitles",
-                        "transcription",
-                        "correction",
-                        "upload",
-                    }
-                    if stage_key == "translate"
-                    else set(prerequisite_roles)
-                )
-                if (
-                    requested is None
-                    or requested.state == "deleted"
-                    or requested.role not in allowed_requested_roles
-                    or (
-                        requested.session_id != session_id
-                        and requested.id not in attached_source_ids
-                    )
-                    or not self._usable_input(
-                        definition, requested, record.workflow_kind
-                    )
-                    or not self._matches_active_media_edit_revision(
-                        requested, active_media_edit_revision
-                    )
-                ):
-                    if explicit_requested_source:
-                        raise ValueError(
-                            f"The selected artifact cannot be used by stage '{stage_key}'."
-                        )
-                else:
-                    source = requested
-            if source is None:
-                source = next(
-                    (
-                        by_role[role]
-                        for role in prerequisite_roles
-                        if role in by_role
-                        and self._usable_input(
-                            definition, by_role[role], record.workflow_kind
-                        )
-                    ),
-                    None,
-                )
-            # The primary automatic-generation action is allowed to enqueue
-            # before its exact derived input exists: workflow.continue creates
-            # those missing prerequisites in order. Individual stage controls
-            # remain locked by snapshot.status == unavailable.
-            if source is None and stage_key == "generate_audio":
-                source = next(
-                    (artifact for artifact in attached_sources),
-                    None,
-                )
-            if prerequisite_roles and source is None:
-                if record.workflow_kind == "media_edit" and stage_key == "export":
-                    raise ValueError(
-                        "Render and review the active media edit before exporting it."
-                    )
+        if prerequisite_roles and source is None:
+            if record.workflow_kind == "media_edit" and stage_key == "export":
                 raise ValueError(
-                    f"Stage '{stage_key}' is missing a required input artifact."
+                    "Render and review the active media edit before exporting it."
                 )
-            payload: dict[str, Any] = {
-                "session_id": session_id,
-                "source_artifact_id": source.id if source else None,
-                "settings": flattened,
-                "resolved_settings_snapshot": resolved,
-                "settings_hash": settings_hash,
-            }
-            if stage_key == "generate_audio":
-                generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
-                generation_revision = session.get(GenerationPlanRevision, generation_plan.active_revision_id) if generation_plan and generation_plan.active_revision_id else None
-                if generation_revision is not None and (session.get(SpeechPlanReview, generation_revision.id) or generation_revision.operation_json or (generation_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
-                    select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == generation_revision.id, GenerationSegment.revision > 1).limit(1)
-                )):
-                    payload["speech_plan_revision_id"] = generation_revision.id
-            if stage_key == "export":
-                export_source = resolve_media_source(session, session_id)
-                # Converting an edited recording to voiceover retains its cut
-                # timeline. Export must keep using the matching render.
-                if record.workflow_kind == "media_edit" or (
-                    record.workflow_kind == "voiceover"
-                    and media_edit_plan is not None
-                    and normalize_export_mode(
-                        flattened.get("export_mode"),
-                        workflow_kind=record.workflow_kind,
-                    ) in {"media", "audio"}
-                ):
-                    edited_media = by_role.get("media_edit_media")
-                    if edited_media is None:
-                        raise ValueError(
-                            "Render and review the media edit before exporting it."
-                        )
-                    edited_name = str(
-                        (edited_media.metadata_json or {}).get("original_filename")
-                        or edited_media.relative_path.rsplit("/", 1)[-1]
+            raise ValueError(
+                f"Stage '{stage_key}' is missing a required input artifact."
+            )
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "source_artifact_id": source.id if source else None,
+            "settings": flattened,
+            "resolved_settings_snapshot": resolved,
+            "settings_hash": settings_hash,
+        }
+        if stage_key == "generate_audio":
+            generation_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+            generation_revision = session.get(GenerationPlanRevision, generation_plan.active_revision_id) if generation_plan and generation_plan.active_revision_id else None
+            if generation_revision is not None and (session.get(SpeechPlanReview, generation_revision.id) or generation_revision.operation_json or (generation_revision.settings_json or {}).get("_prepared_for_review") or session.scalar(
+                select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == generation_revision.id, GenerationSegment.revision > 1).limit(1)
+            )):
+                payload["speech_plan_revision_id"] = generation_revision.id
+        if stage_key == "export":
+            export_source = resolve_media_source(session, session_id)
+            # Converting an edited recording to voiceover retains its cut
+            # timeline. Export must keep using the matching render.
+            if record.workflow_kind == "media_edit" or (
+                record.workflow_kind == "voiceover"
+                and media_edit_plan is not None
+                and normalize_export_mode(
+                    flattened.get("export_mode"),
+                    workflow_kind=record.workflow_kind,
+                ) in {"media", "audio"}
+            ):
+                edited_media = by_role.get("media_edit_media")
+                if edited_media is None:
+                    raise ValueError(
+                        "Render and review the media edit before exporting it."
                     )
-                    edited_kind = str(edited_media.kind or "video")
-                    edited_mime = str(edited_media.mime_type or "")
-                    export_source = PrimarySourceResolution(
-                        artifact=edited_media,
-                        source_asset=None,
-                        attachment=None,
-                        profile=classify_source(
-                            name=edited_name,
-                            kind=edited_kind,
-                            mime_type=edited_mime,
-                        ),
+                edited_name = str(
+                    (edited_media.metadata_json or {}).get("original_filename")
+                    or edited_media.relative_path.rsplit("/", 1)[-1]
+                )
+                edited_kind = str(edited_media.kind or "video")
+                edited_mime = str(edited_media.mime_type or "")
+                export_source = PrimarySourceResolution(
+                    artifact=edited_media,
+                    source_asset=None,
+                    attachment=None,
+                    profile=classify_source(
                         name=edited_name,
                         kind=edited_kind,
                         mime_type=edited_mime,
-                        resolution="derived_media_edit",
-                    )
-                payload["export_contract"] = build_export_contract(
-                    workflow_kind=record.workflow_kind,
-                    settings=flattened,
-                    source=export_source,
+                    ),
+                    name=edited_name,
+                    kind=edited_kind,
+                    mime_type=edited_mime,
+                    resolution="derived_media_edit",
                 )
+            payload["export_contract"] = build_export_contract(
+                workflow_kind=record.workflow_kind,
+                settings=flattened,
+                source=export_source,
+            )
         if stage_key == "generate_audio" or continuation:
             payload.update(
                 {"target_stage": stage_key, "stage_settings": resolved_stage_settings}
