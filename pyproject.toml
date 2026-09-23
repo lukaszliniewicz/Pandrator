@@ -74,6 +74,7 @@ include = [
 [tool.hatch.build.targets.sdist]
 exclude = [
   "/tmp",
+  "/review-notes",
 ]
 
 [tool.pytest.ini_options]
