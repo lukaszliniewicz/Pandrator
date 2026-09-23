@@ -1,7 +1,8 @@
 # Whole-app decomposition and correctness plan
 
-Status: **S1 complete; S2 next** (2026-09-23). The approved sequence was committed
-as `bf987e13`; S1 implementation is committed on `main` as `292f4eec`.
+Status: **S1 and S2 complete; S3 next** (2026-09-23). The approved sequence was
+committed as `bf987e13`; S1 and S2 implementations are committed on `main` as
+`292f4eec` and `050d1133` respectively.
 Planning source baseline: `10fb2bb5` (2026-09-23).
 Update this file as units finish; do not select a new area solely because it is
 large or interesting. This is internal engineering working material, not a
@@ -127,10 +128,11 @@ recorded below; the other open entries still need bounded reproduction.
 | --- | --- | --- | --- |
 | R1 | Fixed in `292f4eec`: a resumed older replacement could wait behind the current owner; that owner's failure or success requeued the parent too early. Also, cancellation could transfer permission to an already-running sibling whose loaded payload lacked the marker, leaving the parent paused. | Terminal outcomes now transfer permission to remaining active replacements; terminal cleanup reads durable ownership. Real worker tests cover queued/running siblings, unchanged/edited plans and explicit pause. | S1 closed |
 | R2 | Fixed in `292f4eec`: revocation via a different output ancestor left a stale job marker in current edit-copy and legacy nested chains. Durable permission checks already prevented that stale marker from resuming the parent. | Revocation removes the child's marker regardless of ancestor ID. Tests separately prove explicit pause cannot be undone and no new job is queued. | S1 closed |
-| R3 | `normalize_voice_recording` removes cleanup intermediates in `finally`; its final destination has explicit cleanup for only selected failures. Request-side upload cleanup is already fixed. | Inject final FFmpeg partial-write, registration and transaction failures; original reference stays intact, unpublished output does not remain, no dangling sample/artifact record. | S2 |
+| R3 | Fixed in `050d1133`: normalization left a new WAV after final FFmpeg, preparation, registration or commit failure. Database rollback already preserved the existing reference. | One cleanup boundary retains ownership of the destination until successful transaction exit. Sixteen failure regressions plus cancellation and post-commit preservation controls pass. Request-side upload cleanup remains unchanged. | S2 closed |
 | R4 | Video export checks cancellation before artifact registration; job completion is a separate operation. Existing video tests cover pre-registration cancellation and ordinary success, not durable cancel/lease loss during or after registration. | Trace the commit boundary and record artifact, selection, job and lease outcomes. Distinguish cancellation before publication from cancellation after committed output; define the completion rule before changing it. | S3 |
 | R5 | Direct `WorkflowService.resolve_stage` uses separate settings, selection and queue operations. Planned workflows have stale-state tests; equivalent direct-run protection was not established here. | Change source/settings at the handoff boundary. A queued run must use one coherent explicit input snapshot or reject stale preparation, never silently mix versions. | S4 |
 | R6 | Multipart voice upload accepts `expected_revision` in the form, while OpenAPI describes required If-Match. | Clarify the contract and generated client/schema coverage when that endpoint is next changed; retain both working input paths. This does not currently invalidate the documented header path. | F3 / contract backlog |
+| R7 | Source-level inconsistency: `retire_sample_artifact` preserves files shared by other sample rows but marks their common artifact deleted first. The schema permits sharing; creation by a normal supported API sequence was not established. | During voice-worker extraction, check supported import/legacy/bundled cases before changing retirement semantics. Current sample APIs normalize to a unique destination; artifact registration reuses IDs by path, not content hash. No shared user data was inspected or runtime defect claimed here. | G1 / bounded evidence backlog |
 
 ## S1 execution contract (completed)
 
@@ -280,3 +282,55 @@ The scratch type baseline was copied from the committed baseline before checking
 only its inspected reduction was copied back. Pre-fix regression runs selected
 the three new parameterized tests in `test_generation_edit_audio.py` and preserved
 the failing assertions before product changes.
+
+### S2 complete — 2026-09-23 — `050d1133`
+
+- Starting checkpoint: clean `main` at `f267b20c`.
+- Contract: a new normalized WAV remains worker-owned until artifact, sample,
+  voice revision and provider-staleness changes commit together. Failure before
+  commit removes that new destination and cleanup intermediates; original upload,
+  existing reference and their records remain unchanged. Failure after commit
+  must not remove the new durable sample. No queue, provider or UI redesign.
+- Reproduction: 16 cases failed before product changes, covering partial final
+  FFmpeg output, preparation/hash failure, registration after flush, and commit
+  rejection, for add/replace and cleanup off/on. All database-state assertions
+  passed before the orphan-file assertions failed. Four controls passed: two
+  cancellation cases and post-commit retirement/progress exceptions.
+- Disposable SQLite/files only; final FFmpeg writes and DeepFilterNet2 are stubbed
+  for fault injection. Existing real-FFmpeg tests remain part of acceptance.
+- Implementation: one `try/finally` covers preparation and publication, with
+  destination ownership transferred only after successful database-session exit.
+  Reuses best-effort managed-file cleanup; no media/hash I/O moved under the
+  database write transaction. Retirement of old files and final progress reporting
+  remain after publication, so their errors cannot discard a committed sample.
+- Verification: **70 tests passed**, including all 20 new cases, existing real
+  FFmpeg normalization and replacement tests, upload routes and lifecycle retries.
+  Ruff, Vulture, test-lane manifest, documentation and whitespace checks passed.
+  Basedpyright: 0 errors/warnings/notes; baseline unchanged at 1,266 entries.
+- Evidence support: researcher profile configured GPT-6 Luna/max traced artifact
+  preparation/registration, commit/rollback, and retirement ownership. Parent
+  designed the failure matrix, implemented the fix and inspected the result.
+- Limits: no live DeepFilterNet2 model, browser, Windows or full-project suite;
+  no deployment. Unlink permission/I/O errors remain best-effort, consistent with
+  existing managed-file cleanup. Process death and cancellation/lease loss around
+  committed publication remain separate from exception cleanup in S3.
+- Adjacent finding R7 was recorded with its reachability limit rather than added
+  to this exception-cleanup patch. No change to the planned sequence.
+- Next unit: **S3**, cancellation/lease loss at artifact publication (R4).
+
+Commands (repository root; `.pixi/envs/default/bin` tools):
+
+```bash
+python -m pytest -q tests/test_web_voice_cleanup.py -k 'normalization_failure_removes or postcommit_failure or canceled_normalization' --tb=short
+python -m pytest -q tests/test_web_voice_cleanup.py tests/test_web_voice_library.py tests/test_voice_lifecycle_idempotency.py --tb=short
+ruff check .
+vulture
+python scripts/test_lanes.py check
+python scripts/check_types.py --baselinefile /tmp/pandrator-s2-type-baseline.json
+python scripts/check_docs.py
+git diff --check
+```
+
+The first command was run before the fix (16 failures, 4 controls passed);
+the three-file acceptance run passed all 70 tests after it. The type check used
+a copy of the committed baseline, verified byte-identical after checking.
