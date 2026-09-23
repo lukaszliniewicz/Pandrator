@@ -1,8 +1,9 @@
 # Whole-app decomposition and correctness plan
 
-Status: **S1–S3 complete; S4 next** (2026-09-23). The approved sequence was
+Status: **Phase 1 complete; W1 next** (2026-09-23). The approved sequence was
 committed as `bf987e13`; S1 and S2 implementations are committed on `main` as
-`292f4eec` and `050d1133` respectively; S3 is committed as `60fdc2c7`.
+`292f4eec` and `050d1133` respectively; S3 is committed as `60fdc2c7`,
+and S4 as `93c325ee`.
 Planning source baseline: `10fb2bb5` (2026-09-23).
 Update this file as units finish; do not select a new area solely because it is
 large or interesting. This is internal engineering working material, not a
@@ -130,7 +131,7 @@ recorded below; the other open entries still need bounded reproduction.
 | R2 | Fixed in `292f4eec`: revocation via a different output ancestor left a stale job marker in current edit-copy and legacy nested chains. Durable permission checks already prevented that stale marker from resuming the parent. | Revocation removes the child's marker regardless of ancestor ID. Tests separately prove explicit pause cannot be undone and no new job is queued. | S1 closed |
 | R3 | Fixed in `050d1133`: normalization left a new WAV after final FFmpeg, preparation, registration or commit failure. Database rollback already preserved the existing reference. | One cleanup boundary retains ownership of the destination until successful transaction exit. Sixteen failure regressions plus cancellation and post-commit preservation controls pass. Request-side upload cleanup remains unchanged. | S2 closed |
 | R4 | Fixed in `60fdc2c7`: final video publication could ignore durable cancellation or lease takeover, leak output on registration/commit failure, and let a stale attempt overwrite/delete a newer owner's committed file. | Serialized claim validation, final path allocation, promotion and registration; rejected output is removed, committed output survives later cancellation/loss. Before/during/after tests verify queue state, files and provenance. Process termination and other output domains are not covered by this guarantee. | S3 closed (final video) |
-| R5 | Direct `WorkflowService.resolve_stage` uses separate settings, selection and queue operations. Planned workflows have stale-state tests; equivalent direct-run protection was not established here. | Change source/settings at the handoff boundary. A queued run must use one coherent explicit input snapshot or reject stale preparation, never silently mix versions. | S4 |
+| R5 | Fixed in `93c325ee`: direct stages and continuation could queue old settings with a newly selected source; multi-section settings resolution could also mix committed versions. | Explicit SQLite read snapshot covers settings sections, service connections and stage input selection. Concurrent edits commit normally and apply to subsequent runs; prepared input stays immutable through enqueue. Planned workflows retain their stale-state rejection. | S4 closed |
 | R6 | Multipart voice upload accepts `expected_revision` in the form, while OpenAPI describes required If-Match. | Clarify the contract and generated client/schema coverage when that endpoint is next changed; retain both working input paths. This does not currently invalidate the documented header path. | F3 / contract backlog |
 | R7 | Source-level inconsistency: `retire_sample_artifact` preserves files shared by other sample rows but marks their common artifact deleted first. The schema permits sharing; creation by a normal supported API sequence was not established. | During voice-worker extraction, check supported import/legacy/bundled cases before changing retirement semantics. Current sample APIs normalize to a unique destination; artifact registration reuses IDs by path, not content hash. No shared user data was inspected or runtime defect claimed here. | G1 / bounded evidence backlog |
 
@@ -412,3 +413,99 @@ git diff --check
 The first command captured five pre-fix failures and two passing late-interruption
 controls. The baseline stale-file reproduction used the isolated module described
 above; the final acceptance runs passed 71 and 35 tests respectively.
+
+
+### S4 complete — 2026-09-23 — `93c325ee`
+
+- Starting checkpoint: clean `main` at `139192e5`.
+- Contract: direct workflow preparation captures one coherent database version
+  across settings and selected inputs. A committed edit during preparation may
+  affect the next run, but must not partially enter the current payload. Run Now
+  overrides retain precedence. The read snapshot ends before queue insertion;
+  this is input capture, not a requirement to reject every subsequent edit.
+- Reproduced three failures against the starting implementations: `clean_source`
+  and direct `generate_audio` continuation each queued the new source with old
+  text settings; multi-section settings resolution mixed old text with new audio
+  settings. The same fixture also changes the TTS connection selection. Source
+  and text changes are committed together on a separate connection, after a
+  settings read and before source selection. Settings/connection changes use the
+  same deterministic boundary. All data lives in temporary test roots.
+- Baseline methods were loaded from `git show 139192e5` into isolated Python
+  modules, then substituted only in the reproduction process. No working files
+  were replaced. The final three regression cases all failed on their intended
+  assertions against that baseline and passed with the fix.
+- Implementation: `Database.snapshot_session` explicitly issues `BEGIN`, since
+  SQLite's legacy mode does not start a transaction for SELECT. WAL permits the
+  competing writer to commit while reads retain the original version.
+  `WorkspaceSettingsService.resolve_in_session` resolves all sections and TTS/STT
+  connection settings using that caller-owned session; the public `resolve`
+  wrapper opens its own snapshot. `WorkflowService.resolve_stage` shares one
+  snapshot across settings and source/outcome/media/generation selection.
+  Transaction ownership is now separate from the preparation body, without
+  copying the planner's broad fingerprint into direct-run code.
+- Five new tests cover the three regressions, Run Now/queued-payload immutability
+  when settings change immediately before enqueue, and existing planning-conflict
+  rejection when an edit commits during resolution. Following direct runs see
+  both new source and settings; concurrent edits are not rolled back.
+- Acceptance: 124 tests passed across workflow plans, workspace parity and
+  workflow handlers. The added single-stage variant and final fixture refinement
+  were followed by all 14 workflow-plan tests passing: **125 distinct tests
+  passed** overall. Ruff, Vulture, test-lane, documentation and whitespace checks
+  passed. Basedpyright reported 0 errors/warnings/notes; the scratch baseline was
+  byte-identical to the committed baseline (1,266 legacy diagnostics).
+- Researcher configured GPT-6 Luna/max traced the existing planner guard and
+  settings helpers; reviewer configured GPT-6 Sol/high found no material
+  regression. Parent retained snapshot policy, implementation and acceptance.
+- Limits: database input coherence and captured payloads, not filesystem-content
+  locking or whole-workflow isolation across future continuation stages. Inputs
+  deleted after capture retain existing worker validation/failure behavior.
+  Existing planned-workflow fingerprint coverage was preserved, not extended to
+  external secrets or runtime configuration. No live providers, Windows/browser
+  qualification, full-project test run, push or deployment.
+
+Commands (repository root; `.pixi/envs/default/bin` tools):
+
+```bash
+python -m pytest -q tests/test_web_workflow_plans.py -k 'direct_run_captures or settings_resolution_captures' --tb=short
+python -m pytest -q tests/test_web_workflow_plans.py tests/test_web_parity_workspace.py tests/test_web_workflow_handlers.py --tb=short
+python -m pytest -q tests/test_web_workflow_plans.py --tb=short
+ruff check .
+vulture
+python scripts/test_lanes.py check
+python scripts/check_types.py --baselinefile /tmp/pandrator-s4-type-baseline.json
+cmp .basedpyright/baseline.json /tmp/pandrator-s4-type-baseline.json
+python scripts/check_docs.py
+git diff --check
+```
+
+The baseline regression replay used `pytest.main` after loading the two original
+methods as described above; it selected both direct source cases and the settings
+case. Early fixture errors (wrong stage prerequisite, response field and repeated
+injection) were corrected before counting the final regression evidence.
+
+### Phase-1 checkpoint — complete, 2026-09-23
+
+Review of the committed S1–S4 evidence establishes the contracts to carry into
+structural work; it is not a fresh retest of every earlier unit:
+
+| Boundary | Contract to preserve |
+| --- | --- |
+| Regeneration scheduling (S1) | Durable resume permission has one owner; terminal children transfer it; explicit user pause revokes it, including legacy nested markers. |
+| Voice normalization (S2) | Worker owns new files until artifact/sample/settings commit; failures clean only its uncommitted output. |
+| Final video publication (S3) | Cancellation/lease checks and artifact publication share a serialized writer; committed output survives later interruption. Job completion is a separate transition. |
+| Workflow preparation (S4) | Direct runs capture coherent input in a read snapshot; reviewed plans additionally retain stale-state and transactional execution checks. |
+
+Phase 1 closes R1–R5 within their recorded scope. Retain S3's process-kill gap
+between file rename and database commit and independent sidecar/other-format
+publication semantics. R6 remains in F3 (upload header/form documentation), and R7
+remains in G1 (establish supported shared-sample reachability before changing
+retirement). No new proven defect requires changing the ordered queue.
+
+**Next executable unit: W1.** Separate settings defaults, validation and snapshot
+policy from workspace orchestration. First map the current settings service's
+non-UI callers and imports; then choose the smallest cohesive extraction that
+preserves builtin/global/service/session/Run Now precedence, secret removal,
+validation, revisions/history and S4's supplied-session boundary. Keep write
+transactions intact and retain a compatibility facade where needed. Verify the
+existing settings/workflow tests plus focused defects found in that boundary;
+do not combine W2 source/outcome ownership or generic route relocation into W1.
