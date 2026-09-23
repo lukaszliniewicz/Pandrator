@@ -3,7 +3,9 @@ from unittest.mock import patch
 
 import pytest
 from pydub import AudioSegment
+from sqlalchemy import select
 
+from pandrator.web.jobs import Worker
 from pandrator.web.models import GenerationPlanRevision, GenerationRun, Job
 
 
@@ -260,6 +262,213 @@ def test_cancel_last_replacement_transfers_resume_to_waiting_sibling(case):
         payload = session.get(Job, first["job_id"]).payload_json
         assert payload["auto_resume_source_generation_run_id"] == original["id"]
         assert not session.get(GenerationRun, second["id"]).resume_source_on_completion
+
+
+@pytest.mark.parametrize("edited_plan", [False, True])
+@pytest.mark.parametrize("terminal", ["failed", "canceled", "partial"])
+@pytest.mark.parametrize("explicit_pause", [False, True])
+def test_terminal_replacement_waits_for_resumed_sibling(
+    case, edited_plan, terminal, explicit_pause
+):
+    original = case._start()
+    selected_id = edit(case, 0, "Replacement")["id"] if edited_plan else case.segment_ids[0]
+    revision = page(case)["plan_revision_id"]
+    first = case._start(operation="regenerate", segment_ids=[selected_id],
+                        speech_plan_revision_id=revision)
+    services = case.app.extensions["pandrator"]
+    generation = services["generation"]
+    handlers = services["workflow_handlers"]
+    worker = Worker(handlers.jobs, "s1-resume", {"generation.run": handlers.run_generation})
+
+    # Real queue ordering: root yields; first replacement pauses; resuming it
+    # appends its new job behind the still-queued second replacement.
+    with case._fake_tts([], [], batch_size=1):
+        assert worker.run_once()
+        generation.request_pause(first["id"])
+        assert worker.run_once()
+    second = case._start(operation="regenerate", segment_ids=[selected_id],
+                         speech_plan_revision_id=revision)
+    resumed_first = generation.resume(first["id"])
+    if explicit_pause:
+        generation.request_pause(original["id"])
+    if terminal == "failed":
+        with patch.object(handlers.tts_providers, "synthesize",
+                          side_effect=RuntimeError("S1 synthesis failure")):
+            assert worker.run_once()
+    elif terminal == "canceled":
+        generation.cancel(second["id"])
+    else:
+        with case._fake_tts([], [], batch_size=1):
+            assert worker.run_once()
+
+    with case.database.session() as session:
+        root = session.get(GenerationRun, original["id"])
+        sibling = session.get(GenerationRun, first["id"])
+        finished = session.get(GenerationRun, second["id"])
+        assert session.get(Job, second["job_id"]).status == (
+            "succeeded" if terminal == "partial" else terminal
+        )
+        assert finished.status == terminal
+        assert not finished.resume_source_on_completion
+        assert "auto_resume_source_generation_run_id" not in session.get(
+            Job, second["job_id"]
+        ).payload_json
+        assert root.status == "paused"
+        assert root.pause_requested
+        assert root.job_id == original["job_id"]
+        assert sibling.status == "queued"
+        assert sibling.resume_source_on_completion is not explicit_pause
+        payload = session.get(Job, resumed_first["job_id"]).payload_json
+        assert payload["segment_ids"] == [selected_id]
+        assert payload.get("auto_resume_source_generation_run_id") == (
+            None if explicit_pause else original["id"]
+        )
+        # Scheduling must not rewrite the replacement's immutable output lineage.
+        assert sibling.source_generation_run_id == first["source_generation_run_id"]
+        assert sibling.output_generation_run_id == first["output_generation_run_id"]
+        assert sibling.plan_revision_id == revision
+
+    calls = []
+    with case._fake_tts(calls, [], batch_size=1):
+        assert worker.run_once()
+    # A successful newer replacement already supplied the shared output take.
+    assert calls == ([] if terminal == "partial" else ["Replacement" if edited_plan else "One"])
+    with case.database.session() as session:
+        root = session.get(GenerationRun, original["id"])
+        assert root.status == ("paused" if explicit_pause else "queued")
+        assert root.pause_requested is explicit_pause
+        assert not session.get(GenerationRun, first["id"]).resume_source_on_completion
+        assert "auto_resume_source_generation_run_id" not in session.get(
+            Job, resumed_first["job_id"]
+        ).payload_json
+        assert session.get(Job, root.job_id).payload_json["segment_ids"] == []
+        root_job_id = root.job_id
+
+    # Duplicate terminal callbacks cannot enqueue a second resume.
+    for child in (second, first):
+        assert handlers._resume_generation_after_regeneration(child["id"], original["id"]) is None
+    with case.database.session() as session:
+        root_jobs = list(session.scalars(select(Job).where(
+            Job.payload_json["generation_run_id"].as_string() == original["id"]
+        )))
+        assert len(root_jobs) == (1 if explicit_pause else 2)
+        assert session.get(GenerationRun, original["id"]).job_id == root_job_id
+    with case._fake_tts([], [], batch_size=1):
+        assert worker.run_once() is not explicit_pause
+    row = page(case)["items"][0]
+    assert row["id"] == selected_id
+    assert row["text"] == ("Replacement" if edited_plan else "One")
+    assert row["status"] == "completed"
+
+
+@pytest.mark.parametrize("edited_plan", [False, True])
+@pytest.mark.parametrize("explicit_pause", [False, True])
+def test_running_sibling_consumes_permission_transferred_after_claim(case, edited_plan, explicit_pause):
+    original = case._start()
+    selected_id = edit(case, 0, "Replacement")["id"] if edited_plan else case.segment_ids[0]
+    revision = page(case)["plan_revision_id"]
+    first = case._start(operation="regenerate", segment_ids=[selected_id],
+                        speech_plan_revision_id=revision)
+    second = case._start(operation="regenerate", segment_ids=[selected_id],
+                         speech_plan_revision_id=revision)
+    services = case.app.extensions["pandrator"]
+    generation = services["generation"]
+    handlers = services["workflow_handlers"]
+    worker = Worker(handlers.jobs, "s1-running", {"generation.run": handlers.run_generation})
+    with case._fake_tts([], [], batch_size=1):
+        assert worker.run_once()
+
+    def cancel_waiting_owner(*_args, **_kwargs):
+        # The worker has already loaded a payload without resume permission.
+        with case.database.session() as session:
+            assert session.get(Job, first["job_id"]).status == "running"
+            assert "auto_resume_source_generation_run_id" not in session.get(
+                Job, first["job_id"]
+            ).payload_json
+        generation.cancel(second["id"])
+        with case.database.session() as session:
+            assert session.get(GenerationRun, first["id"]).resume_source_on_completion
+            assert session.get(Job, first["job_id"]).payload_json[
+                "auto_resume_source_generation_run_id"
+            ] == original["id"]
+        if explicit_pause:
+            generation.request_pause(original["id"])
+        return AudioSegment.silent(duration=20)
+
+    with patch.object(handlers.tts_providers, "synthesize", side_effect=cancel_waiting_owner):
+        assert worker.run_once()
+    with case.database.session() as session:
+        root = session.get(GenerationRun, original["id"])
+        assert root.status == ("paused" if explicit_pause else "queued")
+        assert root.pause_requested is explicit_pause
+        assert not session.get(GenerationRun, first["id"]).resume_source_on_completion
+        assert "auto_resume_source_generation_run_id" not in session.get(
+            Job, first["job_id"]
+        ).payload_json
+        assert session.get(Job, root.job_id).payload_json["segment_ids"] == []
+    assert handlers._resume_generation_after_regeneration(first["id"], original["id"]) is None
+
+
+@pytest.mark.parametrize("legacy_chain", [False, True])
+def test_nested_revocation_clears_marker_even_when_it_names_another_ancestor(case, legacy_chain):
+    original = case._start()
+    selected_id = case.segment_ids[0] if legacy_chain else edit(case, 0, "Replacement")["id"]
+    revision = page(case)["plan_revision_id"]
+    first = case._start(operation="regenerate", segment_ids=[selected_id],
+                        speech_plan_revision_id=revision)
+    second = case._start(operation="regenerate", segment_ids=[selected_id],
+                         speech_plan_revision_id=revision)
+    if legacy_chain:
+        # Persisted shape from versions that chained regeneration children:
+        # root <- first <- second, each child temporarily interrupting its parent.
+        # Current start APIs intentionally flatten this shape, so seed only the
+        # historical links and permission state needed to exercise revocation.
+        with case.database.session() as session:
+            root = session.get(GenerationRun, original["id"])
+            root.status = "paused"
+            session.get(Job, original["job_id"]).status = "succeeded"
+            parent = session.get(GenerationRun, first["id"])
+            parent.status = "paused"
+            parent.pause_requested = True
+            parent.resume_source_on_completion = True
+            parent_job = session.get(Job, first["job_id"])
+            parent_job.status = "succeeded"
+            parent_job.payload_json = {
+                **parent_job.payload_json,
+                "auto_resume_source_generation_run_id": original["id"],
+            }
+            child = session.get(GenerationRun, second["id"])
+            child.source_generation_run_id = first["id"]
+            child.output_generation_run_id = first["id"]
+            child.settings_snapshot_json = {
+                key: value for key, value in child.settings_snapshot_json.items()
+                if key != "interrupted_generation_run_id"
+            }
+            child_job = session.get(Job, second["job_id"])
+            child_job.payload_json = {
+                **child_job.payload_json,
+                "auto_resume_source_generation_run_id": first["id"],
+            }
+    pause_id = original["id"] if legacy_chain else first["id"]
+    source_id = first["id"] if legacy_chain else original["id"]
+    services = case.app.extensions["pandrator"]
+    with case.database.session() as session:
+        assert session.get(GenerationRun, second["id"]).resume_source_on_completion
+        stale_payload = dict(session.get(Job, second["job_id"]).payload_json)
+        assert stale_payload["auto_resume_source_generation_run_id"] == source_id
+        job_ids = set(session.scalars(select(Job.id)))
+    services["generation"].request_pause(pause_id)
+    # Even a worker holding the old payload cannot undo explicit revocation.
+    assert services["workflow_handlers"]._resume_generation_after_regeneration(
+        second["id"], stale_payload["auto_resume_source_generation_run_id"]
+    ) is None
+    with case.database.session() as session:
+        assert not session.get(GenerationRun, second["id"]).resume_source_on_completion
+        assert session.get(GenerationRun, pause_id).pause_requested
+        assert set(session.scalars(select(Job.id))) == job_ids
+        assert "auto_resume_source_generation_run_id" not in session.get(
+            Job, second["job_id"]
+        ).payload_json
 
 
 def test_failed_replacement_resumes_parent_and_keeps_stale_audio(case):

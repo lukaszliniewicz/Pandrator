@@ -398,6 +398,14 @@ class GenerationRegenerationTests(unittest.TestCase):
 
             root_run.status = "paused"
 
+            # Terminal callbacks run after these replacements have finished.
+            # A still-queued sibling must receive the permission instead of
+            # letting the full run resume ahead of it.
+            first_run.status = "partial"
+            second_run.status = "partial"
+            first_job.status = "succeeded"
+            second_job.status = "succeeded"
+
         listed = self.client.get(
             f"/api/v1/sessions/{self.session_id}/generation-runs"
         ).get_json()["items"]

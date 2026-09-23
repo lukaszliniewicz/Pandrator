@@ -74,7 +74,6 @@ def canonical_regeneration_root(
 def clear_regeneration_baton(
     session: Session,
     child_run: GenerationRun,
-    source_run_id: str,
 ) -> None:
     """Revoke one child's durable resume baton, including its job marker."""
     child_run.resume_source_on_completion = False
@@ -83,7 +82,10 @@ def clear_regeneration_baton(
     if child_job is None or not isinstance(child_job.payload_json, dict):
         return
     payload = dict(child_job.payload_json)
-    if payload.get("auto_resume_source_generation_run_id") == source_run_id:
+    # A legacy or edit-copy child's scheduling ancestor can differ from the
+    # output ancestor whose descendants are being revoked. No marker remains
+    # valid once this child's durable permission has been cleared.
+    if "auto_resume_source_generation_run_id" in payload:
         payload.pop("auto_resume_source_generation_run_id", None)
         child_job.payload_json = payload
         child_job.updated_at = utcnow()
@@ -133,7 +135,7 @@ def revoke_regeneration_batons(
     """Revoke all existing batons below a root before assigning a replacement."""
     batons = regeneration_baton_descendants(session, source_run_id)
     for child in batons:
-        clear_regeneration_baton(session, child, source_run_id)
+        clear_regeneration_baton(session, child)
     return batons
 
 
@@ -179,12 +181,12 @@ def release_interrupted_run(
     if source is None or source.session_id != child.session_id:
         return None
 
-    clear_regeneration_baton(session, child, source.id)
+    clear_regeneration_baton(session, child)
     if source.cancel_requested or not source.pause_requested:
         return None
-    # If the last queued replacement is canceled, an earlier replacement may
-    # still be waiting. Transfer the resume responsibility instead of reviving
-    # the full run ahead of it.
+    # A previously paused replacement can be requeued behind the latest one.
+    # Whatever this child's terminal outcome, remaining replacements must
+    # finish before the full run's temporary pause is released.
     sibling = session.scalar(
         select(GenerationRun)
         .where(
@@ -201,7 +203,7 @@ def release_interrupted_run(
         )
         .order_by(GenerationRun.sequence_number.desc())
     )
-    if sibling is not None and child.status in {"canceled", "cancelled"}:
+    if sibling is not None:
         sibling.resume_source_on_completion = True
         sibling_job = session.get(Job, sibling.job_id) if sibling.job_id else None
         if sibling_job is not None:

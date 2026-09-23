@@ -8885,18 +8885,25 @@ class WorkflowHandlers:
         try:
             return self._run_generation(payload, progress, cancel_event)
         finally:
-            source_id = str(payload.get("auto_resume_source_generation_run_id") or "")
-            if source_id:
-                try:
-                    with self.database.session() as session:
-                        child = session.get(GenerationRun, str(payload.get("generation_run_id") or ""))
-                        terminal = child is not None and child.status in {
-                            "completed", "partial", "failed", "canceled", "cancelled"
-                        }
-                    if terminal:
-                        self._resume_generation_after_regeneration(child.id, source_id)
-                except Exception:
-                    logger.exception("Could not release the temporary regeneration pause.")
+            try:
+                from .generation_scheduling import interrupted_run_id
+
+                # A queued sibling's cancellation can transfer permission
+                # after this worker loaded its payload. Read durable ownership;
+                # the resume transaction rechecks it against concurrent pauses.
+                with self.database.session() as session:
+                    child = session.get(GenerationRun, str(payload.get("generation_run_id") or ""))
+                    source_id = (
+                        interrupted_run_id(child)
+                        if child is not None and child.resume_source_on_completion
+                        and child.status in {"completed", "partial", "failed", "canceled", "cancelled"}
+                        else None
+                    )
+                    child_id = child.id if child is not None else None
+                if child_id and source_id:
+                    self._resume_generation_after_regeneration(child_id, source_id)
+            except Exception:
+                logger.exception("Could not release the temporary regeneration pause.")
 
     def _run_generation(self, payload, progress, cancel_event):
         """Generate immutable per-segment takes with safe pause and resume boundaries."""
