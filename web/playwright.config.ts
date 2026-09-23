@@ -5,7 +5,9 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 45_000,
-  expect: { timeout: 8_000 },
+  // Fresh Windows pages can spend more than eight seconds loading the static
+  // bundle before hydration begins. Keep a bounded platform budget, not retries.
+  expect: { timeout: process.platform === 'win32' ? 20_000 : 8_000 },
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: 'playwright-report' }]

@@ -43,7 +43,7 @@ jobs:
           - name: ubuntu-remainder
             os: ubuntu-latest
             lanes: >-
-              web-05-serial web-06-serial web-07-serial
+              web-05-serial web-06-serial web-07-serial web-08-serial
               installer-serial manager-serial mcp-serial
               system-media-serial
           - name: windows-fast-xdist
@@ -72,6 +72,9 @@ jobs:
           - name: windows-web-07
             os: windows-latest
             lanes: web-07-serial
+          - name: windows-web-08
+            os: windows-latest
+            lanes: web-08-serial
           - name: windows-services
             os: windows-latest
             lanes: >-

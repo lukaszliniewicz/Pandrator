@@ -19,6 +19,9 @@ requires every test file exactly once. Keep Windows web lanes in separate CI
 jobs: measured SQLite/filesystem test times are substantially higher there.
 Use JUnit timings when rebalancing lanes, and preserve full coverage on each OS.
 Windows browser projects run in two Playwright shards for the same reason.
+Browser assertions allow 20 seconds on Windows (8 seconds elsewhere), because
+native CI traces repeatedly show cold-page hydration exceeding the shorter
+budget. The total test timeout remains 45 seconds and automatic retries are off.
 Fixtures must dispose their database before deleting temporary workspaces;
 Linux's ability to unlink open database files can conceal missing cleanup.
 

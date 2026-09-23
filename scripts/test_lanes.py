@@ -247,6 +247,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_capabilities.py",
         "tests/test_web_job_concurrency.py",
         "tests/test_generation_plan_review.py",
+    ),
+    "web-08-serial": (
         "tests/test_session_source_plan_controls.py",
         "tests/test_session_source_paths.py",
         "tests/test_session_output_storage.py",
