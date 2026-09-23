@@ -714,17 +714,40 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
       .locator('[data-generation-layout]')
       .getAttribute('data-generation-layout')) !== 'collapsed'
   ) {
+    await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
     await page.getByRole('button', { name: 'Generation', exact: true }).click();
   }
+  // Reopening refreshes the displayed rows. Review must remain disabled until
+  // those rows and their matching review status have finished loading.
+  let releaseRows!: () => void;
+  let rowsRequested!: () => void;
+  const heldRows = new Promise<void>((resolve) => (releaseRows = resolve));
+  const rowRequest = new Promise<void>((resolve) => (rowsRequested = resolve));
+  const rowsUrl = `**${endpoint}/generation-segments?*`;
+  await page.route(rowsUrl, async (route) => {
+    const response = await route.fetch();
+    rowsRequested();
+    await heldRows;
+    await route.fulfill({ response });
+  });
   await planCard
     .getByRole('button', { name: 'Review plan', exact: true })
     .click();
   await expect(
     page.getByRole('button', { name: 'Speech plans', exact: true })
   ).toBeVisible();
+  await rowRequest;
+  try {
+    await expect(
+      page.locator('[data-testid="drawer-mark-reviewed"]:enabled')
+    ).toHaveCount(0);
+  } finally {
+    releaseRows();
+  }
   // Complete the review where the text is being inspected, without returning
   // to the overview to approve it.
   await page.getByTestId('drawer-mark-reviewed').click();
+  await page.unroute(rowsUrl);
   await expect(page.getByTestId('drawer-plan-review')).toContainText(
     'Reviewed'
   );
@@ -842,8 +865,10 @@ test('source reset cancellation preserves work, while confirmation removes only 
     name: 'Generation',
     exact: true
   });
-  await expect(drawerToggle).toHaveAttribute('aria-expanded', 'true');
-  await drawerToggle.click();
+  // Preparation may reveal the drawer; source reset works in either layout.
+  if ((await drawerToggle.getAttribute('aria-expanded')) === 'true') {
+    await drawerToggle.click();
+  }
   const card = page.getByRole('region', { name: 'Session source' });
   await card.getByRole('button', { name: 'Remove source' }).click();
   const confirmation = page.getByRole('dialog', {

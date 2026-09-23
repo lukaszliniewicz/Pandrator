@@ -65,7 +65,9 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await page.getByRole('button', { name: 'Review', exact: true }).click();
   await page.getByLabel('Session name').fill(sessionName);
   await page.getByRole('button', { name: 'Create workspace' }).click();
-  await expect(page.getByRole('heading', { name: sessionName })).toBeVisible();
+  await expect(page.getByRole('heading', { name: sessionName })).toBeVisible({
+    timeout: 20_000
+  });
   await expect(page.getByRole('heading', { name: 'Transcribe' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Tour' })).toBeVisible();
 });
@@ -118,7 +120,9 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
   );
 
   await page.getByRole('button', { name: 'Create workspace' }).click();
-  await expect(page.getByRole('heading', { name: sessionName })).toBeVisible();
+  await expect(page.getByRole('heading', { name: sessionName })).toBeVisible({
+    timeout: 20_000
+  });
 
   const sessions = await page.request.get('/api/v1/sessions');
   const created = (await sessions.json()).items.find(
@@ -2049,7 +2053,9 @@ test('generated segments return to the current filtered page after repeated rege
     await regeneratedRow.waitFor({ state: 'attached', timeout: 30_000 });
     await expect(regenerateSegment101).toBeVisible({ timeout: 10_000 });
   };
-  await page.getByRole('button', { name: 'Load more' }).click();
+  const loadMore = page.getByRole('button', { name: 'Load more' });
+  await loadMore.scrollIntoViewIfNeeded();
+  await loadMore.click();
   await waitForRegeneratedSegment();
   await expect(
     regeneratedRow.getByRole('button', { name: 'Play' })
@@ -2074,7 +2080,8 @@ test('generated segments return to the current filtered page after repeated rege
   await expect
     .poll(() => generatedRefreshes)
     .toBeGreaterThan(completedRefreshesBeforeFilter);
-  await page.getByRole('button', { name: 'Load more' }).click();
+  await loadMore.scrollIntoViewIfNeeded();
+  await loadMore.click();
   await expect
     .poll(() => generatedRefreshes)
     .toBeGreaterThan(completedRefreshesBeforeFilter + 1);
@@ -2285,18 +2292,29 @@ test('alternate regeneration sends one selected-only setting set and returns to 
         body: JSON.stringify({ item: null })
       })
   );
+  const savedMarks = new Map<string, { marked: boolean; revision: number }>();
   await page.route(
     `**/api/v1/sessions/${sessionId}/generation-segments?*`,
-    (route) =>
-      route.fulfill({
+    (route) => {
+      // Marks are saved through the real API. Keep refreshes consistent with
+      // those writes while supplying synthetic takes for this no-inference test.
+      return route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
-          items: rows,
+          items: rows.map((row) => {
+            const saved = savedMarks.get(row.id);
+            return {
+              ...row,
+              marked: saved?.marked ?? row.marked,
+              revision: saved?.revision ?? row.revision
+            };
+          }),
           total: rows.length,
           next_cursor: null,
           plan_revision_id: planRevisionId
         })
-      })
+      });
+    }
   );
 
   await page.goto(`/sessions/${sessionId}`);
@@ -2321,6 +2339,15 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   await page
     .getByRole('button', { name: 'Close alternate regeneration' })
     .click();
+  await page.route(
+    `**/api/v1/generation-segments/${segments[0].id}`,
+    async (route) => {
+      const response = await route.fetch();
+      const saved = await response.json();
+      savedMarks.set(segments[0].id, saved);
+      await route.fulfill({ response });
+    }
+  );
   await page.getByRole('checkbox', { name: 'Mark segment 1' }).check();
   await expect(regenerationOptions).toBeEnabled();
 
@@ -2332,6 +2359,8 @@ test('alternate regeneration sends one selected-only setting set and returns to 
     `**/api/v1/generation-segments/${segments[1].id}`,
     async (route) => {
       const response = await route.fetch();
+      const saved = await response.json();
+      savedMarks.set(segments[1].id, saved);
       await markSaveGate;
       await route.fulfill({ response });
     }

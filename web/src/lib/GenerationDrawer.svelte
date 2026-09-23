@@ -2869,6 +2869,8 @@
               current={!selectedRunId && payload.is_active_revision !== false}
               refreshKey={payload}
               blocked={loading ||
+                generationStore.status === 'loading' ||
+                generationStore.status === 'stale' ||
                 topologyBusy ||
                 pendingSegmentUpdates > 0 ||
                 ['queued', 'running', 'pausing', 'cancel_requested'].includes(

@@ -34,9 +34,11 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         bootstrap = BootstrapTokenStore()
-        token = bootstrap.issue()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)
+        self.addCleanup(self.app.extensions["pandrator"]["database"].dispose)
         self.client = self.app.test_client()
+        # Start token lifetime after potentially slow app setup.
+        token = bootstrap.issue()
         self.headers = {"X-CSRF-Token": self.client.post("/api/v1/auth/bootstrap", json={"token": token}).get_json()["csrf_token"]}
         self.services = self.app.extensions["pandrator"]
         self.database = self.services["database"]

@@ -229,6 +229,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_voice_transcription_defaults.py",
         "tests/test_voiceover_regroup_skipped_status.py",
         "tests/test_web_generation_first_regeneration.py",
+    ),
+    "web-06-serial": (
         "tests/test_web_logical_passages.py",
         "tests/test_web_repair_history_deletion.py",
         "tests/test_web_voiceover_regroup.py",
@@ -253,6 +255,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_tts_parallel_generation.py",
         "tests/test_web_generation_regeneration.py",
         "tests/test_generation_edit_audio.py",
+    ),
+    "web-07-serial": (
         "tests/test_passage_markers.py",
         "tests/test_source_passage_sentence_policy.py",
         "tests/test_passage_marker_routes.py",

@@ -43,22 +43,39 @@ jobs:
           - name: ubuntu-remainder
             os: ubuntu-latest
             lanes: >-
-              web-05-serial installer-serial manager-serial mcp-serial
+              web-05-serial web-06-serial web-07-serial
+              installer-serial manager-serial mcp-serial
               system-media-serial
           - name: windows-fast-xdist
             os: windows-latest
             lanes: fast-xdist
-          - name: windows-web-a
+          # Windows SQLite/filesystem tests take substantially longer than Linux.
+          # Keep web lanes separate so one job stays below the timeout.
+          - name: windows-web-01
             os: windows-latest
-            lanes: web-01-serial web-03-serial
-          - name: windows-web-b
+            lanes: web-01-serial
+          - name: windows-web-02
             os: windows-latest
-            lanes: web-02-serial web-04-serial
-          - name: windows-remainder
+            lanes: web-02-serial
+          - name: windows-web-03
+            os: windows-latest
+            lanes: web-03-serial
+          - name: windows-web-04
+            os: windows-latest
+            lanes: web-04-serial
+          - name: windows-web-05
+            os: windows-latest
+            lanes: web-05-serial
+          - name: windows-web-06
+            os: windows-latest
+            lanes: web-06-serial
+          - name: windows-web-07
+            os: windows-latest
+            lanes: web-07-serial
+          - name: windows-services
             os: windows-latest
             lanes: >-
-              web-05-serial installer-serial manager-serial mcp-serial
-              system-media-serial
+              installer-serial manager-serial mcp-serial system-media-serial
 
     steps:
       - uses: actions/checkout@v4
@@ -137,14 +154,37 @@ jobs:
           test -z "$(git status --porcelain -- pandrator/web/static)"
 
   e2e:
-    name: E2E (${{ matrix.os }}, ${{ matrix.browser }})
+    name: E2E (${{ matrix.os }}, ${{ matrix.browser }}, ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        browser: [chromium, firefox]
+        include:
+          - os: ubuntu-latest
+            browser: chromium
+            shard: 1
+            shards: 1
+          - os: ubuntu-latest
+            browser: firefox
+            shard: 1
+            shards: 1
+          - os: windows-latest
+            browser: chromium
+            shard: 1
+            shards: 2
+          - os: windows-latest
+            browser: chromium
+            shard: 2
+            shards: 2
+          - os: windows-latest
+            browser: firefox
+            shard: 1
+            shards: 2
+          - os: windows-latest
+            browser: firefox
+            shard: 2
+            shards: 2
 
     steps:
       - uses: actions/checkout@v4
@@ -175,12 +215,14 @@ jobs:
         if: runner.os == 'Windows'
         run: npx --prefix web playwright install ${{ matrix.browser }}
       - name: Run selected Playwright project
-        run: npm --prefix web run test:e2e -- --project=${{ matrix.browser }}
+        run: >-
+          npm --prefix web run test:e2e -- --project=${{ matrix.browser }}
+          --shard=${{ matrix.shard }}/${{ matrix.shards }}
       - name: Upload Playwright diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pandrator-web-preview-playwright-${{ matrix.os }}-${{ matrix.browser }}
+          name: pandrator-web-preview-playwright-${{ matrix.os }}-${{ matrix.browser }}-${{ matrix.shard }}of${{ matrix.shards }}
           path: |
             web/playwright-report
             web/test-results

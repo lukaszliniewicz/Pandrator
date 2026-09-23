@@ -56,7 +56,10 @@ for (const kind of ['export.create', 'export.variant']) {
       page.getByRole('progressbar', { name: 'Export 12345678 progress' })
     ).toHaveAttribute('aria-valuenow', '42');
     await page.reload();
-    await expect(page.getByText('Running export')).toBeVisible();
+    // A cold Windows browser may still be loading the page's modules.
+    await expect(page.getByText('Running export')).toBeVisible({
+      timeout: 20_000
+    });
     await expect(
       page.getByText('Prepared subtitle track 1 of 2')
     ).toBeVisible();
@@ -423,6 +426,9 @@ test('Create export keeps the selected audio version when saved effective defaul
   );
 
   await page.goto(`/sessions/${session.id}/output`);
+  await expect(page.getByLabel('Audio version')).toBeVisible({
+    timeout: 20_000
+  });
   await expect(page.getByLabel('Audio version').locator('option')).toHaveCount(
     2
   );

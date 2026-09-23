@@ -14,6 +14,14 @@ The checks also have individual tasks: `lint`, `typecheck`, `dead-code`, and
 The Python quality workflow and the existing cross-platform test workflow run
 on changes to `main` and pull requests targeting it.
 
+Python tests use explicit lanes in `scripts/test_lanes.py`; its manifest check
+requires every test file exactly once. Keep Windows web lanes in separate CI
+jobs: measured SQLite/filesystem test times are substantially higher there.
+Use JUnit timings when rebalancing lanes, and preserve full coverage on each OS.
+Windows browser projects run in two Playwright shards for the same reason.
+Fixtures must dispose their database before deleting temporary workspaces;
+Linux's ability to unlink open database files can conceal missing cleanup.
+
 ## Lint and formatting
 
 Ruff checks production code, scripts, and tests with `E4`, `E7`, `E9`, `F`, `I`,

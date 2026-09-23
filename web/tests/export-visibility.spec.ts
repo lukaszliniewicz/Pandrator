@@ -44,7 +44,7 @@ async function installEvents(page: Page) {
   });
 }
 
-async function sessionFixture(page: Page) {
+async function sessionFixture(page: Page, workflowKind = 'voiceover') {
   await installEvents(page);
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
@@ -57,12 +57,72 @@ async function sessionFixture(page: Page) {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
       name: `Export visibility ${crypto.randomUUID()}`,
-      workflow_kind: 'voiceover'
+      workflow_kind: workflowKind
     }
   });
   expect(response.ok()).toBeTruthy();
   return response.json();
 }
+
+test('an older HTTP snapshot preserves newer live export progress and other jobs', async ({
+  page
+}) => {
+  const session = await sessionFixture(page, 'audiobook');
+  let releaseSnapshot!: () => void;
+  let snapshotRequested!: () => void;
+  const heldSnapshot = new Promise<void>(
+    (resolve) => (releaseSnapshot = resolve)
+  );
+  const snapshotRequest = new Promise<void>(
+    (resolve) => (snapshotRequested = resolve)
+  );
+  await page.route('**/api/v1/jobs?limit=500', async (route) => {
+    snapshotRequested();
+    await heldSnapshot;
+    await route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'historical-export',
+            kind: 'export.variant',
+            session_id: session.id,
+            status: 'succeeded',
+            progress: 1,
+            progress_detail: 'Earlier export complete',
+            created_at: new Date().toISOString()
+          }
+        ]
+      }
+    });
+  });
+  await page.goto(`/sessions/${session.id}/output`);
+  await snapshotRequest;
+  try {
+    await page.evaluate((sid) => {
+      window.__emitExportTestEvent?.('job.progress', {
+        job_id: 'new-live-export',
+        job_kind: 'export.variant',
+        session_id: sid,
+        status: 'running',
+        progress: 0.9,
+        detail: 'Newer live progress',
+        changed_entities: ['jobs']
+      });
+    }, session.id);
+    await expect(page.getByText('Newer live progress')).toBeVisible();
+  } finally {
+    releaseSnapshot();
+  }
+  // This heading changes only when the full HTTP snapshot has been applied.
+  await expect(
+    page.getByRole('heading', { name: 'Audiobook output', exact: true })
+  ).toBeVisible();
+  await expect(page.getByText('Completed export')).toBeVisible();
+  await expect(page.getByText('Newer live progress')).toBeVisible();
+  await expect(
+    page.getByRole('progressbar', { name: 'Export new-live progress' })
+  ).toHaveAttribute('aria-valuenow', '90');
+});
 
 for (const kind of ['export.create', 'export.variant']) {
   test(`${kind} appears from live events and keeps failure details after reload`, async ({

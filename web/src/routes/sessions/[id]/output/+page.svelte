@@ -72,6 +72,8 @@
   let deleting = $state<Record<string, boolean>>({});
   let copiedPath = $state('');
   let loadRevision = 0;
+  let jobProgressRevision = 0;
+  const jobProgressRevisions = new Map<string, number>();
   const outputContext = $derived(
     outputProfile?.context && typeof outputProfile.context === 'object'
       ? (outputProfile.context as Record<string, unknown>)
@@ -126,6 +128,7 @@
   }
   async function load() {
     const revision = ++loadRevision;
+    const progressRevision = jobProgressRevision;
     const [
       artifactPayload,
       runPayload,
@@ -157,11 +160,19 @@
         String(right.created_at).localeCompare(String(left.created_at))
       );
     runs = runPayload.items ?? [];
-    exportJobs = (jobPayload.items ?? [])
-      .filter(
-        (item) => item.session_id === sessionId && isExportJobKind(item.kind)
-      )
-      .slice(0, 8);
+    // A live event can arrive while this HTTP snapshot is in flight. Preserve
+    // those newer jobs while still loading unrelated jobs from the snapshot.
+    const newerJobs = exportJobs.filter(
+      (job) => (jobProgressRevisions.get(job.id) ?? 0) > progressRevision
+    );
+    const newerJobIds = new Set(newerJobs.map((job) => job.id));
+    const snapshotJobs = (jobPayload.items ?? []).filter(
+      (item) => item.session_id === sessionId && isExportJobKind(item.kind)
+    );
+    exportJobs = [
+      ...newerJobs,
+      ...snapshotJobs.filter((job) => !newerJobIds.has(job.id))
+    ].slice(0, 8);
     session = sessionPayload;
     outputProfile = settingsPayload;
     if (
@@ -408,6 +419,7 @@
         !event.job_id
       )
         continue;
+      jobProgressRevisions.set(String(event.job_id), ++jobProgressRevision);
       const index = exportJobs.findIndex((job) => job.id === event.job_id);
       const current = index >= 0 ? exportJobs[index] : null;
       const next: JobRecord = {

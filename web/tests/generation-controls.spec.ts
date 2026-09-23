@@ -363,7 +363,12 @@ test('catalog selection assigns a managed reference to a character', async ({
   await expect(
     library.getByRole('button', { name, exact: true })
   ).toBeVisible();
-  await library.getByRole('button', { name: 'Use voice', exact: true }).click();
+  const voiceCard = library.locator('article').filter({
+    has: page.getByRole('button', { name, exact: true })
+  });
+  await voiceCard
+    .getByRole('button', { name: 'Use voice', exact: true })
+    .click();
   await expect(library).toBeHidden();
   await expect(character.locator('p').filter({ hasText: name })).toBeVisible();
   await panel

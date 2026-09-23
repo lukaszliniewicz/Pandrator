@@ -64,6 +64,9 @@ their effect. Vocal events are distinct from a background sound-effects workflow
   are closed, while open dialogs retain their own keyboard input.
 - Block settings wait for the selected plan to load, so saving changes reliably
   offers preparation of a new plan even on a slow connection.
+- Plan review waits for refreshed speech rows and their review status, keeping
+  the approval button unavailable while the inspected content is loading.
+- Live export progress survives older HTTP snapshots arriving afterward.
 - A simpler session workflow, casting controls, mobile navigation, and completed
   stage folding keep active work visible.
 - Video export measures an overlong audio tail and asks whether to extend the
