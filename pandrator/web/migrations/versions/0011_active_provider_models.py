@@ -3,9 +3,8 @@
 import copy
 import json
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0011_active_provider_models"
 down_revision = "0010_named_generation_runs"

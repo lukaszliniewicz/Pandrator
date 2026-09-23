@@ -1,8 +1,7 @@
 """Associate provider usage with jobs, artifacts, and generation runs."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0014_usage_event_links"
 down_revision = "0013_stage_artifact_selections"

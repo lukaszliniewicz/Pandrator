@@ -9,7 +9,6 @@ import tempfile
 import traceback
 from datetime import datetime
 
-
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
 except ImportError:

@@ -18,8 +18,8 @@ compute and deployment paths.
 ## Code quality
 
 - Support the Python versions declared by the affected package.
-- Use Ruff for Python linting and formatting conventions already present in
-  the component.
+- Run `pixi run quality`: Ruff, basedpyright, high-confidence dead-code checks,
+  and test-lane validation. Follow the [code quality policy](code-quality.md).
 - Keep public interfaces typed and validate untrusted input at the boundary.
 - Add migrations for durable schema changes; do not mutate an existing
   released migration.

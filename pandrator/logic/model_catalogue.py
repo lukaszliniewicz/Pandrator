@@ -26,12 +26,14 @@ from .audio_cpp_catalogue import package_metadata
 _OPENAI_TTS_SOURCE = "https://developers.openai.com/api/docs/guides/text-to-speech"
 _GEMINI_TTS_SOURCE = "https://ai.google.dev/gemini-api/docs/speech-generation"
 _VERTEX_TTS_SOURCE = "https://docs.cloud.google.com/text-to-speech/docs/gemini-tts"
+_ELEVENLABS_TTS_SOURCE = "https://elevenlabs.io/docs/overview/models"
 _AZURE_TTS_SOURCE = "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices"
 
 _OFFICIAL_PROVIDER_SOURCES = {
     "openai": [_OPENAI_TTS_SOURCE],
     "gemini": [_GEMINI_TTS_SOURCE],
     "vertex_ai": [_VERTEX_TTS_SOURCE],
+    "elevenlabs": [_ELEVENLABS_TTS_SOURCE],
 }
 _KNOWN_GEMINI_MODELS = {
     "gemini-3.1-flash-tts-preview",
@@ -40,8 +42,46 @@ _KNOWN_GEMINI_MODELS = {
     "gemini-2.5-flash-tts",
     "gemini-2.5-pro-tts",
 }
+_KNOWN_ELEVENLABS_MODELS = {
+    "eleven_v3": {
+        "label": "Eleven v3",
+        "description": "Expressive speech generation with inline audio tags.",
+    },
+    "eleven_multilingual_v2": {
+        "label": "Eleven Multilingual v2",
+        "description": "Natural-sounding multilingual speech for consistent, long-form generation.",
+    },
+    "eleven_flash_v2_5": {
+        "label": "Eleven Flash v2.5",
+        "description": "Low-latency speech generation across 32 languages.",
+    },
+    "eleven_turbo_v2_5": {
+        "label": "Eleven Turbo v2.5",
+        "description": "Deprecated low-latency speech model; upstream recommends Eleven Flash v2.5.",
+    },
+}
 _AZURE_SPEECH_ADAPTER = "azure_speech"
 _AUDIO_CPP_ADAPTER = "audio_cpp"
+_ELEVENLABS_ADAPTER = "elevenlabs_native"
+
+
+def _capability_notes(*values: Any) -> list[str]:
+    notes: list[str] = []
+    for value in values:
+        if not isinstance(value, (list, tuple)):
+            continue
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            note = item.strip()
+            normalized = note.casefold()
+            if not note or any(
+                marker in normalized
+                for marker in ("http://", "https://", "api_key", "api key", "base_url", "secret")
+            ):
+                continue
+            notes.append(note)
+    return list(dict.fromkeys(notes))
 
 
 def _string_list(value: Any) -> list[str]:
@@ -233,11 +273,7 @@ def _feature_capabilities(
     if control_profile.get("voice_design") is True or voice_mode == "design":
         capabilities.add("voice_design")
 
-    # Gemini's current app path has no verified vocal-event tag dialect. The
-    # general speech capability helper currently describes upstream tags, so
-    # omit them from this provider-neutral app capability view.
-    gemini_route = backend.casefold() in {"gemini", "vertex_ai", "google_gemini", "google_vertex_ai"}
-    if control_profile.get("event_tags") and not gemini_route:
+    if control_profile.get("event_tags"):
         capabilities.add("vocal_events")
 
     # Preserve only feature claims explicitly attached to this model or
@@ -263,6 +299,7 @@ def _feature_capabilities(
                 upstream_features["emotion_control"] = True
 
     pandrator = model_metadata.get("pandrator_features")
+    pandrator_features: dict[str, Any]
     if isinstance(pandrator, dict):
         pandrator_features = copy.deepcopy(pandrator)
     else:
@@ -279,7 +316,7 @@ def _feature_capabilities(
         "emotion_control",
         emotion.get("mode", "none") if isinstance(emotion, Mapping) else "none",
     )
-    if control_profile.get("event_tags") and not gemini_route:
+    if control_profile.get("event_tags"):
         pandrator_features.setdefault(
             "vocal_events", ", ".join(control_profile["event_tags"].keys())
         )
@@ -294,8 +331,12 @@ def _feature_capabilities(
         if has_styles:
             capabilities.add("emotion_control")
             pandrator_features["emotion_control"] = "discrete_styles"
+            azure_style_note = (
+                "Expressive styles are selected with azure_speech_style and are available only on voices that advertise them; this does not imply general pSSML support or styles on every voice."
+            )
         else:
             pandrator_features["emotion_control"] = "none"
+            azure_style_note = ""
         pandrator_features.update(
             instructions="none",
             voice_design="none",
@@ -304,6 +345,8 @@ def _feature_capabilities(
         capabilities.difference_update(
             {"instructions", "voice_design", "voice_cloning", "vocal_events"}
         )
+    else:
+        azure_style_note = ""
 
     # A generic profile's coarse service-level flags do not establish support
     # for its individual model. It may retain explicit model_catalog claims.
@@ -326,6 +369,28 @@ def _feature_capabilities(
                 "emotion_control": "none",
                 "vocal_events": "none",
             }
+
+    instruction_scope = control_profile.get("instruction_scope")
+    instruction_scope_text = (
+        ", ".join(str(scope).strip() for scope in instruction_scope if str(scope).strip())
+        if isinstance(instruction_scope, (list, tuple))
+        else ""
+    )
+    capability_notes = _capability_notes(
+        control_profile.get("notes"),
+        pandrator_features.get("capability_notes"),
+        [azure_style_note] if azure_style_note else [],
+    )
+    if provider_id == "elevenlabs" and model_id == "eleven_turbo_v2_5":
+        capability_notes = _capability_notes(
+            capability_notes,
+            ["Upstream marks this model deprecated and recommends eleven_flash_v2_5 for new selections."],
+        )
+    pandrator_features.update(
+        instruction_scope=instruction_scope_text or "none",
+        semantic_context=str(control_profile.get("semantic_context") or "none"),
+        capability_notes=capability_notes,
+    )
 
     return sorted(capabilities), pandrator_features, upstream_features
 
@@ -547,6 +612,47 @@ def _catalogue_rows() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                 config=config,
                 adapter=adapter,
                 allow_provider_defaults=True,
+            )
+
+    # Keep the stable native ElevenLabs model IDs searchable even when a fresh
+    # local configuration only carries the provider's current default model.
+    elevenlabs_provider = "elevenlabs"
+    add_provider(elevenlabs_provider, "ElevenLabs", "commercial")
+    for model_id, model_info in _KNOWN_ELEVENLABS_MODELS.items():
+        key = (elevenlabs_provider, model_id)
+        if key not in rows:
+            rows[key] = _build_item(
+                provider_id=elevenlabs_provider,
+                provider_name="ElevenLabs",
+                provider_kind="commercial",
+                model_id=model_id,
+                model_metadata={
+                    **model_info,
+                    "family": "elevenlabs_tts",
+                    "family_label": "ElevenLabs TTS",
+                    "voice_mode": "prebuilt",
+                    "sources": [_ELEVENLABS_TTS_SOURCE],
+                    "pandrator_features": {
+                        "capability_notes": [
+                            "Upstream marks this model deprecated and recommends eleven_flash_v2_5 for new selections."
+                        ]
+                    }
+                    if model_id == "eleven_turbo_v2_5"
+                    else {},
+                },
+                adapter=_ELEVENLABS_ADAPTER,
+                allow_provider_defaults=True,
+            )
+        rows[key]["sources"] = list(
+            dict.fromkeys([_ELEVENLABS_TTS_SOURCE, *rows[key].get("sources", [])])
+        )
+        if model_id == "eleven_turbo_v2_5":
+            rows[key]["upstream_status"] = "deprecated"
+            rows[key]["recommended_for"] = ""
+            features = rows[key].setdefault("pandrator_features", {})
+            features["capability_notes"] = _capability_notes(
+                features.get("capability_notes"),
+                ["Upstream marks this model deprecated and recommends eleven_flash_v2_5 for new selections."],
             )
 
     # Provider profiles absent from canonical defaults remain discoverable by

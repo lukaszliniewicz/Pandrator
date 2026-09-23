@@ -5,7 +5,6 @@ from typing import Any
 
 from .models import SourceBlock
 
-
 SUPPORTED_SELECTOR_KEYS = {
     "href",
     "href_regex",

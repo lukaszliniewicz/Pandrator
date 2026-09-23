@@ -9,9 +9,13 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select, text as sql_text
+from sqlalchemy import func, select
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.source_passage_settings import (
+    SOURCE_PASSAGE_DEFAULTS as _SOURCE_PASSAGE_DEFAULTS,
+)
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID
 from pandrator.logic.tts_provider_switch import (
     normalize_tts_voice_aliases,
@@ -60,10 +64,6 @@ from .tts_optimization import (
     DEFAULT_PROMPT,
     DEFAULT_SECOND_PROMPT,
     DEFAULT_THIRD_PROMPT,
-)
-
-from pandrator.logic.dubbing.source_passage_settings import (
-    SOURCE_PASSAGE_DEFAULTS as _SOURCE_PASSAGE_DEFAULTS,
 )
 
 SETTING_SECTIONS = (
@@ -308,6 +308,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "chatterbox_exaggeration": 0.5,
         "chatterbox_cfg_weight": 0.5,
         "chatterbox_norm_loudness": True,
+        "elevenlabs_voice_settings": {},
         "openai_audio_endpoint": "",
         "openai_audio_instructions": "",
         "generation_prompt": "",
@@ -1236,7 +1237,9 @@ class WorkspaceSettingsService:
             raise KeyError(session_id)
         value = dict(value)
         if section == "text":
-            from pandrator.logic.audiobook_chunking import validate_audiobook_chunking_settings
+            from pandrator.logic.audiobook_chunking import (
+                validate_audiobook_chunking_settings,
+            )
 
             validate_audiobook_chunking_settings(value)
         if section == "stt":
@@ -3408,7 +3411,9 @@ class GenerationService:
             if not isinstance(cue, dict):
                 continue
             for selected_span, companion_span in zip(
-                cue.get(selected_key) or [], cue.get(companion_key) or []
+                cue.get(selected_key) or [],
+                cue.get(companion_key) or [],
+                strict=False,
             ):
                 if not (
                     isinstance(selected_span, (list, tuple))
@@ -5688,8 +5693,8 @@ class GenerationService:
         from .speech_boundaries import freeze_boundaries
         boundary_snapshot = deepcopy(run.settings_snapshot_json or {}) if run else {"audio": snapshot.get("audio") or {}}
         if not run:
-            from .performance_plans import freeze_performance_snapshot
             from .models import PerformancePlan
+            from .performance_plans import freeze_performance_snapshot
             tts_settings = self.settings.get_in_session(session, session_id, "tts")["effective"]
             if (tts_settings.get("casting_enabled") or tts_settings.get("performance_enabled")) and session.scalar(select(PerformancePlan.id).where(PerformancePlan.plan_revision_id == plan_revision_id, PerformancePlan.status == "adopted")):
                 freeze_performance_snapshot(session, plan_revision_id, boundary_snapshot)

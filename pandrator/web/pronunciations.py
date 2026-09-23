@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import regex as unicode_regex
-from pandrator.logic.dubbing.text_units import pronunciation_pattern
 import unicodedata
 from typing import Any
 
+import regex as unicode_regex
 from sqlalchemy import or_, select
+
+from pandrator.logic.dubbing.text_units import pronunciation_pattern
 
 from .database import Database
 from .models import PronunciationEntry, SessionRecord, utcnow
-
 
 _COMBINING_MARK_CATEGORIES = frozenset({"Mc", "Me", "Mn"})
 _DISALLOWED_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf"})
@@ -136,7 +136,7 @@ def apply_reviewed_pronunciations(
 
     selected: list[tuple[int, int, str]] = []
     occupied: list[tuple[int, int]] = []
-    for start, end, rank, replacement in sorted(
+    for start, end, _rank, replacement in sorted(
         candidates,
         key=lambda item: (-(item[1] - item[0]), item[2], item[0]),
     ):

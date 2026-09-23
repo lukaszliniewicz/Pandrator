@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 from sqlalchemy import func, select
 
+from pandrator.web import models as m
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web import models as m
 
 SRT = "1\n00:00:01,000 --> 00:00:03,000\nHello, world.\n\n2\n00:00:04,000 --> 00:00:06,000\nA second complete thought.\n"
 
@@ -482,9 +482,10 @@ class SessionSourcePlanControlTests(unittest.TestCase):
     def test_file_bundle_after_reset_skips_tombstones_and_includes_attached_source(
         self,
     ):
-        import zipfile
         import json
+        import zipfile
         from pathlib import Path
+
         from pandrator.web.bundles import SessionBundleService
 
         replacement = self.upload(

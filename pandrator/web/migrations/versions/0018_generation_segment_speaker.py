@@ -1,8 +1,7 @@
 """Preserve structured speaker provenance on generation segments."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0018_generation_segment_speaker"
 down_revision = "0017_job_progress_detail"

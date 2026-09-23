@@ -7,8 +7,8 @@ from sqlalchemy import select
 from pandrator.web.models import (
     Artifact,
     AudioTake,
-    GenerationRun,
     GenerationPlanRevision,
+    GenerationRun,
     Job,
     UsageEvent,
 )

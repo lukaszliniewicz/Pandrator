@@ -108,6 +108,35 @@ test('model catalogue stays usable on a narrow screen and recovers from an API e
   await expect(page.locator('article')).toHaveCount(10);
 });
 
+test('ElevenLabs details render instruction scope and capability notes', async ({
+  page
+}) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await signIn(page);
+  await page
+    .getByRole('combobox', { name: 'Provider', exact: true })
+    .selectOption('elevenlabs');
+  await page.getByLabel('Recommended starting points').uncheck();
+  await page
+    .getByRole('button', { name: 'Apply filters', exact: true })
+    .click();
+  const v3 = page.locator('article').filter({
+    has: page.getByRole('heading', { name: 'Eleven v3', exact: true })
+  });
+  await v3
+    .getByText('Languages, licence and controls', { exact: true })
+    .click();
+  await expect(v3.getByText('Direction scope:', { exact: true })).toBeVisible();
+  await expect(
+    v3.getByText(/no hard scope, reset, or timing guarantee/)
+  ).toBeVisible();
+  await expect(
+    v3.getByText(/these request options may be ignored/)
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('voice design uses catalogue models, languages and their own licence', async ({
   page
 }, info) => {

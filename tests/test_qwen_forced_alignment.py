@@ -18,7 +18,7 @@ from pandrator.logic.dubbing.caption_alignment import (
     align_caption_cues,
     map_ctc_words_to_cues,
 )
-from pandrator.logic.dubbing.crispasr import ctc_language_problem, _align_moss_segments
+from pandrator.logic.dubbing.crispasr import _align_moss_segments, ctc_language_problem
 from pandrator.logic.media_edit import MediaCue
 
 

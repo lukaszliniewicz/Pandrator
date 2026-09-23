@@ -37,7 +37,10 @@ export type DetailRequest = {
   batchId: string | null;
 };
 
-export function historyEntryKey(item: { id: string; entry_id?: string }): string {
+export function historyEntryKey(item: {
+  id: string;
+  entry_id?: string;
+}): string {
   return item.entry_id ?? item.id;
 }
 
@@ -68,7 +71,11 @@ export function mergeRevisionDetail<T extends CheckedItem>(
     // Repair eligibility belongs to exactly one grouped entry: entries may
     // share a revision id across different repair batches, so only the
     // selected entry receives the authoritative batch.
-    if (batch !== null && batch !== undefined && historyEntryKey(item) === entryKey) {
+    if (
+      batch !== null &&
+      batch !== undefined &&
+      historyEntryKey(item) === entryKey
+    ) {
       merged = { ...merged, repair_batch: batch };
     }
     return merged;
@@ -90,7 +97,9 @@ export function createRevisionDetailLoader<T extends CheckedItem>(
       revision: DetailAudio;
       active_revision_id: string | null | undefined;
     }>;
-    fetchBatch: (batchId: string) => Promise<{ repair_batch: T['repair_batch'] }>;
+    fetchBatch: (
+      batchId: string
+    ) => Promise<{ repair_batch: T['repair_batch'] }>;
   },
   toErrorMessage: (caught: unknown) => string
 ) {

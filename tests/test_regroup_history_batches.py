@@ -10,10 +10,10 @@ database tests run against a disposable app database.
 
 from __future__ import annotations
 
+import unittest
 import wave
 from datetime import datetime, timezone
 from types import SimpleNamespace
-import unittest
 
 import pytest
 from sqlalchemy import func, select
@@ -36,9 +36,7 @@ from pandrator.web.repair_batches import (
     UNDO_REPAIR_REASON,
     capture_repair_base,
     record_accepted_repair,
-    repair_state_hash,
 )
-
 
 # ---------------------------------------------------------------------------
 # Pure history projection helpers (no database).

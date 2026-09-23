@@ -4,9 +4,8 @@ Revision ID: 0020_capability_snapshots
 Revises: 0019_job_lease_fencing
 """
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0020_capability_snapshots"
 down_revision = "0019_job_lease_fencing"

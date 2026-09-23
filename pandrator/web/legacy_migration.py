@@ -35,7 +35,6 @@ from .models import (
     new_id,
 )
 
-
 MIGRATION_VERSION = 1
 GENERATION_PROMOTION_VERSION = 1
 _SECRET_KEYS = {"api_key", "token", "password", "secret", "access_token", "refresh_token"}

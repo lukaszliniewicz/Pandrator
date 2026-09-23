@@ -8,7 +8,6 @@ from typing import Iterable
 
 from .catalog import INSTALL_COMPONENT_KEYS, resolve_dependencies
 
-
 PASSWORD_SCOPES = ("none", "local", "remote", "all")
 # Match the Manager catalogue. Explicit 0.6B selections remain supported for
 # Base-model voice cloning; this fallback is only for missing/invalid legacy

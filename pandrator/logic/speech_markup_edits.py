@@ -386,7 +386,7 @@ def edit_speech_markup_range(
         # copy of the source effective scope, preserving metadata outside the
         # selected range even when the range crosses existing scopes.
         cuts = sorted({left, right, max(left, start), min(right, end)})
-        for fragment_start, fragment_end in zip(cuts, cuts[1:]):
+        for fragment_start, fragment_end in zip(cuts, cuts[1:], strict=False):
             if fragment_end <= fragment_start:
                 continue
             fragment = replace(

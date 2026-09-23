@@ -8,13 +8,13 @@ each engine's wire format.
 
 from __future__ import annotations
 
-from .text_units import join_fragments
-
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+from .text_units import join_fragments
 
 
 class TranscriptFormatError(ValueError):

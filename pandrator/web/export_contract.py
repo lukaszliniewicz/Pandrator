@@ -7,7 +7,6 @@ from typing import Any
 
 from .source_resolution import PrimarySourceResolution
 
-
 EXPORT_CONTRACT_VERSION = 1
 EXPORT_MODES = frozenset({"media", "audio", "subtitles", "text"})
 AUDIO_MODE_ALIASES = {

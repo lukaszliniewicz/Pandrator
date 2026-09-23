@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pydub.generators import Sine
 
-from pandrator.logic.dubbing.audio_sync import alignment_adjustment, align_audio_blocks
+from pandrator.logic.dubbing.audio_sync import align_audio_blocks, alignment_adjustment
 from pandrator.logic.dubbing.models import AudioAlignmentBlock
 from pandrator.web.voiceover_repair import TimingGroup, advance_timing
 
@@ -66,7 +66,7 @@ def test_real_assembly_and_repair_preview_share_cue_local_placement(backend):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         paths = [root / "reply.wav", root / "closing.wav"]
-        for path, duration in zip(paths, [400, 1005]):
+        for path, duration in zip(paths, [400, 1005], strict=False):
             Sine(440).to_audio_segment(duration=duration).export(path, format="wav")
         blocks = [
             AudioAlignmentBlock(number="1", text="Ja.", start_ms=0, end_ms=640,

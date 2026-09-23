@@ -1,8 +1,8 @@
 """Cross-stage passage identity and real speech timing, without model or TTS calls."""
 
 from copy import deepcopy
-from types import SimpleNamespace
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -28,8 +28,8 @@ from pandrator.web.models import (
     TimedWord,
 )
 from pandrator.web.voiceover_repair import _load_groups
-from tests import test_web_dispatch as dispatch_tests
 from tests import test_dubbing_llm_translation as translation_tests
+from tests import test_web_dispatch as dispatch_tests
 
 
 @pytest.fixture
@@ -553,6 +553,7 @@ def test_changed_source_file_does_not_silently_use_saved_passages(app_case):
 
 def test_translation_schemas_reject_ambiguous_and_boolean_ids():
     from pydantic import ValidationError
+
     from pandrator.web.schemas import DispatchTranslationItem
     from pandrator_mcp.schemas.dispatch import DispatchTranslationItemInput
 

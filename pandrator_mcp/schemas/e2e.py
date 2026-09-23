@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .common import ToolInput
 
@@ -134,6 +135,28 @@ class AudioCppCatalogueInput(ToolInput):
     offset: int = Field(default=0, ge=0, le=10_000)
 
 
+class ElevenLabsVoiceSettingsInput(ToolInput):
+    stability: float | None = Field(default=None, ge=0, le=1)
+    similarity_boost: float | None = Field(default=None, ge=0, le=1)
+    style: float | None = Field(default=None, ge=0, le=1)
+    speed: float | None = Field(default=None, ge=0.25, le=4)
+    use_speaker_boost: bool | None = Field(default=None, strict=True)
+
+    @field_validator("stability", "similarity_boost", "style", "speed", mode="before")
+    @classmethod
+    def finite_numeric(cls, value):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("Voice settings require finite numeric values.")
+        return value
+
+    @field_validator("use_speaker_boost", mode="before")
+    @classmethod
+    def strict_boolean(cls, value):
+        if type(value) is not bool:
+            raise ValueError("use_speaker_boost requires a boolean.")
+        return value
+
+
 class ConfigureTtsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     service_id: str = Field(
@@ -157,6 +180,12 @@ class ConfigureTtsInput(ToolInput):
         max_length=12_000,
         description="Natural-language delivery/style instructions, when supported.",
     )
+    tts_context_mode: Literal["off", "before", "both"] | None = None
+    performance_context_before: int | None = Field(default=None, ge=0, le=20)
+    performance_context_after: int | None = Field(default=None, ge=0, le=20)
+    performance_context_max_chars: int | None = Field(default=None, ge=0, le=16_000)
+    performance_allow_vocalizations: bool | None = None
+    elevenlabs_voice_settings: ElevenLabsVoiceSettingsInput | None = None
     expected_revision: int = Field(
         ge=0,
         description="Current revision of the session's tts settings section.",

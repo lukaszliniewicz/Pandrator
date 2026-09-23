@@ -37,6 +37,7 @@ async function fixture(
     active_segment_count: 2,
     reusable_segment_count: 2,
     stale_segment_count: 0,
+    audio_reuse_checked: true,
     source_artifact_id: null,
     reviewed: false,
     compatible: true

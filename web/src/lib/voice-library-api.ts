@@ -1,7 +1,7 @@
 import { apiJson } from './api';
 import { dedupeInflight } from './inflight-dedupe';
 
-export type TraitEvidence = {
+type TraitEvidence = {
   source: 'user' | 'provider' | 'design_request' | 'audition_review';
   status: 'requested' | 'described' | 'reviewed';
   artifact_id?: string | null;

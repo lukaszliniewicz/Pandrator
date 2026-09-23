@@ -58,7 +58,7 @@ spellings and prompt-separated semantic context. Unknown routes must not inherit
 capabilities merely because another model in the family supports them.
 
 Pandrator compiles `pandrator.performance/v1` annotations into Fish S2 inline
-controls, capable Qwen/OpenAI instruction fields, Gemini's labelled prompt, and
+controls, capable Qwen/OpenAI instruction fields, Gemini's labelled prompt, Eleven v3 audio tags, and
 supported event-only formats. Never put native provider tags into the stored
 transcript. Preview an actual block with `pandrator_preview_performance_plan` to
 see applied, approximate, unsupported and disabled controls without synthesizing.
@@ -82,3 +82,35 @@ For searchable profiles, collections, voice design, reference import and passive
 multi-voice casting, read the `voice-casting` guide. Start with
 `pandrator_get_voice_capabilities` and `pandrator_get_voice_catalog`; use
 `generation-controls` for the XML and character dictionary contract.
+
+## Configure directions and context in one operation
+
+`pandrator_configure_tts` can atomically set `style_instructions`,
+`tts_context_mode` (`off`, `before`, or `both`), `performance_context_before`,
+`performance_context_after`, `performance_context_max_chars`, and
+`performance_allow_vocalizations` along with the exact service/model/voice.
+Inspect the full catalogue first: unsupported or unknown requested controls are
+rejected before saving. Omitted options keep existing values; an empty style
+clears it. Configuration does not analyse, adopt a performance plan, or generate
+speech.
+
+For Gemini, configure `tts_context_mode="both"`, the desired neighbour counts,
+and a context budget in the same call as `style_instructions`. This automates
+context setup; Pandrator derives each request's neighbours from the accepted
+speech plan. Keep scene/language boundaries and inspect a compiled preview.
+
+For ElevenLabs, `eleven_v3` supports inline direction and mapped vocal tags but
+not preceding/following stitching fields. Supported v2/v2.5 models support those
+native context fields but not v3 expressive tags. Never transfer controls by
+provider name alone. Optional `elevenlabs_voice_settings` replaces the settings
+object; `{}` restores provider defaults. Native REST requests accept
+stability/similarity_boost/style 0–1, speed 0.25–4 and boolean
+use_speaker_boost. The helper validates these before saving. Provider documentation
+differs on non-stability settings for v3; they are forwarded but reported as
+approximate and may be ignored. Existing Turbo v2.5
+selections remain discoverable; upstream recommends Flash v2.5 for new work.
+
+For direct whole-block or phrase edits use `pandrator_preview_speech_selection`
+and `pandrator_apply_speech_selection`, following the `generation-controls`
+guide. `pandrator_update_generation_segment` changes text, voice, or language;
+it is not a delivery-instruction editor.

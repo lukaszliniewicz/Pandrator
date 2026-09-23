@@ -3,9 +3,8 @@ from unittest.mock import patch
 
 import pytest
 from pydub import AudioSegment
-from sqlalchemy import select
 
-from pandrator.web.models import AudioTake, GenerationPlanRevision, GenerationRun, Job
+from pandrator.web.models import GenerationPlanRevision, GenerationRun, Job
 
 
 @pytest.fixture

@@ -4,17 +4,16 @@ from collections.abc import Iterable
 
 from pandrator.logic.dubbing.subtitle_finalization import SubtitleFinalizationConfig
 from pandrator.logic.dubbing.subtitle_rebalancing import (
-    _SourceWord,
-    _TokenTime,
     _candidate_range,
-    _estimated_token_times,
     _ends_clause,
     _ends_sentence,
+    _estimated_token_times,
     _source_silences,
+    _SourceWord,
     _stranded_fragment,
+    _TokenTime,
     rebalance_display_cues,
 )
-
 
 SPEAKER = "Luke Liniewicz"
 OTHER_SPEAKER = "Pascal Schilling"

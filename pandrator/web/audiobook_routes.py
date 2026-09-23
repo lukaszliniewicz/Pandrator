@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
-from .audiobook_setup import configure_audiobook_setup, get_audiobook_setup
 from .audiobook_schemas import (
     AudiobookSetupConfigureRequest,
     SpeechPlanPreviewRequest,
 )
+from .audiobook_setup import configure_audiobook_setup, get_audiobook_setup
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .speech_plan_preview import preview_speech_segment
 from .workspace import RevisionConflict

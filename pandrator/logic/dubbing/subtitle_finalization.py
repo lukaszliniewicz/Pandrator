@@ -7,10 +7,9 @@ reading and export.
 
 from __future__ import annotations
 
-from bisect import bisect_right
-
 import logging
 import re
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from itertools import pairwise
@@ -20,13 +19,18 @@ from statistics import median
 from typing import Any
 
 from .. import sentence_segmenter
-from .models import SubtitleSegment
 from .languages import normalize_language_code
-from .text_units import (
-    clean_text, contains_cjk, display_length, infer_cjk_language,
-    join_fragments, subtitle_units, fragment_separator,
-)
+from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
+from .text_units import (
+    clean_text,
+    contains_cjk,
+    display_length,
+    fragment_separator,
+    infer_cjk_language,
+    join_fragments,
+    subtitle_units,
+)
 from .transcript_normalization import (
     NormalizedTranscript,
     TimedSegment,
@@ -199,7 +203,10 @@ def _layout_units(text: str, config: SubtitleFinalizationConfig) -> list[str]:
 
 def _wrap_cjk_text(text: str, config: SubtitleFinalizationConfig) -> str:
     units = _layout_units(text, config)
-    join = lambda items: "".join(items).strip(" \t\r\n")
+
+    def join(items):
+        return "".join(items).strip(" \t\r\n")
+
     if config.max_lines == 2:
         candidates = []
         for index in range(1, len(units)):
@@ -518,7 +525,7 @@ def _split_segment(segment: SubtitleSegment, config: SubtitleFinalizationConfig)
 
     cursor = start_ms
     output: list[SubtitleSegment] = []
-    for index, (chunk, duration_ms) in enumerate(zip(chunks, durations)):
+    for _index, (chunk, duration_ms) in enumerate(zip(chunks, durations, strict=False)):
         if sequential:
             end = min(source_end_ms, cursor + duration_ms)
         else:
@@ -1292,7 +1299,7 @@ def compose_transcript_segments_with_ownership(
     adjusted = _adjust_durations([item.cue for item in ordered], config)
     final_segments: list[SubtitleSegment] = []
     word_segment_ordinals: dict[int, int] = {}
-    for index, (item, cue) in enumerate(zip(ordered, adjusted), start=1):
+    for index, (item, cue) in enumerate(zip(ordered, adjusted, strict=False), start=1):
         final_cue = SubtitleSegment(
             index=index,
             start_ms=cue.start_ms,

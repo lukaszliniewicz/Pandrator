@@ -14,14 +14,36 @@ Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.9.4/PandratorManager-0.9.24-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.9.4/PandratorManager-0.9.24-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.9.4 / Manager 0.9.24
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.10.0 / Manager 0.9.25
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
+
+## New in 0.10.0
+
+- **Direct a whole block or a phrase.** Review speaker assignments, emotions,
+  delivery directions, and explicit vocal sounds without changing the spoken
+  words. Inspect the compiled request before generating audio.
+- **Find the right model and voice.** Browse local and cloud capabilities,
+  languages, licences, model variants, saved references, and voice collections.
+- **Automate the setup through MCP.** Configure Gemini directions with preceding
+  and following context, use model-specific ElevenLabs controls, and preview
+  and apply guarded phrase edits.
+- **Transcribe and align more languages.** Use Qwen ASR and forced alignment,
+  optional vocal isolation, and improved CJK speech/subtitle handling.
+- **Work with larger sessions.** Generation rows and history load on demand;
+  continuation keeps completed recordings and shows exactly what will change.
+- **Stronger development checks.** Pinned Ruff and basedpyright checks, targeted
+  debt cleanup, and CI gates help keep fixes from regressing. See the
+  [code quality policy](docs/development/code-quality.md).
+
+See [speech directions](docs/reference/generation-controls.md),
+[provider controls](docs/speech-performance.md), and the
+[release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.10.0).
 
 ## Try your first workflow
 
@@ -194,6 +216,7 @@ XTTS training benefits strongly from an NVIDIA GPU.
 | Runtime / provider | Models and capabilities |
 | --- | --- |
 | **CrispASR (local)** | **Whisper large-v3** for multilingual transcription, **Parakeet TDT 0.6B v3** with native word timing, and **MOSS Transcribe-Diarize 0.9B** with speaker diarization. |
+| **Qwen3 ASR / ForcedAligner through audio.cpp (local)** | Multilingual transcription and alignment of accepted captions; selectable model packages and language controls. |
 | **Canary CTC (local)** | Forced alignment for existing captions and MOSS word timing; aligns text to audio. |
 | **Azure Speech (cloud)** | **MAI-Transcribe-2** and **MAI-Transcribe-1.5**, with word timing; these profiles do not provide diarization. |
 

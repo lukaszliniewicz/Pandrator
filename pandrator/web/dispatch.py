@@ -24,9 +24,9 @@ from pandrator.logic.dubbing.llm_translation import (
     build_translation_task_instructions,
     merge_glossaries,
     parse_translation_items_details,
-    parse_translation_response_details,
     parse_translation_passage_items_details,
     parse_translation_passage_response_details,
+    parse_translation_response_details,
 )
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.settings import normalize_correction_style

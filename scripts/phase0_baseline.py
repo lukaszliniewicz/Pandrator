@@ -26,38 +26,40 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from unittest import mock
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pydub import AudioSegment
-from sqlalchemy import event, select
-from sqlalchemy.orm import Session as OrmSession
+# Keep this import block after the repository-root sys.path bootstrap above.
+from pydub import AudioSegment  # noqa: E402
+from sqlalchemy import event, select  # noqa: E402
+from sqlalchemy.orm import Session as OrmSession  # noqa: E402
 
-from pandrator.runtime import DataPaths
-from pandrator.web.artifacts import ArtifactService
-from pandrator.web.audio_assembly import (
+from pandrator.runtime import DataPaths  # noqa: E402
+from pandrator.web.artifacts import ArtifactService  # noqa: E402
+from pandrator.web.audio_assembly import (  # noqa: E402
     AudioAssemblyPart,
     assemble_audio_plan,
     build_audio_assembly_plan,
 )
-from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.capabilities import probe_stable_capabilities
-from pandrator.web.database import Database, upgrade_database
-from pandrator.web.jobs import JobQueue
-from pandrator.web.models import (
+from pandrator.web.auth import BootstrapTokenStore  # noqa: E402
+from pandrator.web.capabilities import probe_stable_capabilities  # noqa: E402
+from pandrator.web.database import Database, upgrade_database  # noqa: E402
+from pandrator.web.jobs import JobQueue  # noqa: E402
+from pandrator.web.models import (  # noqa: E402
     Artifact,
     AudioTake,
     GenerationRun,
     GenerationSegment,
     Job,
 )
-from pandrator.web.sessions import SessionService
-from pandrator.web.workflow_handlers import WorkflowHandlers
-from pandrator.web.workflows import WorkflowService
-from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
-
+from pandrator.web.sessions import SessionService  # noqa: E402
+from pandrator.web.workflow_handlers import WorkflowHandlers  # noqa: E402
+from pandrator.web.workflows import WorkflowService  # noqa: E402
+from pandrator.web.workspace import (  # noqa: E402
+    GenerationService,
+    WorkspaceSettingsService,
+)
 
 TARGET_BUDGETS = {
     "job_claim": {
@@ -234,7 +236,7 @@ def benchmark_job_claims(
         results = _run_concurrently(
             database.path,
             contenders,
-            lambda candidate_queue, index: (
+            lambda candidate_queue, index, trial=trial: (
                 claimed.id if (claimed := candidate_queue.claim(f"phase0-claim-{trial}-{index}")) else None
             ),
             delay_statement=is_candidate_read,
@@ -303,7 +305,7 @@ def benchmark_resource_acquisition(
         results = _run_concurrently(
             database.path,
             2,
-            lambda candidate_queue, index: candidate_queue.acquire_resources(
+            lambda candidate_queue, index, jobs=jobs, trial=trial, resource_key=resource_key, claimed=claimed: candidate_queue.acquire_resources(
                 jobs[index].id,
                 f"phase0-resource-{trial}-{index}",
                 [resource_key],
@@ -466,7 +468,7 @@ def benchmark_generation_assembly(
         take_artifact_ids.append(artifact.id)
 
     with database.session() as session:
-        for segment, artifact_id in zip(segments, take_artifact_ids):
+        for segment, artifact_id in zip(segments, take_artifact_ids, strict=False):
             managed = session.get(GenerationSegment, segment.id)
             managed.status = "completed"
             session.add(

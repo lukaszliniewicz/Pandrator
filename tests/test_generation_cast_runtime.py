@@ -7,16 +7,17 @@ import pytest
 from pydub import AudioSegment
 from sqlalchemy import select
 
-from tests.test_performance_plans import case as case, create, adopt, get
 from pandrator.logic.speech_performance import compile_performance
 from pandrator.web import models as m
+from pandrator.web.generation_audio_identity import AudioIdentityContext
+from pandrator.web.generation_cast_runtime import combine_source_markup
 from pandrator.web.generation_controls import (
     get_generation_controls,
     save_generation_controls,
 )
-from pandrator.web.generation_audio_identity import AudioIdentityContext
-from pandrator.web.generation_cast_runtime import combine_source_markup
 from pandrator.web.tts_providers import TtsCapabilities
+from tests.test_performance_plans import adopt, create, get
+from tests.test_performance_plans import case as case
 
 
 def test_cast_design_description_keeps_general_delivery_direction(monkeypatch):
@@ -772,6 +773,7 @@ def test_timed_annotated_cues_remain_integral_and_store_document_markup(case):
 
 def test_configured_annotation_only_skips_word_rewriting_and_retains_srt_markup(case):
     import json
+
     from pandrator.logic.llm_handler import ChatCompletionResult
 
     handlers = case["services"]["workflow_handlers"]

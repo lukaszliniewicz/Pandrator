@@ -49,7 +49,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-
 GENERATION_MODES = ("passage", "legacy")
 DEFAULT_GENERATION_MODE = "passage"
 

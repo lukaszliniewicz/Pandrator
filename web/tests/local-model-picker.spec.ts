@@ -231,19 +231,25 @@ test('grouped picker nests quants under variants and selects an exact Qwen id', 
   await expect(
     dialog.getByRole('radio', { name: /qwen3_tts_1_7b_base_bf16/ })
   ).toHaveAccessibleName(/Loaded/);
-  await page.screenshot({ path: testInfo.outputPath('grouped-models-desktop.png') });
+  await page.screenshot({
+    path: testInfo.outputPath('grouped-models-desktop.png')
+  });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect.poll(async () => {
-    const box = await dialog.boundingBox();
-    return box ? box.x + box.width : Infinity;
-  }).toBeLessThanOrEqual(390);
+  await expect
+    .poll(async () => {
+      const box = await dialog.boundingBox();
+      return box ? box.x + box.width : Infinity;
+    })
+    .toBeLessThanOrEqual(390);
   const bounds = await dialog.boundingBox();
   expect(bounds).not.toBeNull();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
   expect(bounds!.y).toBeGreaterThanOrEqual(0);
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844);
-  await page.screenshot({ path: testInfo.outputPath('grouped-models-mobile.png') });
+  await page.screenshot({
+    path: testInfo.outputPath('grouped-models-mobile.png')
+  });
   await page.setViewportSize({ width: 1280, height: 720 });
   await dialog.getByRole('button', { name: /1\.7B CustomVoice/ }).click();
   await dialog

@@ -10,7 +10,7 @@ import webbrowser
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
@@ -98,15 +98,14 @@ class ManagerEnrollmentSummary:
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
-    server: "_CallbackServer"
-
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         if parsed.path != "/callback":
             self.send_error(404)
             return
-        self.server.authorization_response = (
-            f"http://127.0.0.1:{self.server.server_port}{self.path}"
+        server = cast(_CallbackServer, self.server)
+        server.authorization_response = (
+            f"http://127.0.0.1:{server.server_port}{self.path}"
         )
         body = (
             b"<!doctype html><title>Pandrator enrollment</title>"
@@ -119,10 +118,10 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        self.server.callback_event.set()
+        server.callback_event.set()
 
-    def log_message(self, _format: str, *args: object) -> None:
-        _ = args
+    def log_message(self, format: str, *args: object) -> None:
+        _ = (format, args)
 
 
 class _CallbackServer(ThreadingHTTPServer):
@@ -276,12 +275,15 @@ def enroll_target(
         redirect_uri=redirect_uri,
         code_challenge_method="S256",
     )
-    oauth.trust_env = False
+    # Authlib OAuth2Session inherits requests.Session at runtime; its stub omits
+    # Session methods and attributes used for this pinned transport boundary.
+    oauth_transport = cast(requests.Session, oauth)
+    oauth_transport.trust_env = False
     adapter = PinnedAddressAdapter(
         target.application.origin,
         target.application.addresses,
     )
-    oauth.mount(f"{target.application.origin}/", adapter)
+    oauth_transport.mount(f"{target.application.origin}/", adapter)
     verify: bool | str = target.application.ca_bundle or True
     proxies = (
         {
@@ -398,7 +400,7 @@ def enroll_target(
             callback_server.server_close()
         if callback_thread is not None:
             callback_thread.join(timeout=2)
-        oauth.close()
+        oauth_transport.close()
         adapter.close()
 
 
@@ -519,6 +521,7 @@ def enroll_manager_recovery(
     token_url = f"{endpoint.origin}/v1/automation/token"
     try:
         identity_status = 0
+        identity_response: requests.Response | None = None
         try:
             identity_response = session.get(
                 identity_url,
@@ -537,7 +540,7 @@ def enroll_manager_recovery(
                 retryable=True,
             ) from error
         finally:
-            if "identity_response" in locals():
+            if identity_response is not None:
                 identity_response.close()
         if (
             identity_status != 200
@@ -641,6 +644,7 @@ def enroll_manager_recovery(
                 "Manager recovery authorization was denied or invalid.",
             )
         token_status = 0
+        token_response: requests.Response | None = None
         try:
             token_response = session.post(
                 token_url,
@@ -667,18 +671,15 @@ def enroll_manager_recovery(
                 "Manager rejected the one-use recovery enrollment response.",
             ) from error
         finally:
-            if "token_response" in locals():
+            if token_response is not None:
                 token_response.close()
         if not isinstance(token_payload, dict):
             raise PandratorMcpError(
                 "authentication_required",
                 "Manager returned an invalid recovery enrollment response.",
             )
-        principal = (
-            token_payload.get("principal")
-            if isinstance(token_payload.get("principal"), dict)
-            else {}
-        )
+        supplied_principal = token_payload.get("principal")
+        principal = supplied_principal if isinstance(supplied_principal, dict) else {}
         returned_scopes = tuple(
             sorted(
                 str(item)

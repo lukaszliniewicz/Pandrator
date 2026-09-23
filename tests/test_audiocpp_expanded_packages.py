@@ -7,7 +7,6 @@ from pandrator_manager.components.audiocpp import (
     SUPPORTED_MODEL_IDS,
 )
 
-
 EXPANDED_PACKAGES = {
     "qwen3_tts_0_6b_base_q8_0": {
         "family": "qwen3_tts",

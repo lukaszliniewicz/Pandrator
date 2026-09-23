@@ -1,9 +1,11 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import pytest
 import requests
 
 from pandrator.logic import tts_handler, tts_provider_profiles
+from pandrator.logic.speech_performance import compile_performance
 from pandrator.web.credentials import TTS_SERVICE_ENVS, redact_inline_secrets
 from pandrator.web.tts_providers import (
     ElevenLabsAdapter,
@@ -71,6 +73,86 @@ class ElevenLabsRequestTests(unittest.TestCase):
             {"output_format": "mp3_44100_128"}, post.call_args.kwargs["params"]
         )
         self.assertEqual(300, post.call_args.kwargs["timeout"])
+
+    @patch("pandrator.logic.tts_handler.requests.post")
+    def test_v3_request_compiles_inline_controls_and_matches_preview(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings.update({
+            "xtts_model": "eleven_multilingual_v2",
+            "elevenlabs_model": "eleven_v3",
+            "generation_prompt": "Restrained",
+            "performance_allow_vocalizations": True,
+            "tts_context_mode": "both",
+            "_semantic_context": {"before": "Before.", "after": "After."},
+            "_performance": {
+                "decision": "steer",
+                "spans": [{"anchor": {"quote": "there"}, "delivery": {"emphasis": "strong"}}],
+                "events": [{"kind": "sigh", "position": "before"}],
+            },
+            "elevenlabs_voice_settings": {"stability": 0.5},
+        })
+        endpoint = {
+            "id": "my-eleven-endpoint", "adapter": "elevenlabs_native",
+            "api_base": "https://custom.example.test", "api_key": "custom-key",
+        }
+        preview = compile_performance("Hello there.", settings, endpoint)
+        tts_handler._request_elevenlabs_audio("Hello there.", settings, endpoint=endpoint)
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual("eleven_v3", payload["model_id"])
+        self.assertEqual(preview.input, payload["text"])
+        self.assertIn("[sighs]", payload["text"])
+        self.assertIn("[strong emphasis]there", payload["text"])
+        self.assertEqual({"stability": 0.5}, payload["voice_settings"])
+        self.assertNotIn("instructions", payload)
+        self.assertNotIn("previous_text", payload)
+        self.assertNotIn("next_text", payload)
+        self.assertEqual("https://custom.example.test/v1/text-to-speech/voice%2Fwith%20spaces%3Fx", post.call_args.args[0])
+        self.assertEqual("custom-key", post.call_args.kwargs["headers"]["xi-api-key"])
+
+    @patch("pandrator.logic.tts_handler.requests.post")
+    def test_older_model_request_sends_only_selected_context(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings.update({
+            "tts_context_mode": "before",
+            "_semantic_context": {"before": "Previous.", "after": "Next."},
+            "generation_prompt": "Unsupported instruction.",
+            "elevenlabs_voice_settings": {"stability": 0.4, "similarity_boost": 0.8,
+                                           "style": 0.2, "speed": 1.1,
+                                           "use_speaker_boost": False},
+        })
+        tts_handler._request_elevenlabs_audio("Current.", settings)
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual("Current.", payload["text"])
+        self.assertEqual("Previous.", payload["previous_text"])
+        self.assertNotIn("next_text", payload)
+        self.assertNotIn("instructions", payload)
+        self.assertEqual(settings["elevenlabs_voice_settings"], payload["voice_settings"])
+        settings["tts_context_mode"] = "both"
+        tts_handler._request_elevenlabs_audio("Current.", settings)
+        self.assertEqual("Next.", post.call_args.kwargs["json"]["next_text"])
+        settings["tts_context_mode"] = "off"
+        tts_handler._request_elevenlabs_audio("Current.", settings)
+        self.assertNotIn("previous_text", post.call_args.kwargs["json"])
+        self.assertNotIn("next_text", post.call_args.kwargs["json"])
+
+    @patch("pandrator.logic.tts_handler.requests.post")
+    def test_unknown_model_discards_unsupported_controls(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings.update({"elevenlabs_model": "future_model", "generation_prompt": "Do not speak.",
+                         "tts_context_mode": "both", "_semantic_context": {"before": "Earlier."}})
+        tts_handler._request_elevenlabs_audio("Current.", settings)
+        self.assertEqual({"text": "Current.", "model_id": "future_model"}, post.call_args.kwargs["json"])
+
+    @patch("pandrator.logic.tts_handler.requests.post")
+    def test_empty_voice_settings_are_omitted(self, post):
+        post.return_value = _response({}, status_code=200)
+        settings = self._settings()
+        settings["elevenlabs_voice_settings"] = {}
+        tts_handler._request_elevenlabs_audio("Current.", settings)
+        self.assertNotIn("voice_settings", post.call_args.kwargs["json"])
 
     @patch("pandrator.logic.tts_handler.requests.post")
     def test_native_request_normalizes_language_for_supporting_model(self, post):
@@ -167,6 +249,55 @@ class ElevenLabsRequestTests(unittest.TestCase):
         post.side_effect = requests.exceptions.Timeout()
         with self.assertRaisesRegex(RuntimeError, "timed out"):
             tts_handler._request_elevenlabs_audio("Hello", self._settings())
+
+
+@pytest.mark.parametrize("value", [
+    {"stability": True}, {"stability": float("nan")},
+    {"style": float("inf")}, {"speed": 0.24}, {"speed": 4.01},
+    {"similarity_boost": 1.01}, {"use_speaker_boost": 1},
+    {"unknown": 0.5}, ["stability"],
+])
+def test_invalid_elevenlabs_voice_settings_fail_before_http(value):
+    settings = ElevenLabsRequestTests()._settings()
+    settings["elevenlabs_voice_settings"] = value
+    with patch("pandrator.logic.tts_handler.requests.post") as post:
+        with pytest.raises(ValueError, match="ElevenLabs"):
+            tts_handler._request_elevenlabs_audio("Text.", settings)
+        post.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [
+    {"stability": 0.3},
+    {"stability": 0.3, "similarity_boost": 0.5, "style": 0.5,
+     "speed": 4.0, "use_speaker_boost": True},
+    {"speed": 0.25},
+])
+def test_v3_accepts_valid_generic_voice_settings_with_qualified_report(value):
+    settings = ElevenLabsRequestTests()._settings()
+    settings["elevenlabs_model"] = "eleven_v3"
+    settings["elevenlabs_voice_settings"] = value
+    compiled = compile_performance("Text.", settings)
+    assert compiled.request_options["voice_settings"] == value
+    approximated = [
+        item for item in compiled.report
+        if item["control"] == "voice_settings" and item["status"] == "approximated"
+    ]
+    assert bool(approximated) is any(key != "stability" for key in value)
+    with patch("pandrator.logic.tts_handler.requests.post") as post:
+        post.return_value = _response({}, status_code=200)
+        tts_handler._request_elevenlabs_audio("Text.", settings)
+        assert post.call_args.kwargs["json"]["voice_settings"] == value
+
+
+def test_blank_legacy_model_is_rejected_by_preview_and_runtime_before_http():
+    settings = ElevenLabsRequestTests()._settings()
+    settings["elevenlabs_model"] = "  "
+    with pytest.raises(ValueError, match="Select an ElevenLabs model"):
+        compile_performance("Text.", settings)
+    with patch("pandrator.logic.tts_handler.requests.post") as post:
+        with pytest.raises(ValueError, match="Select an ElevenLabs model"):
+            tts_handler._request_elevenlabs_audio("Text.", settings)
+        post.assert_not_called()
 
 
 class ElevenLabsCatalogueTests(unittest.TestCase):

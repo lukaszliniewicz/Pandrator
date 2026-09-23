@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 from pandrator.logic.dubbing.logical_passages import build_source_passages
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.source_passage_settings import (
-    SOURCE_PASSAGE_DEFAULTS,
     SOURCE_PASSAGE_POLICY_VERSION,
     effective_source_passage_settings,
     normalize_source_passage_settings,

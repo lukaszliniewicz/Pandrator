@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from unittest import mock
 
 from pandrator.logic import tts_handler, tts_provider_profiles
 from pandrator.logic.audio_cpp_catalogue import inventory, package_metadata
 from pandrator.logic.model_catalogue import _catalogue_rows, catalogue_page
+from pandrator.logic.speech_performance import capabilities_for_model
 
 
 def _item(provider_id: str, model_id: str) -> dict:
@@ -18,7 +20,15 @@ def test_catalogue_has_local_cloud_and_static_azure_models():
 
     assert page["schema_version"] == 1
     assert page["runtime_version"]
-    assert {"audio_cpp", "xtts", "openai", "gemini", "vertex_ai", "azure"} <= provider_ids
+    assert {
+        "audio_cpp",
+        "xtts",
+        "openai",
+        "gemini",
+        "vertex_ai",
+        "azure",
+        "elevenlabs",
+    } <= provider_ids
     assert page["total"] > 1
     assert page["next_offset"] == 1
     assert page["items"][0]["provider_id"] == "audio_cpp"
@@ -37,6 +47,12 @@ def test_catalogue_has_local_cloud_and_static_azure_models():
     assert azure["pandrator_features"]["instructions"] == "none"
     assert azure["pandrator_features"]["voice_design"] == "none"
     assert azure["pandrator_features"]["vocal_events"] == "none"
+    assert any(
+        "azure_speech_style" in note
+        and "general pSSML" in note
+        and "every voice" in note
+        for note in azure["pandrator_features"]["capability_notes"]
+    )
     assert azure["upstream_features"] == {"emotion_control": True}
     assert "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices" in azure["sources"]
     assert "https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices" in azure["sources"]
@@ -65,14 +81,32 @@ def test_cloud_capabilities_are_model_and_provider_specific():
 
     gemini = _item("gemini", "gemini-2.5-flash-preview-tts")
     vertex = _item("vertex_ai", "gemini-2.5-flash-tts")
-    expected = ["emotion_control", "instructions", "prebuilt_voices"]
+    expected = [
+        "emotion_control",
+        "instructions",
+        "prebuilt_voices",
+        "vocal_events",
+    ]
     assert gemini["capabilities"] == expected
     assert vertex["capabilities"] == expected
     assert gemini["catalogue_id"] == "gemini:gemini-2.5-flash-preview-tts"
     assert vertex["catalogue_id"] == "vertex_ai:gemini-2.5-flash-tts"
-    assert "vocal_events" not in gemini["capabilities"]
-    assert gemini["pandrator_features"]["vocal_events"] == "none"
-    assert vertex["pandrator_features"]["vocal_events"] == "none"
+    for item, backend in ((gemini, "gemini"), (vertex, "vertex_ai")):
+        profile = capabilities_for_model(
+            item["id"], backend=backend, family=item["family"], voice_mode=item["voice_mode"]
+        )
+        assert item["pandrator_features"]["vocal_events"] == ", ".join(
+            profile["event_tags"]
+        )
+        assert item["pandrator_features"]["instruction_scope"] == ", ".join(
+            profile["instruction_scope"]
+        )
+        assert item["pandrator_features"]["semantic_context"] == profile[
+            "semantic_context"
+        ]
+        assert item["pandrator_features"]["capability_notes"] == profile["notes"]
+    assert "laugh" in gemini["pandrator_features"]["vocal_events"]
+    assert "gasp" in vertex["pandrator_features"]["vocal_events"]
     assert gemini["catalogue_id"] != vertex["catalogue_id"]
 
     rows = catalogue_page(provider="gemini", limit=100)["items"]
@@ -81,6 +115,48 @@ def test_cloud_capabilities_are_model_and_provider_specific():
     )
     vertex_rows = catalogue_page(provider="vertex_ai", limit=100)["items"]
     assert {row["id"] for row in vertex_rows} >= set(tts_handler.VERTEX_TTS_MODELS)
+
+
+def test_elevenlabs_models_distinguish_v3_directions_from_v2_and_setup_state():
+    provider_rows = {
+        row["id"]: row
+        for row in catalogue_page(provider="elevenlabs", limit=100)["items"]
+    }
+    assert {
+        "eleven_v3",
+        "eleven_multilingual_v2",
+        "eleven_flash_v2_5",
+        "eleven_turbo_v2_5",
+    } <= set(provider_rows)
+
+    v3 = provider_rows["eleven_v3"]
+    v3_profile = capabilities_for_model(
+        "eleven_v3", backend="elevenlabs_native", voice_mode="prebuilt"
+    )
+    assert v3["pandrator_features"]["instructions"] == "inline"
+    assert v3["pandrator_features"]["instruction_scope"] == "request, span"
+    assert v3["pandrator_features"]["vocal_events"] == ", ".join(
+        v3_profile["event_tags"]
+    )
+    assert v3["pandrator_features"]["capability_notes"] == v3_profile["notes"]
+
+    v2 = provider_rows["eleven_multilingual_v2"]
+    assert v2["pandrator_features"]["instructions"] == "none"
+    assert v2["pandrator_features"]["instruction_scope"] == "none"
+    assert v2["pandrator_features"]["vocal_events"] == "none"
+    assert "instructions" not in v2["capabilities"]
+    assert "vocal_events" not in v2["capabilities"]
+
+    turbo = provider_rows["eleven_turbo_v2_5"]
+    assert turbo["upstream_status"] == "deprecated"
+    assert turbo["recommended_for"] == ""
+    assert turbo["package_availability"]["status"] == "external_service"
+    assert any("eleven_flash_v2_5" in note for note in turbo["pandrator_features"]["capability_notes"])
+    for model in provider_rows.values():
+        assert model["package_availability"]["status"] == "external_service"
+        assert not {"multi_speaker", "sound_generation", "sound_effects"} & set(
+            model.get("capabilities", [])
+        )
 
 
 def test_provider_filter_search_and_capability_alias_keep_facets_independent():
@@ -131,13 +207,16 @@ def test_pagination_is_deterministic_and_catalogue_ids_are_unique():
     assert second["offset"] == 9
     assert len({row["catalogue_id"] for row in first["items"] + second["items"]}) == 18
     combined = first["items"] + second["items"]
-    sort_key = lambda row: (
-        row["provider_name"].casefold(),
-        row["family"].casefold(),
-        row["label"].casefold(),
-        row["id"].casefold(),
-        row["id"],
-    )
+
+    def sort_key(row: dict) -> tuple:
+        return (
+            row["provider_name"].casefold(),
+            row["family"].casefold(),
+            row["label"].casefold(),
+            row["id"].casefold(),
+            row["id"],
+        )
+
     assert combined == sorted(combined, key=sort_key)
 
 
@@ -186,10 +265,21 @@ def test_catalogue_does_not_emit_connection_or_runtime_state():
     def check(value):
         if isinstance(value, dict):
             assert not ({str(key).casefold() for key in value} & forbidden)
-            for nested in value.values():
+            for key, nested in value.items():
+                if key == "capability_notes":
+                    assert isinstance(nested, list)
+                    assert all(isinstance(note, str) for note in nested)
+                    assert all(
+                        not any(
+                            marker in note.casefold()
+                            for marker in ("http://", "https://", "api_key", "api key", "base_url", "secret")
+                        )
+                        for note in nested
+                    )
                 check(nested)
         elif isinstance(value, list):
             for nested in value:
                 check(nested)
 
     check(page)
+    json.dumps(page)

@@ -11,11 +11,11 @@ import secrets
 import shutil
 import signal
 import socket
-import sys
-import webbrowser
-import subprocess
 import sqlite3
+import subprocess
+import sys
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +36,16 @@ from .process_identity import (
 )
 from .service import HeadlessInstaller
 from .supervisor import ManagedProcessSpec, ProcessSupervisor
-from .update import health_check, install_wheel, restore_database, restore_installed_package, run_migrations, snapshot_installed_package, snapshot_sqlite, verify_release_manifest
-
+from .update import (
+    health_check,
+    install_wheel,
+    restore_database,
+    restore_installed_package,
+    run_migrations,
+    snapshot_installed_package,
+    snapshot_sqlite,
+    verify_release_manifest,
+)
 
 LIFECYCLE_COMMANDS = {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"}
 
@@ -401,7 +409,7 @@ def _open_browser(url: str) -> None:
         if not opened:
             try:
                 if is_windows():
-                    os.startfile(url)  # type: ignore[attr-defined]
+                    os.startfile(url)
                 elif sys.platform == "darwin":
                     subprocess.Popen(["open", url])
                 else:

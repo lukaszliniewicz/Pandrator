@@ -196,7 +196,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 ).all()
             )
             segment_ids = [segment.id for segment in segments]
-        for index, (segment_id, duration) in enumerate(zip(segment_ids, (100, 140))):
+        for index, (segment_id, duration) in enumerate(
+            zip(segment_ids, (100, 140), strict=False)
+        ):
             path = self.session_dir / f"take-{index}.wav"
             Sine(440 + index * 110).to_audio_segment(duration=duration).export(
                 path, format="wav"
@@ -620,7 +622,9 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 ).all()
             )
             segment_ids = [segment.id for segment in segments]
-        for index, (segment_id, duration) in enumerate(zip(segment_ids, (100, 150))):
+        for index, (segment_id, duration) in enumerate(
+            zip(segment_ids, (100, 150), strict=False)
+        ):
             path = self.session_dir / f"subtitle-take-{index}.wav"
             Sine(440 + index * 110).to_audio_segment(duration=duration).export(
                 path, format="wav"

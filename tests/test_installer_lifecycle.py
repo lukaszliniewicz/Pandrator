@@ -1,16 +1,25 @@
+import base64
 import contextlib
+import hashlib
 import io
 import json
 import sys
 import tempfile
 import unittest
-import base64
-import hashlib
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
-from pandrator_installer.cli import main as launcher_main, parse_launcher_cli_args, run_headless_install_from_cli
-from pandrator_installer.lifecycle import SERVICE_HEALTH_URLS, _owned_service_processes, _runtime_specs, main
+from pandrator_installer.cli import main as launcher_main
+from pandrator_installer.cli import (
+    parse_launcher_cli_args,
+    run_headless_install_from_cli,
+)
+from pandrator_installer.lifecycle import (
+    SERVICE_HEALTH_URLS,
+    _owned_service_processes,
+    _runtime_specs,
+    main,
+)
 from pandrator_installer.models import WorkspacePaths, normalize_password_scope
 from pandrator_installer.supervisor import ProcessSupervisor
 from pandrator_installer.update import verify_release_manifest

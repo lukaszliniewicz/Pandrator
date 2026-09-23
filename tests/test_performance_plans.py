@@ -9,17 +9,17 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
-from pandrator.web.api import create_app
-from pandrator.web.auth import BootstrapTokenStore
+from pandrator.logic.speech_performance import compile_performance
 from pandrator.web import models as m
 from pandrator.web import performance_plans as plans
+from pandrator.web.api import create_app
+from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_audio_identity import AudioIdentityContext
 from pandrator.web.speech_plan_workspace import (
     freeze_speech_snapshot,
     frozen_semantic_contexts,
     segment_performance_settings,
 )
-from pandrator.logic.speech_performance import compile_performance
 
 
 @pytest.fixture
@@ -471,6 +471,7 @@ def test_real_generation_runner_applies_frozen_performance_to_each_short_request
     case, batch_size
 ):
     from pydub import AudioSegment
+
     from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 
     adopt(case, edit(case, create(case)))

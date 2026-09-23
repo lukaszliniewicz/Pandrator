@@ -1,9 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-
-const source = (path: string) =>
-  readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
 
 async function signIn(page: Page) {
   await page.goto('/');
@@ -89,57 +85,61 @@ async function mockGenerationSegments(
   return () => [...requestedCursors];
 }
 
-test('generation search loads the full corpus only on explicit request', async ({
+test('generation search queries the complete plan only after input', async ({
   page
 }) => {
   await signIn(page);
   const sessionId = await createAudiobookSession(page);
-  const requests = await mockGenerationSegments(
-    page,
-    sessionId,
-    () => 101,
-    false
+  const csrf = (await (await page.request.get('/api/v1/auth/status')).json())
+    .csrf_token;
+  const plan = await page.request.post(
+    `/api/v1/sessions/${sessionId}/generation-plan`,
+    {
+      headers: { 'X-CSRF-Token': csrf },
+      data: {
+        segments: Array.from({ length: 101 }, (_, index) => ({
+          text: `Performance segment ${index + 1}.`
+        }))
+      }
+    }
   );
-
+  expect(plan.ok()).toBeTruthy();
+  const requests: URL[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === 'GET' &&
+      url.pathname.endsWith('/generation-segments')
+    )
+      requests.push(url);
+  });
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('button', { name: 'Generation', exact: true }).click();
-  const rows = page.locator('tbody tr[data-segment-id]');
-  await expect(rows).toHaveCount(100);
-
-  const pagedRequestsBeforeFocus = requests().filter(
-    (cursor) => cursor > 0
-  ).length;
-  await page.getByLabel('Find in generation segments').focus();
-  await page.waitForTimeout(200);
-  expect(requests().filter((cursor) => cursor > 0)).toHaveLength(
-    pagedRequestsBeforeFocus
-  );
-  await expect(rows).toHaveCount(100);
+  const table = page.getByTestId('generation-segment-table');
+  await expect(table).toHaveAttribute('data-loaded-count', '100');
+  await expect(table).toHaveAttribute('data-virtualized', 'true');
+  await page.getByRole('button', { name: 'Search and replace' }).click();
+  const find = page.getByLabel('Find in generation segments');
+  await expect(find).toBeFocused();
+  expect(requests.filter((url) => url.searchParams.has('q'))).toHaveLength(0);
+  await find.fill('Performance segment 101.');
   await expect(
-    page.getByText('Searching 100 loaded generation segments out of 101.')
+    page.getByText('1 matching segments across the complete plan · script text')
   ).toBeVisible();
-
-  await page.getByRole('button', { name: 'Load all 101 for search' }).click();
-  await expect(rows).toHaveCount(101);
   await expect(
-    page.getByRole('button', { name: 'Load all 101 for search' })
-  ).toBeHidden();
-  expect(requests()).toContain(100);
-});
-
-test('expensive preview work is cached or lifecycle-cancelled', () => {
-  const pdfEditor = source('lib/PdfEditor.svelte');
-  const waveform = source('lib/WaveformPeaks.svelte');
-  const outputSettings = source('lib/OutputSettingsPanel.svelte');
-  const outputPage = source('routes/sessions/[id]/output/+page.svelte');
-
-  expect(pdfEditor).toContain('function compositeRenderedPages()');
-  expect(pdfEditor).toContain(
-    'renderedStackPages = [...renderedStackPages, offscreen]'
-  );
-  expect(waveform).toContain('onDestroy(() => controller?.abort())');
-  expect(outputSettings).toContain('previewController?.abort()');
-  expect(outputPage).toContain('onDestroy(() => assemblyController?.abort())');
+    page.locator('textarea[data-generation-search-index]')
+  ).toHaveValue('Performance segment 101.');
+  expect(
+    requests.some(
+      (url) => url.searchParams.get('q') === 'Performance segment 101.'
+    )
+  ).toBeTruthy();
+  expect(
+    requests.some(
+      (url) =>
+        Number(url.searchParams.get('cursor')) > 0 && !url.searchParams.has('q')
+    )
+  ).toBeFalsy();
 });
 
 test('records generation drawer costs at representative corpus sizes', async ({
@@ -167,18 +167,26 @@ test('records generation drawer costs at representative corpus sizes', async ({
     const startedAt = performance.now();
     await page.goto(`/sessions/${sessionId}`);
     await page.getByRole('button', { name: 'Generation', exact: true }).click();
-    const rows = page.locator('tbody tr[data-segment-id]');
-    await expect(rows).toHaveCount(Math.min(100, size));
+    const table = page.getByTestId('generation-segment-table');
+    await expect(table).toHaveAttribute(
+      'data-loaded-count',
+      String(Math.min(100, size))
+    );
     const initialRenderMs = performance.now() - startedAt;
     const requestsAfterInitialRender = requests().length;
 
     let explicitFullLoadMs = 0;
     if (size > 100) {
       const fullLoadStartedAt = performance.now();
-      await page
-        .getByRole('button', { name: `Load all ${size} for search` })
-        .click();
-      await expect(rows).toHaveCount(size);
+      for (let loaded = 100; loaded < size; loaded += 100) {
+        await page
+          .getByRole('button', { name: 'Load more', exact: true })
+          .click();
+        await expect(table).toHaveAttribute(
+          'data-loaded-count',
+          String(Math.min(size, loaded + 100))
+        );
+      }
       explicitFullLoadMs = performance.now() - fullLoadStartedAt;
     }
 

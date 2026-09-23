@@ -18,8 +18,8 @@ import regex
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA = "pandrator.performance/v1"
-COMPILER_VERSION = "pssml-1.2"
-CAPABILITY_VERSION = "2026-09-20.1"
+COMPILER_VERSION = "pssml-1.3"
+CAPABILITY_VERSION = "2026-09-23.1"
 
 
 def content_hash(value: Any) -> str:
@@ -147,7 +147,7 @@ def validate_annotation(
         else PerformanceAnnotation.model_validate(value)
     )
     ranges = sorted(anchor_range(text, item.anchor) for item in annotation.spans)
-    if any(left[1] > right[0] for left, right in zip(ranges, ranges[1:])):
+    if any(left[1] > right[0] for left, right in zip(ranges, ranges[1:], strict=False)):
         raise ValueError(
             "Overlapping performance spans are not supported; combine their directions."
         )
@@ -177,6 +177,14 @@ _GEMINI_EVENTS = {
 _TURBO_EVENTS = {"laugh": "laugh", "chuckle": "chuckle", "cough": "cough"}
 _BREEZE_EVENTS = {"laugh": "laugh", "cough": "cough", "clear_throat": "clears throat", "sigh": "sigh"}
 _BREEZE_ZH_EVENTS = {"laugh": "笑", "cough": "咳嗽", "clear_throat": "清嗓子", "sigh": "叹气"}
+_ELEVEN_V3_EVENTS = {"laugh": "laughs", "sigh": "sighs", "clear_throat": "clears throat"}
+_ELEVEN_STITCHING_MODELS = {
+    "eleven_multilingual_v2",
+    "eleven_flash_v2",
+    "eleven_flash_v2_5",
+    "eleven_turbo_v2",
+    "eleven_turbo_v2_5",
+}
 
 
 def capabilities_for_model(
@@ -216,7 +224,28 @@ def capabilities_for_model(
     }
     audio_cpp = route in {"audio_cpp", "audiocpp", "audio_cpp_server"}
     gemini = route in {"gemini", "google_gemini", "vertex_ai", "google_vertex_ai"}
-    if gemini and "tts" in normalized:
+    elevenlabs = route in {"elevenlabs", "elevenlabs_native"}
+    if elevenlabs and model == "eleven_v3":
+        profile.update(
+            status="documented",
+            dialect="eleven_v3",
+            instructions="inline",
+            instruction_scope=["request", "span"],
+            emotion={"mode": "open_description", "tags": []},
+            event_tags=dict(_ELEVEN_V3_EVENTS),
+        )
+        profile["notes"].append(
+            "Inline directions and restoration are model-interpreted; no hard scope, reset, or timing guarantee."
+        )
+        profile["notes"].append(
+            "Provider documentation differs on non-stability voice settings for Eleven v3; these request options may be ignored by the selected model."
+        )
+    elif elevenlabs and model in _ELEVEN_STITCHING_MODELS:
+        profile.update(status="documented", semantic_context="field")
+        profile["notes"].append(
+            "Previous and next text are unspoken stitching context, subject to model interpretation."
+        )
+    elif gemini and "tts" in normalized:
         profile.update(
             status="documented",
             dialect="gemini",
@@ -357,7 +386,7 @@ def capabilities_for_model(
 def decorate_service_capabilities(service: dict[str, Any]) -> None:
     """Expose one backend-authoritative capability view to UI and MCP clients."""
     route = str(service.get("adapter") or "")
-    if route != "audio_cpp":
+    if route not in {"audio_cpp", "elevenlabs_native"}:
         route = str(service.get("provider") or service.get("id") or "")
     catalog = service.get("model_catalog") or []
     metadata = {
@@ -406,6 +435,7 @@ def resolve_capabilities(
             str(settings.get("tts_service") or ""),
             str(settings.get("openai_audio_endpoint") or ""),
             str(settings.get("xtts_model") or ""),
+            str(settings.get("elevenlabs_model") or ""),
             str(settings.get("model") or ""),
             bool(settings.get("audio_cpp_voice_ref")),
         )
@@ -415,15 +445,21 @@ def resolve_capabilities(
     if endpoint is None:
         selected = str(settings.get("openai_audio_endpoint") or service_name)
         endpoint = tts_handler.get_service_config(settings, selected, _cache=_service_config_cache) or {}
+    route = str(endpoint.get("adapter") or "")
+    if route not in {"audio_cpp", "elevenlabs_native"}:
+        route = str(endpoint.get("provider") or endpoint.get("id") or service_name)
     model = str(
-        settings.get("xtts_model")
+        (settings.get("elevenlabs_model") if route in {"elevenlabs", "elevenlabs_native"} else None)
+        or settings.get("xtts_model")
         or settings.get("model")
         or endpoint.get("default_model")
+        or (tts_handler.ELEVENLABS_TTS_DEFAULT_MODEL if route in {"elevenlabs", "elevenlabs_native"} else "")
         or ""
     )
-    route = str(endpoint.get("adapter") or "")
-    if route != "audio_cpp":
-        route = str(endpoint.get("provider") or endpoint.get("id") or service_name)
+    if route in {"elevenlabs", "elevenlabs_native"}:
+        model = model.strip()
+        if not model:
+            raise ValueError("Select an ElevenLabs model before generating speech.")
     if route.casefold() in {
         "openai compatible",
         "openai-compatible",
@@ -457,9 +493,14 @@ def resolve_capabilities(
     )
     if route == "audio_cpp" and metadata.get("family") == "fireredtts3" and settings.get("audio_cpp_voice_ref"):
         # v0.8.1 reuses the instruction slot for the reference transcript.
-        profile.update(instructions="none", voice_design=False)
+        profile.update(
+            instructions="none",
+            instruction_scope=[],
+            voice_design=False,
+            emotion={"mode": "none", "tags": []},
+        )
         profile["notes"].append("FireRed cloning uses the instruction slot for the reference transcript; delivery directions are unavailable in this mode.")
-    if cache_key is not None:
+    if cache_key is not None and _service_config_cache is not None:
         _service_config_cache[cache_key] = deepcopy(profile)
     return profile
 
@@ -660,7 +701,7 @@ def compile_performance(
             opening, closing = "(", ")"
         inserts.setdefault(position, []).append((priority, f"{opening}{tag}{closing}"))
 
-    inline = dialect in {"fish_s2", "gemini"}
+    inline = dialect in {"fish_s2", "gemini", "eleven_v3"}
     if combined:
         if capability["instructions"] == "none":
             note(
@@ -673,7 +714,7 @@ def compile_performance(
                 raise ValueError("VoxCPM2 direction must not contain nested parentheses or control tokens.")
             inserts.setdefault(0, []).append((0, f"({combined.replace(chr(10), '; ')})"))
             note("applied", "direction", "Compiled as a VoxCPM2 style prefix.")
-        elif dialect == "fish_s2":
+        elif dialect in {"fish_s2", "eleven_v3"}:
             # General directions are user input, not pSSML: reject nested control
             # syntax instead of creating malformed tags or reading it as speech.
             combined = (
@@ -683,10 +724,10 @@ def compile_performance(
             )
             if re.search(r"[\[\]\x00]|<\||\|>", combined):
                 raise ValueError(
-                    "Fish speech direction must be plain text without nested control tags."
+                    "Inline speech direction must be plain text without nested control tags."
                 )
             insert(0, 0, combined.replace("\n", "; "))
-            note("applied", "direction", "Compiled as an inline Fish direction.")
+            note("applied", "direction", "Compiled as an inline direction.")
         else:
             instructions = combined
             note(
@@ -791,19 +832,21 @@ def compile_performance(
     if len(before) + len(after) > 16000:
         raise ValueError("Semantic context exceeds the maximum 16000 characters.")
     if before or after:
-        if capability["semantic_context"] != "prompt":
+        if capability["semantic_context"] not in {"prompt", "field"}:
             note(
                 "unsupported",
                 "semantic_context",
                 "This route cannot receive unspoken text context; use the contextual performance pass.",
             )
             before = after = ""
-        else:
+        elif capability["semantic_context"] == "prompt":
             note(
                 "approximated",
                 "semantic_context",
                 "Read-only text context is prompt-separated, not an enforced hidden channel.",
             )
+        else:
+            note("applied", "semantic_context", "Compiled as unspoken provider stitching fields.")
     base_input, base_instructions = provider_input, instructions
 
     def render_request(context_before: str, context_after: str) -> tuple[str, str]:
@@ -871,6 +914,27 @@ def compile_performance(
                 f"Vertex TTS request exceeds the {vertex_limit}-byte UTF-8 limit."
             )
     request_options: dict[str, Any] = {}
+    if route in {"elevenlabs", "elevenlabs_native"}:
+        voice_settings = settings.get("elevenlabs_voice_settings")
+        if voice_settings is not None:
+            from .tts_handler import _validated_elevenlabs_voice_settings
+
+            validated = _validated_elevenlabs_voice_settings(voice_settings)
+            if validated:
+                request_options["voice_settings"] = validated
+                if str(capability["model"]) == "eleven_v3" and any(
+                    key != "stability" for key in validated
+                ):
+                    note(
+                        "approximated",
+                        "voice_settings",
+                        "Non-stability Eleven v3 voice settings are sent, but the model may ignore them.",
+                    )
+    if capability["semantic_context"] == "field":
+        if before:
+            request_options["previous_text"] = before
+        if after:
+            request_options["next_text"] = after
     if native_emotion:
         request_options["emotion"] = native_emotion
         note("applied", "emotion", "Compiled as a NeuTTS emotion option.")

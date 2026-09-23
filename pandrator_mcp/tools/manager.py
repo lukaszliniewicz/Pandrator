@@ -139,11 +139,8 @@ def manager_status_projection(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     if payload.get("available") is False:
-        error = (
-            payload.get("error")
-            if isinstance(payload.get("error"), dict)
-            else {}
-        )
+        error = payload.get("error")
+        error = error if isinstance(error, dict) else {}
         return {
             "schema_version": "1",
             "available": False,
@@ -158,21 +155,12 @@ def manager_status_projection(
                 ),
             },
         }
-    status = (
-        payload.get("status")
-        if isinstance(payload.get("status"), dict)
-        else payload
-    )
-    health = (
-        payload.get("health")
-        if isinstance(payload.get("health"), dict)
-        else {}
-    )
-    identity = (
-        payload.get("identity")
-        if isinstance(payload.get("identity"), dict)
-        else {}
-    )
+    status = payload.get("status")
+    status = status if isinstance(status, dict) else payload
+    health = payload.get("health")
+    health = health if isinstance(health, dict) else {}
+    identity = payload.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
     return {
         "schema_version": "1",
         "available": True,
@@ -234,11 +222,8 @@ def manager_doctor_projection(
                     ),
                 }
             )
-    summary = (
-        payload.get("summary")
-        if isinstance(payload.get("summary"), dict)
-        else {}
-    )
+    summary = payload.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
     return {
         "schema_version": "1",
         "healthy": bool(payload.get("healthy")),
@@ -349,11 +334,8 @@ def manager_plan_projection(
         for component_id, state in sorted(source_desired.items()):
             if not isinstance(state, dict):
                 continue
-            options = (
-                state.get("options")
-                if isinstance(state.get("options"), dict)
-                else {}
-            )
+            options = state.get("options")
+            options = options if isinstance(options, dict) else {}
             desired.append(
                 {
                     "component_id": _text(component_id, 160),
@@ -457,11 +439,8 @@ def _runtime_projection(
         for item in source_services[:100]:
             if not isinstance(item, dict):
                 continue
-            health = (
-                item.get("health")
-                if isinstance(item.get("health"), dict)
-                else {}
-            )
+            health = item.get("health")
+            health = health if isinstance(health, dict) else {}
             services.append(
                 {
                     "id": _text(item.get("id"), 160),

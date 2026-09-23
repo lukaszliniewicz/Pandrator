@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-import unittest
 
 from pandrator.web.generation_run_history import build_generation_run_history
 from pandrator_mcp.schemas.e2e import ListGenerationRunsInput

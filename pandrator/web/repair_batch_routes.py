@@ -4,7 +4,11 @@ from flask import jsonify, request
 
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .repair_batch_schemas import RepairBatchUndoRequest
-from .repair_batches import grouped_revision_history, repair_batch_detail, undo_repair_batch_in_session
+from .repair_batches import (
+    grouped_revision_history,
+    repair_batch_detail,
+    undo_repair_batch_in_session,
+)
 from .workspace import RevisionConflict
 
 

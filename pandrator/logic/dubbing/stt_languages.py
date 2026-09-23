@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from .languages import normalize_language_code
 
-
 # Source: NVIDIA's official Hugging Face model card for
 # nvidia/parakeet-tdt-0.6b-v3 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
 PARAKEET_V3_LANGUAGE_CODES = (

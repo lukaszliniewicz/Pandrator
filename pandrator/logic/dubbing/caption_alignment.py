@@ -851,7 +851,10 @@ def align_caption_cues(
                     raise
                 except (qwen_alignment.QwenAlignmentError, OSError, ValueError) as error:
                     results = [error] * len(requests)
-                prepared_results.update((str(request[2]), result) for request, result in zip(requests, results))
+                prepared_results.update(
+                    (str(request[2]), result)
+                    for request, result in zip(requests, results, strict=False)
+                )
             if cancel_event is not None and cancel_event.is_set():
                 raise ProcessCancelled("Caption alignment was canceled.")
             if progress:

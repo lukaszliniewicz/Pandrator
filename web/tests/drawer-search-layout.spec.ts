@@ -391,7 +391,7 @@ test.describe('drawer search Ctrl+K', () => {
 });
 
 for (const workflowKind of ['audiobook', 'voiceover'] as const) {
-  test(`segment actions share the delivery row in ${workflowKind} mode`, async ({
+  test(`segment actions and options stay within the row in ${workflowKind} mode`, async ({
     page
   }, testInfo) => {
     await page.setViewportSize({ width: 1600, height: 900 });
@@ -411,10 +411,14 @@ for (const workflowKind of ['audiobook', 'voiceover'] as const) {
     });
     await expect(table.locator('thead th')).toHaveCount(5);
     await expect(row.locator(':scope > td')).toHaveCount(5);
-    await expect(table.locator('tr.boundary-row td').first()).toHaveAttribute(
-      'colspan',
-      '5'
-    );
+    if (workflowKind === 'voiceover') {
+      await expect(table.locator('tr.boundary-row td').first()).toHaveAttribute(
+        'colspan',
+        '5'
+      );
+    } else {
+      await expect(table.locator('tr.boundary-row')).toHaveCount(0);
+    }
     await expect(actions).toBeVisible();
     await expect(
       actions.getByRole('button', { name: 'Remove segment', exact: true })
@@ -429,19 +433,20 @@ for (const workflowKind of ['audiobook', 'voiceover'] as const) {
     await expect(split).toBeDisabled();
     await expect(regenerate).toBeEnabled();
 
-    // The three delivery dropdowns and the action group are siblings in one
-    // flexible row. At desktop width they share a vertical centre line.
-    const alignment = await actions.evaluate((group) => {
-      const rect = group.getBoundingClientRect();
-      return Array.from(
-        group.parentElement!.querySelectorAll(':scope > select')
-      ).map((select) => {
-        const box = select.getBoundingClientRect();
-        return Math.abs(box.y + box.height / 2 - rect.y - rect.height / 2);
-      });
+    const options = actions.getByRole('button', {
+      name: 'Options for segment 1',
+      exact: true
     });
-    expect(alignment).toHaveLength(3);
-    for (const offset of alignment) expect(offset).toBeLessThanOrEqual(2);
+    await options.click();
+    const optionsPanel = page.getByRole('dialog', {
+      name: 'Options for segment 1',
+      exact: true
+    });
+    await expect(optionsPanel.getByRole('combobox')).toHaveCount(3);
+    await expect(optionsPanel.getByLabel('Segment role')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(optionsPanel).toBeHidden();
+    await expect(options).toBeFocused();
 
     // Moving the controls must preserve the text-cursor guard and menu access.
     const text = narrative.locator('textarea').first();

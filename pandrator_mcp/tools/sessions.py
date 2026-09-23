@@ -141,7 +141,8 @@ def _artifact_projection(item: Any) -> dict[str, Any] | None:
 
 def _workflow_projection(payload: dict[str, Any]) -> dict[str, Any]:
     stages: list[dict[str, Any]] = []
-    source_stages = payload.get("stages") if isinstance(payload.get("stages"), list) else []
+    source_stages = payload.get("stages")
+    source_stages = source_stages if isinstance(source_stages, list) else []
     for source in source_stages[:50]:
         if not isinstance(source, dict):
             continue
@@ -173,7 +174,8 @@ def _workflow_projection(payload: dict[str, Any]) -> dict[str, Any]:
             if key in source
         }
         stage["artifact"] = _artifact_projection(source.get("artifact"))
-        history = source.get("artifacts") if isinstance(source.get("artifacts"), list) else []
+        history = source.get("artifacts")
+        history = history if isinstance(history, list) else []
         stage["artifacts"] = [
             projected
             for item in history[:20]
@@ -181,7 +183,8 @@ def _workflow_projection(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         stages.append(stage)
     sources: list[dict[str, Any]] = []
-    source_items = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+    source_items = payload.get("sources")
+    source_items = source_items if isinstance(source_items, list) else []
     for item in source_items[:50]:
         if not isinstance(item, dict):
             continue
@@ -213,7 +216,8 @@ def list_sessions(
         query=arguments.query,
         include_trashed=arguments.include_trashed or arguments.state == "trashed",
     )
-    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    items = payload.get("items")
+    items = items if isinstance(items, list) else []
     query_term = arguments.query.strip().casefold() if arguments.query else None
     filtered = []
     for item in items:
@@ -371,7 +375,8 @@ def list_sources(
     payload = runtime.require_application().list_sources(
         include_trashed=arguments.state == "trashed"
     )
-    source = payload.get("items") if isinstance(payload.get("items"), list) else []
+    source = payload.get("items")
+    source = source if isinstance(source, list) else []
     items: list[dict[str, Any]] = []
     query = str(arguments.query or "").casefold().strip()
     requested_kind = str(arguments.kind or "").casefold().strip()

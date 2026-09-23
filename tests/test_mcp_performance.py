@@ -7,9 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from pydantic import ValidationError
 import pytest
+from pydantic import ValidationError
 
+from pandrator.web.openapi import build_openapi_document
 from pandrator_mcp.catalog import ACTION_CATALOG
 from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.context import build_runtime
@@ -25,7 +26,6 @@ from pandrator_mcp.tools.performance import (
     performance_action,
     register_performance_tools,
 )
-from pandrator.web.openapi import build_openapi_document
 
 try:
     from mcp import Client

@@ -1,8 +1,7 @@
 """Preserve paragraph boundaries in generation plans."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0008_generation_paragraph_boundaries"
 down_revision = "0007_generation_optimization"

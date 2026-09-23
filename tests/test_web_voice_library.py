@@ -765,6 +765,16 @@ class VoiceLibraryApiTests(unittest.TestCase):
         self.assertEqual(3, updated.get_json()["revision"])
         self.assertEqual("Renamed narrator", updated.get_json()["name"])
 
+        busy_delete = self.client.delete(
+            f"/api/v1/voices/{voice['id']}",
+            headers={"X-CSRF-Token": self.csrf, "If-Match": '"3"'},
+        )
+        self.assertEqual(409, busy_delete.status_code)
+        self.assertEqual("voice_busy", busy_delete.get_json()["error"]["code"])
+
+        replacement_job = extension["jobs"].request_cancel(replacement.get_json()["id"])
+        self.assertEqual("canceled", replacement_job.status)
+
         removed = self.client.delete(
             f"/api/v1/voices/{voice['id']}",
             headers={"X-CSRF-Token": self.csrf, "If-Match": '"3"'},

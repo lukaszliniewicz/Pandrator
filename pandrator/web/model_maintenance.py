@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-
 AUDIO_CPP_COMPONENT_ID = "audio_cpp"
 """The component ID persisted by Manager plans for audio.cpp."""
 

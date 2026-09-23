@@ -1,6 +1,7 @@
 """Contextual performance sidecars and resumable leased analysis batches."""
 
 from __future__ import annotations
+
 import sqlalchemy as sa
 from alembic import op
 

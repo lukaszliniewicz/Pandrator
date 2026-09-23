@@ -19,10 +19,10 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from ..cancellable_process import ProcessCancelled, run_cancellable
-from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
-from .languages import normalize_language_code
-from .text_units import infer_cjk_language, join_fragments
 from . import qwen_alignment
+from .languages import normalize_language_code
+from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
+from .text_units import infer_cjk_language, join_fragments
 
 CRISPASR_VERSION = "0.8.32"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"

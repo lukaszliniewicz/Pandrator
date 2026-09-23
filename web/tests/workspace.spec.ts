@@ -20,7 +20,8 @@ async function createGenerationPlan(
     text: string;
     paragraph_break_after?: boolean;
     node_kind?: string;
-  }>
+  }>,
+  workflowKind: 'audiobook' | 'voiceover' = 'audiobook'
 ) {
   const authStatus = await page.request.get('/api/v1/auth/status');
   expect(authStatus.ok()).toBeTruthy();
@@ -31,7 +32,7 @@ async function createGenerationPlan(
     headers,
     data: {
       name: uniqueName('Reading mode regression'),
-      workflow_kind: 'audiobook'
+      workflow_kind: workflowKind
     }
   });
   expect(sessionResponse.ok()).toBeTruthy();
@@ -793,6 +794,7 @@ test('a selected correction checkpoint can fork a clean session branch', async (
   });
 
   await page.goto(`/sessions/${session.id}`);
+  await page.getByRole('button', { name: 'Show details', exact: true }).click();
   await page.getByRole('button', { name: 'Fork here' }).click();
   const dialog = page.getByRole('dialog', {
     name: 'Fork after correction'
@@ -816,6 +818,9 @@ test('provider defaults and restartable tours are keyboard reachable', async ({
 }) => {
   await signIn(page);
   await page.getByRole('link', { name: 'Providers & services' }).click();
+  await page
+    .getByRole('button', { name: 'LLM providers', exact: true })
+    .click();
   await expect(
     page.getByRole('heading', { name: 'LLM connections and models' })
   ).toBeVisible();
@@ -837,7 +842,7 @@ test('theme and setup dock remain available after navigation', async ({
   ).toBeVisible();
   await page.getByRole('link', { name: 'Continue setup' }).click();
   await expect(
-    page.getByRole('heading', { name: 'Prepare your studio' })
+    page.getByRole('heading', { name: 'Set up Pandrator' })
   ).toBeVisible();
   await page.getByRole('button', { name: 'Close setup checklist' }).click();
   await page.getByRole('button', { name: /Dark mode|Light mode/ }).click();
@@ -880,14 +885,16 @@ test('sessions page launches creation and workspace source picker exposes every 
   await page.getByRole('button', { name: 'Paste text' }).click();
   await page.getByLabel('Source name').fill('Pasted source');
   await page
-    .getByLabel('Text')
+    .getByRole('textbox', { name: 'Text', exact: true })
     .fill(
       'AİB cafe\u0301 cafe. This source source was pasted directly into an existing session.'
     );
   await page.getByLabel('Find in pasted source').fill('İ');
   await page.getByLabel('Replace in pasted source').fill('X');
   await page.getByRole('button', { name: 'Replace all' }).click();
-  await expect(page.getByLabel('Text')).toHaveValue(
+  await expect(
+    page.getByRole('textbox', { name: 'Text', exact: true })
+  ).toHaveValue(
     'AXB cafe\u0301 cafe. This source source was pasted directly into an existing session.'
   );
   await page.getByLabel('Find in pasted source').fill('cafe');
@@ -895,13 +902,17 @@ test('sessions page launches creation and workspace source picker exposes every 
   await page.getByRole('button', { name: 'Match whole word' }).click();
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Replace all' }).click();
-  await expect(page.getByLabel('Text')).toHaveValue(
+  await expect(
+    page.getByRole('textbox', { name: 'Text', exact: true })
+  ).toHaveValue(
     'AXB cafe\u0301 bistro. This source source was pasted directly into an existing session.'
   );
   await page.getByLabel('Find in pasted source').fill('source');
   await page.getByLabel('Replace in pasted source').fill('asset');
   await page.getByRole('button', { name: 'Replace all' }).click();
-  await expect(page.getByLabel('Text')).toHaveValue(
+  await expect(
+    page.getByRole('textbox', { name: 'Text', exact: true })
+  ).toHaveValue(
     'AXB cafe\u0301 bistro. This asset asset was pasted directly into an existing session.'
   );
   await page.getByRole('button', { name: 'Add and select' }).click();
@@ -946,7 +957,7 @@ test('voiceover output settings follow the video source and default to a control
 
   await page.goto(`/sessions/${session.id}/output`);
   await expect(
-    page.getByRole('heading', { name: 'Video output', exact: true })
+    page.getByRole('heading', { name: 'Voiceover output', exact: true })
   ).toBeVisible();
   await expect(page.getByLabel('Audio result')).toHaveValue('mixed');
   await expect(page.getByText('Soundtrack mix')).toBeVisible();
@@ -1026,13 +1037,15 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   const common = {
     origin: 'automatic',
     segment_count: 2,
+    active_segment_count: 2,
+    audio_reuse_checked: true,
     reusable_segment_count: 2,
     stale_segment_count: 0,
     source_artifact_id: null,
     summary: 'Repair speech running ahead of its cues',
     source_block_ordinal: 0
   };
-  await page.route(`**${endpoint}/generation-plan/revisions?*`, (route) =>
+  await page.route(`**${endpoint}/generation-plan/history?*`, (route) =>
     route.fulfill({
       json: {
         active_revision_id: activeId,
@@ -1205,10 +1218,14 @@ test('speech-block boundaries expose evidence and cursor edits are reversible', 
   page
 }) => {
   await signIn(page);
-  const sessionId = await createGenerationPlan(page, [
-    { text: 'A🙂 B' },
-    { text: 'A second block.', paragraph_break_after: true }
-  ]);
+  const sessionId = await createGenerationPlan(
+    page,
+    [
+      { text: 'A🙂 B' },
+      { text: 'A second block.', paragraph_break_after: true }
+    ],
+    'voiceover'
+  );
   const topologyRequests: Array<Record<string, unknown>> = [];
   page.on('request', (request) => {
     if (
@@ -1224,7 +1241,7 @@ test('speech-block boundaries expose evidence and cursor edits are reversible', 
   const rows = page.locator('tbody tr[data-segment-id]');
   await expect(rows).toHaveCount(2);
 
-  const text = rows.nth(0).locator('textarea');
+  const text = rows.nth(0).locator('textarea').first();
   await text.evaluate((node: HTMLTextAreaElement) => {
     // Browser offsets are UTF-16 code units; this lands after the emoji.
     node.setSelectionRange(3, 3);
@@ -1582,7 +1599,9 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await expect(regenerateAction).toBeFocused();
   await expect(alternateAction).toBeVisible();
   expect(revision).toBe(0);
-  await page.screenshot({ path: '/tmp/pandrator-regeneration-table.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-regeneration-table.png')
+  });
   await page.keyboard.press('ArrowDown');
   await expect(alternateAction).toBeFocused();
   await page.keyboard.press('Escape');
@@ -1635,7 +1654,9 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   expect(menuBounds!.y + menuBounds!.height).toBeLessThanOrEqual(
     page.viewportSize()!.height
   );
-  await page.screenshot({ path: '/tmp/pandrator-regeneration-reading.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-regeneration-reading.png')
+  });
   await alternateAction.click();
   await expect(
     page.getByRole('heading', { name: 'Regenerate 1 selected segment with…' })
@@ -1869,7 +1890,7 @@ test('selecting a take from history returns to Active mix without changing anoth
   await expect(deleteRun).toBeEnabled();
   page.once('dialog', async (dialog) => {
     expect(dialog.message()).toContain(
-      'audio takes, assembled audio, and regeneration history'
+      'audio takes, assembled audio, timing repairs, and regeneration history'
     );
     await dialog.dismiss();
   });
@@ -2196,7 +2217,7 @@ test('alternate regeneration sends one selected-only setting set and returns to 
       })
     })
   );
-  await page.route('**/api/v1/services/tts?refresh=true', (route) =>
+  await page.route(/\/api\/v1\/services\/tts(?:\?.*)?$/, (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -2400,6 +2421,9 @@ test('voice recording can be previewed, normalized, saved, and played', async ({
   const voiceName = uniqueName('Browser recorder');
   await signIn(page);
   await page.getByRole('link', { name: 'Voices' }).click();
+  await page
+    .getByRole('button', { name: 'Add reference', exact: true })
+    .click();
   await page.getByLabel('New voice name').fill(voiceName);
   await page.getByRole('button', { name: 'Add voice' }).click();
   await expect(page.getByRole('heading', { name: voiceName })).toBeVisible();

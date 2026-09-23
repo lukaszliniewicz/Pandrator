@@ -10,9 +10,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0022_source_asset_backfill"
 down_revision = "0021_query_path_indexes"

@@ -1,7 +1,7 @@
 // Unit coverage for web/src/lib/generation-virtual-window.ts.
 // Run: node unit-tests/generation-virtual-window.test.mjs (from web/).
 // No ports, no server, no build.
-/*global process, console */
+/*global console */
 import assert from 'node:assert/strict';
 import {
   buildOffsets,

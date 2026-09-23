@@ -1,7 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const SHOTS = '/home/lliniewicz/search-ui-shots';
-
 async function signIn(page: Page) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
@@ -114,7 +112,7 @@ test('audiobook search hides behind a toggle and keeps single-text behavior', as
   const toggle = page.getByRole('button', { name: 'Search and replace' });
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(page.getByLabel('Find in generation segments')).toBeHidden();
-  await page.screenshot({ path: `${SHOTS}/default-hidden.png` });
+  await page.screenshot({ path: test.info().outputPath('default-hidden.png') });
 
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -132,7 +130,9 @@ test('audiobook search hides behind a toggle and keeps single-text behavior', as
   const fields = page.locator('textarea[data-generation-search-index]');
   await expect(fields.nth(0)).toHaveValue('A dog waits.');
   await expect(fields.nth(1)).toHaveValue('A catfish and dog.');
-  await page.screenshot({ path: `${SHOTS}/audiobook-no-scope.png` });
+  await page.screenshot({
+    path: test.info().outputPath('audiobook-no-scope.png')
+  });
 
   await toggle.click();
   await expect(find).toBeHidden();
@@ -183,7 +183,9 @@ test('voiceover scope selector targets cue text or TTS text only', async ({
   await expect(page.getByText('1 / 1', { exact: true })).toBeVisible();
   await page.getByLabel('Replace in generation segments').fill('CUEWORD');
   await page.getByRole('button', { name: 'Replace', exact: true }).click();
-  await page.screenshot({ path: `${SHOTS}/voiceover-scope-replace.png` });
+  await page.screenshot({
+    path: test.info().outputPath('voiceover-scope-replace.png')
+  });
 
   saved = await segmentTexts(page, sessionId);
   expect(saved.find((item) => item.ordinal === 0)?.text).toContain('CUEWORD');

@@ -21,7 +21,6 @@ from .database import Database
 from .models import Artifact, ArtifactEdge, SessionRecord, SessionSource, SourceAsset
 from .sessions import SessionService
 
-
 BUNDLE_VERSION = 1
 ProgressCallback = Callable[[float, str | None], None]
 

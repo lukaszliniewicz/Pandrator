@@ -239,7 +239,13 @@ async function testAudioOnlyMergePreservesBatchAndDecorations() {
     undo_checked: true,
     can_undo: false
   });
-  const merged = mergeRevisionDetail([row], 'entry-x', 'rev-x', fullAudio, null);
+  const merged = mergeRevisionDetail(
+    [row],
+    'entry-x',
+    'rev-x',
+    fullAudio,
+    null
+  );
   assert.equal(merged.length, 1);
   const [next] = merged;
   assert.equal(next.reusable_segment_count, 1);

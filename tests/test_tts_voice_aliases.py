@@ -7,12 +7,12 @@ from copy import deepcopy
 import pytest
 
 from pandrator.logic.tts_provider_switch import normalize_tts_voice_aliases
-from pandrator.web.workspace import adapt_runtime_settings
+from pandrator.web.models import AppSetting, SessionSetting
 from pandrator.web.workflow_handlers import (
     _apply_segment_tts_overrides,
     _apply_selected_segment_tts_override,
 )
-from pandrator.web.models import AppSetting, SessionSetting
+from pandrator.web.workspace import adapt_runtime_settings
 from tests import test_web_settings_api as settings_tests
 
 

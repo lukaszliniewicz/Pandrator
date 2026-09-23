@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import pytest
-
 from sqlalchemy import select
 
 from pandrator.web import models as m
-from pandrator.web.generation_controls import get_generation_controls, save_generation_controls
+from pandrator.web.generation_controls import (
+    get_generation_controls,
+    save_generation_controls,
+)
 from pandrator.web.speech_plan_preview import preview_speech_segment
-from tests.test_performance_plans import adopt, case as case, create, edit
+from tests.test_performance_plans import adopt, create, edit
+from tests.test_performance_plans import case as case
 
 
 def _set_tts(case, **values):

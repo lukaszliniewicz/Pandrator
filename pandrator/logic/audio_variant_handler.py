@@ -8,7 +8,6 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
-
 SOURCE_VARIANT_ID = "source"
 VARIANTS_DIR_NAME = "Audio_Variants"
 MANIFEST_FILENAME = "variants.json"

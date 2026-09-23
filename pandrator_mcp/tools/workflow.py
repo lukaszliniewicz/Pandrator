@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ..clients.application import ApplicationClient
 from ..context import McpRuntime
 from ..errors import NextAction, PandratorMcpError
 from ..results import ToolOutcome
@@ -142,7 +143,7 @@ def _safe_stage_statuses(workflow: dict[str, object]) -> list[dict[str, object]]
 
 
 def _effective_settings(
-    application: object,
+    application: ApplicationClient,
     session_id: str,
     section: str,
 ) -> dict[str, object]:
@@ -152,7 +153,7 @@ def _effective_settings(
 
 
 def _merged_settings(
-    application: object,
+    application: ApplicationClient,
     session_id: str,
     section: str,
     override: object,
@@ -183,22 +184,18 @@ def _normalise_glossary(value: object, *, depth: int = 0) -> dict[str, str]:
         for item in value:
             if not isinstance(item, Mapping):
                 continue
-            source = next(
-                (
-                    item.get(key)
-                    for key in ("source", "term")
-                    if isinstance(item.get(key), str) and item.get(key).strip()
-                ),
-                None,
-            )
-            target = next(
-                (
-                    item.get(key)
-                    for key in ("target", "translation", "value")
-                    if isinstance(item.get(key), str) and item.get(key).strip()
-                ),
-                None,
-            )
+            source = None
+            for key in ("source", "term"):
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    source = candidate
+                    break
+            target = None
+            for key in ("target", "translation", "value"):
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    target = candidate
+                    break
             if isinstance(source, str) and isinstance(target, str):
                 result[source.strip()] = target.strip()
         return result
@@ -257,7 +254,7 @@ def _passive_override(arguments: PlanOrchestratedWorkflowInput, stage: str) -> o
 
 
 def _resolved_passive_packet(
-    application: object,
+    application: ApplicationClient,
     session: dict[str, object],
     workflow: dict[str, object],
     arguments: PlanOrchestratedWorkflowInput,
@@ -336,7 +333,9 @@ def _resolved_passive_packet(
         try:
             raw_batch_size = packet["max_units_per_batch"]
             batch_size = (
-                8 if raw_batch_size is None or raw_batch_size == "" else int(raw_batch_size)
+                int(raw_batch_size)
+                if isinstance(raw_batch_size, (str, int, float)) and raw_batch_size != ""
+                else 8
             )
         except (TypeError, ValueError):
             batch_size = 8
@@ -369,7 +368,8 @@ def _passive_phase(
     create_arguments: dict[str, object],
 ) -> dict[str, object]:
     execution_mode = str(create_arguments.get("execution_mode") or "serial")
-    max_parallel_batches = int(create_arguments.get("max_parallel_batches") or 1)
+    raw_parallel_batches = create_arguments.get("max_parallel_batches") or 1
+    max_parallel_batches = int(raw_parallel_batches) if isinstance(raw_parallel_batches, (str, int, float)) else 1
     if stage in {"correction", "translation"}:
         create_tool = "pandrator_create_dispatch_run"
         get_tool = "pandrator_get_dispatch_run"
@@ -597,10 +597,14 @@ def plan_orchestrated_workflow(
 
     first_phase = phases[0]
     if arguments.passive_stages:
+        create_arguments = first_phase["create_arguments"]
+        create = first_phase["create"]
+        assert isinstance(create_arguments, dict)
+        assert isinstance(create, dict)
         first_action = NextAction(
             tool=str(first_phase["create_tool"]),
-            arguments=dict(first_phase["create_arguments"]),
-            reason=str((first_phase["create"] or {}).get("reason")),
+            arguments=dict(create_arguments),
+            reason=str(create.get("reason")),
         )
     else:
         first_action = NextAction(

@@ -15,7 +15,6 @@ from typing import Any
 
 from .tts_handler import _audio_cpp_model_metadata, _audio_cpp_selected_model_options
 
-
 DEFAULT_MANUAL_LENGTH = 200
 MAX_MANUAL_LENGTH = 8192
 QWEN_DEFAULT_MAX_TOKENS = 2048

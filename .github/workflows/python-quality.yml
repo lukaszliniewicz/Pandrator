@@ -1,0 +1,31 @@
+name: Python quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.80.0
+          locked: true
+          cache: true
+      - name: Lint all Python source and tests
+        run: pixi run --locked lint
+      - name: Check types and import cycles without expanding the debt baseline
+        run: pixi run --locked typecheck
+      - name: Check high-confidence dead code
+        run: pixi run --locked dead-code
+      - name: Check test ownership
+        run: pixi run --locked check-test-lanes

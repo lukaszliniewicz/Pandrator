@@ -1,19 +1,20 @@
-import os
+import base64
 import io
 import json
-import base64
 import logging
-import tempfile
+import os
 import subprocess
-from pydub import AudioSegment
-from PIL import Image
+import tempfile
 
 # Mutagen imports for metadata
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import APIC, ID3, TALB, TCON, TIT2, TLAN, TPE1, PictureType
 from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, APIC, TIT2, TALB, TPE1, TCON, TLAN, PictureType
 from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
-from mutagen.flac import FLAC, Picture
+from PIL import Image
+from pydub import AudioSegment
+
 
 def apply_fade(audio_data: AudioSegment, fade_in: int, fade_out: int) -> AudioSegment:
     """Applies fade in and fade out to an AudioSegment."""
@@ -137,11 +138,16 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
         if output_format == "mp3":
             audio = MP3(output_path, ID3=ID3)
             audio.tags = ID3()
-            if metadata.get("title"): audio.tags.add(TIT2(encoding=3, text=metadata["title"]))
-            if metadata.get("album"): audio.tags.add(TALB(encoding=3, text=metadata["album"]))
-            if metadata.get("artist"): audio.tags.add(TPE1(encoding=3, text=metadata["artist"]))
-            if metadata.get("genre"): audio.tags.add(TCON(encoding=3, text=metadata["genre"]))
-            if metadata.get("language"): audio.tags.add(TLAN(encoding=3, text=metadata["language"]))
+            if metadata.get("title"):
+                audio.tags.add(TIT2(encoding=3, text=metadata["title"]))
+            if metadata.get("album"):
+                audio.tags.add(TALB(encoding=3, text=metadata["album"]))
+            if metadata.get("artist"):
+                audio.tags.add(TPE1(encoding=3, text=metadata["artist"]))
+            if metadata.get("genre"):
+                audio.tags.add(TCON(encoding=3, text=metadata["genre"]))
+            if metadata.get("language"):
+                audio.tags.add(TLAN(encoding=3, text=metadata["language"]))
             
             if cover_image_path and os.path.exists(cover_image_path):
                 cover_data = _optimize_image(cover_image_path)
@@ -150,11 +156,16 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
 
         elif output_format == "m4b":
             audio = MP4(output_path)
-            if metadata.get("title"): audio["\xa9nam"] = [metadata["title"]]
-            if metadata.get("album"): audio["\xa9alb"] = [metadata["album"]]
-            if metadata.get("artist"): audio["\xa9ART"] = [metadata["artist"]]
-            if metadata.get("genre"): audio["\xa9gen"] = [metadata["genre"]]
-            if metadata.get("language"): audio["\xa9lng"] = [metadata["language"]]
+            if metadata.get("title"):
+                audio["\xa9nam"] = [metadata["title"]]
+            if metadata.get("album"):
+                audio["\xa9alb"] = [metadata["album"]]
+            if metadata.get("artist"):
+                audio["\xa9ART"] = [metadata["artist"]]
+            if metadata.get("genre"):
+                audio["\xa9gen"] = [metadata["genre"]]
+            if metadata.get("language"):
+                audio["\xa9lng"] = [metadata["language"]]
             
             if cover_image_path and os.path.exists(cover_image_path):
                 with open(cover_image_path, "rb") as f:

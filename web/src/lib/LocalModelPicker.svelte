@@ -161,18 +161,26 @@
   $effect(() => {
     const panel = panelEl;
     const trigger = triggerEl;
-    if (!open || !panel || !trigger || typeof panel.showPopover !== 'function') return;
+    if (!open || !panel || !trigger || typeof panel.showPopover !== 'function')
+      return;
     const place = () => {
       const anchor = trigger.getBoundingClientRect();
       const width = panel.offsetWidth;
       const height = panel.offsetHeight;
       const viewportWidth = document.documentElement.clientWidth;
       const viewportHeight = window.innerHeight;
-      const left = Math.max(16, Math.min(anchor.left, viewportWidth - width - 16));
+      const left = Math.max(
+        16,
+        Math.min(anchor.left, viewportWidth - width - 16)
+      );
       const below = anchor.bottom + 6;
-      const top = below + height <= viewportHeight - 16
-        ? below
-        : Math.max(16, Math.min(anchor.top - height - 6, viewportHeight - height - 16));
+      const top =
+        below + height <= viewportHeight - 16
+          ? below
+          : Math.max(
+              16,
+              Math.min(anchor.top - height - 6, viewportHeight - height - 16)
+            );
       panel.style.left = `${left}px`;
       panel.style.top = `${top}px`;
     };

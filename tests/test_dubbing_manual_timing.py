@@ -6,7 +6,6 @@ from pathlib import Path
 
 from pandrator.logic.dubbing import manual_timing, srt_utils
 
-
 SAMPLE_SRT = """1
 00:00:00,000 --> 00:00:02,000
 Hello there friend.

@@ -173,7 +173,10 @@ class TargetProfile(BaseModel):
         cls,
         value: object,
     ) -> tuple[str, ...]:
-        values = tuple(str(item) for item in (value or ()))
+        raw_values = value or ()
+        if not isinstance(raw_values, Iterable):
+            raise ValueError("Application scopes must be iterable.")
+        values = tuple(str(item) for item in raw_values)
         selected = tuple(dict.fromkeys(values))
         unknown = set(selected) - APPLICATION_SCOPES
         if unknown:
@@ -188,7 +191,10 @@ class TargetProfile(BaseModel):
         cls,
         value: object,
     ) -> tuple[str, ...]:
-        values = tuple(str(item) for item in (value or ()))
+        raw_values = value or ()
+        if not isinstance(raw_values, Iterable):
+            raise ValueError("Manager recovery scopes must be iterable.")
+        values = tuple(str(item) for item in raw_values)
         selected = tuple(dict.fromkeys(values))
         unknown = set(selected) - MANAGER_RECOVERY_SCOPES
         if unknown:
@@ -200,7 +206,10 @@ class TargetProfile(BaseModel):
     @field_validator("allowed_private_cidrs", mode="before")
     @classmethod
     def validate_private_cidrs(cls, value: object) -> tuple[str, ...]:
-        values = tuple(value or ())
+        raw_values = value or ()
+        if not isinstance(raw_values, Iterable):
+            raise ValueError("Allowed private CIDRs must be iterable.")
+        values = tuple(raw_values)
         normalized: list[str] = []
         for supplied in values:
             try:
@@ -208,7 +217,7 @@ class TargetProfile(BaseModel):
             except ValueError as error:
                 raise ValueError(f"Invalid private CIDR: {supplied!s}.") from error
             shared_vpn = isinstance(network, ipaddress.IPv4Network) and network.subnet_of(
-                ipaddress.ip_network("100.64.0.0/10")
+                ipaddress.IPv4Network("100.64.0.0/10")
             )
             if not (network.is_private or network.is_loopback or shared_vpn):
                 raise ValueError("Allowed LAN/VPN CIDRs must be private or loopback ranges.")

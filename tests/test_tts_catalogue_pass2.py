@@ -11,7 +11,6 @@ from pandrator.web.openapi import build_openapi_document
 from pandrator.web.tts_providers import TtsHealth
 from tests.web_test_support import prepare_web_test_data_root
 
-
 HEAVY_MODEL_KEYS = frozenset({
     "catalogue_info",
     "request_parameters",

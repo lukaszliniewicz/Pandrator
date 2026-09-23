@@ -275,7 +275,8 @@ class AgenticCleaningTests(unittest.TestCase):
                 source = ArtifactService(database, paths).register(source_path, kind="source", role="upload", session_id=session_record.id)
                 with database.session() as session:
                     provider = Provider(provider_key="openai", label="Local", base_url="http://127.0.0.1:1234/v1")
-                    session.add(provider); session.flush()
+                    session.add(provider)
+                    session.flush()
                     session.add(ProviderModel(provider_id=provider.id, model_id="test", is_default=True))
                 from pandrator.logic.source_cleaning.models import PipelineResult
 
@@ -603,10 +604,12 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_srt_workflow_omits_transcription_and_renumbers_cards(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
             try:
                 record = SessionService(database).create("SRT", workflow_kind="subtitles")
-                source_path = paths.uploads / "captions.srt"; source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+                source_path = paths.uploads / "captions.srt"
+                source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
                 ArtifactService(database, paths).register(source_path, kind="source", role="upload", session_id=record.id, metadata={"original_filename":"captions.srt"})
                 stages = WorkflowService(database, JobQueue(database)).snapshot(record.id)["stages"]
                 self.assertEqual(stages[0]["key"], "correct")
@@ -618,13 +621,17 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_enabled_document_optimization_locks_generation_until_its_artifact_exists(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
             try:
                 record = SessionService(database).create("Review first", workflow_kind="voiceover")
-                source_path = paths.uploads / "captions.srt"; source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+                source_path = paths.uploads / "captions.srt"
+                source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
                 upload = ArtifactService(database, paths).register(source_path, kind="srt", role="upload", session_id=record.id, metadata={"original_filename":"captions.srt"})
                 # Subtitle-first sessions register the immutable timed source before work.
-                from pandrator.web.subtitle_sources import adopt_subtitle_source_in_session
+                from pandrator.web.subtitle_sources import (
+                    adopt_subtitle_source_in_session,
+                )
                 with database.session() as session:
                     adopt_subtitle_source_in_session(
                         session, ArtifactService(database, paths), record.id, upload.id
@@ -754,7 +761,8 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_completed_generation_run_unlocks_export_before_audio_is_assembled(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
             try:
                 record = SessionService(database).create("Ready to export", workflow_kind="audiobook")
                 with database.session() as session:
@@ -787,11 +795,14 @@ class SourceAwareWorkflowTests(unittest.TestCase):
 
     def test_reusable_source_is_copied_as_a_managed_dependency(self):
         with tempfile.TemporaryDirectory() as directory:
-            paths = prepare_web_test_data_root(directory); database = Database(paths.database)
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
             try:
-                first = SessionService(database).create("First"); second = SessionService(database).create("Second")
+                first = SessionService(database).create("First")
+                second = SessionService(database).create("Second")
                 (paths.sessions / second.storage_key).mkdir()
-                source_path = paths.uploads / "book.txt"; source_path.write_text("Text", encoding="utf-8")
+                source_path = paths.uploads / "book.txt"
+                source_path.write_text("Text", encoding="utf-8")
                 source = ArtifactService(database, paths).register(source_path, kind="source", role="upload", session_id=first.id)
                 result = WorkflowHandlers(database, paths).reuse_source({"session_id":second.id,"artifact_id":source.id}, lambda *_:None, threading.Event())
                 copied, copied_path = ArtifactService(database, paths).resolve(result["artifact_id"])

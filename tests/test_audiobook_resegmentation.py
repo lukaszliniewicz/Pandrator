@@ -9,7 +9,8 @@ from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.web import models as m
 from pandrator.web.generation_cast_runtime import remap_markup
 from pandrator.web.speech_boundaries import assembly_pause, freeze_boundaries
-from tests.test_performance_plans import adopt, case as case, create, edit
+from tests.test_performance_plans import adopt, create, edit
+from tests.test_performance_plans import case as case
 
 
 def topology(case, revision, **operation):

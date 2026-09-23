@@ -101,7 +101,7 @@ def decode_frame_rgb(path, position):
 
 def mean_abs_diff(left, right):
     total = 0
-    for left_byte, right_byte in zip(left, right):
+    for left_byte, right_byte in zip(left, right, strict=False):
         total += abs(left_byte - right_byte)
     return total / max(1, len(left))
 
@@ -381,8 +381,9 @@ class TailExportTests(unittest.TestCase):
                 threading.Event(),
             )
         with self.services.database.session() as session:
-            from pandrator.web.models import Artifact
             from sqlalchemy import select
+
+            from pandrator.web.models import Artifact
 
             self.assertIsNone(
                 session.scalar(

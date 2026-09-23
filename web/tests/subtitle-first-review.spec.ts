@@ -345,6 +345,18 @@ test('saved block-building changes offer keeping or preparing a plan, with retry
   page
 }, testInfo) => {
   const { session, endpoint, headers } = await setup(page);
+  // Character splitting belongs to legacy block generation. Passage mode
+  // deliberately ignores this limit when deciding whether to rebuild a plan.
+  const ttsSettings = await (
+    await page.request.get(`${endpoint}/settings/tts`)
+  ).json();
+  const legacy = await page.request.put(`${endpoint}/settings/tts`, {
+    headers: { ...headers, 'If-Match': `"${ttsSettings.revision}"` },
+    data: {
+      value: { ...ttsSettings.override, speech_block_generation_mode: 'legacy' }
+    }
+  });
+  expect(legacy.ok()).toBeTruthy();
   await prepareInitialPlan(page, endpoint, headers);
   await page.goto(`/sessions/${session.id}`);
   const card = page.getByRole('region', { name: 'Speech plan', exact: true });
@@ -378,7 +390,22 @@ test('saved block-building changes offer keeping or preparing a plan, with retry
   expect((await speechState(page, endpoint)).selected_revision_id).toBe(
     original.selected_revision_id
   );
+  let releasePlanStatus!: () => void;
+  const planStatusReady = new Promise<void>((resolve) => {
+    releasePlanStatus = resolve;
+  });
+  await page.route(
+    `**${endpoint}/generation-plan/status?summary=true`,
+    async (route) => {
+      await planStatusReady;
+      await route.continue();
+    }
+  );
   await page.reload();
+  await expect(
+    card.getByRole('button', { name: 'Block settings', exact: true })
+  ).toBeDisabled();
+  releasePlanStatus();
   await card
     .getByRole('button', { name: 'Block settings', exact: true })
     .click();
@@ -588,8 +615,8 @@ test('gentle voiceover slowdown is optional and persists in audio settings', asy
   const slowdown = page.getByRole('checkbox', {
     name: /Allow gentle voiceover slowdown/
   });
-  await expect(slowdown).not.toBeChecked();
-  await slowdown.check();
+  await expect(slowdown).toBeChecked();
+  await slowdown.uncheck();
   await page
     .locator('section.settings-panel')
     .filter({ has: slowdown })
@@ -602,9 +629,9 @@ test('gentle voiceover slowdown is optional and persists in audio settings', asy
       ).json();
       return settings.effective.synchronization_slowdown_enabled;
     })
-    .toBe(true);
+    .toBe(false);
   await page.reload();
-  await expect(slowdown).toBeChecked();
+  await expect(slowdown).not.toBeChecked();
   await slowdown.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: testInfo.outputPath('voiceover-slowdown-settings.png')
@@ -805,6 +832,12 @@ test('source reset cancellation preserves work, while confirmation removes only 
   await expect(
     planCard.getByRole('button', { name: 'Review plan', exact: true })
   ).toBeEnabled();
+  const drawerToggle = page.getByRole('button', {
+    name: 'Generation',
+    exact: true
+  });
+  await expect(drawerToggle).toHaveAttribute('aria-expanded', 'true');
+  await drawerToggle.click();
   const card = page.getByRole('region', { name: 'Session source' });
   await card.getByRole('button', { name: 'Remove source' }).click();
   const confirmation = page.getByRole('dialog', {

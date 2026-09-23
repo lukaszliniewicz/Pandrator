@@ -123,8 +123,10 @@
           href={`/sessions/${sessionId}/voice#characters-cast`}
           >Characters &amp; cast</a
         >{/if}
-      <button class="btn btn-secondary" onclick={onsettings} disabled={busy}
-        ><Settings2 size={16} /> Block settings</button
+      <button
+        class="btn btn-secondary"
+        onclick={onsettings}
+        disabled={busy || !plan}><Settings2 size={16} /> Block settings</button
       >
       <button
         class={selected ? 'btn btn-secondary' : 'btn btn-primary'}

@@ -21,7 +21,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pandrator.logic import llm_handler
+# Keep this project import after the repository-root sys.path bootstrap above.
+from pandrator.logic import llm_handler  # noqa: E402
+
 try:
     from pandrator.logic.dubbing import audio_sync, llm_translation, transcription, zoom
 except ModuleNotFoundError as error:

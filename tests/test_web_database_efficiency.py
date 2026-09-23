@@ -10,14 +10,13 @@ from alembic import command
 from alembic.config import Config
 
 from pandrator.runtime import DataPaths
+from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import (
     SCHEMA_HEAD,
     Database,
     sqlite_url,
     upgrade_database,
 )
-from pandrator.web.artifacts import ArtifactService
-from pandrator.web.subtitle_sources import adopt_subtitle_source_in_session
 from pandrator.web.jobs import JobQueue
 from pandrator.web.models import (
     Artifact,
@@ -31,6 +30,7 @@ from pandrator.web.models import (
     utcnow,
 )
 from pandrator.web.sessions import SessionService
+from pandrator.web.subtitle_sources import adopt_subtitle_source_in_session
 from pandrator.web.workflows import WorkflowService, _latest_jobs_by_kind
 from pandrator.web.workspace import OutcomePlanService
 from scripts.phase0_baseline import (
@@ -79,11 +79,11 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
         large = self.measure_workflow(1000, 4000)
 
         self.assertEqual(small["select_count"], large["select_count"])
-        # Artifact-to-job lineage and grouped usage totals are separate bounded
-        # queries; the absolute budget reflects that established split while
-        # the equality above guards the important history-scaling invariant.
-        # The independently attached media source needs one additional bounded lookup.
-        self.assertLessEqual(large["select_count"], 12)
+        # Keep the previous 12-query budget plus four bounded reads added by
+        # workflow_transformations in db8fbd28: AppSetting defaults,
+        # SessionSetting, OutcomePlan, and translation-artifact existence.
+        # The equality above still guards against history scaling.
+        self.assertLessEqual(large["select_count"], 16)
         self.assertLessEqual(large["orm_objects_loaded"], 50)
         self.assertLess(large["response_json_bytes"], 25_000)
 

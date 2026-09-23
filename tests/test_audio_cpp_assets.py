@@ -84,7 +84,7 @@ def test_allowlist_pins_all_five_models_with_immutable_sources():
         "qwen3_asr_0_6b",
         "qwen3_asr_1_7b",
     ]
-    for model_id, spec in MODELS.items():
+    for _model_id, spec in MODELS.items():
         assert spec["size_bytes"] > 0
         assert spec["sha256"] is not None and len(spec["sha256"]) == 64
         assert spec["url"].startswith("https://")

@@ -12,7 +12,6 @@ from .. import llm_handler
 from .llm_config import resolve_dubbing_llm_settings
 from .settings import migrate_dubbing_payload
 
-
 _SPEAKER_LINE_RE = re.compile(r"^\s*([^:]+):\s*(.*)")
 _TIMESTAMP_RE = re.compile(r"^\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}")
 _SEQUENCE_RE = re.compile(r"^\d+$")

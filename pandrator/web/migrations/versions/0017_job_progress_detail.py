@@ -1,8 +1,7 @@
 """Persist the latest human-readable job progress detail."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0017_job_progress_detail"
 down_revision = "0016_agentic_research_and_speech_plans"

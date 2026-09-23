@@ -1,8 +1,7 @@
 """Add stable, human-readable generation run identity and take ownership."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0010_named_generation_runs"
 down_revision = "0009_stored_credentials"

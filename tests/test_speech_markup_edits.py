@@ -8,7 +8,6 @@ from pandrator.logic.speech_markup_edits import (
     slice_speech_markup,
 )
 
-
 CHARACTERS = [{"id": "c-alice", "voice_category": "female"}]
 
 

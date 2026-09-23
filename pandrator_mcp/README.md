@@ -290,11 +290,12 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.4.2. Use Pandrator 0.9.3 for all current tools, including
-Quick Transcribe; existing workflows can target Pandrator 0.8.16 or newer. The
-source-cleaning, speech-optimization, and end-to-end workflow tools require
-Pandrator 0.8.17. With Python 3.11 or 3.12, install it as an isolated
-command-line tool:
+The current release is 0.5.0. Use Pandrator 0.10.0 for the complete tool set,
+including model-capability discovery, Gemini context setup, ElevenLabs controls,
+voice collections, and guarded speech-selection preview/apply. Older applications
+retain their existing workflows but cannot serve the new routes. Restart or
+reconnect long-running MCP clients after upgrading so their tool schemas refresh.
+With Python 3.11 or 3.12, install it as an isolated command-line tool:
 
 ```console
 pipx install "pandrator-mcp[credential-stores,manager]"

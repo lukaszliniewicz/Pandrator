@@ -609,13 +609,13 @@ def normalize_llm_settings(llm_settings: Any | None):
 
     normalized_configs = get_provider_configs(llm_settings)
     if _read_setting(llm_settings, "provider_configs", []) != normalized_configs:
-        setattr(llm_settings, "provider_configs", normalized_configs)
+        llm_settings.provider_configs = normalized_configs
 
     normalized_default_model = normalize_default_model(
         _read_setting(llm_settings, "default_model", DEFAULT_LITELLM_MODEL)
     )
     if _read_setting(llm_settings, "default_model", "") != normalized_default_model:
-        setattr(llm_settings, "default_model", normalized_default_model)
+        llm_settings.default_model = normalized_default_model
 
 
 def list_custom_provider_configs(llm_settings: Any | None = None) -> list[dict[str, Any]]:

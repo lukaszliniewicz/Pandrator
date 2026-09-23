@@ -457,7 +457,10 @@ class MediaEditService:
 
             segment_metadata = dict(getattr(segment, "metadata", {}) or {})
             if segment_metadata.get("timing_source") == "qwen3_alignment":
-                from pandrator.logic.dubbing.qwen_alignment import restore_surfaces, QwenAlignmentError
+                from pandrator.logic.dubbing.qwen_alignment import (
+                    QwenAlignmentError,
+                    restore_surfaces,
+                )
                 try:
                     restored = restore_surfaces(cue.text, [{"word": word.text} for word in words])
                 except QwenAlignmentError:

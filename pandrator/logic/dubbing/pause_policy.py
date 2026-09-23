@@ -67,7 +67,7 @@ def validate_logical_merge_pauses(
     windows = [window(row) for row in selected]
     total_span = max(end for _, end in windows) - min(start for start, _ in windows)
     bridged = 0
-    for index, (left, right) in enumerate(zip(selected, selected[1:])):
+    for index, (left, right) in enumerate(zip(selected, selected[1:], strict=False)):
         gap = windows[index + 1][0] - windows[index][1]
         if gap < 0:
             raise ValueError("Logical passage groups cannot merge overlapping cues.")

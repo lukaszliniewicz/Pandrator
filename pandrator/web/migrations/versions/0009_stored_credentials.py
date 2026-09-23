@@ -6,9 +6,8 @@ import json
 import re
 from typing import Any
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0009_stored_credentials"
 down_revision = "0008_generation_paragraph_boundaries"

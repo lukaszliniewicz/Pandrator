@@ -8,7 +8,6 @@ from typing import Any, Mapping
 
 import psutil
 
-
 PROCESS_CREATE_TIME_TOLERANCE_SECONDS = 0.01
 
 

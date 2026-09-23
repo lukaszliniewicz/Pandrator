@@ -22,6 +22,10 @@ generate-requirements = "python scripts/generate_requirements.py"
 check-requirements = "python scripts/generate_requirements.py --check"
 check-docs = "python scripts/check_docs.py"
 check-test-lanes = "python scripts/test_lanes.py check"
+lint = "ruff check ."
+typecheck = "python scripts/check_types.py"
+dead-code = "vulture"
+quality = { depends-on = ["lint", "typecheck", "dead-code", "check-test-lanes"] }
 test-fast = { cmd = "python scripts/test_lanes.py run fast-xdist", depends-on = ["check-test-lanes"] }
 test-full = { cmd = "python -m pytest -q tests", depends-on = ["check-test-lanes"] }
 test-profile = { cmd = "python -m pytest -q tests --durations=30 --durations-min=0.5", depends-on = ["check-test-lanes"] }
@@ -37,9 +41,6 @@ pandrator-manager = { path = "./pandrator_manager", editable = true, extras = ["
 pandrator-mcp = { path = "./pandrator_mcp", editable = true, extras = ["dev"] }
 pandrator-installer = { path = "./pandrator_installer", editable = true }
 keyring = ">=25, <26"
-mypy = ">=1.17,<2"
-vulture = ">=2.14,<3"
-pydeps = ">=3,<4"
 
 [feature.web-build.dependencies]
 nodejs = ">=24,<25"

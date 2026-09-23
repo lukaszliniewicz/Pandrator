@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from .models import Artifact, SessionSource, SourceAsset
 
-
 VIDEO_EXTENSIONS = frozenset(
     {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".mpeg", ".mpg"}
 )

@@ -26,8 +26,8 @@ from urllib.request import Request, urlopen
 
 import regex
 
-from ..cancellable_process import ProcessCancelled, run_cancellable
 from ..audio_cpp_execution import native_audio_cpp_guard
+from ..cancellable_process import ProcessCancelled, run_cancellable
 from .languages import normalize_language_code
 from .text_units import infer_cjk_language, subtitle_units
 
@@ -334,7 +334,7 @@ def restore_surfaces(text: str, words: Sequence[dict]) -> list[dict]:
         raise QwenAlignmentError("Qwen alignment omitted transcript content.")
     return [
         {**word, "word": text[start:end].strip()}
-        for word, start, end in zip(retained, cuts, cuts[1:])
+        for word, start, end in zip(retained, cuts, cuts[1:], strict=False)
     ]
 
 
@@ -506,7 +506,7 @@ def run_batch(
             ) from error
         check_cancelled(cancel_event)
         results = []
-        for index, (audio, text, output) in enumerate(requests):
+        for index, (_audio, text, _output) in enumerate(requests):
             generated = root / f"words_request_{index}.json"
             try:
                 payload = json.loads(generated.read_text(encoding="utf-8"))
@@ -516,7 +516,7 @@ def run_batch(
             except (OSError, ValueError, QwenAlignmentError) as error:
                 result = QwenAlignmentError(str(error))
             results.append(result)
-        for (_audio, _text, output), result in zip(requests, results):
+        for (_audio, _text, output), result in zip(requests, results, strict=False):
             if not isinstance(result, Exception):
                 Path(output).write_text(
                     json.dumps(result, ensure_ascii=False), encoding="utf-8"
@@ -640,7 +640,9 @@ def align_moss_turns(
                 raise
             except (QwenAlignmentError, OSError, ValueError) as error:
                 results = [QwenAlignmentError(str(error))] * len(requests)
-            for (segment, offset_ms, index), result in zip(owners, results):
+            for (segment, offset_ms, index), result in zip(
+                owners, results, strict=False
+            ):
                 if isinstance(result, Exception):
                     segment.pop("words", None)
                     segment["pandrator_forced_alignment"] = {

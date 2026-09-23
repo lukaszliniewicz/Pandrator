@@ -15,7 +15,6 @@ from typing import Any
 
 from pydub import AudioSegment
 
-
 SCHEMA_VERSION = 1
 VERIFICATION_MODE_OFF = "off"
 VERIFICATION_MODE_SIGNAL = "signal"

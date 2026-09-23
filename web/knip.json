@@ -1,4 +1,10 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "ignore": ["src/lib/api.generated.ts"]
+  "ignore": ["src/lib/api.generated.ts"],
+  "entry": [
+    "unit-tests/*.test.mjs",
+    "scripts/*.mjs",
+    "src/lib/local-model-groups.ts"
+  ],
+  "ignoreBinaries": ["ffmpeg"]
 }

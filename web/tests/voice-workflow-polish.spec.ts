@@ -261,7 +261,7 @@ test('canceling voice design keeps the brief and completed candidates', async ({
   ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
-    path: '/tmp/pandrator-polish-designer-canceled.png'
+    path: test.info().outputPath('pandrator-polish-designer-canceled.png')
   });
   await designer.getByRole('button', { name: '1. Voice brief' }).click();
   await expect(designer.getByLabel('Voice name', { exact: true })).toHaveValue(
@@ -289,12 +289,20 @@ test('source scope, filters and model variants remain explicit', async ({
   ).toHaveCount(1);
   const model = page.getByRole('combobox', { name: /^Model for Achernar/ });
   await expect(model.locator('option')).toHaveCount(6);
-  await model.selectOption({ index: 1 });
+  const proVariant = await model
+    .locator('option')
+    .filter({ hasText: 'gemini-2.5-pro-preview-tts' })
+    .first()
+    .getAttribute('value');
+  expect(proVariant).toBeTruthy();
+  await model.selectOption(proVariant!);
   await page.getByRole('button', { name: 'Details', exact: true }).click();
   await expect(
     page.getByRole('heading', { name: 'Achernar', exact: true })
   ).toBeVisible();
-  await expect(page.getByText(/gemini-2.5-pro-tts/).first()).toBeVisible();
+  await expect(
+    page.getByText(/gemini-2.5-pro-preview-tts/).first()
+  ).toBeVisible();
   await page
     .getByRole('button', { name: 'Back to voices', exact: true })
     .click();
@@ -409,7 +417,9 @@ test('comparison has its own renderer, reference playback, and per-voice results
       () => document.documentElement.scrollWidth <= innerWidth
     )
   ).toBeTruthy();
-  await page.screenshot({ path: '/tmp/pandrator-polish-comparison-390.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-polish-comparison-390.png')
+  });
 });
 
 test('collections support rename and bulk add and remove without deleting voices', async ({
@@ -564,7 +574,9 @@ test('voice page exposes a compact cast, inheritance and a navigation guard', as
     .click();
   for (const width of [390, 800, 1440]) {
     await page.setViewportSize({ width, height: 960 });
-    await cast.screenshot({ path: `/tmp/pandrator-polish-cast-${width}.png` });
+    await cast.screenshot({
+      path: test.info().outputPath(`pandrator-polish-cast-${width}.png`)
+    });
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth
@@ -707,7 +719,7 @@ test('phone generation controls and output actions stay inside their cards', asy
       )
     ).toBeTruthy();
     await page.screenshot({
-      path: `/tmp/pandrator-polish-output-${width}.png`,
+      path: test.info().outputPath(`pandrator-polish-output-${width}.png`),
       fullPage: true
     });
   }

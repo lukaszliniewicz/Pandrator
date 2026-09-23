@@ -41,16 +41,18 @@ from .constants import (
     PANDRATOR_PYMUPDF_SPEC,
     PYOPENJTALK_WHEEL_PREFIX,
     WHISPERX_CTRANSLATE2_VERSION,
-    WHISPERX_TORCHAUDIO_VERSION,
-    WHISPERX_TORCHVISION_VERSION,
     WHISPERX_TORCH_INDEX_URL,
     WHISPERX_TORCH_VERSION,
+    WHISPERX_TORCHAUDIO_VERSION,
+    WHISPERX_TORCHVISION_VERSION,
     WHISPERX_VERSION,
     WTPSPLIT_LITE_SPEC,
     WTPSPLIT_MODEL,
     WTPSPLIT_RETIRED_MODELS,
     XTTS_FINETUNING_BUNDLED_WHEEL_PREFIX,
 )
+from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
+from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows, pixi_env_python_path
 from .process_identity import (
     ProcessIdentityError,
@@ -59,8 +61,6 @@ from .process_identity import (
     identity_from_mapping,
     validated_process,
 )
-from .crispasr import CRISPASR_VERSION, detect_compute_backends, resolve_asset
-from .models import DEFAULT_QWEN_MODEL_SIZE
 
 
 class ComponentOperationsMixin:

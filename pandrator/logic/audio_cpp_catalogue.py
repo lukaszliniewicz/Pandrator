@@ -105,6 +105,25 @@ def _package_availability(
     }
 
 
+def _capability_notes(*values: Any) -> list[str]:
+    notes: list[str] = []
+    for value in values:
+        if not isinstance(value, (list, tuple)):
+            continue
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            note = item.strip()
+            normalized = note.casefold()
+            if not note or any(
+                marker in normalized
+                for marker in ("http://", "https://", "api_key", "api key", "base_url", "secret")
+            ):
+                continue
+            notes.append(note)
+    return list(dict.fromkeys(notes))
+
+
 def package_metadata(model_id: str) -> dict[str, Any]:
     package = next(
         (row for row in inventory()["packages"] if row["id"] == model_id), None
@@ -203,13 +222,33 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         voice_mode=result["voice_mode"],
         backend_version=inventory()["runtime_version"],
     )
+    instruction_scope = controls.get("instruction_scope")
+    instruction_scope_text = (
+        ", ".join(str(scope).strip() for scope in instruction_scope if str(scope).strip())
+        if isinstance(instruction_scope, (list, tuple))
+        else ""
+    )
+    capability_notes = _capability_notes(
+        controls.get("notes"),
+        result["pandrator_features"].get("capability_notes"),
+    )
+    if package["family"] == "fireredtts3" and "instruct" in model_id.casefold():
+        capability_notes = _capability_notes(
+            capability_notes,
+            [
+                "FireRed Instruct supports instructions, emotion control, and voice design only without reference audio; clone mode uses the instruction field as the reference transcript."
+            ],
+        )
     result["pandrator_features"].update(
         {
             "instructions": controls["instructions"],
+            "instruction_scope": instruction_scope_text or "none",
             "voice_design": "documented" if controls["voice_design"] else "none",
             "vocal_events": ", ".join(controls["event_tags"]) or "none",
             "timing": controls["timing"],
             "emotion_control": controls["emotion"]["mode"],
+            "semantic_context": str(controls.get("semantic_context") or "none"),
+            "capability_notes": capability_notes,
         }
     )
     # Keep documented upstream task flags; derive runtime controls separately.

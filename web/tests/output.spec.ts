@@ -1206,7 +1206,7 @@ for (const action of ['stop', 'extend'] as const) {
       )
     ).toBeLessThanOrEqual(1);
     await page.screenshot({
-      path: `/tmp/pandrator-tail-${action}.png`,
+      path: test.info().outputPath(`pandrator-tail-${action}.png`),
       fullPage: true
     });
     await (action === 'stop' ? stop : extend).click();

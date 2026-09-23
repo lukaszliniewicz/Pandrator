@@ -60,7 +60,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.9.4",
+            "default": "0.10.0",
             "title": "Application Version",
             "type": "string"
           },

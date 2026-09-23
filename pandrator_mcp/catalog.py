@@ -54,6 +54,8 @@ ACTION_CATALOG = ActionCatalog(
         ActionSpec("pandrator_get_audiobook_setup", "Inspect audiobook setup", "GetAudiobookSetupInput", RiskClass.READ, "app.read", "getAudiobookSetup", "GET", "/api/v1/sessions/{sessionId}/audiobook-setup", True),
         ActionSpec("pandrator_configure_audiobook", "Configure audiobook voice mode", "ConfigureAudiobookInput", RiskClass.WRITE, "app.write", "configureAudiobook", "PATCH", "/api/v1/sessions/{sessionId}/audiobook-setup", True, requires_idempotency=True),
         ActionSpec("pandrator_preview_speech_segment", "Preview a speech-plan segment", "PreviewSpeechSegmentInput", RiskClass.READ, "app.read", "previewSpeechSegment", "POST", "/api/v1/sessions/{sessionId}/speech-plan/preview", True),
+        ActionSpec("pandrator_preview_speech_selection", "Preview a speech selection", "PreviewSpeechSelectionInput", RiskClass.READ, "app.read", "previewSpeechSelection", "POST", "/api/v1/sessions/{sessionId}/speech-plan/selection-preview", True),
+        ActionSpec("pandrator_apply_speech_selection", "Apply a speech selection", "ApplySpeechSelectionInput", RiskClass.WRITE, "app.write", "applySpeechSelection", "POST", "/api/v1/sessions/{sessionId}/speech-plan/selection", True, requires_idempotency=True),
         *(ActionSpec(name, title, model, RiskClass(risk), scope, operation, method,
                      performance_api_path(suffix), True, requires_idempotency=risk != "read")
           for _action, name, title, model, risk, scope, operation, method, suffix in PERFORMANCE_ACTIONS),

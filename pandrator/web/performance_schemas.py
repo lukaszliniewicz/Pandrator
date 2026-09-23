@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import Literal
+
 from pydantic import Field, model_validator
+
 from pandrator.logic.speech_performance import PerformanceAnnotation, StrictModel
 
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-
 EARLY_REPAIR_MARKER_KEY = "early_repair_parent_run_id"
 REGROUP_MARKER_KEY = "regroup_parent_run_id"
 SECOND_PASS_MARKER_KEYS = (EARLY_REPAIR_MARKER_KEY, REGROUP_MARKER_KEY)

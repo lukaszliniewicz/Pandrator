@@ -186,7 +186,7 @@ test('upload, switch formats, reload result and delete without a session', async
   const scan = await new AxeBuilder({ page }).include('main').analyze();
   expect(scan.violations).toEqual([]);
   await page.screenshot({
-    path: '/tmp/pandrator-quick-transcribe-desktop.png',
+    path: test.info().outputPath('pandrator-quick-transcribe-desktop.png'),
     fullPage: true
   });
   await page.reload();
@@ -229,7 +229,7 @@ test('record, preview and transcribe on a narrow screen', async ({ page }) => {
     )
   ).toBe(true);
   await page.screenshot({
-    path: '/tmp/pandrator-quick-transcribe-mobile.png',
+    path: test.info().outputPath('pandrator-quick-transcribe-mobile.png'),
     fullPage: true
   });
 });

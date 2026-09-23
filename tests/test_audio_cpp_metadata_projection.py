@@ -10,6 +10,7 @@ from pandrator.logic.audio_cpp_catalogue import (
     inventory,
     package_metadata,
 )
+from pandrator.logic.speech_performance import capabilities_for_model
 from pandrator_manager.components.audiocpp import MODEL_PACKAGES
 from pandrator_manager.components.catalog import _audio_cpp_models
 
@@ -105,6 +106,41 @@ def test_firered_base_and_instruct_keep_distinct_modes_and_controls():
         "instructions",
         "emotion_control",
     } <= set(instruct["capabilities"])
+    assert instruct["pandrator_features"]["instruction_scope"] == "request"
+    fire_red_notes = instruct["pandrator_features"]["capability_notes"]
+    assert any(
+        "instructions, emotion control, and voice design only without reference audio" in note
+        and "clone mode uses the instruction field as the reference transcript" in note
+        for note in fire_red_notes
+    )
+
+
+def test_audio_cpp_projection_exposes_profile_scope_context_and_safe_notes():
+    for package in inventory()["packages"]:
+        model = package_metadata(package["id"])
+        profile = capabilities_for_model(
+            package["id"],
+            backend="audio_cpp",
+            family=package["family"],
+            voice_mode=model["voice_mode"],
+            backend_version=inventory()["runtime_version"],
+        )
+        features = model["pandrator_features"]
+        assert features["instruction_scope"] == (
+            ", ".join(profile["instruction_scope"]) or "none"
+        )
+        assert features["semantic_context"] == profile["semantic_context"]
+        assert isinstance(features["capability_notes"], list)
+        assert all(isinstance(note, str) for note in features["capability_notes"])
+        assert all(note in features["capability_notes"] for note in profile["notes"])
+        assert all(
+            not any(
+                marker in note.casefold()
+                for marker in ("http://", "https://", "api_key", "api key", "base_url", "secret")
+            )
+            for note in features["capability_notes"]
+        )
+        json.dumps(model)
 
 
 def test_emotions_alias_matches_canonical_emotion_control_filter():

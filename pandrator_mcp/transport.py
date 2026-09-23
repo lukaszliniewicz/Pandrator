@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import socket
 import sys
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from requests.adapters import HTTPAdapter
@@ -32,26 +32,28 @@ class _PinnedConnection:
         super().__init__(*args, **kwargs)
 
     def _new_conn(self) -> socket.socket:
+        # The mixin is always paired with urllib3's HTTP(S)Connection below.
+        connection = cast(HTTPConnection, self)
         last_error: OSError | None = None
         for address in self.pinned_addresses:
             try:
                 sock = connection_util.create_connection(
-                    (address, self.port),
-                    self.timeout,
-                    source_address=self.source_address,
-                    socket_options=self.socket_options,
+                    (address, connection.port),
+                    connection.timeout,
+                    source_address=connection.source_address,
+                    socket_options=connection.socket_options,
                 )
-                sys.audit("http.client.connect", self, self.host, self.port)
+                sys.audit("http.client.connect", self, connection.host, connection.port)
                 return sock
             except socket.timeout as error:
                 raise ConnectTimeoutError(
-                    self,
-                    f"Connection to {self.host} timed out. (connect timeout={self.timeout})",
+                    connection,
+                    f"Connection to {connection.host} timed out. (connect timeout={connection.timeout})",
                 ) from error
             except OSError as error:
                 last_error = error
         raise NewConnectionError(
-            self,
+            connection,
             f"Failed to connect to a policy-approved address: {last_error}",
         ) from last_error
 
@@ -65,7 +67,9 @@ class PinnedHTTPSConnection(_PinnedConnection, HTTPSConnection):
 
 
 class PinnedHTTPConnectionPool(HTTPConnectionPool):
-    ConnectionCls = PinnedHTTPConnection
+    # urllib3 accepts custom ConnectionCls and forwards pool kwargs at runtime;
+    # its type declaration rejects the required pinned_addresses constructor kwarg.
+    ConnectionCls = PinnedHTTPConnection  # pyright: ignore[reportAssignmentType]
 
     def __init__(
         self,
@@ -84,7 +88,8 @@ class PinnedHTTPConnectionPool(HTTPConnectionPool):
 
 
 class PinnedHTTPSConnectionPool(HTTPSConnectionPool):
-    ConnectionCls = PinnedHTTPSConnection
+    # Same urllib3 custom-connection declaration limitation as the HTTP pool.
+    ConnectionCls = PinnedHTTPSConnection  # pyright: ignore[reportAssignmentType]
 
     def __init__(
         self,
@@ -131,7 +136,10 @@ class PinnedAddressAdapter(HTTPAdapter):
                 proxies,
                 cert,
             )
-        parsed = parse_url(request.url)
+        request_url = request.url
+        if request_url is None:
+            raise ValueError("The request escaped its pinned target origin.")
+        parsed = parse_url(request_url)
         if (
             parsed.scheme != self.scheme
             or parsed.host != self.host

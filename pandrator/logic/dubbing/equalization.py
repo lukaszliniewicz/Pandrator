@@ -5,9 +5,8 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from pathlib import Path
-
 from dataclasses import replace
+from pathlib import Path
 
 from .srt_utils import compose_srt, parse_srt
 

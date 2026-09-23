@@ -336,8 +336,9 @@ def _validate_source(services, session, source_asset_id: str | None, role: str):
     if role == "media" and profile not in {"audio", "video"}:
         raise ValueError("The associated recording must be an audio or video file.")
     if profile in {"audio", "video"}:
-        from .soundtrack_export import probe_soundtrack_media
         import subprocess
+
+        from .soundtrack_export import probe_soundtrack_media
 
         try:
             inspected = probe_soundtrack_media(path)

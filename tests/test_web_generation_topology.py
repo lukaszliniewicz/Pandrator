@@ -195,8 +195,9 @@ class GenerationTopologyTests(unittest.TestCase):
             self.running_assembly_id = running_assembly.id
 
     def test_large_inactive_repair_batches_unchanged_audio_copies(self):
-        from sqlalchemy import event
         import time
+
+        from sqlalchemy import event
 
         with self.database.session() as session:
             artifact_id = session.get(AudioTake, self.initial_take_ids[1]).artifact_id

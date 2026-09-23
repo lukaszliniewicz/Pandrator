@@ -131,7 +131,7 @@ export type SpeechPlanHistoryPage = {
 // Grouped-history rows: full revision_history fields plus grouping decorations.
 // Optional fields stay optional so summary payloads (null reuse counts,
 // unchecked guards) and full payloads share one type.
-export type SpeechPlanHistoryItem = SpeechPlanRevision & {
+type SpeechPlanHistoryItem = SpeechPlanRevision & {
   parent_revision_id: string | null;
   source_revision_id?: string | null;
   action?: string;
@@ -148,7 +148,11 @@ export type SpeechPlanHistoryItem = SpeechPlanRevision & {
 
 export const speechPlanHistory = (
   sessionId: string,
-  options?: { summary?: boolean; before_revision_number?: number | null; limit?: number }
+  options?: {
+    summary?: boolean;
+    before_revision_number?: number | null;
+    limit?: number;
+  }
 ) => {
   const query = new URLSearchParams({
     limit: String(options?.limit ?? 50)

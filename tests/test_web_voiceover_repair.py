@@ -1,16 +1,14 @@
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 from pydub.generators import Sine
 from sqlalchemy import func, select
 
 from pandrator.logic.dubbing.audio_sync import align_audio_blocks
 from pandrator.logic.dubbing.models import AudioAlignmentBlock
-from pandrator.web.voiceover_repair import _load_groups, advance_timing
-
 from pandrator.web.database import Database
 from pandrator.web.generation_review import revision_history
 from pandrator.web.models import (
@@ -24,6 +22,7 @@ from pandrator.web.models import (
     Segment,
 )
 from pandrator.web.sessions import SessionService
+from pandrator.web.voiceover_repair import _load_groups, advance_timing
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root

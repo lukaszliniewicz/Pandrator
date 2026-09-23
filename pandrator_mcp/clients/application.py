@@ -1200,6 +1200,23 @@ class ApplicationClient:
             method="POST", body=body, maximum_body_bytes=4096,
         )
 
+    def preview_speech_selection(
+        self, session_id: str, *, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/speech-plan/selection-preview",
+            method="POST", body=body, maximum_body_bytes=16 * 1024,
+        )
+
+    def apply_speech_selection(
+        self, session_id: str, *, body: dict[str, Any], idempotency_key: str
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/speech-plan/selection",
+            method="POST", body=body, idempotency_key=idempotency_key,
+            maximum_body_bytes=16 * 1024,
+        )
+
     def voice_metadata_request(
         self, action: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:

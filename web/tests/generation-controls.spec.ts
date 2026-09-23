@@ -257,7 +257,7 @@ test('one XML draft survives refresh, view changes, navigation and save; preview
   );
   expect(errors).toEqual([]);
   await page.screenshot({
-    path: '/tmp/pandrator-generation-controls-desktop.png',
+    path: test.info().outputPath('pandrator-generation-controls-desktop.png'),
     fullPage: false
   });
 });
@@ -289,7 +289,7 @@ test('recognition settings and managed voice categories are editable without gen
     .getByRole('group', { name: 'Dialogue and character recognition' })
     .scrollIntoViewIfNeeded();
   await page.screenshot({
-    path: '/tmp/pandrator-speech-optimization-settings.png'
+    path: test.info().outputPath('pandrator-speech-optimization-settings.png')
   });
   await page.getByRole('button', { name: 'Close stage settings' }).click();
 
@@ -307,7 +307,9 @@ test('recognition settings and managed voice categories are editable without gen
   await page
     .getByRole('combobox', { name: 'Voice presentation', exact: true })
     .selectOption('androgynous');
-  await page.screenshot({ path: '/tmp/pandrator-voice-category.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-voice-category.png')
+  });
   const saved = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/api/v1/voices/${voice.id}`) &&
@@ -444,7 +446,9 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
         )?.x
     )
     .toBe(0);
-  await page.screenshot({ path: '/tmp/pandrator-mobile-navigation.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-mobile-navigation.png')
+  });
   await page.keyboard.press('Escape');
   await expect(
     page.getByRole('button', { name: 'Open navigation', exact: true })
@@ -467,11 +471,11 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
     )
   ).toEqual([]);
   await page.screenshot({
-    path: '/tmp/pandrator-generation-controls-mobile.png',
+    path: test.info().outputPath('pandrator-generation-controls-mobile.png'),
     fullPage: false
   });
   await character.screenshot({
-    path: '/tmp/pandrator-character-editor-mobile.png'
+    path: test.info().outputPath('pandrator-character-editor-mobile.png')
   });
   await page.setViewportSize({ width: 320, height: 740 });
   await expect
@@ -482,7 +486,7 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
     )
     .toBe(true);
   await page.screenshot({
-    path: '/tmp/pandrator-generation-controls-narrow.png'
+    path: test.info().outputPath('pandrator-generation-controls-narrow.png')
   });
   await character.getByLabel('Identity notes').fill('An unsaved change.');
   await header
@@ -542,7 +546,9 @@ test('leaving a section can save character, direction and generation-default dra
   });
   await expect(guard).toBeVisible();
   expect((await guard.boundingBox())?.height).toBeLessThan(500);
-  await page.screenshot({ path: '/tmp/pandrator-unsaved-controls-mobile.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-unsaved-controls-mobile.png')
+  });
   await guard
     .getByRole('button', { name: 'Save and continue', exact: true })
     .click();

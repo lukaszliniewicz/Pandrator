@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from .languages import normalize_language_code
-
-from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
-
 import hashlib
 import json
 import logging
@@ -19,9 +15,11 @@ from threading import Lock
 from typing import Any
 
 from .. import llm_handler
+from .languages import normalize_language_code
 from .llm_config import resolve_dubbing_llm_settings
 from .llm_correction import DEFAULT_LLM_CHAR_LIMIT, extract_json_payload
 from .models import SubtitleSegment
+from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
 from .srt_utils import (
     compose_srt,
     create_translation_blocks,
@@ -1170,7 +1168,7 @@ def translation_responses_to_srt(
         pairs = (
             zip(translations, groups, strict=True)
             if explicit_groups is not None
-            else zip(translations, groups)
+            else zip(translations, groups, strict=False)
         )
         for position, (translated_text, group) in enumerate(pairs):
             if remove_marked_subtitles and str(translated_text).strip() == "[REMOVE]":

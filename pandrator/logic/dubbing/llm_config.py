@@ -8,7 +8,6 @@ from typing import Any
 from .. import llm_handler
 from .settings import migrate_dubbing_payload
 
-
 STAGE_MODEL_FIELDS = {
     "correction": "correction_model",
     "translation": "translation_model",

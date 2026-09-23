@@ -1,8 +1,8 @@
+import datetime
 import os
 import re
-import shutil
 import subprocess
-import datetime
+
 
 def _extract_chapter_text(html_content, all_html_content=""):
     from bs4 import BeautifulSoup

@@ -16,13 +16,14 @@ from typing import Any
 
 from sqlalchemy import select
 
+from pandrator.logic.speech_markup import parse_speech_markup, plain_speech_markup
 from pandrator.logic.speech_performance import (
     PerformanceAnnotation,
     compile_performance,
     content_hash,
     resolve_capabilities,
 )
-from pandrator.logic.speech_markup import parse_speech_markup, plain_speech_markup
+
 from . import models as m
 from .generation_controls import get_generation_controls
 from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
@@ -1066,6 +1067,7 @@ def preview_segment(
 def run_analysis(handlers, payload, progress, cancel_event) -> dict[str, Any]:
     """Checkpoint each validated batch. No database transaction spans an LLM call."""
     from pandrator.logic.llm_handler import chat_completion_with_metadata
+
     from .provider_settings import build_llm_settings
     from .speech_planning import _extract_json
     from .tts_optimization import OptimizationUsage

@@ -78,6 +78,8 @@
       voice_source?: string;
       fallback?: boolean;
       input?: string;
+      instructions?: string;
+      request_options?: Record<string, unknown>;
       report?: { status: string; control: string; message: string }[];
     }[];
   };
@@ -1097,10 +1099,34 @@
                 <summary class="cursor-pointer text-xs"
                   >Exact provider input</summary
                 >
-                <pre
-                  class="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{preview.instructions
-                    ? preview.instructions + '\n\n'
-                    : ''}{preview.input}</pre>
+                {#each preview.parts?.length ? preview.parts : [preview] as request, index}
+                  {#if (preview.parts?.length ?? 0) > 1}<p
+                      class="mt-3 text-xs font-semibold"
+                    >
+                      Part {index + 1}
+                    </p>{/if}
+                  {#if request.instructions}<p
+                      class="mt-2 text-xs font-semibold"
+                    >
+                      Instructions
+                    </p>
+                    <pre
+                      class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{request.instructions}</pre>{/if}
+                  <p class="mt-2 text-xs font-semibold">Input</p>
+                  <pre
+                    class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{request.input}</pre>
+                  {#if request.request_options && Object.keys(request.request_options).length}<p
+                      class="mt-2 text-xs font-semibold"
+                    >
+                      Request options
+                    </p>
+                    <pre
+                      class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(
+                        request.request_options,
+                        null,
+                        2
+                      )}</pre>{/if}
+                {/each}
               </details>{/if}
           </section>{/if}
       {/if}

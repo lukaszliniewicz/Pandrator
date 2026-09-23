@@ -9,7 +9,6 @@ import shutil
 import socket
 import sqlite3
 import subprocess
-import tempfile
 import time
 import zipfile
 from dataclasses import dataclass

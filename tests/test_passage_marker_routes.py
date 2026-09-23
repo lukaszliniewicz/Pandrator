@@ -3,6 +3,7 @@ from copy import deepcopy
 
 import pytest
 from sqlalchemy import func, select
+
 from pandrator.web.models import AudioTake, GenerationPlanRevision, GenerationSegment
 from tests.test_passage_markers import block
 

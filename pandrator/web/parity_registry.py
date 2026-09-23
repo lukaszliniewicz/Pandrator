@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .workspace import BUILTIN_DEFAULTS
 
-
 FEATURES = (
     ("navigation", "application_routes", "replaced", "complete", "Qt tabs are replaced by real URL-addressable application and session routes."),
     ("sessions", "session_manager", "equivalent", "complete", "List, inspect artifacts, search, trash, restore, and reconcile sessions."),

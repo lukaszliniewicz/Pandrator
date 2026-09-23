@@ -1,9 +1,9 @@
 """Store provider voice overrides and normalize inherited segment language."""
 
 import json
-from alembic import op
-import sqlalchemy as sa
 
+import sqlalchemy as sa
+from alembic import op
 
 revision = "0015_generation_segment_voice"
 down_revision = "0014_usage_event_links"

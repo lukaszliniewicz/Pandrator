@@ -104,7 +104,9 @@ test('catalogue sharing is inflight-only with guarded cleanup', () => {
   // Cleanup consumes both outcomes (no detached rejection) and only clears
   // the slot it still owns (late settlers cannot clobber newer requests).
   expect(dedupe).toContain('void request.then(cleanup, cleanup);');
-  expect(dedupe).toContain('if (slots.get(key) === request) slots.delete(key);');
+  expect(dedupe).toContain(
+    'if (slots.get(key) === request) slots.delete(key);'
+  );
 });
 
 test('late responses for the previous session never overwrite the current one', async ({
@@ -127,16 +129,13 @@ test('late responses for the previous session never overwrite the current one', 
         body: JSON.stringify(sessionRecord(id, label))
       });
     });
-    await page.route(
-      `**/api/v1/sessions/${id}/outcome-plan`,
-      async (route) => {
-        await new Promise((resolve) => setTimeout(resolve, delayMs[id] ?? 0));
-        await route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify(outcomePlan())
-        });
-      }
-    );
+    await page.route(`**/api/v1/sessions/${id}/outcome-plan`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs[id] ?? 0));
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(outcomePlan())
+      });
+    });
     await page.route(`**/api/v1/sessions/${id}/workflow`, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, delayMs[id] ?? 0));
       await route.fulfill({
@@ -144,15 +143,12 @@ test('late responses for the previous session never overwrite the current one', 
         body: JSON.stringify(workflowSnapshot(id))
       });
     });
-    await page.route(
-      `**/api/v1/sessions/${id}/settings/**`,
-      async (route) => {
-        await route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify(settingsPayload())
-        });
-      }
-    );
+    await page.route(`**/api/v1/sessions/${id}/settings/**`, async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(settingsPayload())
+      });
+    });
   }
 
   const title = page.locator('.session-shell h1');

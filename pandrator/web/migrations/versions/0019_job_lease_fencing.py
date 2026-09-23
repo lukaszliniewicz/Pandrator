@@ -4,9 +4,8 @@ Revision ID: 0019_job_lease_fencing
 Revises: 0018_generation_segment_speaker
 """
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0019_job_lease_fencing"
 down_revision = "0018_generation_segment_speaker"

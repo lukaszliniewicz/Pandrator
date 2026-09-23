@@ -95,13 +95,13 @@ from .models import (
 )
 from .output_settings_snapshot import build_output_settings_snapshot
 from .source_resolution import resolve_media_source, resolve_primary_source
-from .workflow_inputs import workflow_transformations
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
     retire_sample_artifact,
     sample_file_status,
 )
+from .workflow_inputs import workflow_transformations
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
@@ -2765,8 +2765,8 @@ class WorkflowHandlers:
             child_records: list[Segment] = []
             speech_markup = (artifact.metadata_json or {}).get("speech_markup") or {}
             if speech_markup:
-                from .generation_controls import get_generation_controls
                 from .generation_cast_runtime import remap_markup
+                from .generation_controls import get_generation_controls
                 characters = get_generation_controls(session, session_id)["characters"]
             for ordinal, item in enumerate(resolved_segments):
                 cue_markup = speech_markup.get(str(ordinal + 1))
@@ -7081,6 +7081,7 @@ class WorkflowHandlers:
         supplied_markup = (source_artifact.metadata_json or {}).get("speech_markup") or {}
         if supplied_markup:
             from pandrator.logic.speech_markup import parse_speech_markup
+
             from .generation_controls import get_generation_controls
             with self.database.session() as db:
                 characters = get_generation_controls(db, session_id)["characters"]
@@ -7289,9 +7290,10 @@ class WorkflowHandlers:
             session.add(revision)
             session.flush()
             segment_ids = []
-            from .generation_controls import get_generation_controls
-            from .generation_cast_runtime import remap_markup
             from pandrator.logic.speech_markup import parse_speech_markup
+
+            from .generation_cast_runtime import remap_markup
+            from .generation_controls import get_generation_controls
             characters = get_generation_controls(session, session_id)["characters"]
             for ordinal, record in enumerate(clean):
                 record = dict(record)
@@ -8165,7 +8167,9 @@ class WorkflowHandlers:
             for record in records
         ]
         from .speech_plan_workspace import (
-            freeze_speech_snapshot, frozen_semantic_contexts, segment_performance_settings,
+            freeze_speech_snapshot,
+            frozen_semantic_contexts,
+            segment_performance_settings,
         )
 
         performance_snapshot = {"tts": dict(settings)}
@@ -8350,6 +8354,8 @@ class WorkflowHandlers:
                 settings_for_segment: dict[str, Any] = segment_tts_settings,
                 segment_index: int = index,
                 synthesis_progress_share: float = synthesis_share,
+                generation_segment_id: str = generation_segment_id,
+                render_manifest: list[dict[str, Any]] = render_manifest,
             ):
                 if casting_enabled:
                     from .generation_cast_runtime import segment_render_parts
@@ -8908,6 +8914,7 @@ class WorkflowHandlers:
         from pydub import AudioSegment
 
         from pandrator.logic import rvc_handler
+
         from .media_process import MediaProcessCancelled
 
         run_id = str(payload.get("generation_run_id") or "")
@@ -9232,7 +9239,10 @@ class WorkflowHandlers:
         # particular, a first-class service's explicit base URL must reach the
         # legacy synthesis boundary instead of the source provider's URL.
         tts_urls = self._tts_urls(selected_tts_runtime or tts_settings)
-        from .speech_plan_workspace import frozen_semantic_contexts, segment_performance_settings
+        from .speech_plan_workspace import (
+            frozen_semantic_contexts,
+            segment_performance_settings,
+        )
 
         performance_contexts = frozen_semantic_contexts(settings_snapshot)
         if operation != "rvc":
@@ -9508,7 +9518,12 @@ class WorkflowHandlers:
                             **tts_urls,
                         )
 
-                    def synthesize_one():
+                    def synthesize_one(
+                        *,
+                        segment_tts_settings: dict[str, Any] = segment_tts_settings,
+                        segment_id: str = segment_id,
+                        synthesized_text: str = synthesized_text,
+                    ):
                         nonlocal render_manifest
                         if not segment_tts_settings.get("casting_enabled"):
                             return synthesize_request()
@@ -9519,7 +9534,9 @@ class WorkflowHandlers:
                             segment_tts_settings, settings_snapshot,
                             segment_id, synthesized_text,
                         )
-                        def render_part(part_text, part_settings):
+                        def render_part(
+                            part_text, part_settings, segment_id: str = segment_id
+                        ):
                             prepared = self.prepare_audio_cpp_voice_reference(part_settings)
                             self._ensure_qwen_cloned_voice(
                                 prepared, base_url=tts_urls["kobold_qwen_base_url"],

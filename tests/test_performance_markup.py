@@ -3,10 +3,13 @@
 import pytest
 from pydantic import ValidationError
 
-from tests.test_performance_plans import case as performance_case
 from pandrator.logic.speech_markup import plain_speech_markup
 from pandrator.web import models as m
 from pandrator.web import performance_plans as plans
+from pandrator.web.performance_schemas import (
+    PerformanceItem,
+    PerformancePreviewRequest,
+)
 from pandrator.web.speech_annotation_records import (
     normalized_record,
     record_annotation,
@@ -16,10 +19,7 @@ from pandrator_mcp.schemas.performance import (
     GetPerformancePlanInput,
     PreviewPerformancePlanInput,
 )
-from pandrator.web.performance_schemas import (
-    PerformanceItem,
-    PerformancePreviewRequest,
-)
+from tests.test_performance_plans import case as performance_case
 
 case = performance_case
 

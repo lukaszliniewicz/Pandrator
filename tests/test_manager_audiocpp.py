@@ -13,9 +13,9 @@ from pandrator_manager.components import builtin_registry
 from pandrator_manager.components.audiocpp import (
     AUDIO_CPP_MODEL_REVISION,
     AUDIO_CPP_PORT,
+    AUDIO_CPP_RELEASE_BASE,
     AUDIO_CPP_VERSION,
     MODEL_PACKAGES,
-    AUDIO_CPP_RELEASE_BASE,
     SUPPORTED_MODEL_IDS,
     resolve_assets,
     server_config,

@@ -1618,7 +1618,7 @@ class WebApiTests(unittest.TestCase):
             artifact_by_revision = {
                 revision.id: artifact
                 for revision, artifact in zip(
-                    [older_r1, older_r2, newer_r1, newer_r2], artifacts
+                    [older_r1, older_r2, newer_r1, newer_r2], artifacts, strict=False
                 )
             }
 

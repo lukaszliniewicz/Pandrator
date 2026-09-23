@@ -1,4 +1,4 @@
-export const COMPLETED_DISCLOSURE_EXCLUDED_KEYS = new Set([
+const COMPLETED_DISCLOSURE_EXCLUDED_KEYS = new Set([
   'generate_audio',
   'export',
   'output',
@@ -16,7 +16,7 @@ export type CollapsibleStageLike = {
   progress?: number | null;
 };
 
-export function hasSelectedArtifact(
+function hasSelectedArtifact(
   stage: CollapsibleStageLike | null | undefined
 ): boolean {
   if (!stage) return false;
@@ -49,12 +49,6 @@ export function disclosureIdentity(
   stageKey: string | null | undefined
 ): string {
   return `${sessionId ?? ''}::${stageKey ?? ''}`;
-}
-
-export function initialDisclosureExpanded(
-  collapsibleAtMount: boolean
-): boolean {
-  return !collapsibleAtMount;
 }
 
 export function effectiveDisclosureExpanded(

@@ -138,7 +138,7 @@ class PaddleOCRMediumEngine:
         scale_x = float(page.rect.width) / max(1, pixmap.width)
         scale_y = float(page.rect.height) / max(1, pixmap.height)
         lines: list[dict[str, Any]] = []
-        for polygon, text, score in zip(polygons, texts, scores):
+        for polygon, text, score in zip(polygons, texts, scores, strict=False):
             cleaned = _normalize_space(str(text))
             if not cleaned:
                 continue
@@ -700,7 +700,7 @@ def _merge_line_fragments(lines: list[dict[str, Any]]) -> dict[str, Any]:
             "font_size": round(
                 sum(
                     float(line.get("font_size") or 0.0) * count
-                    for line, count in zip(lines, char_counts)
+                    for line, count in zip(lines, char_counts, strict=False)
                 )
                 / max(1, total_chars),
                 3,
@@ -1012,7 +1012,7 @@ def _same_line_direction(previous: dict[str, Any], current: dict[str, Any]) -> b
     current_direction = tuple(current.get("direction") or [1.0, 0.0])
     return all(
         abs(float(left) - float(right)) <= 0.05
-        for left, right in zip(previous_direction, current_direction)
+        for left, right in zip(previous_direction, current_direction, strict=False)
     )
 
 
@@ -1801,7 +1801,7 @@ def _matching_horizontal_directions(
         and abs(float(previous_direction[1])) <= 0.20
         and all(
             abs(float(left) - float(right)) <= 0.05
-            for left, right in zip(previous_direction, current_direction)
+            for left, right in zip(previous_direction, current_direction, strict=False)
         )
     )
 

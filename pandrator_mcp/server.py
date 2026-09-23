@@ -9,11 +9,11 @@ import uuid
 from contextlib import redirect_stdout
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
 from . import __version__
 from .context import McpRuntime
-from .errors import PandratorMcpError, ToolFailure
+from .errors import FailureCode, PandratorMcpError, ToolFailure
 from .request_context import begin_request, end_request
 from .results import ToolOutcome
 from .schemas import (
@@ -40,6 +40,7 @@ from .schemas import (
     DescribeParametersInput,
     DispatchStructuredResultInput,
     DownloadArtifactInput,
+    ElevenLabsVoiceSettingsInput,
     ExecuteComponentPlanInput,
     ExecuteWorkflowPlanInput,
     ExplainSystemInput,
@@ -126,7 +127,7 @@ from .schemas import (
     UpdateSessionSettingsInput,
     VoiceCatalogInput,
 )
-from .schemas.delegation import execution_policy_json_schema
+from .schemas.delegation import DelegationContextCapsuleInput, execution_policy_json_schema
 from .schemas.e2e import AudioCppCatalogueInput
 from .schemas.transcription import (
     CancelTranscriptionInput,
@@ -252,7 +253,7 @@ _STDOUT_GUARD = threading.Lock()
 
 def _tool_failure(error: PandratorMcpError, request_id: str) -> Exception:
     failure = ToolFailure(
-        code=error.code,
+        code=TypeAdapter(FailureCode).validate_python(error.code),
         message=str(error),
         request_id=request_id,
         details=error.details,
@@ -1494,7 +1495,7 @@ def build_server(runtime: McpRuntime):
                 glossary=glossary or {},
                 execution_mode=execution_mode,
                 max_parallel_batches=max_parallel_batches,
-                context_capsule=context_capsule or {},
+                context_capsule=DelegationContextCapsuleInput.model_validate(context_capsule or {}),
                 idempotency_key=idempotency_key,
             ),
         )
@@ -2074,7 +2075,7 @@ def build_server(runtime: McpRuntime):
                 annotation_only=annotation_only,
                 execution_mode=execution_mode,
                 max_parallel_batches=max_parallel_batches,
-                context_capsule=context_capsule or {},
+                context_capsule=DelegationContextCapsuleInput.model_validate(context_capsule or {}),
                 idempotency_key=idempotency_key,
             ),
         )
@@ -2753,7 +2754,7 @@ def build_server(runtime: McpRuntime):
                 subtitle_format=subtitle_format,
                 execution_mode=execution_mode,
                 max_parallel_batches=max_parallel_batches,
-                context_capsule=context_capsule or {},
+                context_capsule=DelegationContextCapsuleInput.model_validate(context_capsule or {}),
                 materialize=materialize,
                 filename=filename,
                 wait_seconds=wait_seconds,
@@ -2975,6 +2976,12 @@ def build_server(runtime: McpRuntime):
             str | None,
             Field(max_length=12_000),
         ] = None,
+        tts_context_mode: Literal["off", "before", "both"] | None = None,
+        performance_context_before: Annotated[int | None, Field(ge=0, le=20)] = None,
+        performance_context_after: Annotated[int | None, Field(ge=0, le=20)] = None,
+        performance_context_max_chars: Annotated[int | None, Field(ge=0, le=16_000)] = None,
+        performance_allow_vocalizations: bool | None = None,
+        elevenlabs_voice_settings: ElevenLabsVoiceSettingsInput | None = None,
     ) -> dict[str, Any]:
         """Validate exact catalog IDs and update only the session's TTS override."""
 
@@ -2988,6 +2995,12 @@ def build_server(runtime: McpRuntime):
                 voice=voice,
                 language=language,
                 style_instructions=style_instructions,
+                tts_context_mode=tts_context_mode,
+                performance_context_before=performance_context_before,
+                performance_context_after=performance_context_after,
+                performance_context_max_chars=performance_context_max_chars,
+                performance_allow_vocalizations=performance_allow_vocalizations,
+                elevenlabs_voice_settings=elevenlabs_voice_settings,
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
             ),

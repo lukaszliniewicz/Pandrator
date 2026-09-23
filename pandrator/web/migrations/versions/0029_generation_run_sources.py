@@ -6,9 +6,8 @@ Revises: 0028_repair_fork_translation_sources
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0029_generation_run_sources"
 down_revision = "0028_repair_fork_translation_sources"

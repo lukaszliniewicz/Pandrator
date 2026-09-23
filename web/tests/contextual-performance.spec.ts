@@ -35,7 +35,7 @@ test('contextual performance opens lazily, saves a draft and previews without sy
     source_artifact_id: null
   };
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-plan/status`,
+    `**/api/v1/sessions/${sessionId}/generation-plan/status*`,
     (route) =>
       route.fulfill({
         json: {
@@ -150,6 +150,19 @@ test('contextual performance opens lazily, saves a draft and previews without sy
             input:
               '[Introduce a restrained contrast.]Yet this defeat was temporary.',
             instructions: '',
+            parts: [
+              {
+                text: 'Yet this defeat ',
+                input: 'Yet this defeat ',
+                instructions: 'Introduce a restrained contrast.'
+              },
+              {
+                text: 'was temporary.',
+                input: 'was temporary.',
+                instructions: 'Become more assured.',
+                request_options: { previous_text: 'Yet this defeat ' }
+              }
+            ],
             report: [
               {
                 status: 'applied',
@@ -172,21 +185,21 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   const panel = card
     .locator('details')
     .filter({
-      has: page
-        .locator('summary')
-        .filter({ hasText: 'Speech direction' })
+      has: page.locator('summary').filter({ hasText: 'Speech direction' })
     })
     .first();
   expect(reads).toBe(0);
   await panel.locator('summary').first().click();
-  await expect(
-    panel.getByText('Model:', { exact: false })
-  ).toContainText('fish_audio_s2_pro_q8_0');
+  await expect(panel.getByText('Model:', { exact: false })).toContainText(
+    'fish_audio_s2_pro_q8_0'
+  );
   await panel
     .getByRole('button', { name: 'Create manual draft', exact: true })
     .click();
   await expect(
-    panel.getByText('Editable speech-direction draft created.', { exact: false })
+    panel.getByText('Editable speech-direction draft created.', {
+      exact: false
+    })
   ).toBeVisible();
   await panel
     .getByLabel('Block delivery direction')
@@ -195,7 +208,9 @@ test('contextual performance opens lazily, saves a draft and previews without sy
     .getByRole('button', { name: 'Save block directions', exact: true })
     .click();
   await expect(
-    panel.getByText('Block directions and speaker assignments saved', { exact: false })
+    panel.getByText('Block directions and speaker assignments saved', {
+      exact: false
+    })
   ).toBeVisible();
   expect(writes).toBe(1);
   await panel
@@ -209,6 +224,13 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   ).toBeVisible();
   await expect(
     panel.getByText('Compiled as an inline Fish direction.')
+  ).toBeVisible();
+  await panel.getByText('Exact provider input', { exact: true }).click();
+  await expect(
+    panel.getByText('Become more assured.', { exact: true })
+  ).toBeVisible();
+  await expect(
+    panel.getByText('"previous_text"', { exact: false })
   ).toBeVisible();
   expect(synthesized).toBe(false);
 });

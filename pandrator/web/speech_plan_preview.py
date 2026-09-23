@@ -37,9 +37,9 @@ from .performance_plans import (
 from .speech_annotation_records import record_annotation, record_markup
 from .speech_plan_workspace import (
     frozen_semantic_contexts,
+    segment_performance_settings,
     semantic_context_units,
     semantic_context_window,
-    segment_performance_settings,
 )
 from .workspace import RevisionConflict, adapt_runtime_settings
 

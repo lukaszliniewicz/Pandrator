@@ -246,7 +246,6 @@ class FirstRegenerationTests(unittest.TestCase):
     def test_genuine_concurrent_revision_still_rejected(self):
         """Segments that are NOT on the active revision must still 409."""
         page = self._segments()
-        revision_r1 = page["plan_revision_id"]
         first = page["items"][0]
 
         main = self._start_run(

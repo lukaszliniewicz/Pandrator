@@ -2,14 +2,15 @@
 
 import pytest
 
+from pandrator.logic import tts_handler
 from pandrator.logic.speech_performance import (
     PerformanceAnnotation,
     capabilities_for_model,
     compile_performance,
+    decorate_service_capabilities,
     resolve_capabilities,
     validate_annotation,
 )
-from pandrator.logic import tts_handler
 from pandrator.web.speech_plan_workspace import semantic_context_window
 
 
@@ -46,6 +47,98 @@ def test_capability_is_model_and_route_specific(model, route, supported):
     assert (profile["instructions"] != "none") is supported
 
 
+def test_elevenlabs_profiles_are_exact_model_and_route_intersections():
+    v3 = capabilities_for_model("eleven_v3", backend="elevenlabs_native")
+    assert v3["instructions"] == "inline"
+    assert v3["instruction_scope"] == ["request", "span"]
+    assert v3["emotion"]["mode"] == "open_description"
+    assert v3["event_tags"] == {
+        "laugh": "laughs", "sigh": "sighs", "clear_throat": "clears throat"
+    }
+    assert v3["voice_design"] is False
+    assert v3["semantic_context"] == "none"
+    assert any("may be ignored" in note for note in v3["notes"])
+    assert capabilities_for_model("eleven_v3", backend="elevenlabs")["instructions"] == "inline"
+    assert capabilities_for_model("eleven_v3", backend="custom")["instructions"] == "none"
+    assert capabilities_for_model("eleven_v3_preview", backend="elevenlabs")["instructions"] == "none"
+    for model in (
+        "eleven_multilingual_v2", "eleven_flash_v2", "eleven_flash_v2_5",
+        "eleven_turbo_v2", "eleven_turbo_v2_5",
+    ):
+        profile = capabilities_for_model(model, backend="elevenlabs_native")
+        assert profile["semantic_context"] == "field"
+        assert profile["instructions"] == "none"
+    assert capabilities_for_model("future_eleven", backend="elevenlabs_native")["semantic_context"] == "none"
+    custom = {"id": "custom", "adapter": "elevenlabs_native", "models": ["eleven_v3"]}
+    decorate_service_capabilities(custom)
+    assert custom["expressive_capabilities"]["eleven_v3"]["instructions"] == "inline"
+
+
+def test_eleven_v3_inline_scope_and_event_gating_preserve_transcript():
+    text = "Hello again."
+    options = {
+        "service": "elevenlabs", "model": "eleven_v3",
+        "generation_prompt": "Measured narration",
+        "_performance": steer(
+            spans=[{"anchor": {"quote": "again"}, "delivery": {"emotion": "wistful"}}],
+            events=[{"kind": "laugh", "position": "after", "anchor": {"quote": "Hello"}},
+                    {"kind": "clear_throat", "position": "before"},
+                    {"kind": "chuckle", "position": "after"}],
+        ),
+    }
+    disabled = compile_performance(text, options, {"adapter": "elevenlabs_native", "id": "custom"})
+    assert disabled.transcript == text
+    assert disabled.input.startswith("[Measured narration; Measured contrast]")
+    assert "[wistful tone]again[Measured narration; Measured contrast]" in disabled.input
+    assert "[laughs]" not in disabled.input
+    assert disabled.instructions == ""
+    enabled = compile_performance(
+        text, {**options, "performance_allow_vocalizations": True},
+        {"adapter": "elevenlabs_native", "id": "custom"},
+    )
+    assert "[clears throat]" in enabled.input
+    assert "[laughs]" in enabled.input
+    assert "[chuckle]" not in enabled.input
+    assert any(item["control"] == "span" and item["status"] == "approximated" for item in enabled.report)
+    assert any(item["control"] == "event" and item["status"] == "unsupported" for item in enabled.report)
+
+
+def test_eleven_v3_rejects_nested_directions_and_excludes_stitching():
+    options = {
+        "service": "elevenlabs", "model": "eleven_v3",
+        "tts_context_mode": "both",
+        "_semantic_context": {"before": "Earlier.", "after": "Later."},
+    }
+    compiled = compile_performance("Now.", options, {"adapter": "elevenlabs_native"})
+    assert compiled.input == "Now."
+    assert compiled.request_options == {}
+    assert any(item["control"] == "semantic_context" and item["status"] == "unsupported" for item in compiled.report)
+    with pytest.raises(ValueError, match="provider tags or control tokens"):
+        compile_performance("Now.", {**options, "generation_prompt": "[whisper]"}, {"adapter": "elevenlabs_native"})
+
+
+@pytest.mark.parametrize(
+    "mode,expected", [("off", {}), ("before", {"previous_text": "Earlier."}),
+                      ("both", {"previous_text": "Earlier.", "next_text": "Later."})],
+)
+def test_eleven_v2_context_compiles_into_fingerprinted_fields(mode, expected):
+    options = {
+        "service": "elevenlabs", "model": "eleven_multilingual_v2",
+        "tts_context_mode": mode,
+        "_semantic_context": {"before": "Earlier.", "after": "Later."},
+        "generation_prompt": "Never speak this.",
+    }
+    compiled = compile_performance("Now.", options, {"adapter": "elevenlabs_native"})
+    assert compiled.input == compiled.transcript == "Now."
+    assert compiled.request_options == expected
+    assert compiled.instructions == ""
+    assert any(item["control"] == "direction" and item["status"] == "unsupported" for item in compiled.report)
+    if mode != "off":
+        assert compiled.fingerprint != compile_performance(
+            "Now.", {**options, "tts_context_mode": "off"}, {"adapter": "elevenlabs_native"}
+        ).fingerprint
+
+
 def test_resolved_capability_cache_is_input_complete_and_mutation_isolated(monkeypatch):
     calls = 0
     original = tts_handler.get_service_config
@@ -76,6 +169,9 @@ def test_resolved_capability_cache_is_input_complete_and_mutation_isolated(monke
         assert cached == resolve_capabilities(variant)
         assert resolve_capabilities(variant, _service_config_cache=cache) == cached
     assert resolve_capabilities(variants[1], _service_config_cache=cache)["instructions"] == "none"
+    reference_profile = resolve_capabilities(variants[1], _service_config_cache=cache)
+    assert reference_profile["instruction_scope"] == []
+    assert reference_profile["emotion"] == {"mode": "none", "tags": []}
 
 
 def test_explicit_endpoint_bypasses_resolved_capability_cache():

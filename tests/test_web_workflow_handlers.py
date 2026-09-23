@@ -14,18 +14,33 @@ from pydub.generators import Sine
 from sqlalchemy import func, select
 
 from pandrator.web.artifacts import ArtifactService
-from pandrator.web.database import Database
 from pandrator.web.credentials import (
     auxiliary_credential_key,
     database_reference,
     tts_service_credential_key,
     upsert_credential,
 )
+from pandrator.web.database import Database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import AppSetting, Artifact, ArtifactEdge, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, OutputAssembly, PronunciationEntry, SessionRecord, SessionSetting, SessionStageSelection, UsageEvent
+from pandrator.web.models import (
+    AppSetting,
+    Artifact,
+    ArtifactEdge,
+    AudioTake,
+    GenerationPlan,
+    GenerationRun,
+    GenerationSegment,
+    OutputAssembly,
+    PronunciationEntry,
+    SessionRecord,
+    SessionSetting,
+    SessionStageSelection,
+    UsageEvent,
+)
 from pandrator.web.pronunciations import PronunciationLibrary
-from pandrator.web.speech_planning import SPEECH_PROMPT_REVISION
 from pandrator.web.sessions import SessionService
+from pandrator.web.speech_planning import SPEECH_PROMPT_REVISION
+from pandrator.web.tts_optimization import OptimizationUsage
 from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from pandrator.web.workflow_handlers import (
     WorkflowHandlers,
@@ -34,8 +49,13 @@ from pandrator.web.workflow_handlers import (
     _secret_free_tts_settings,
     _source_cleaning_progress_callback,
 )
-from pandrator.web.tts_optimization import OptimizationUsage
-from pandrator.web.workspace import GenerationService, OutcomePlanService, WorkspaceSettingsService, adapt_runtime_settings, mark_output_assemblies_stale
+from pandrator.web.workspace import (
+    GenerationService,
+    OutcomePlanService,
+    WorkspaceSettingsService,
+    adapt_runtime_settings,
+    mark_output_assemblies_stale,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -700,7 +720,9 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         callback("First: LLM turn 2/2")
         callback("Phase 2/2: Second")
 
-        for expected, (value, _detail) in zip([0.4, 0.5, 0.6], updates):
+        for expected, (value, _detail) in zip(
+            [0.4, 0.5, 0.6], updates, strict=False
+        ):
             self.assertAlmostEqual(expected, value)
 
     def test_rerunning_an_upstream_role_marks_previous_descendants_stale(self):
@@ -3625,7 +3647,7 @@ A single reviewed cue.
         )
         translation_srt = session_dir / "translation.srt"
         translation_srt.write_text("1\n00:00:00,050 --> 00:00:00,650\nWiersz docelowy\n", encoding="utf-8")
-        translation = self.artifacts.register(
+        self.artifacts.register(
             translation_srt,
             kind="srt",
             role="translation",
@@ -3634,7 +3656,7 @@ A single reviewed cue.
         )
         dubbing_path = session_dir / "dub.wav"
         AudioSegment.silent(duration=800).overlay(AudioSegment.silent(duration=800)).export(dubbing_path, format="wav").close()
-        dubbing = self.artifacts.register(
+        self.artifacts.register(
             dubbing_path,
             kind="audio",
             role="assembled_audio",

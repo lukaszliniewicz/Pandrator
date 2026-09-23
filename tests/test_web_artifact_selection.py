@@ -96,7 +96,7 @@ class WebArtifactSelectionTests(unittest.TestCase):
     def test_clear_selection_keeps_history_but_unlocks_a_fresh_path(self):
         source = self.artifact("clear-source.mp4", "upload", "media")
         transcript = self.artifact("clear-transcript.srt", "transcription", "one", [source.id])
-        correction = self.artifact("clear-correction.srt", "correction", "one!", [transcript.id])
+        self.artifact("clear-correction.srt", "correction", "one!", [transcript.id])
         history = self.client.get(
             f"/api/v1/sessions/{self.session_id}/stages/transcribe/artifacts"
         ).get_json()

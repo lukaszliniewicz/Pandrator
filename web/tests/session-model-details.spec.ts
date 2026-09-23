@@ -138,14 +138,12 @@ test('session settings use compact choices and ignore late metadata from another
   page.on('pageerror', (error) => pageErrors.push(String(error)));
   try {
     await page.goto(`/sessions/${data.sessionId}/voice`);
-    const settings = page
-      .locator('.settings-panel')
-      .filter({
-        has: page.getByRole('heading', {
-          name: 'Speech generation',
-          exact: true
-        })
-      });
+    const settings = page.locator('.settings-panel').filter({
+      has: page.getByRole('heading', {
+        name: 'Speech generation',
+        exact: true
+      })
+    });
     const model = settings.getByRole('combobox', {
       name: 'Model',
       exact: true
@@ -183,11 +181,9 @@ test('missing selected-model metadata exposes retry and does not silently valida
   const data = await fixture(page);
   data.failFirst();
   await page.goto(`/sessions/${data.sessionId}/voice`);
-  const settings = page
-    .locator('.settings-panel')
-    .filter({
-      has: page.getByRole('heading', { name: 'Speech generation', exact: true })
-    });
+  const settings = page.locator('.settings-panel').filter({
+    has: page.getByRole('heading', { name: 'Speech generation', exact: true })
+  });
   await expect(
     settings
       .getByRole('alert')

@@ -1,15 +1,18 @@
 """Preview context and provider request-size consistency regressions."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from pandrator.logic.speech_performance import compile_performance
-from pandrator_mcp.schemas.performance import PreviewPerformancePlanInput
-from pandrator.web import performance_plans
+from pandrator.web import models, performance_plans
 from pandrator.web.performance_schemas import PerformancePreviewRequest
 from pandrator.web.speech_plan_workspace import semantic_context_window
+from pandrator_mcp.schemas.performance import PreviewPerformancePlanInput
 
 
 def _vertex_settings(**overrides):
@@ -20,11 +23,25 @@ def _vertex_settings(**overrides):
     }
 
 
+@pytest.fixture
+def preview_session():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    models.Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            session.add(models.SessionRecord(id="session", name="Preview fixture"))
+            session.flush()
+            yield session
+    finally:
+        engine.dispose()
+
+
 def test_preview_uses_effective_runtime_context_not_historical_plan_settings(
-    monkeypatch,
+    monkeypatch, preview_session,
 ):
     plan = SimpleNamespace(
         id="plan",
+        session_id="session",
         settings_json={
             "context_before": 0,
             "context_after": 0,
@@ -59,7 +76,7 @@ def test_preview_uses_effective_runtime_context_not_historical_plan_settings(
     )
 
     preview = performance_plans.preview_segment(
-        None,
+        preview_session,
         plan,
         "target",
         {
@@ -73,6 +90,48 @@ def test_preview_uses_effective_runtime_context_not_historical_plan_settings(
     )
 
     assert "Historical context." in preview["input"]
+
+
+def test_elevenlabs_preview_options_match_native_request(monkeypatch, preview_session):
+    from pandrator.logic import tts_handler
+
+    plan = SimpleNamespace(
+        id="plan",
+        session_id="session",
+        settings_json={},
+        units_json=[
+            {"id": "target", "text": "Hello.", "spoken_text": "Hello.", "speaker": "A"}
+        ],
+    )
+    monkeypatch.setattr(performance_plans, "_assert_current", lambda *_args: None)
+    monkeypatch.setattr(
+        performance_plans, "_annotations", lambda *_args: {"target": {"decision": "none"}}
+    )
+    settings = {
+        "service": "elevenlabs",
+        "elevenlabs_model": "eleven_v3",
+        "generation_prompt": "Measured",
+        "elevenlabs_voice_settings": {"stability": 0.5},
+    }
+    preview = performance_plans.preview_segment(
+        preview_session, plan, "target", settings
+    )
+    runtime = {
+        **settings,
+        "speaker": "voice-id",
+        "provider_configs": [{"id": "elevenlabs", "api_key": "test-key"}],
+    }
+    with patch("pandrator.logic.tts_handler.requests.post") as post:
+        post.return_value = Mock()
+        tts_handler._request_elevenlabs_audio("Hello.", runtime)
+    payload = post.call_args.kwargs["json"]
+    assert payload["text"] == preview["input"]
+    assert payload["model_id"] == preview["capabilities"]["model"] == "eleven_v3"
+    assert payload["voice_settings"] == preview["request_options"]["voice_settings"]
+    changed = compile_performance(
+        "Hello.", {**settings, "elevenlabs_voice_settings": {"stability": 1}}
+    )
+    assert changed.fingerprint != preview["fingerprint"]
 
 
 @pytest.mark.parametrize("model", [PerformancePreviewRequest, PreviewPerformancePlanInput])

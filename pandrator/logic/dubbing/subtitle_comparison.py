@@ -110,7 +110,7 @@ def comparison_rows(
                     continue
 
     stages = [stage for stage in ("source", "corrected", "translated") if stage in stage_segments]
-    for left_stage, right_stage in zip(stages, stages[1:]):
+    for left_stage, right_stage in zip(stages, stages[1:], strict=False):
         if (left_stage, right_stage) in paired_with_lineage:
             continue
         for left_segment_index, left_segment in enumerate(stage_segments[left_stage]):

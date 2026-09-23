@@ -5,10 +5,10 @@ source ID lists, proportional offsets, or an obsolete pre-merge word ledger.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from pandrator.logic.dubbing.natural_boundaries import classify_boundary
@@ -105,7 +105,9 @@ def describe_passages(segment: Any, *, language: str | None = None) -> dict[str,
         other = maps[companion]
         correspondence = (layers[companion]["status"] == "mapped"
                           and [p.reference for p in passages] == [p.reference for p in other])
-        for index, (left, right) in enumerate(zip(passages, passages[1:])):
+        for index, (left, right) in enumerate(
+            zip(passages, passages[1:], strict=False)
+        ):
             offset = left.end
             offsets = {layer: offset, companion: other[index].end if correspondence else None}
             kind = classify_boundary(texts[layer][:offset], texts[layer][offset:], language_code=lang)

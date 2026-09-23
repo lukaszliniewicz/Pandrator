@@ -327,6 +327,7 @@ class McpArchitectureTests(unittest.TestCase):
         self.assertEqual(
             {
                 "pandrator_adopt_performance_plan",
+                "pandrator_apply_speech_selection",
                 "pandrator_assemble_generation_run",
                 "pandrator_analyse_performance_plan",
                 "pandrator_attach_existing_source",

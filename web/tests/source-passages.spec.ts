@@ -131,6 +131,7 @@ test('transcribe dialog shows passage defaults and keeps an explicit 48-char sub
 }) => {
   await signIn(page);
   const sessionId = await createIsolatedSession(page);
+  let legacySubtitleLimit: number | null = null;
   await page.route(
     `**/api/v1/sessions/${sessionId}/settings/source_passages`,
     (route) =>
@@ -150,6 +151,9 @@ test('transcribe dialog shows passage defaults and keeps an explicit 48-char sub
       const body = await response.json();
       const effective = { ...(body.effective ?? {}) };
       delete effective.subtitle_max_chars_per_line;
+      delete effective.subtitle_language_defaults;
+      if (legacySubtitleLimit !== null)
+        effective.subtitle_max_chars_per_line = legacySubtitleLimit;
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({ ...body, effective })
@@ -172,10 +176,28 @@ test('transcribe dialog shows passage defaults and keeps an explicit 48-char sub
   await expect(
     dialog.getByLabel('Diagnostic span (not a cap)', { exact: true })
   ).toHaveValue('8000');
+  const automatic = dialog.getByLabel(
+    'Automatic limits for each subtitle language'
+  );
+  await expect(automatic).toBeChecked();
+  await expect(
+    dialog.getByRole('spinbutton', { name: 'Characters / line' })
+  ).toHaveCount(0);
+  await automatic.uncheck();
   // Missing backend key falls back to 60, never the old 48.
   await expect(
     dialog.getByRole('spinbutton', { name: 'Characters / line' })
   ).toHaveValue('60');
+  // A saved legacy override remains custom when the settings are opened again.
+  await automatic.check();
+  legacySubtitleLimit = 48;
+  const reopened = await openTranscribeSettings(page, sessionId);
+  await expect(
+    reopened.getByLabel('Automatic limits for each subtitle language')
+  ).not.toBeChecked();
+  await expect(
+    reopened.getByRole('spinbutton', { name: 'Characters / line' })
+  ).toHaveValue('48');
 });
 
 test('invalid passage values block saving with inline errors', async ({

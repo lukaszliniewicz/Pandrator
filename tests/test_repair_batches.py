@@ -1,15 +1,26 @@
 """Disposable-database regression tests for grouped repair history and Undo."""
 
 import wave
-from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import Artifact, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, Job
-from pandrator.web.repair_batches import GUARD_KEY, capture_repair_base, record_accepted_repair, repair_state_hash
+from pandrator.web.models import (
+    AudioTake,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
+    GenerationSegment,
+    Job,
+)
+from pandrator.web.repair_batches import (
+    GUARD_KEY,
+    capture_repair_base,
+    record_accepted_repair,
+    repair_state_hash,
+)
 
 
 @pytest.fixture

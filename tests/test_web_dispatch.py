@@ -101,7 +101,7 @@ class DispatchWebTests(unittest.TestCase):
                          " ".join(v["text"] for v in result).split())
         self.assertTrue(all(v["end_ms"] - v["start_ms"] >= 833 for v in result))
         self.assertTrue(all(a["end_ms"] <= b["start_ms"]
-                            for a, b in zip(result, result[1:])))
+                            for a, b in zip(result, result[1:], strict=False)))
         self.assertEqual(0, result[0]["start_ms"])
         self.assertEqual(9400, result[-1]["end_ms"])
 

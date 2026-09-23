@@ -303,7 +303,7 @@
         "pandrator_update_voice_collection",
         "pandrator_update_catalog_voice_metadata"
       ],
-      "minimum_application_version": "0.9.4",
+      "minimum_application_version": "0.10.0",
       "revision": 1,
       "file": "voice-casting.md"
     },
@@ -324,7 +324,7 @@
         "pandrator_configure_audiobook",
         "pandrator_preview_speech_segment"
       ],
-      "minimum_application_version": "0.9.4",
+      "minimum_application_version": "0.10.0",
       "revision": 3,
       "file": "generation-controls.md"
     },
@@ -343,7 +343,7 @@
         "pandrator_preview_speech_segment",
         "pandrator_get_work"
       ],
-      "minimum_application_version": "0.9.4",
+      "minimum_application_version": "0.10.0",
       "revision": 1,
       "file": "multivoice-audiobooks.md"
     }

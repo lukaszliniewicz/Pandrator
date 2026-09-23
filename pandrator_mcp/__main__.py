@@ -7,6 +7,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -174,7 +175,7 @@ def _delete_local_enrollment(
     store: TargetStore,
     name: str,
     *,
-    audience: str,
+    audience: Literal["application", "manager_recovery"],
 ) -> tuple[TargetProfile, bool]:
     profile = _target_profile(store, name)
     if audience == "application":
@@ -747,20 +748,11 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.yes:
                     raise ValueError("Target removal requires --yes confirmation.")
                 profile = _target_profile(store, args.name)
-                configured_audiences = [
-                    audience
-                    for audience, reference in (
-                        (
-                            "application",
-                            profile.application_credential,
-                        ),
-                        (
-                            "manager_recovery",
-                            profile.manager_recovery_credential,
-                        ),
-                    )
-                    if reference is not None
-                ]
+                configured_audiences: list[Literal["application", "manager_recovery"]] = []
+                if profile.application_credential is not None:
+                    configured_audiences.append("application")
+                if profile.manager_recovery_credential is not None:
+                    configured_audiences.append("manager_recovery")
                 if (
                     configured_audiences
                     and not args.delete_local_credentials
@@ -798,7 +790,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.target_command == "logout":
                 if not args.yes:
                     raise ValueError("Credential logout requires --yes confirmation.")
-                audience = "manager_recovery" if args.manager_recovery else "application"
+                audience: Literal["application", "manager_recovery"] = (
+                    "manager_recovery" if args.manager_recovery else "application"
+                )
                 before = _target_profile(store, args.name)
                 _updated, deleted = _delete_local_enrollment(
                     store,

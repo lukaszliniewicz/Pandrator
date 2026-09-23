@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pandrator.logic.dubbing.text_units import clean_text
-
 import hashlib
 import json
 import re
@@ -13,6 +11,7 @@ from dataclasses import dataclass, field
 from threading import Event, Lock
 from typing import Any
 
+from pandrator.logic.dubbing.text_units import clean_text
 from pandrator.logic.llm_handler import (
     ChatCompletionResult,
     chat_completion_with_metadata,

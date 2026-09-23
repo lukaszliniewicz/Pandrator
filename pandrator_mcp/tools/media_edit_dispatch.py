@@ -188,9 +188,12 @@ def get_media_edit_dispatch_run(
     elif state == "completed" and result.get("result_revision_id"):
         result_revision = result.get("result_revision")
         if result_revision is None:
+            source_revision = result.get("source_revision_number") or result.get("source_revision")
             try:
                 result_revision = (
-                    int(result.get("source_revision_number") or result.get("source_revision")) + 1
+                    int(source_revision) + 1
+                    if isinstance(source_revision, (str, int, float))
+                    else None
                 )
             except (TypeError, ValueError):
                 result_revision = None
@@ -274,9 +277,12 @@ def submit_media_edit_dispatch_batch(
     if state == "completed" and result.get("session_id"):
         result_revision = result.get("result_revision")
         if result_revision is None:
+            source_revision = result.get("source_revision_number") or result.get("source_revision")
             try:
                 result_revision = (
-                    int(result.get("source_revision_number") or result.get("source_revision")) + 1
+                    int(source_revision) + 1
+                    if isinstance(source_revision, (str, int, float))
+                    else None
                 )
             except (TypeError, ValueError):
                 result_revision = None

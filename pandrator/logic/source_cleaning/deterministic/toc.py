@@ -134,7 +134,7 @@ def build_global_toc_map(structure: dict) -> dict[str, str]:
                     toc_map[base] = title
 
     # 2. Extract anchors from all HTML files in spine classified as TOC
-    for idx, item in enumerate(spine):
+    for _idx, item in enumerate(spine):
         href = item["href"]
         if href not in parsed_docs:
             continue

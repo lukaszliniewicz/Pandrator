@@ -1,8 +1,7 @@
 """Track durable generation output assembly jobs and failures."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0004_output_assembly_jobs"
 down_revision = "0003_parity_workspace"

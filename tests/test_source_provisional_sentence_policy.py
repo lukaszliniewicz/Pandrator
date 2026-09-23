@@ -6,15 +6,13 @@ ranks) plus the size-setting propagation from builder to run splitter.
 Shared ``natural_boundaries``/``pause_policy`` behaviour is asserted only
 to prove it is untouched, never modified here.
 """
-import pytest
-
+from pandrator.logic.dubbing import natural_boundaries
 from pandrator.logic.dubbing.logical_passages import build_source_passages
 from pandrator.logic.dubbing.source_passage_policy import (
     SOURCE_PASSAGE_POLICY_VERSION,
     select_boundaries,
 )
 from pandrator.logic.dubbing.source_sentence_assessment import (
-    SOURCE_PASSAGE_POLICY_VERSION as HELPER_VERSION,
     FILLER_SCRAP_MAX_WORDS,
     hold_short_sentence_reason,
     is_filler_sentence,
@@ -25,7 +23,9 @@ from pandrator.logic.dubbing.source_sentence_assessment import (
     resolve_source_language,
     source_clause_rank,
 )
-from pandrator.logic.dubbing import natural_boundaries
+from pandrator.logic.dubbing.source_sentence_assessment import (
+    SOURCE_PASSAGE_POLICY_VERSION as HELPER_VERSION,
+)
 from tests.test_dubbing_logical_passages import _timed_fixture
 
 

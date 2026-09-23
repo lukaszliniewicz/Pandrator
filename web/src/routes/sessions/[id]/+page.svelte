@@ -6,9 +6,9 @@
 </script>
 
 {#if context.session && context.outcome}{#key context.session.id}<SessionWorkspace
-    session={context.session}
-    outcome={context.outcome}
-    workflowStore={context.workflow}
-    initialSettingsStage={page.url.searchParams.get('settings') ?? ''}
-    onupdated={() => context.reload()}
-  />{/key}{/if}
+      session={context.session}
+      outcome={context.outcome}
+      workflowStore={context.workflow}
+      initialSettingsStage={page.url.searchParams.get('settings') ?? ''}
+      onupdated={() => context.reload()}
+    />{/key}{/if}

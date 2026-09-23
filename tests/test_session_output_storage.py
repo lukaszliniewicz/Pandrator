@@ -10,7 +10,12 @@ from sqlalchemy import select
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Artifact, ArtifactEdge, OutputAssembly, SessionStageSelection
+from pandrator.web.models import (
+    Artifact,
+    ArtifactEdge,
+    OutputAssembly,
+    SessionStageSelection,
+)
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import SourceLibraryService

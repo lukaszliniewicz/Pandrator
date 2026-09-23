@@ -6,10 +6,9 @@ Revises: 0020_capability_snapshots
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.sql.elements import TextClause
-
 
 revision = "0021_query_path_indexes"
 down_revision = "0020_capability_snapshots"

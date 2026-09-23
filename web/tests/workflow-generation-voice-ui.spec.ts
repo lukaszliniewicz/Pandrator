@@ -161,7 +161,10 @@ test('standalone voice library lets users choose a cloning provider', async ({
     'Second cloner · unavailable'
   ]);
   await providerSelect.selectOption('kobold_qwen');
-  await page.getByRole('button', { name: 'Managed voice' }).click();
+  await page
+    .getByText('Add a sample to an existing voice', { exact: true })
+    .click();
+  await page.getByRole('button', { name: /^Managed voice/ }).click();
   await expect(
     page.getByRole('button', { name: 'Upload to Qwen3 TTS' })
   ).toBeVisible();
@@ -171,13 +174,16 @@ test('standalone voice library lets users choose a cloning provider', async ({
     .getByRole('button', { name: 'Add reference', exact: true })
     .click();
   await expect(page.getByLabel('Voice cloning provider')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Managed voice' }).click();
+  await page
+    .getByText('Add a sample to an existing voice', { exact: true })
+    .click();
+  await page.getByRole('button', { name: /^Managed voice/ }).click();
   await expect(
     page.getByRole('button', { name: 'Upload to Qwen3 TTS' })
   ).toBeVisible();
 });
 
-test('generation settings make source, availability, voice language, and reuse choices visible', async ({
+test('generation settings preserve provider availability and voice language choices', async ({
   page
 }) => {
   await signIn(page);
@@ -192,36 +198,6 @@ test('generation settings make source, availability, voice language, and reuse c
   });
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
-
-  await page.route(
-    `**/api/v1/sessions/${session.id}/workflow`,
-    async (route) => {
-      const response = await route.fetch();
-      const snapshot = await response.json();
-      const generation = snapshot.stages.find(
-        (stage: { key: string }) => stage.key === 'generate_audio'
-      );
-      generation.status = 'ready';
-      generation.artifact = null;
-      generation.artifacts = [];
-      generation.resolved_input = {
-        artifact_id: 'translation-v3',
-        role: 'translation',
-        stage_key: 'translate',
-        version: 3,
-        label: 'Translation'
-      };
-      snapshot.sources = [
-        {
-          id: 'source-srt',
-          filename: 'source.srt',
-          kind: 'srt',
-          role: 'upload'
-        }
-      ];
-      await route.fulfill({ response, json: snapshot });
-    }
-  );
 
   const services = {
     default_service: 'offline-local',
@@ -297,49 +273,11 @@ test('generation settings make source, availability, voice language, and reuse c
       }
     })
   );
-  await page.route(
-    `**/api/v1/sessions/${session.id}/stages/generate_audio/settings-mismatches`,
-    (route) =>
-      route.fulfill({
-        contentType: 'application/json',
-        json: {
-          mismatches: [
-            {
-              stage: 'translate',
-              changed_fields: ['target_language', 'model'],
-              reasons: ['source_lineage_changed', 'settings_changed'],
-              stored: { target_language: 'en', model: 'previous-model' },
-              current: { target_language: 'de', model: 'current-model' }
-            },
-            {
-              stage: 'correct',
-              changed_fields: [],
-              reasons: ['settings_unverifiable']
-            }
-          ]
-        }
-      })
-  );
-  let generationRunPayload: Record<string, unknown> | null = null;
-  await page.route(
-    `**/api/v1/sessions/${session.id}/stages/generate_audio/run`,
-    (route) => {
-      generationRunPayload = route.request().postDataJSON() as Record<
-        string,
-        unknown
-      >;
-      return route.fulfill({
-        contentType: 'application/json',
-        json: { id: 'generation-job', status: 'queued' }
-      });
-    }
-  );
-
   await page.goto(`/sessions/${session.id}`);
   const generationCard = page
     .getByRole('heading', { name: 'Generate audio', exact: true })
     .locator('xpath=ancestor::article');
-  await expect(generationCard).toContainText('Generate from: Translation v3');
+  await expect(generationCard).toContainText('Prepare a speech plan first');
   await generationCard.getByRole('button', { name: 'Settings' }).click();
 
   const settingsDialog = page.getByRole('dialog');
@@ -392,65 +330,11 @@ test('generation settings make source, availability, voice language, and reuse c
   await settingsDialog.getByRole('button', { name: 'Save settings' }).click();
   await expect(settingsDialog).toHaveCount(0);
 
-  await generationCard.getByRole('button', { name: 'Run now' }).click();
-  const mismatchDialog = page.getByRole('dialog', {
-    name: 'Generate with the selected text?'
-  });
-  await expect(mismatchDialog).toContainText('Translation');
-  await expect(mismatchDialog).toContainText('Correction');
-  await expect(mismatchDialog).toContainText(
-    'This text was produced from a different source or earlier selected text.'
-  );
-  await expect(mismatchDialog).toContainText(
-    'This result has no comparable settings record.'
-  );
+  // Starting and reusing audio is covered by generation-start-dialog and
+  // subtitle-first-review; an empty session must first prepare a speech plan.
   await expect(
-    mismatchDialog.getByRole('button', {
-      name: 'Generate with selected text'
-    })
-  ).toBeVisible();
-  await expect(
-    mismatchDialog.getByRole('button', { name: 'Refresh text first' })
-  ).toBeVisible();
-  await expect(mismatchDialog).toContainText('target language: en → de');
-  await expect(mismatchDialog).toContainText(
-    'model: previous-model → current-model'
-  );
-  await expect(
-    mismatchDialog.getByRole('button', {
-      name: 'Generate with selected text',
-      exact: true
-    })
-  ).toBeFocused();
-  await page.screenshot({ path: '/tmp/pandrator-generation-freshness.png' });
-  await page.keyboard.press('Enter');
-  await expect
-    .poll(() => generationRunPayload)
-    .toMatchObject({ reuse_stages: ['translate', 'correct'] });
-  await expect(mismatchDialog).toBeHidden();
-  generationRunPayload = null;
-  await generationCard.getByRole('button', { name: 'Run now' }).click();
-  await mismatchDialog
-    .getByRole('button', { name: 'Refresh text first' })
-    .click();
-  await expect.poll(() => generationRunPayload).not.toBeNull();
-  expect(generationRunPayload).not.toHaveProperty('reuse_stages');
-  generationRunPayload = null;
-
-  await page
-    .getByLabel('Workspace mode')
-    .getByRole('button', { name: 'Automatic workflow' })
-    .click();
-  await page.getByRole('button', { name: 'Generate audio segments' }).click();
-  await expect.poll(() => generationRunPayload).not.toBeNull();
-  expect(generationRunPayload).toMatchObject({
-    reuse_stages: ['translate', 'correct']
-  });
-  await expect(
-    page.getByText(
-      /Generating with the selected text. Keeping the selected translate and correct results/
-    )
-  ).toBeVisible();
+    generationCard.getByRole('button', { name: 'Generate audio…', exact: true })
+  ).toBeDisabled();
 
   const currentTtsSettings = await page.request.get(
     `/api/v1/sessions/${session.id}/settings/tts`
@@ -493,14 +377,6 @@ test('generation settings make source, availability, voice language, and reuse c
     unavailableDialog.getByRole('button', { name: 'Save as defaults' })
   ).toBeDisabled();
   await unavailableDialog.getByRole('button', { name: 'Cancel' }).click();
-  await page
-    .getByLabel('Workspace mode')
-    .getByRole('button', { name: 'Review each stage' })
-    .click();
-  generationRunPayload = null;
-  await reloadedGenerationCard.getByRole('button', { name: 'Run now' }).click();
-  await expect(page.getByText('Service is not running')).toBeVisible();
-  expect(generationRunPayload).toBeNull();
 });
 
 test('XTTS model management lists, installs, selects, removes, and guides legacy wrappers', async ({
@@ -523,7 +399,7 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
   let installed = false;
   let uploadAttempt = 0;
   const deletedModelIds: string[] = [];
-  await page.route('**/api/v1/services/tts?refresh=true', (route) =>
+  await page.route(/\/api\/v1\/services\/tts(?:\?.*)?$/, (route) =>
     route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({

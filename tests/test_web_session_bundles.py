@@ -2,7 +2,6 @@ import json
 import tempfile
 import unittest
 import zipfile
-from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -37,7 +36,7 @@ class SessionBundleTests(unittest.TestCase):
         source = self.artifacts.register(source_path, kind="srt", role="transcription", session_id=source_session.id)
         corrected_path = directory / "corrected.srt"
         corrected_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello.\n", encoding="utf-8")
-        corrected = self.artifacts.register(corrected_path, kind="srt", role="correction", session_id=source_session.id, parent_ids=[source.id])
+        self.artifacts.register(corrected_path, kind="srt", role="correction", session_id=source_session.id, parent_ids=[source.id])
         bundle_path = self.paths.root / "portable.pandrator-session"
 
         export_updates = []

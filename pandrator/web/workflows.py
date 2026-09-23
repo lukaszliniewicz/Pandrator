@@ -1639,7 +1639,8 @@ class WorkflowService:
         # snapshot is immutable job input: later settings edits affect only
         # future runs, and Run Now values still take highest precedence.
         from .workspace import (
-            WorkspaceSettingsService, adapt_runtime_settings,
+            WorkspaceSettingsService,
+            adapt_runtime_settings,
             normalize_subtitle_limit_override,
         )
 

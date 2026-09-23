@@ -123,7 +123,7 @@ def subtitle_units(text: str, *, split_hangul: bool = False) -> list[str]:
     if not clusters:
         return []
     cuts = [0]
-    for left, right in zip(clusters, clusters[1:]):
+    for left, right in zip(clusters, clusters[1:], strict=False):
         a, b = left.group(), right.group()
         if a[-1] in NO_LINE_END or b[0] in NO_LINE_START:
             continue
@@ -134,7 +134,7 @@ def subtitle_units(text: str, *, split_hangul: bool = False) -> list[str]:
         ) or a[-1] in _CJK_PUNCTUATION or b[0] in _CJK_PUNCTUATION:
             cuts.append(left.end())
     cuts.append(len(value))
-    return [value[start:end] for start, end in zip(cuts, cuts[1:])]
+    return [value[start:end] for start, end in zip(cuts, cuts[1:], strict=False)]
 
 
 def pronunciation_pattern(value: str, *, flexible_whitespace: bool = False) -> str:

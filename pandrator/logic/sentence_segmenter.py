@@ -3,7 +3,7 @@
 import logging
 import re
 import threading
-
+from importlib import import_module
 
 WTPSPLIT_MODEL = "sat-12l-sm"
 WTPSPLIT_THRESHOLD = 0.05
@@ -13,9 +13,10 @@ _SEGMENTER = None
 _SEGMENTER_FAILED = False
 _SEGMENTER_LOCK = threading.RLock()
 
-# Load ONNX Runtime before SciPy-family native libraries to avoid a Windows DLL collision.
+# Load ONNX Runtime before SciPy-family native libraries
+# to avoid a Windows DLL collision.
 try:
-    import onnxruntime as _onnxruntime
+    import_module("onnxruntime")
 except Exception as exc:
     _ONNX_RUNTIME_IMPORT_ERROR = exc
 else:

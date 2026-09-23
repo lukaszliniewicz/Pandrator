@@ -2,12 +2,6 @@
 
 from __future__ import annotations
 
-from .text_units import clean_text, join_fragments
-from .languages import normalize_language_code
-
-from .natural_boundaries import classify_boundary
-from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, may_bridge_unfinished_pause
-
 import logging
 import re
 from collections.abc import Mapping
@@ -19,7 +13,11 @@ from pandrator.logic.speaker_labels import (
     speaker_label_candidate,
 )
 
+from .languages import normalize_language_code
 from .models import SubtitleSegment
+from .natural_boundaries import classify_boundary
+from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, may_bridge_unfinished_pause
+from .text_units import clean_text, join_fragments
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,6 @@
   import PerformancePanel from './PerformancePanel.svelte';
   import type { SpeechSelection, SpeechPreview } from './speech-annotations';
   import SpeechSelectionEditor from './SpeechSelectionEditor.svelte';
-  import { apiJson } from './api';
   import { modalFocus } from './modal-focus';
   import {
     readPassageVisibility,
@@ -2013,7 +2012,13 @@
         ttsServicesOpen ||
         comparisonItem ||
         passagePreview ||
-        document.querySelector('[role="dialog"], dialog[open]')
+        Array.from(
+          document.querySelectorAll('[role="dialog"], dialog[open]')
+        ).some(
+          (dialog) =>
+            dialog.getClientRects().length > 0 &&
+            getComputedStyle(dialog).visibility !== 'hidden'
+        )
       )
         return;
       event.preventDefault();
@@ -2981,16 +2986,10 @@
         await load(true, false);
         if (!payload.plan_revision_id) return;
         try {
-          const preview = await apiJson<SpeechPreview>(
-            `/sessions/${encodeURIComponent(sessionId)}/speech-plan/preview`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                revision_id: payload.plan_revision_id,
-                segment_id: selected.item.id
-              })
-            }
+          const preview = await generationApi.previewSpeech(
+            sessionId,
+            payload.plan_revision_id,
+            selected.item.id
           );
           speechPreviews = { ...speechPreviews, [selected.item.id]: preview };
         } catch (caught) {

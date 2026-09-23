@@ -29,7 +29,6 @@ from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import GenerationService, WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
-
 FIRST = "First short passage."
 SECOND = "Second short passage."
 THIRD = "Third short passage."

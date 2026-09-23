@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Mapping
 
-
 RETRYABLE_HTTP_STATUSES = {408, 409, 425, 429}
 NON_RETRYABLE_EXCEPTION_NAMES = {
     "authenticationerror",

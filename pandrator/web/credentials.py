@@ -222,7 +222,7 @@ def credential_reference_input(reference: object) -> str:
 
 def _load_keyring():
     try:
-        import keyring  # type: ignore[import-not-found]
+        import keyring
     except ImportError as error:
         raise RuntimeError(
             "The optional keyring package is not installed. Install Pandrator's credential-stores extra first."

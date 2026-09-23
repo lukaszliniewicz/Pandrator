@@ -35,7 +35,11 @@ import re
 from .languages import normalize_language_code
 from .natural_boundaries import (
     ABBREVIATIONS as _SHARED_ABBREVIATIONS,
+)
+from .natural_boundaries import (
     CONJUNCTIONS as _SHARED_CONJUNCTIONS,
+)
+from .natural_boundaries import (
     SUPPORTED_SYNTHESIS_LANGUAGES,
     starts_with_safe_conjunction,
 )

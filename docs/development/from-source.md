@@ -53,6 +53,10 @@ and READMEs:
 
 ## Test lanes
 
+Run `pixi run quality` for the Python lint, type, import-cycle, dead-code,
+and test-ownership gates. See the [code quality policy](code-quality.md) for
+the legacy type baseline and editor setup.
+
 Validate lane ownership before running tests:
 
 ```bash

@@ -1,14 +1,19 @@
 """Real pause-driven fragments and the guards around semantic reconstruction."""
-import json
-
 import pytest
 
+from pandrator.logic.dubbing.llm_correction import (
+    apply_correction_operations,
+    validate_correction_operations,
+)
+from pandrator.logic.dubbing.llm_translation import (
+    parse_translation_passage_items_details,
+)
 from pandrator.logic.dubbing.natural_boundaries import classify_boundary
-from pandrator.logic.dubbing.pause_policy import may_bridge_unfinished_pause, validate_logical_merge_pauses
+from pandrator.logic.dubbing.pause_policy import (
+    may_bridge_unfinished_pause,
+)
 from pandrator.logic.dubbing.speech_blocks import create_speech_blocks
 from pandrator.logic.dubbing.srt_utils import create_translation_blocks
-from pandrator.logic.dubbing.llm_correction import validate_correction_operations, apply_correction_operations, build_correction_task_instructions
-from pandrator.logic.dubbing.llm_translation import parse_translation_passage_items_details, build_translation_task_instructions
 from pandrator.web.logical_passages import passage_srt
 
 PASCAL = [

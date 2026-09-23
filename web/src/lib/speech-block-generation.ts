@@ -28,14 +28,7 @@
  * Unknown keys are never sent.
  */
 
-export const SPEECH_BLOCK_GENERATION_SECTION = 'tts';
-
 export type SpeechBlockGenerationMode = 'passage' | 'legacy';
-
-export const SPEECH_BLOCK_GENERATION_MODES: SpeechBlockGenerationMode[] = [
-  'passage',
-  'legacy'
-];
 
 export type SpeechBlockGenerationValues = {
   speech_block_generation_mode: SpeechBlockGenerationMode;
@@ -57,7 +50,7 @@ export const SPEECH_BLOCK_GENERATION_DEFAULTS: SpeechBlockGenerationValues = {
   speech_block_regroup_max_boundary_shift_ms: 500
 };
 
-export type SpeechBlockRegroupKey =
+type SpeechBlockRegroupKey =
   | 'speech_block_regroup_max_mismatch_ms'
   | 'speech_block_regroup_max_mismatch_percent'
   | 'speech_block_regroup_max_gap_ms'
@@ -122,22 +115,10 @@ export const SPEECH_BLOCK_REGROUP_CONTROLS: SpeechBlockRegroupControl[] = [
   }
 ];
 
-const CONTROL_BY_KEY = new Map(
-  SPEECH_BLOCK_REGROUP_CONTROLS.map((control) => [control.key, control])
-);
-
-export function speechBlockRegroupControl(key: SpeechBlockRegroupKey) {
-  return CONTROL_BY_KEY.get(key);
-}
-
 export function isSpeechBlockGenerationMode(
   value: unknown
 ): value is SpeechBlockGenerationMode {
   return value === 'passage' || value === 'legacy';
-}
-
-export function isPassageGenerationMode(value: unknown): boolean {
-  return value === 'passage';
 }
 
 /** Fill missing/invalid entries from built-in defaults without mutating input. */

@@ -60,6 +60,10 @@ async function revealSegment(page: Page, segmentId: string, ordinal: number) {
   // host near the target estimate, wait for the row to mount, then settle
   // it into view before interacting.
   const row = page.locator(`tbody tr[data-segment-id="${segmentId}"]`);
+  if (await row.count()) {
+    await row.scrollIntoViewIfNeeded();
+    return row;
+  }
   await page.evaluate((targetOrdinal: number) => {
     const table = document.querySelector(
       '[data-testid="generation-segment-table"]'
@@ -77,7 +81,11 @@ async function revealSegment(page: Page, segmentId: string, ordinal: number) {
   return row;
 }
 
-async function mockCompletedCorpus(page: Page, sessionId: string, total: number) {
+async function mockCompletedCorpus(
+  page: Page,
+  sessionId: string,
+  total: number
+) {
   // Stateful selection: production persists the chosen take server-side, so
   // the mocked select POST must be reflected by subsequent GETs. A stateless
   // mock that always returns take-a active would unfaithfully revert the mix
@@ -166,7 +174,8 @@ async function mockCompletedCorpus(page: Page, sessionId: string, total: number)
         .url()
         .match(/generation-segments\/([^/]+)\/takes\/([^/]+)\/select/);
       const ordinal = Number(match?.[1]?.split('-').pop());
-      if (Number.isInteger(ordinal)) activeTakeBySegment.set(ordinal, match?.[2] ?? '');
+      if (Number.isInteger(ordinal))
+        activeTakeBySegment.set(ordinal, match?.[2] ?? '');
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({ revision: 2 })
@@ -296,7 +305,10 @@ test('hundreds of playable rows mount a single audio element on demand', async (
     const active = document.activeElement;
     return {
       label: active?.getAttribute('aria-label') ?? '',
-      row: active?.closest('tr[data-segment-id]')?.getAttribute('data-segment-id') ?? ''
+      row:
+        active
+          ?.closest('tr[data-segment-id]')
+          ?.getAttribute('data-segment-id') ?? ''
     };
   });
   expect(focused).toEqual({ label: 'Pause', row: 'preview-segment-7' });

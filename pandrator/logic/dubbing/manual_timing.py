@@ -281,7 +281,9 @@ class BoundaryEditorModel:
 
     def build_manual_corrections(self) -> list[dict[str, Any]]:
         corrections: list[dict[str, Any]] = []
-        for index, (segment, original) in enumerate(zip(self.segments, self.original_segments)):
+        for index, (segment, original) in enumerate(
+            zip(self.segments, self.original_segments, strict=False)
+        ):
             if segment.get("end") != original.get("end"):
                 corrections.append(
                     {

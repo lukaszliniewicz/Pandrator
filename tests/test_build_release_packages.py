@@ -7,8 +7,8 @@ repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "scripts"))
 
-import audit_python_distributions
-import build_release_packages
+import audit_python_distributions  # noqa: E402 -- sys.path above exposes repository scripts.
+import build_release_packages  # noqa: E402 -- sys.path above exposes repository scripts.
 
 
 class BuildReleasePackagesTests(unittest.TestCase):

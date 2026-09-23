@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-
 VISUAL_TAGS = {"figure", "figcaption", "img"}
 
 VISUAL_SEMANTIC_VALUES = {

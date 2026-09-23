@@ -10,7 +10,13 @@ from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
 from pandrator.web.jobs import JobQueue
 from pandrator.web.media_edit import MediaEditService
-from pandrator.web.models import Artifact, MediaEditPlan, OutcomePlan, SessionSource, SourceAsset
+from pandrator.web.models import (
+    Artifact,
+    MediaEditPlan,
+    OutcomePlan,
+    SessionSource,
+    SourceAsset,
+)
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import MEDIA_EDIT_STAGES, WorkflowService

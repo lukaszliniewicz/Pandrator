@@ -142,6 +142,7 @@ class KeyringCredentialBackend:
     def delete(self, reference: CredentialReference) -> None:
         try:
             import keyring
+            from keyring.errors import PasswordDeleteError
         except ImportError as error:
             raise CredentialResolutionError(
                 "The native credential-store extra is not installed."
@@ -151,7 +152,7 @@ class KeyringCredentialBackend:
                 self.service_name,
                 reference.reference,
             )
-        except keyring.errors.PasswordDeleteError:
+        except PasswordDeleteError:
             # Logout and cleanup are intentionally retry-safe when a user or
             # credential manager already removed the native secret.
             return

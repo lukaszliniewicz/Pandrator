@@ -1,14 +1,15 @@
+import concurrent.futures
+import difflib
 import re
 import unicodedata
-from unidecode import unidecode
-import difflib
-from sentence_splitter import SentenceSplitter
-import regex
+
 import hasami
-import concurrent.futures
+import regex
 from num2words import num2words
-from . import nemo_normalizer
-from . import sentence_segmenter
+from sentence_splitter import SentenceSplitter
+from unidecode import unidecode
+
+from . import nemo_normalizer, sentence_segmenter
 from .dubbing.languages import normalize_language_code
 from .dubbing.natural_boundaries import natural_split_candidates
 from .dubbing.text_units import (
@@ -335,7 +336,9 @@ def _normalize_caps_line(line: str, max_len: int) -> str:
         new_words, changed = _normalize_caps_run(words, max_len)
         if changed:
             new_run_text = ""
-            for i, (new_word, (s, e)) in enumerate(zip(new_words, run)):
+            for i, (new_word, (s, _e)) in enumerate(
+                zip(new_words, run, strict=False)
+            ):
                 if i > 0:
                     new_run_text += line[run[i - 1][1]:s]
                 new_run_text += new_word
@@ -668,7 +671,11 @@ def split_into_sentences(text, language, tts_service):
 def split_chinese_sentences(text):
     positions = sorted({offset for offset, kind in natural_split_candidates(text, "zh") if kind == "sentence"})
     boundaries = [0, *positions, len(text)]
-    return [text[start:end].strip() for start, end in zip(boundaries, boundaries[1:]) if text[start:end].strip()]
+    return [
+        text[start:end].strip()
+        for start, end in zip(boundaries, boundaries[1:], strict=False)
+        if text[start:end].strip()
+    ]
 
 
 def calculate_similarity(str1, str2):

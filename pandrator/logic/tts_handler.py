@@ -1,4 +1,5 @@
 import base64
+import binascii
 import copy
 import hashlib
 import io
@@ -9,6 +10,8 @@ import os
 import re
 import time
 import wave
+from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from contextlib import ExitStack, contextmanager
 from queue import Queue
 from threading import Event, Lock, RLock, Thread
@@ -18,6 +21,7 @@ from xml.sax.saxutils import escape as escape_xml
 
 import requests
 from pydub import AudioSegment
+from requests.structures import CaseInsensitiveDict
 
 from ..constants import (
     KOKORO_NAMED_VOICE_META,
@@ -27,6 +31,8 @@ from ..constants import (
     SILERO_LANGUAGES,
     magpie_voice_catalog,
 )
+from .audio_cpp_execution import local_tts_audio_cpp_guard
+from .audio_cpp_parameters import validate_audio_cpp_model_options
 from .retry_utils import (
     retry_after_seconds,
     retry_delay_seconds,
@@ -34,8 +40,6 @@ from .retry_utils import (
     status_code_from_error,
     wait_for_retry,
 )
-from .audio_cpp_parameters import validate_audio_cpp_model_options
-from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     AUDIO_CPP_MODEL_VOICE_MODES,
@@ -438,7 +442,7 @@ OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
 VERTEX_AUDIO_DEFAULT_MODEL = GEMINI_AUDIO_DEFAULT_MODEL
 GEMINI_AUDIO_DEFAULT_VOICE = "Kore"
-VERTEX_AUDIO_DEFAULT_LOCATION = "us-central1"
+VERTEX_AUDIO_DEFAULT_LOCATION = "global"
 OPENAI_AUDIO_BASE_URL = "https://api.openai.com/v1"
 GEMINI_AUDIO_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 ELEVENLABS_API_BASE_URL = "https://api.elevenlabs.io"
@@ -1174,8 +1178,9 @@ def _merge_service_config(
     )
     if default_model:
         record["default_model"] = default_model
-        if default_model not in record["models"]:
-            record["models"].insert(0, default_model)
+        models = record.get("models")
+        if isinstance(models, list) and default_model not in models:
+            models.insert(0, default_model)
 
     voices = _parse_voice_list(raw_record.get("voices", []), provider_key)
     if voices:
@@ -1188,8 +1193,9 @@ def _merge_service_config(
     )
     if default_voice:
         record["default_voice"] = default_voice
-        if default_voice not in record["voices"]:
-            record["voices"].insert(0, default_voice)
+        voices = record.get("voices")
+        if isinstance(voices, list) and default_voice not in voices:
+            voices.insert(0, default_voice)
 
     return record
 
@@ -1227,6 +1233,7 @@ def _service_config_cache_key(tts_settings) -> str:
 
 
 def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
+    cache_key: tuple[str, str] | None = None
     if _cache is not None:
         cache_key = ("service_configs", _service_config_cache_key(tts_settings))
         hit = _cache.get(cache_key)
@@ -1241,7 +1248,7 @@ def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]
     )
     for legacy_record in _legacy_endpoints_to_provider_configs(legacy_raw_json):
         service_id = _normalize_service_id(
-            legacy_record.get("id") or legacy_record.get("name")
+            str(legacy_record.get("id") or legacy_record.get("name") or "")
         )
         if service_id not in services:
             continue
@@ -1280,7 +1287,7 @@ def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]
 
     for service in first_class:
         decorate_service_capabilities(service)
-    if _cache is not None:
+    if _cache is not None and cache_key is not None:
         # Only private lookups may access this shared catalogue. Public
         # results always copy before returning mutable records.
         _cache[cache_key] = first_class
@@ -2089,7 +2096,15 @@ def _build_xtts_overrides(tts_settings: dict) -> dict[str, object]:
     for output_name, setting_name, send_flag, coercer, fallback in XTTS_OVERRIDE_SPECS:
         if not _coerce_bool(tts_settings.get(send_flag), False):
             continue
-        overrides[output_name] = coercer(tts_settings.get(setting_name), fallback)
+        value = tts_settings.get(setting_name)
+        if coercer is _coerce_bool and isinstance(fallback, bool):
+            overrides[output_name] = _coerce_bool(value, fallback)
+        elif coercer is _coerce_int and isinstance(fallback, int):
+            overrides[output_name] = _coerce_int(value, fallback)
+        elif coercer is _coerce_float and isinstance(fallback, float):
+            overrides[output_name] = _coerce_float(value, fallback)
+        else:
+            raise TypeError(f"Invalid XTTS override specification: {output_name}")
 
     return overrides
 
@@ -2114,7 +2129,7 @@ def _looks_like_xtts_model(model_name: str) -> bool:
     return "xtts" in normalized
 
 
-def _looks_like_xtts_endpoint(endpoint: dict[str, str] | None) -> bool:
+def _looks_like_xtts_endpoint(endpoint: Mapping[str, object] | None) -> bool:
     if not isinstance(endpoint, dict):
         return False
 
@@ -2128,7 +2143,7 @@ def _looks_like_xtts_endpoint(endpoint: dict[str, str] | None) -> bool:
     return "xtts" in hint
 
 
-def _is_xtts_target(model_name: str, endpoint: dict[str, str] | None = None) -> bool:
+def _is_xtts_target(model_name: str, endpoint: Mapping[str, object] | None = None) -> bool:
     return _looks_like_xtts_model(model_name) or _looks_like_xtts_endpoint(endpoint)
 
 
@@ -2390,7 +2405,7 @@ def _dedupe_sorted(items: list[str]) -> list[str]:
     return sorted(unique)
 
 
-def _dedupe_ordered(items: list[str]) -> list[str]:
+def _dedupe_ordered(items: Iterable[object]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
     for item in items:
@@ -2490,6 +2505,12 @@ def _provider_for_tts_service(raw_service: str | None) -> str:
     return ""
 
 
+def _endpoint_string_list(record: Mapping[str, object], key: str) -> list[str]:
+    """Return the string list carried by a heterogeneous provider record."""
+    values = record.get(key)
+    return [str(value) for value in values] if isinstance(values, list) else []
+
+
 def _service_audio_endpoint(tts_settings, provider: str, _cache=None) -> dict[str, object]:
     normalized_provider = (
         AUDIO_CPP_ADAPTER
@@ -2531,8 +2552,8 @@ def _service_audio_endpoint(tts_settings, provider: str, _cache=None) -> dict[st
                 else _provider_default_voice(normalized_provider)
             )
         ),
-        "models": list(service.get("models") or []),
-        "voices": list(service.get("voices") or []),
+        "models": _endpoint_string_list(service, "models"),
+        "voices": _endpoint_string_list(service, "voices"),
         "speech_path": str(service.get("speech_path") or ""),
         "models_path": str(service.get("models_path") or ""),
         "voices_path": str(service.get("voices_path") or ""),
@@ -2758,7 +2779,7 @@ def _extract_voices_from_openai_payload(payload) -> list[str]:
 def _extract_file_ids_from_openai_payload(
     payload,
     *,
-    allowed_purposes: set[str] | None = None,
+    allowed_purposes: AbstractSet[str] | None = None,
 ) -> list[str]:
     if not isinstance(payload, dict):
         return []
@@ -2904,15 +2925,19 @@ def _parse_openai_audio_endpoints(tts_settings: dict) -> dict[str, dict[str, obj
             "provider": provider,
             "default_model": default_model,
             "default_voice": default_voice,
-            "models": list(provider_record.get("models") or []),
-            "voices": list(provider_record.get("voices") or []),
+            "models": _endpoint_string_list(provider_record, "models"),
+            "voices": _endpoint_string_list(provider_record, "voices"),
             "adapter": adapter,
             "profile_id": profile_id,
             "speech_path": str(provider_record.get("speech_path") or ""),
             "models_path": str(provider_record.get("models_path") or ""),
             "voices_path": str(provider_record.get("voices_path") or ""),
-            "request_fields": dict(provider_record.get("request_fields") or {}),
-            "request_defaults": dict(provider_record.get("request_defaults") or {}),
+            "request_fields": dict(request_fields) if isinstance(
+                request_fields := provider_record.get("request_fields"), dict
+            ) else {},
+            "request_defaults": dict(request_defaults) if isinstance(
+                request_defaults := provider_record.get("request_defaults"), dict
+            ) else {},
             "auth_mode": str(provider_record.get("auth_mode") or "bearer"),
             "direct_http": _coerce_bool(provider_record.get("direct_http"), False),
             "model_catalog": copy.deepcopy(provider_record.get("model_catalog") or []),
@@ -2941,7 +2966,7 @@ def list_openai_audio_endpoint_names(tts_settings: dict) -> list[str]:
     """Lists configured custom audio endpoint names."""
     service_provider = _provider_for_tts_service(tts_settings.get("service"))
     if service_provider:
-        return [_service_audio_endpoint(tts_settings, service_provider)["name"]]
+        return [str(_service_audio_endpoint(tts_settings, service_provider)["name"])]
 
     return sorted(_parse_openai_audio_endpoints(tts_settings).keys())
 
@@ -3000,7 +3025,7 @@ def should_show_xtts_advanced_settings(tts_settings: dict) -> bool:
     return _is_xtts_target(model_name, endpoint)
 
 
-def _resolve_openai_audio_api_key(endpoint: dict[str, str]) -> str:
+def _resolve_openai_audio_api_key(endpoint: Mapping[str, object]) -> str:
     key_env = str(endpoint.get("api_key_env", "") or "").strip()
     if key_env:
         env_value = os.getenv(key_env, "").strip()
@@ -3258,6 +3283,34 @@ def _elevenlabs_catalog_status(error: BaseException) -> int:
         return 0
 
 
+def _validated_elevenlabs_voice_settings(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("ElevenLabs voice settings must be a dictionary.")
+    numeric_ranges = {
+        "stability": (0.0, 1.0),
+        "similarity_boost": (0.0, 1.0),
+        "style": (0.0, 1.0),
+        "speed": (0.25, 4.0),
+    }
+    allowed = {*numeric_ranges, "use_speaker_boost"}
+    validated: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in allowed:
+            raise ValueError(f"Unsupported ElevenLabs voice setting: {key}.")
+        if key == "use_speaker_boost":
+            if not isinstance(item, bool):
+                raise ValueError("ElevenLabs use_speaker_boost must be a boolean.")
+        elif (
+            isinstance(item, bool)
+            or not isinstance(item, (int, float))
+            or not math.isfinite(item)
+            or not numeric_ranges[key][0] <= item <= numeric_ranges[key][1]
+        ):
+            raise ValueError(f"ElevenLabs {key} is outside its supported numeric range.")
+        validated[key] = item
+    return validated
+
+
 def _request_elevenlabs_audio(
     text: str,
     tts_settings: dict,
@@ -3297,6 +3350,8 @@ def _request_elevenlabs_audio(
         or selected_endpoint.get("default_model")
         or ELEVENLABS_TTS_DEFAULT_MODEL
     ).strip()
+    if not model_id:
+        raise ValueError("Select an ElevenLabs model before generating speech.")
     request_defaults = selected_endpoint.get("request_defaults")
     default_output_format = (
         request_defaults.get("output_format")
@@ -3313,7 +3368,15 @@ def _request_elevenlabs_audio(
         ).strip()
         or ELEVENLABS_TTS_OUTPUT_FORMAT
     )
-    payload = {"text": str(text), "model_id": model_id}
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(
+        str(text),
+        {**tts_settings, "xtts_model": model_id, "elevenlabs_model": model_id},
+        selected_endpoint,
+    )
+    payload = {"text": compiled.input, "model_id": model_id}
+    payload.update(compiled.request_options)
     language_code = normalize_elevenlabs_language_code(tts_settings.get("language"))
     if (
         language_code
@@ -3409,7 +3472,7 @@ def get_elevenlabs_voice_catalog(
 ) -> list[dict[str, object]]:
     """Fetch voice IDs and metadata from ElevenLabs' current v2 voices API."""
     url = f"{_elevenlabs_base_url(base_url)}/v2/voices"
-    params: dict[str, object] = {"show_legacy": "true", "page_size": 100}
+    params: dict[str, str | int] = {"show_legacy": "true", "page_size": 100}
     voices: list[dict[str, object]] = []
     seen: set[str] = set()
     try:
@@ -3663,9 +3726,9 @@ def _resolve_openai_audio_provider_context(
         return None, "", "", ""
 
     provider = _infer_audio_provider(
-        name=endpoint.get("name", ""),
-        base_url=endpoint.get("base_url", ""),
-        raw_provider=endpoint.get("provider", ""),
+        name=str(endpoint.get("name") or ""),
+        base_url=str(endpoint.get("base_url") or ""),
+        raw_provider=str(endpoint.get("provider") or ""),
     )
 
     profile_id = str(endpoint.get("profile_id") or "")
@@ -3699,7 +3762,7 @@ def get_openai_audio_models_fallback(tts_settings: dict) -> list[str]:
         else []
     )
     preferred_models = (
-        [default_model] + list(endpoint.get("models") or []) + builtin_models
+        [default_model] + _endpoint_string_list(endpoint, "models") + builtin_models
     )
     return _dedupe_ordered(preferred_models)
 
@@ -3727,7 +3790,7 @@ def get_openai_audio_voices_fallback(tts_settings: dict) -> list[str]:
         else []
     )
     preferred_voices = (
-        [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
+        [default_voice] + _endpoint_string_list(endpoint, "voices") + builtin_voices
     )
     return _dedupe_ordered(preferred_voices)
 
@@ -3853,7 +3916,7 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
         )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
-        models = list(endpoint.get("models") or [])
+        models = _endpoint_string_list(endpoint, "models")
         models_path = str(endpoint.get("models_path") or "").strip()
         if models_path:
             try:
@@ -3878,7 +3941,7 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
             api_key=_resolve_elevenlabs_endpoint_api_key(endpoint),
         )
         return _merge_catalog_with_discovered(
-            [default_model] + list(endpoint.get("models") or []),
+            [default_model] + _endpoint_string_list(endpoint, "models"),
             [str(item.get("id") or "") for item in discovered],
         )
 
@@ -3914,7 +3977,7 @@ def get_openai_audio_models(tts_settings: dict) -> list[str]:
         [] if endpoint.get("profile_id") else _provider_model_catalog(provider)
     )
     preferred_models = (
-        [default_model] + list(endpoint.get("models") or []) + builtin_models
+        [default_model] + _endpoint_string_list(endpoint, "models") + builtin_models
     )
 
     return _merge_catalog_with_discovered(preferred_models, models)
@@ -3962,7 +4025,7 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
         )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
-        voices = list(endpoint.get("voices") or [])
+        voices = _endpoint_string_list(endpoint, "voices")
         voices_path = str(endpoint.get("voices_path") or "").strip()
         if voices_path:
             try:
@@ -3987,7 +4050,7 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
             api_key=_resolve_elevenlabs_endpoint_api_key(endpoint),
         )
         return _merge_catalog_with_discovered(
-            [default_voice] + list(endpoint.get("voices") or []),
+            [default_voice] + _endpoint_string_list(endpoint, "voices"),
             [str(item.get("voice_id") or "") for item in discovered],
         )
 
@@ -4029,7 +4092,7 @@ def get_openai_audio_voices(tts_settings: dict) -> list[str]:
         else _provider_voice_catalog(provider, selected_model)
     )
     preferred_voices = (
-        [default_voice] + list(endpoint.get("voices") or []) + builtin_voices
+        [default_voice] + _endpoint_string_list(endpoint, "voices") + builtin_voices
     )
 
     return _merge_catalog_with_discovered(preferred_voices, voices)
@@ -4389,14 +4452,12 @@ def get_kobold_qwen_voice_catalog(
             if isinstance(payload, list):
                 candidates = payload
             elif isinstance(payload, dict):
-                candidates = next(
-                    (
-                        payload.get(key)
-                        for key in ("data", "voices", "items")
-                        if isinstance(payload.get(key), list)
-                    ),
-                    [],
-                )
+                candidates = []
+                for key in ("data", "voices", "items"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        candidates = value
+                        break
             else:
                 candidates = []
             for item in candidates:
@@ -4693,8 +4754,6 @@ def get_magpie_models(base_url: str = MAGPIE_API_BASE_URL) -> list[str]:
     """Fetches available Magpie TTS models from server."""
     normalized_base_url = _normalize_base_url(base_url, MAGPIE_API_BASE_URL)
     try:
-        import json
-
         response = requests.get(f"{normalized_base_url}/v1/models", timeout=8)
         response.raise_for_status()
         payload = response.json()
@@ -5455,7 +5514,8 @@ def get_silero_models(
     catalog = get_silero_model_catalog(base_url)
     models = []
     for item in catalog:
-        status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        raw_status = item.get("status")
+        status = raw_status if isinstance(raw_status, dict) else {}
         if installed_only and not status.get("installed"):
             continue
         models.append(str(item["id"]))
@@ -5662,11 +5722,8 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
     )
     voice = str(tts_settings.get("speaker") or "").strip() or FISHS2_DEFAULT_VOICE
     fishs2_options = _build_fishs2_options(tts_settings)
-    prosody = (
-        fishs2_options.get("prosody")
-        if isinstance(fishs2_options.get("prosody"), dict)
-        else {}
-    )
+    raw_prosody = fishs2_options.get("prosody")
+    prosody = raw_prosody if isinstance(raw_prosody, dict) else {}
 
     payload = {
         "model": model,
@@ -5810,12 +5867,12 @@ def _request_kokoro_audio(
 def _build_openai_compatible_audio_payload(
     text: str,
     tts_settings: dict,
-    endpoint: dict[str, str],
+    endpoint: Mapping[str, object],
 ) -> dict:
     provider = _infer_audio_provider(
-        name=endpoint.get("name", ""),
-        base_url=endpoint.get("base_url", ""),
-        raw_provider=endpoint.get("provider", ""),
+        name=str(endpoint.get("name") or ""),
+        base_url=str(endpoint.get("base_url") or ""),
+        raw_provider=str(endpoint.get("provider") or ""),
     )
 
     model_name = str(tts_settings.get("xtts_model") or "").strip()
@@ -6020,10 +6077,13 @@ def _audio_cpp_language(model: str, language: object, endpoint: dict | None = No
         return names[iso]
     if family == "pocket_tts":
         # Pocket's language belongs to the loaded model package, not a request.
-        supported = metadata.get("supported_languages") or []
+        supported = metadata.get("supported_languages")
+        supported_languages = (
+            [str(value) for value in supported] if isinstance(supported, list) else []
+        )
         requested = canonical.split("-")[0] or iso
-        if supported and requested not in supported:
-            label = "English-only" if supported == ["en"] else "/".join(supported)
+        if supported_languages and requested not in supported_languages:
+            label = "English-only" if supported_languages == ["en"] else "/".join(supported_languages)
             raise ValueError(
                 f"The selected PocketTTS package is {label}. "
                 "Select a model package matching the requested language."
@@ -6298,7 +6358,7 @@ def _litellm_response_to_requests_response(litellm_response) -> requests.Respons
     response = requests.Response()
     response.status_code = int(getattr(raw_response, "status_code", 200) or 200)
     response._content = bytes(getattr(litellm_response, "content", b"") or b"")
-    response.headers = requests.structures.CaseInsensitiveDict(
+    response.headers = CaseInsensitiveDict(
         dict(getattr(raw_response, "headers", {}) or {})
     )
 
@@ -6323,7 +6383,7 @@ def _litellm_response_to_requests_response(litellm_response) -> requests.Respons
 
 
 def _request_litellm_audio(
-    payload: dict, endpoint: dict[str, str]
+    payload: dict, endpoint: Mapping[str, object]
 ) -> requests.Response:
     litellm_speech = _get_litellm_speech_client()
     if litellm_speech is None:
@@ -6339,9 +6399,9 @@ def _request_litellm_audio(
         )
 
     provider = _infer_audio_provider(
-        name=endpoint.get("name", ""),
-        base_url=endpoint.get("base_url", ""),
-        raw_provider=endpoint.get("provider", ""),
+        name=str(endpoint.get("name") or ""),
+        base_url=str(endpoint.get("base_url") or ""),
+        raw_provider=str(endpoint.get("provider") or ""),
     )
     if provider not in SUPPORTED_AUDIO_PROVIDERS:
         raise RuntimeError(
@@ -6457,14 +6517,14 @@ def _request_openai_compatible_audio(
 
     payload = _build_openai_compatible_audio_payload(text, tts_settings, endpoint)
     provider = _infer_audio_provider(
-        name=endpoint.get("name", ""),
-        base_url=endpoint.get("base_url", ""),
-        raw_provider=endpoint.get("provider", ""),
+        name=str(endpoint.get("name") or ""),
+        base_url=str(endpoint.get("base_url") or ""),
+        raw_provider=str(endpoint.get("provider") or ""),
     )
 
     uses_nonstandard_gemini_base = (
         provider == GEMINI_PROVIDER
-        and _normalize_base_url(endpoint.get("base_url"), "") != GEMINI_AUDIO_BASE_URL
+        and _normalize_base_url(str(endpoint.get("base_url") or ""), "") != GEMINI_AUDIO_BASE_URL
     )
     if (
         provider in SUPPORTED_AUDIO_PROVIDERS
@@ -6479,6 +6539,11 @@ def _request_openai_compatible_audio(
                 endpoint.get("name", ""),
                 e,
             )
+
+    if provider == GEMINI_PROVIDER and not uses_nonstandard_gemini_base:
+        return _request_gemini_native_audio(
+            payload, endpoint, request_session=request_session
+        )
 
     last_response = None
     for speech_url in _configured_openai_urls(
@@ -6557,6 +6622,96 @@ def _pcm_to_wav_bytes(pcm: bytes, *, sample_rate: int = 24000) -> bytes:
     return output.getvalue()
 
 
+def _google_tts_pcm_response(
+    response: requests.Response, endpoint: str, provider_name: str
+) -> requests.Response:
+    """Decode a Gemini/Vertex PCM response without assuming audio is part zero."""
+    if not response.ok:
+        return response
+    try:
+        candidates = response.json()["candidates"]
+        if not isinstance(candidates, list):
+            raise TypeError("candidates must be a list")
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content")
+            if not isinstance(content, dict):
+                continue
+            parts = content.get("parts", [])
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                inline_data = part.get("inlineData") or part.get("inline_data")
+                if not isinstance(inline_data, dict):
+                    continue
+                mime = str(
+                    inline_data.get("mimeType") or inline_data.get("mime_type") or ""
+                ).lower()
+                media_type, *parameters = (item.strip() for item in mime.split(";"))
+                if media_type and media_type not in {"audio/l16", "audio/pcm", "audio/x-pcm"}:
+                    continue
+                sample_rate = 24000
+                for parameter in parameters:
+                    name, separator, value = parameter.partition("=")
+                    if separator and name.strip() == "rate":
+                        sample_rate = int(value.strip())
+                    elif separator and name.strip() == "channels" and int(value.strip()) != 1:
+                        raise ValueError("multichannel PCM is unsupported")
+                if sample_rate <= 0:
+                    raise ValueError("invalid PCM sample rate")
+                data = inline_data.get("data")
+                if not isinstance(data, str) or not data:
+                    raise ValueError("empty PCM data")
+                pcm = base64.b64decode(data, validate=True)
+                if not pcm or len(pcm) % 2:
+                    raise ValueError("invalid 16-bit PCM data")
+                audio_response = requests.Response()
+                audio_response.status_code = 200
+                audio_response._content = _pcm_to_wav_bytes(pcm, sample_rate=sample_rate)
+                audio_response.headers["Content-Type"] = "audio/wav"
+                audio_response.url = endpoint
+                return audio_response
+    except (KeyError, TypeError, ValueError, binascii.Error) as error:
+        raise RuntimeError(f"{provider_name} returned no decodable audio payload.") from error
+    raise RuntimeError(f"{provider_name} returned no decodable audio payload.")
+
+
+def _request_gemini_native_audio(
+    payload: dict, endpoint: dict[str, object], *,
+    request_session: requests.Session | None = None,
+) -> requests.Response:
+    model = _normalize_model_for_provider(str(payload.get("model") or ""), GEMINI_PROVIDER)
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{quote(model, safe='')}:generateContent"
+    )
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": str(payload.get("input") or "")}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": str(payload.get("voice") or "")},
+                }
+            },
+        },
+    }
+    transport = request_session or requests
+    response = transport.post(
+        url,
+        headers={
+            "x-goog-api-key": _resolve_openai_audio_api_key(endpoint),
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+    )
+    return _google_tts_pcm_response(response, url, "Gemini")
+
+
 def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response:
     service = get_service_config(tts_settings, VERTEX_PROVIDER) or {}
     token, project_id = _vertex_access_token(service)
@@ -6606,22 +6761,7 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         json=payload,
         timeout=TTS_GENERATION_TIMEOUT_SECONDS,
     )
-    if not response.ok:
-        return response
-    try:
-        response_payload = response.json()
-        part = response_payload["candidates"][0]["content"]["parts"][0]
-        inline_data = part.get("inlineData") or part.get("inline_data")
-        pcm = base64.b64decode(str(inline_data["data"]), validate=True)
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        raise RuntimeError("Vertex AI returned no decodable audio payload.") from error
-
-    audio_response = requests.Response()
-    audio_response.status_code = 200
-    audio_response._content = _pcm_to_wav_bytes(pcm)
-    audio_response.headers["Content-Type"] = "audio/wav"
-    audio_response.url = endpoint
-    return audio_response
+    return _google_tts_pcm_response(response, endpoint, "Vertex AI")
 
 
 def _decode_audio_response(response: requests.Response) -> AudioSegment:
@@ -6896,7 +7036,7 @@ def _wait_for_kobold_qwen_recovery(
     return False
 
 
-def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, object]:
+def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, str | float]:
     model = resolve_kobold_qwen_model(tts_settings)
     if not model:
         model = KOBOLD_QWEN_DEFAULT_MODEL
@@ -6925,7 +7065,7 @@ def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, objec
             f"Qwen voice '{voice}' is a cloning reference and cannot be used with Prebuilt Voices."
         )
 
-    payload = {
+    payload: dict[str, str | float] = {
         "model": model,
         "input": text,
         "voice": voice,
@@ -7032,16 +7172,15 @@ def _iter_kobold_qwen_batch_audio_http(
     if not items:
         return
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
-    resolved_api_key = api_key or _resolve_kobold_qwen_api_key(
-        next(
-            (
-                item["settings"]
-                for item in items
-                if isinstance(item.get("settings"), dict)
-            ),
-            {},
-        )
+    first_settings = next(
+        (
+            settings
+            for item in items
+            if isinstance(settings := item.get("settings"), dict)
+        ),
+        {},
     )
+    resolved_api_key = api_key or _resolve_kobold_qwen_api_key(first_settings)
     request_items = []
     for item in items:
         item_id = str(item.get("id") or "").strip()

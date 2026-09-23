@@ -85,6 +85,7 @@ tts_voices/voice_library.json
 .vscode/
 .idea/
 .antigravity/
+.serena/
 *.code-workspace
 .DS_Store
 Thumbs.db
@@ -92,3 +93,4 @@ desktop.ini
 
 web/playwright-report/
 web/test-results/
+/tmp/

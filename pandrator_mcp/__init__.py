@@ -5,7 +5,7 @@ from __future__ import annotations
 from .catalog import ACTION_CATALOG, ActionCatalog, ActionSpec
 from .targets import TargetProfile, TargetRegistry
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 __all__ = [
     "ACTION_CATALOG",

@@ -17,10 +17,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.audio_sync import (
-    _speed_up_wav_streaming,
-    _streaming_audio_duration_ms,
     NATURAL_OVERRUN_TOLERANCE_MS,
     NATURAL_OVERRUN_TOLERANCE_RATIO,
+    _speed_up_wav_streaming,
+    _streaming_audio_duration_ms,
     alignment_adjustment,
     sentence_gap_ms_from_settings,
     slowdown_enabled_from_settings,

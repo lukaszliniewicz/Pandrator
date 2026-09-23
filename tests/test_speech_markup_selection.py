@@ -5,7 +5,6 @@ import pytest
 from pandrator.logic.speech_markup import parse_speech_markup
 from pandrator.logic.speech_markup_edits import edit_speech_markup_range
 
-
 CHARACTERS = [
     {"id": "alice", "display_name": "Alice", "voice_category": "female"},
     {"id": "bob", "display_name": "Bob", "voice_category": "male"},

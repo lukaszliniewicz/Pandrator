@@ -374,7 +374,7 @@ def annotate_speech_units(
     # authored markup so a later artifact cannot silently discard it.
     if requested_mode == "off":
         preserved: list[str] = []
-        for unit_id, text in enumerate(normalized_texts, start=1):
+        for unit_id, _text in enumerate(normalized_texts, start=1):
             xml = _source_for(source_markup, unit_id)
             if xml is None:
                 preserved.append("")

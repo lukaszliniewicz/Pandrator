@@ -108,9 +108,9 @@ for (const saveAsDefaults of [false, true]) {
     ).toBeVisible();
     await dialog.getByRole('button', { name: 'Switch to audio.cpp' }).click();
     await expect(dialog.getByLabel('TTS service')).toHaveValue('audio_cpp');
-    await expect(dialog.getByLabel('TTS model', { exact: true })).toHaveValue(
-      targetModel
-    );
+    await expect(
+      dialog.getByRole('button', { name: /^TTS model:/ })
+    ).toContainText(targetModel);
     await expect(
       dialog.getByRole('combobox', { name: 'Voice', exact: true })
     ).toHaveValue('Ryan');

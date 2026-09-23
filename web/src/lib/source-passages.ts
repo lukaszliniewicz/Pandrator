@@ -28,8 +28,6 @@ import { apiJson, ApiError } from './api';
 
 export const SOURCE_PASSAGE_SECTION = 'source_passages';
 
-export const SOURCE_PASSAGE_POLICY_VERSION = 'source_provisional_v1';
-
 export type SourcePassageKey =
   | 'min_chars'
   | 'preferred_chars'
@@ -105,14 +103,6 @@ export const SOURCE_PASSAGE_CONTROLS: SourcePassageControl[] = [
   }
 ];
 
-const CONTROL_BY_KEY = new Map(
-  SOURCE_PASSAGE_CONTROLS.map((control) => [control.key, control])
-);
-
-export function sourcePassageControl(key: SourcePassageKey) {
-  return CONTROL_BY_KEY.get(key);
-}
-
 /** Fill missing/invalid entries from built-in defaults without mutating input. */
 export function coerceSourcePassageValues(
   saved: Record<string, unknown> | null | undefined
@@ -160,13 +150,6 @@ export function validateSourcePassageValues(
   return errors;
 }
 
-export function sourcePassageValuesEqual(
-  left: SourcePassageValues,
-  right: SourcePassageValues
-): boolean {
-  return SOURCE_PASSAGE_CONTROLS.every(({ key }) => left[key] === right[key]);
-}
-
 /** Exact five-key payload; unknown keys are never sent (backend rejects them). */
 export function sourcePassagePayload(
   values: Record<string, unknown>
@@ -193,7 +176,7 @@ export type SourcePassageStatus = {
   display_content_hash?: string | null;
 };
 
-export type SourcePassagePreview = {
+type SourcePassagePreview = {
   passage_count: number;
   items: unknown[];
   policy_version: string;

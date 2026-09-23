@@ -93,7 +93,7 @@ test('setup checklist is exposed as a keyboard-operable dialog', async ({
 }) => {
   await signIn(page);
   await page.goto('/?setup=1');
-  const dialog = page.getByRole('dialog', { name: 'Prepare your studio' });
+  const dialog = page.getByRole('dialog', { name: 'Set up Pandrator' });
   await expect(dialog).toBeVisible();
   await expectNoBlockingViolations(page);
   await page.keyboard.press('Escape');

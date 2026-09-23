@@ -72,7 +72,7 @@ class AtomicJobQueueTests(unittest.TestCase):
                 with ThreadPoolExecutor(max_workers=count) as executor:
                     results = list(
                         executor.map(
-                            lambda index: self._thread_claim(
+                            lambda index, barrier=barrier, count=count: self._thread_claim(
                                 barrier,
                                 f"thread-worker-{count}-{index}",
                             ),

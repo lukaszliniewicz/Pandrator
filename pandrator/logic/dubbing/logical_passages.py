@@ -8,15 +8,24 @@ it retains the complete cue window.
 
 from __future__ import annotations
 
-from .text_units import join_fragments
-
-import heapq
 import hashlib
+import heapq
+import re
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from typing import Any
 
-from .pause_policy import DEFAULT_CONTINUATION_GAP_MS, MAX_CONTINUATION_SPAN_MS, may_bridge_unfinished_pause
+from .pause_policy import (
+    DEFAULT_CONTINUATION_GAP_MS,
+    MAX_CONTINUATION_SPAN_MS,
+    may_bridge_unfinished_pause,
+)
 from .source_passage_policy import (
-    DEFAULT_CUE_JOIN_GAP_MS, DEFAULT_DIAGNOSTIC_SPAN_MS,
-    DEFAULT_MIN_CHARS, DEFAULT_PREFERRED_CHARS, DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
+    DEFAULT_CUE_JOIN_GAP_MS,
+    DEFAULT_DIAGNOSTIC_SPAN_MS,
+    DEFAULT_MIN_CHARS,
+    DEFAULT_PREFERRED_CHARS,
+    DEFAULT_SENTENCE_LOOKAHEAD_CHARS,
     SOURCE_PASSAGE_POLICY_VERSION,
     select_boundaries,
 )
@@ -27,11 +36,7 @@ from .source_sentence_assessment import (
     is_supported_source_language,
     source_clause_rank,
 )
-import re
-from dataclasses import dataclass
-from difflib import SequenceMatcher
-from typing import Any
-
+from .text_units import join_fragments
 
 _SPACE_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"\S+")
@@ -456,6 +461,7 @@ def _match_cue_tokens(tokens: list[_Token], cue_words: list[_Word]) -> dict[int,
         for cue_position, word_position in zip(
             range(cue_start_index, cue_end_index),
             range(word_start_index, word_end_index),
+            strict=False,
         ):
             matched[cue_indices[cue_position]] = cue_words[
                 word_indices[word_position]
@@ -743,7 +749,7 @@ def _project_run(group: list[tuple], *, min_chars: int, max_chars: int,
             }
         result.append(row)
         start = end
-    if any(a['end_ms'] > b['start_ms'] for a, b in zip(result, result[1:])):
+    if any(a['end_ms'] > b['start_ms'] for a, b in zip(result, result[1:], strict=False)):
         # An unmatched edge must never fabricate overlapping child windows.
         fallbacks = []
         for cue, local_tokens, local_matched in group:

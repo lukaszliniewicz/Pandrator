@@ -154,4 +154,6 @@ await testRejectionSharedAndSlotCleared();
 await testForcedRejectionDoesNotClobberNewerSlot();
 await tick(20);
 assert.deepEqual(unhandled, []);
-console.log('inflight-dedupe: 6 race/error cases passed, no unhandled rejections');
+console.log(
+  'inflight-dedupe: 6 race/error cases passed, no unhandled rejections'
+);

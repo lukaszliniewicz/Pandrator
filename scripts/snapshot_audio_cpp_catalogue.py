@@ -24,7 +24,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-
 RUNTIME_VERSION = "0.8.1"
 SCHEMA_VERSION = 1
 SOURCE_URL = "https://github.com/0xShug0/audio.cpp/tree/v0.8.1/model_specs"

@@ -1,5 +1,6 @@
 """Pure MCP handler functions, separated from protocol registration."""
 
+from .audiobook import apply_speech_selection, preview_speech_selection
 from .dispatch import (
     claim_dispatch_batch,
     create_dispatch_run,
@@ -139,6 +140,7 @@ from .workflow import (
 )
 
 __all__ = [
+    "apply_speech_selection",
     "assemble_generation_run",
     "attach_existing_source",
     "browse_local_sources",
@@ -151,6 +153,7 @@ __all__ = [
     "cancel_transcription",
     "control_runtime",
     "configure_tts",
+    "preview_speech_selection",
     "create_text_source",
     "create_session",
     "delete_output",

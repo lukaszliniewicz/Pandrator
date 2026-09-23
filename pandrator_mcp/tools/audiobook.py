@@ -8,9 +8,11 @@ from typing import Annotated, Any
 from ..context import McpRuntime
 from ..results import ToolOutcome
 from ..schemas.audiobook import (
+    ApplySpeechSelectionInput,
     ConfigureAudiobookInput,
     GetAudiobookSetupInput,
     PreviewSpeechSegmentInput,
+    PreviewSpeechSelectionInput,
 )
 
 AUDIOBOOK_ACTIONS = (
@@ -35,13 +37,36 @@ AUDIOBOOK_ACTIONS = (
         PreviewSpeechSegmentInput,
         "read",
     ),
+    (
+        "selection_preview",
+        "pandrator_preview_speech_selection",
+        "Preview a speech selection",
+        PreviewSpeechSelectionInput,
+        "read",
+    ),
+    (
+        "selection_apply",
+        "pandrator_apply_speech_selection",
+        "Apply a speech selection",
+        ApplySpeechSelectionInput,
+        "write",
+    ),
 )
+
+# FastMCP supplies Python signature defaults even when a caller omits an
+# optional field. Zero is outside the declared types of these fields; the
+# public schema removes this internal default so exact supplied keys survive.
+_OMITTED_SELECTION_FIELD = 0
+_SELECTION_OPTIONAL_FIELDS = frozenset({
+    "speaker", "character_id", "voice", "delivery", "unlock_locked",
+    "enable_casting", "enable_performance",
+})
 
 
 def audiobook_action(
     runtime: McpRuntime,
     action: str,
-    arguments: GetAudiobookSetupInput | ConfigureAudiobookInput | PreviewSpeechSegmentInput,
+    arguments: GetAudiobookSetupInput | ConfigureAudiobookInput | PreviewSpeechSegmentInput | PreviewSpeechSelectionInput | ApplySpeechSelectionInput,
 ) -> ToolOutcome:
     """Dispatch one allowlisted audiobook operation to the HTTP client."""
 
@@ -66,6 +91,24 @@ def audiobook_action(
             segment_id=arguments.segment_id,
             generation_run_id=arguments.generation_run_id,
             include_request=arguments.include_request,
+        )
+    elif action == "selection_preview":
+        if not isinstance(arguments, PreviewSpeechSelectionInput):
+            raise ValueError("The selection preview action requires selection input.")
+        payload = application.preview_speech_selection(
+            arguments.session_id,
+            body=arguments.model_dump(mode="json", exclude_unset=True, exclude={"session_id"}),
+        )
+    elif action == "selection_apply":
+        if not isinstance(arguments, ApplySpeechSelectionInput):
+            raise ValueError("The selection apply action requires apply input.")
+        payload = application.apply_speech_selection(
+            arguments.session_id,
+            body=arguments.model_dump(
+                mode="json", exclude_unset=True,
+                exclude={"session_id", "idempotency_key"},
+            ),
+            idempotency_key=arguments.idempotency_key,
         )
     else:
         raise ValueError("Unknown audiobook action.")
@@ -99,6 +142,24 @@ def preview_speech_segment(
     return audiobook_action(runtime, "preview", arguments)
 
 
+def preview_speech_selection(
+    runtime: McpRuntime,
+    arguments: PreviewSpeechSelectionInput,
+) -> ToolOutcome:
+    """Preview a codepoint range edit without adopting a performance plan."""
+
+    return audiobook_action(runtime, "selection_preview", arguments)
+
+
+def apply_speech_selection(
+    runtime: McpRuntime,
+    arguments: ApplySpeechSelectionInput,
+) -> ToolOutcome:
+    """Apply a reviewed selection using the backend preview revision."""
+
+    return audiobook_action(runtime, "selection_apply", arguments)
+
+
 def _register_tool(
     server,
     runtime: McpRuntime,
@@ -111,6 +172,11 @@ def _register_tool(
     annotations,
 ) -> None:
     def handle(**values) -> dict[str, Any]:
+        if model in (PreviewSpeechSelectionInput, ApplySpeechSelectionInput):
+            values = {
+                key: value for key, value in values.items()
+                if not (key in _SELECTION_OPTIONAL_FIELDS and type(value) is int and value == _OMITTED_SELECTION_FIELD)
+            }
         return validated_call(_handler, runtime, model, values)
 
     # The selected handler is assigned per registration below. Keeping the
@@ -119,6 +185,8 @@ def _register_tool(
         GetAudiobookSetupInput: get_audiobook_setup,
         ConfigureAudiobookInput: configure_audiobook,
         PreviewSpeechSegmentInput: preview_speech_segment,
+        PreviewSpeechSelectionInput: preview_speech_selection,
+        ApplySpeechSelectionInput: apply_speech_selection,
     }[model]
     parameters = []
     annotations_map: dict[str, Any] = {"return": dict[str, Any]}
@@ -133,6 +201,9 @@ def _register_tool(
                 default=(
                     inspect.Parameter.empty
                     if field.is_required()
+                    else _OMITTED_SELECTION_FIELD
+                    if model in (PreviewSpeechSelectionInput, ApplySpeechSelectionInput)
+                    and field_name in _SELECTION_OPTIONAL_FIELDS
                     else field.default
                 ),
             )
@@ -164,6 +235,26 @@ def register_audiobook_tools(
             "configuration revision without refreshing the catalog."
         ),
         annotations=read_only,
+    )
+    _register_tool(
+        server,
+        runtime,
+        validated_call,
+        model=PreviewSpeechSelectionInput,
+        name="pandrator_preview_speech_selection",
+        title="Preview a speech selection",
+        description="Preview an edit to a codepoint range in a speech-plan segment without adopting it.",
+        annotations=read_only,
+    )
+    _register_tool(
+        server,
+        runtime,
+        validated_call,
+        model=ApplySpeechSelectionInput,
+        name="pandrator_apply_speech_selection",
+        title="Apply a speech selection",
+        description="Apply a reviewed speech selection using its preview revision and idempotency key.",
+        annotations=write_action,
     )
     _register_tool(
         server,
@@ -201,5 +292,7 @@ __all__ = [
     "configure_audiobook",
     "get_audiobook_setup",
     "preview_speech_segment",
+    "preview_speech_selection",
+    "apply_speech_selection",
     "register_audiobook_tools",
 ]

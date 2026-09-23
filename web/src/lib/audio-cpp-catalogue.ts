@@ -20,7 +20,7 @@ export type AudioCppModelInfo = {
   estimated_download_bytes?: number;
   license?: { name?: string; url?: string; commercial_use?: string };
   upstream_features?: Record<string, boolean>;
-  pandrator_features?: Record<string, string>;
+  pandrator_features?: Record<string, string | string[]>;
   package_availability?: string | { status?: string; reason?: string };
   verified_runtime?: string;
   sources?: string[];
@@ -41,6 +41,8 @@ export const featureLabels: Record<string, string> = {
   voice_cloning: 'Voice cloning',
   voice_design: 'Voice design',
   instructions: 'Natural-language directions',
+  instruction_scope: 'Direction scope',
+  semantic_context: 'Surrounding text context',
   emotion_control: 'Emotion controls',
   vocal_events: 'Vocal sounds',
   multi_speaker: 'Multiple speakers in one request',

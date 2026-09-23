@@ -1,7 +1,7 @@
 """Add revisioned web parity workspace resources."""
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 from pandrator.web.models import Base
 

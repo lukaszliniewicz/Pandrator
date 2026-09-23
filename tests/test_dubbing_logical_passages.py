@@ -1,5 +1,7 @@
 from copy import deepcopy
+
 import pytest
+
 from pandrator.logic.dubbing.logical_passages import build_source_passages
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, JsonValue, model_validator
 
 from .common import ToolInput
 
@@ -17,7 +17,7 @@ _ContextValue = Annotated[str, Field(min_length=1, max_length=2_000)]
 _ContextNote = Annotated[str, Field(min_length=1, max_length=2_000)]
 
 
-def execution_policy_json_schema() -> dict[str, object]:
+def execution_policy_json_schema() -> dict[str, JsonValue]:
     """Return the cross-field JSON Schema used by model-visible tool inputs."""
 
     return {

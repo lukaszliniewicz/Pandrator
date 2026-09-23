@@ -1,8 +1,7 @@
 """Store reviewable per-segment LLM speech optimization."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0007_generation_optimization"
 down_revision = "0006_session_languages"

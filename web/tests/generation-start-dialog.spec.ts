@@ -277,7 +277,9 @@ test('continue keeps completed recordings and confirms a single block', async ({
   const submit = dialog.getByTestId('generation-start-submit');
   await expect(submit).toHaveText('Generate 1 block');
   await expect(submit).toBeEnabled();
-  await page.screenshot({ path: '/tmp/pandrator-generation-start-dialog.png' });
+  await page.screenshot({
+    path: test.info().outputPath('pandrator-generation-start-dialog.png')
+  });
   await submit.click();
   expect(started).toHaveLength(1);
   expect(started[0]).toMatchObject({

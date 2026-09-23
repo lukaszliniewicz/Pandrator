@@ -6,8 +6,8 @@ tests may continue to read or write this module until the Qt cutover gates are
 complete, but new web features must not depend on it.
 """
 
-import datetime
 import copy
+import datetime
 import hashlib
 import json
 import logging
@@ -26,7 +26,6 @@ from .source_media import (
     TEXT_SOURCE_EXTENSIONS,
     VIDEO_SOURCE_EXTENSIONS,
 )
-
 
 STATE_DB_FILENAME = "pandrator_state.sqlite3"
 SCHEMA_VERSION = 3

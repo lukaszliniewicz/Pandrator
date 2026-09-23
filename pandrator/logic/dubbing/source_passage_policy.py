@@ -5,8 +5,8 @@ module chooses among them without changing a word or manufacturing a timestamp.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Mapping, Sequence
 
 from .source_sentence_assessment import (
@@ -76,7 +76,7 @@ def unsafe_clause_offsets(tokens: Sequence[str]) -> set[int]:
             blocked.add(index + 1)
     commas = [index + 1 for index, token in enumerate(tokens)
               if token.rstrip('\"\'»”’)]}').endswith((",", "，", "،"))]
-    for left, right in zip(commas, commas[1:]):
+    for left, right in zip(commas, commas[1:], strict=False):
         middle = list(tokens[left:right])
         if not 2 <= len(middle) <= 8 or any(re.search(r"[.!?;:]", t) for t in middle):
             continue
@@ -174,7 +174,12 @@ def select_boundaries(
         first_sentence = sentences[index] if index < len(sentences) else None
         sentence_horizon = first_sentence or barrier
 
-        def good_clause(p: int) -> bool:
+        def good_clause(
+            p: int,
+            *,
+            start: int = start,
+            sentence_horizon: int = sentence_horizon,
+        ) -> bool:
             if p in blocked or p >= sentence_horizon or length(start, p) < min_chars:
                 return False
             # An incomplete two-word tail is not a useful second passage.

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from .text_units import join_fragments
-
 from math import ceil
 from typing import Any
 
 from .models import SubtitleSegment
 from .subtitle_finalization import SubtitleFinalizationConfig, finalize_segments
 from .subtitle_rebalancing import rebalance_display_cues
+from .text_units import join_fragments
 
 
 def project_subtitle_display(

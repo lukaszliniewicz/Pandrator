@@ -1,14 +1,13 @@
+import io
 import tempfile
 import unittest
-import io
 from pathlib import Path
 
 from PIL import Image
 from sqlalchemy import func, select
 
-from pandrator.web.auth import BootstrapTokenStore
-
 from pandrator.web.api import create_app
+from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import Artifact, SourceAsset
 from tests.web_test_support import prepare_web_test_data_root
 

@@ -508,6 +508,11 @@
       if (key.startsWith('voxtral_')) return service.includes('voxtral');
       if (key.startsWith('silero_')) return service.includes('silero');
       if (key.startsWith('chatterbox_')) return service.includes('chatterbox');
+      if (key.startsWith('elevenlabs_'))
+        return (
+          selectedTts?.adapter === 'elevenlabs_native' ||
+          service.includes('elevenlabs')
+        );
       if (
         key.startsWith('xtts_') ||
         [

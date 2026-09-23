@@ -10,14 +10,14 @@ async function signIn(page: Page) {
   if (await closeTour.isVisible()) await closeTour.click();
 }
 
-async function createAudiobookSession(page: Page) {
+async function createAudiobookSession(page: Page, kind = 'audiobook') {
   const authStatus = await page.request.get('/api/v1/auth/status');
   const csrfToken = (await authStatus.json()).csrf_token;
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
       name: `Segment virtualization ${crypto.randomUUID()}`,
-      workflow_kind: 'audiobook'
+      workflow_kind: kind
     }
   });
   expect(response.ok()).toBeTruthy();
@@ -49,7 +49,9 @@ function segmentText(ordinal: number) {
   if (ordinal % 5 === 0) {
     return (
       `Virtualization segment ${ordinal + 1}. ` +
-      'A long delivery paragraph exercises variable row measurement. '.repeat(12)
+      'A long delivery paragraph exercises variable row measurement. '.repeat(
+        12
+      )
     );
   }
   return `Virtualization segment ${ordinal + 1}. Compact row.`;
@@ -199,9 +201,7 @@ test('600 loaded rows render a bounded window with loaded counts', async ({
 
   // Visible accessible fallback: show-all mounts everything for
   // find-in-page, then virtualizes again without losing loaded rows.
-  await page
-    .getByRole('button', { name: /Show all 600 loaded rows/ })
-    .click();
+  await page.getByRole('button', { name: /Show all 600 loaded rows/ }).click();
   await expect(table).toHaveAttribute('data-virtualized', 'false');
   await expect(segmentRows(page)).toHaveCount(600);
   await expect(table).toHaveAttribute('data-loaded-count', '600');
@@ -216,7 +216,8 @@ test('scroll reaches the last row with correct boundary neighbors', async ({
 }) => {
   const pageErrors = trackPageErrors(page);
   await signIn(page);
-  const sessionId = await createAudiobookSession(page);
+  // Voiceover has inter-segment boundary controls; compact audiobook rows do not.
+  const sessionId = await createAudiobookSession(page, 'voiceover');
   await mockLargeCorpus(page, sessionId, 600);
   const table = await openGeneration(page, sessionId);
   await loadAll(page, 600);

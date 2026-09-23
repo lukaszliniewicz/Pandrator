@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from .text_units import join_fragments
-
-from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
-
 import hashlib
 import json
 import logging
@@ -23,6 +19,7 @@ from .. import llm_handler
 from .llm_config import DubbingLLMSettings
 from .llm_config import resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
 from .models import SubtitleSegment
+from .pause_policy import logical_pause_instructions, validate_logical_merge_pauses
 from .settings import normalize_correction_style
 from .srt_utils import (
     compose_srt,
@@ -33,6 +30,7 @@ from .srt_utils import (
     subtitle_task_cue,
     timing_context_mode_from_settings,
 )
+from .text_units import join_fragments
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +281,7 @@ def validate_correction_operations(
                 f"already handled by another operation: {overlap}."
             )
         sequential = ids == sorted(ids) and all(
-            right == left + 1 for left, right in zip(ids, ids[1:])
+            right == left + 1 for left, right in zip(ids, ids[1:], strict=False)
         )
         positions = [
             position
@@ -478,7 +476,7 @@ def apply_correction_operations(
             continue
 
         sequential = ids == sorted(ids) and all(
-            right == left + 1 for left, right in zip(ids, ids[1:])
+            right == left + 1 for left, right in zip(ids, ids[1:], strict=False)
         )
         positions = [
             position

@@ -16,7 +16,6 @@ from pandrator.web.audiobook_schemas import (
 )
 from pandrator.web.idempotency import IdempotencyConflict
 
-
 REVISION = "a" * 64
 
 

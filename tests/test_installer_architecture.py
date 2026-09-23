@@ -1,4 +1,3 @@
-import unittest
 import hashlib
 import io
 import json
@@ -6,29 +5,23 @@ import os
 import subprocess
 import sys
 import tempfile
+import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+from pandrator_installer import platforms
 from pandrator_installer.catalog import (
     COMPONENTS,
     LINUX_DEFERRED_INSTALL_COMPONENT_KEYS,
     PACKAGING_COMPONENT_PATHS,
     PACKAGING_CONFIG_FLAGS,
 )
-from pandrator_installer.cli import parse_launcher_cli_args, run_self_check
-from pandrator_installer.cli import run_tls_self_check
-from pandrator_installer.models import (
-    InstallSelection,
-    LaunchSelection,
-    WorkspacePaths,
-    qwen_effective_model_size,
-    qwen_model_variants,
+from pandrator_installer.cli import (
+    parse_launcher_cli_args,
+    run_self_check,
+    run_tls_self_check,
 )
-from pandrator_installer import platforms
-from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
-from pandrator_installer.reporting import HeadlessReporter
-from pandrator_installer.service import HeadlessInstaller
 from pandrator_installer.constants import (
     NEMO_PYNINI_CONDA_SPEC,
     ONNX_ASR_INSTALL_SPEC,
@@ -36,6 +29,16 @@ from pandrator_installer.constants import (
     PANDRATOR_REPO_BRANCH,
     PANDRATOR_URL_DOWNLOADER_CONDA_SPEC,
 )
+from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
+from pandrator_installer.models import (
+    InstallSelection,
+    LaunchSelection,
+    WorkspacePaths,
+    qwen_effective_model_size,
+    qwen_model_variants,
+)
+from pandrator_installer.reporting import HeadlessReporter
+from pandrator_installer.service import HeadlessInstaller
 
 
 class InstallerArchitectureTests(unittest.TestCase):

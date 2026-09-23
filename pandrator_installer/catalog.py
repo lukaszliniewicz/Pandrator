@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 INSTALLER_STATE_FILENAME = "installer_state.json"
 PACKAGING_LAYOUT_FILENAME = "packaging_layout.json"
 KOKORO_ENV_NAME = "kokoro_api_server_installer"

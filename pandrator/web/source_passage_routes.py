@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import g, jsonify, request
+from flask import jsonify, request
 
 from .domain_blueprints import DomainBlueprints
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -167,5 +167,5 @@ def register_source_passage_routes(app: DomainBlueprints, context: RouteContext)
             return error_response("revision_conflict", str(error), 409)
         except (TypeError, ValueError) as error:
             return error_response("validation_error", str(error), 422)
-        except (IdempotencyConflict, IdempotencyInProgress, ValueError) as error:
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
             return idempotency_error(error)

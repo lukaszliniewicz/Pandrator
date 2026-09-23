@@ -1,8 +1,7 @@
 """Make newly added provider models opt-in without changing existing choices."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0012_inactive_provider_models"
 down_revision = "0011_active_provider_models"

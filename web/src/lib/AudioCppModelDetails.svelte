@@ -12,6 +12,11 @@
   const languages = $derived(
     (model.supported_languages ?? []).map(languageName)
   );
+  const capabilityNotes = $derived(
+    Array.isArray(model.pandrator_features?.capability_notes)
+      ? model.pandrator_features.capability_notes
+      : []
+  );
 </script>
 
 <details open={expanded} class="model-details text-xs">
@@ -68,10 +73,10 @@
           <h4 class="font-semibold">Pandrator support</h4>
           <dl class="mt-1 space-y-1">
             {#each Object.entries(model.pandrator_features ?? {}) as [key, status]}
-              <div>
-                <dt class="inline">{featureLabels[key] ?? readable(key)}:</dt>
-                <dd class="muted inline">{readable(status)}</dd>
-              </div>
+              {#if typeof status === 'string'}<div>
+                  <dt class="inline">{featureLabels[key] ?? readable(key)}:</dt>
+                  <dd class="muted inline">{readable(status)}</dd>
+                </div>{/if}
             {/each}
           </dl>
         </div>
@@ -95,6 +100,9 @@
         </div>
       </div>
     {/if}
+    {#each capabilityNotes as note}<p class="muted">
+        {note}
+      </p>{/each}
     {#if model.verified_runtime}<p class="muted">
         Catalogue checked against audio.cpp {model.verified_runtime}. Request
         support does not certify voice quality or emotional delivery.

@@ -6,6 +6,7 @@ import {
   type UploadProgressCallback,
   type UploadTransferCompleteCallback
 } from './api';
+import type { SpeechPreview } from './speech-annotations';
 import type {
   AgentRun,
   AgentStep,
@@ -916,6 +917,15 @@ export type SpeechBlockTopologyOperation = {
 };
 
 export const generationApi = {
+  previewSpeech: (sessionId: string, revisionId: string, segmentId: string) =>
+    apiJson<SpeechPreview>(
+      `/sessions/${encodeURIComponent(sessionId)}/speech-plan/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ revision_id: revisionId, segment_id: segmentId })
+      }
+    ),
   runs: (sessionId: string, signal?: AbortSignal) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-runs',

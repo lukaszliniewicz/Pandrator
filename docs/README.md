@@ -6,6 +6,9 @@ read it in order.
 
 ## Start here
 
+Read the [Pandrator 0.10.0 release notes](release-notes-0.10.0.md) for the latest
+speech controls, catalogue, automation, and workflow changes.
+
 | Goal | Guide |
 | --- | --- |
 | Install or update Pandrator | [Installation](getting-started/installation.md) |
@@ -41,6 +44,8 @@ interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md)
 - [Speech-text optimization and dispatch](reference/speech-optimization.md)
 - [Voiceover repair history and undo](guides/repair-history.md)
 - [Local model groups, Qwen transcription, and audio preprocessing](reference/local-audio-tools.md)
+- [Qwen forced alignment for multilingual captions](guides/qwen-forced-alignment.md)
+- [Contextual performance planning and provider controls](speech-performance.md)
 
 The document reference covers upload lineage, PDF layout/OCR, EPUB structure,
 cleanup, narration preparation, and generation segments. The subtitle reference
@@ -65,6 +70,8 @@ site and should not be moved or copied into this directory.
 
 - [Run Pandrator from source](development/from-source.md)
 - [Contribute code or documentation](development/contributing.md)
+- [Lint, types, and code quality policy](development/code-quality.md)
+- [CJK speech and subtitle pipeline contracts](development/cjk-pipeline-review.md)
 
 ## Documentation boundaries
 

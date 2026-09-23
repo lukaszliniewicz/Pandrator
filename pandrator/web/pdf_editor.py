@@ -14,7 +14,6 @@ from typing import Any
 
 import fitz
 
-
 PROVENANCE_SCHEMA = "pandrator.pdf-edit"
 PROVENANCE_VERSION = 1
 

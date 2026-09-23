@@ -441,7 +441,7 @@ def unpack_epub_structure(epub_path: str) -> dict:
         # Parse NCX TOC mapping if available
         ncx_toc = {}
         ncx_href = None
-        for item_id, item in manifest.items():
+        for _item_id, item in manifest.items():
             if item.get("media_type") == "application/x-dtbncx+xml":
                 ncx_href = item["href"]
                 break

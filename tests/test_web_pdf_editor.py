@@ -5,7 +5,12 @@ from pathlib import Path
 
 import fitz
 
-from pandrator.web.pdf_editor import PdfEditPlan, apply_pdf_edit_plan, inspect_pdf, page_side
+from pandrator.web.pdf_editor import (
+    PdfEditPlan,
+    apply_pdf_edit_plan,
+    inspect_pdf,
+    page_side,
+)
 
 
 class PdfEditorTests(unittest.TestCase):

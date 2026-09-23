@@ -57,10 +57,10 @@ test('global STT defaults disclose only controls used by the selected engine', a
 
   await expect(field('STT Engine')).toBeVisible();
   await expect(field('Attached-caption alignment method')).toHaveValue('ctc');
-  await expect(field('Caption CTC aligner model')).toBeVisible();
+  await expect(field('Caption forced aligner')).toBeVisible();
   await expect(field('Use voice activity detection')).toBeVisible();
   await expect(field('VAD speech threshold')).toBeVisible();
-  await expect(field('MOSS CTC aligner model')).toHaveCount(0);
+  await expect(field('MOSS forced aligner')).toHaveCount(0);
   await expect(field('STT Transcribe Style')).toHaveCount(0);
   await expect(field('STT Compute Device')).toHaveCount(0);
   const selectBox = await field('STT Engine').boundingBox();
@@ -75,18 +75,18 @@ test('global STT defaults disclose only controls used by the selected engine', a
 
   await field('STT Engine').selectOption('moss');
   await expect(field('Use VAD before MOSS diarization')).toBeVisible();
-  await expect(field('MOSS CTC aligner model')).toBeVisible();
+  await expect(field('MOSS forced aligner')).toBeVisible();
   await expect(field('Whisper Prompt')).toHaveCount(0);
 
-  await field('Align each MOSS turn to words with CTC').uncheck();
-  await expect(field('MOSS CTC aligner model')).toHaveCount(0);
+  await field('Align each MOSS turn to timed units').uncheck();
+  await expect(field('MOSS forced aligner')).toHaveCount(0);
 
   await field('STT Engine').selectOption('azure_mai_transcribe_1_5');
   await expect(field('STT Transcribe Style')).toBeVisible();
   // Attached-caption CTC still uses local compute even with cloud ASR.
   await expect(field('STT Compute Backend')).toBeVisible();
   await field('Attached-caption alignment method').selectOption('asr');
-  await expect(field('Caption CTC aligner model')).toHaveCount(0);
+  await expect(field('Caption forced aligner')).toHaveCount(0);
   await expect(field('STT Compute Backend')).toHaveCount(0);
   await expect(field('Use voice activity detection')).toHaveCount(0);
 });

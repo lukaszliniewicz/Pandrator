@@ -23,7 +23,11 @@ from pandrator.web.models import (
     GenerationRun,
     GenerationSegment,
 )
-from pandrator.web.repair_batches import GUARD_KEY, capture_repair_base, record_accepted_repair
+from pandrator.web.repair_batches import (
+    GUARD_KEY,
+    capture_repair_base,
+    record_accepted_repair,
+)
 
 
 @pytest.fixture

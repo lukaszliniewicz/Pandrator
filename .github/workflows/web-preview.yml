@@ -2,7 +2,7 @@ name: Web migration preview
 
 on:
   push:
-    branches: [codex/webui-migration, codex/webui-**]
+    branches: [main, codex/webui-migration, codex/webui-**]
   pull_request:
     branches: [codex/webui-migration, main]
   workflow_dispatch:

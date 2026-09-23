@@ -8,11 +8,11 @@ that backend-specific step.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any
-import unicodedata
 
 from pydub import AudioSegment
 

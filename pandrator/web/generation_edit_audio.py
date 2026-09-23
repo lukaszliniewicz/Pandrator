@@ -10,7 +10,15 @@ from typing import Any
 
 from sqlalchemy import select
 
-from .models import Artifact, AudioTake, GenerationPlan, GenerationPlanRevision, GenerationRun, GenerationSegment, utcnow
+from .models import (
+    Artifact,
+    AudioTake,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
+    GenerationSegment,
+    utcnow,
+)
 
 
 def edit_copy_ancestors(session: Any, revision: GenerationPlanRevision) -> list[str]:
@@ -95,8 +103,8 @@ def release_interrupted_run(session: Any, jobs: Any, child: GenerationRun) -> st
     source = session.get(GenerationRun, source_id) if source_id else None
     if source is None or source.session_id != child.session_id:
         return None
-    from .workspace import GenerationService
     from .models import Job
+    from .workspace import GenerationService
 
     GenerationService._clear_regeneration_baton(session, child, source.id)
     if source.cancel_requested or not source.pause_requested:

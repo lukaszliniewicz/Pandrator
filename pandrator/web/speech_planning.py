@@ -7,17 +7,22 @@ import difflib
 import hashlib
 import json
 import re
-import unicodedata
-import regex as unicode_regex
-
-from pandrator.logic.dubbing.languages import normalize_language_code
-from pandrator.logic.dubbing.text_units import clean_text, contains_cjk, fragment_separator, pronunciation_pattern
 import shutil
 import subprocess
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import regex as unicode_regex
+
+from pandrator.logic.dubbing.languages import normalize_language_code
+from pandrator.logic.dubbing.text_units import (
+    clean_text,
+    contains_cjk,
+    fragment_separator,
+    pronunciation_pattern,
+)
 from pandrator.logic.llm_handler import (
     ChatCompletionResult,
     chat_completion_with_metadata,

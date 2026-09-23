@@ -194,8 +194,10 @@ def test_migration_preserves_existing_voice_rows(tmp_path: Path) -> None:
 
     upgrade_database(database_path)
 
-    assert SCHEMA_HEAD == "0048_voice_collections"
     with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version LIMIT 1"
+        ).fetchone() == (SCHEMA_HEAD,)
         assert connection.execute(
             "SELECT name, revision FROM voices WHERE id = ?", ("legacy-voice",)
         ).fetchone() == ("Legacy voice", 3)

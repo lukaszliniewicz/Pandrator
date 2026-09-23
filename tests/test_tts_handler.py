@@ -1,8 +1,10 @@
 import base64
+import io
 import json
 import tempfile
 import threading
 import unittest
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -599,14 +601,144 @@ class TTSHandlerTests(unittest.TestCase):
                     "speaker": "Kore",
                     "provider_configs": [{"id": "gemini", "direct_http": True}],
                 }
-                response = Mock(status_code=200)
+                response = Mock(ok=True)
+                response.json.return_value = {
+                    "candidates": [{"content": {"parts": [{"inlineData": {
+                        "mimeType": "audio/L16;rate=24000",
+                        "data": base64.b64encode(b"\x00\x00\x01\x00").decode(),
+                    }}]}}]
+                }
                 with patch(
                     "pandrator.logic.tts_handler.requests.post",
                     return_value=response,
                 ) as post:
-                    tts_handler._request_openai_compatible_audio("Hello", settings)
-                self.assertEqual(expected_model, post.call_args.kwargs["json"]["model"])
+                    audio = tts_handler._request_openai_compatible_audio("Hello", settings)
+                self.assertTrue(audio.content.startswith(b"RIFF"))
+                self.assertIn(
+                    f"/models/{expected_model}:generateContent", post.call_args.args[0]
+                )
                 self.assertEqual(selected_model, settings["xtts_model"])
+
+    def test_gemini_direct_and_litellm_fallback_use_native_audio_contract(self):
+        pcm = b"\x00\x00\x01\x00"
+        for direct_http in (True, False):
+            with self.subTest(direct_http=direct_http):
+                settings = {
+                    "service": tts_handler.GEMINI_SERVICE,
+                    "xtts_model": "gemini-3.1-flash-tts-preview",
+                    "speaker": "Kore",
+                    "generation_prompt": "Speak calmly.",
+                    "provider_configs": [{"id": "gemini", "api_key": "test-key",
+                                          "direct_http": direct_http}],
+                }
+                response = Mock(ok=True)
+                response.json.return_value = {
+                    "candidates": [{"content": {"parts": [
+                        {"text": "metadata"},
+                        {"inline_data": {"mime_type": "audio/L16; rate=16000; channels=1",
+                                         "data": base64.b64encode(pcm).decode()}},
+                    ]}}]
+                }
+                with (
+                    patch.dict("os.environ", {"GEMINI_API_KEY": ""}),
+                    patch("pandrator.logic.tts_handler._request_litellm_audio",
+                          side_effect=RuntimeError("LiteLLM failed")) as litellm,
+                    patch("pandrator.logic.tts_handler.requests.post",
+                          return_value=response) as post,
+                ):
+                    audio = tts_handler._request_openai_compatible_audio("Hello.", settings)
+                if direct_http:
+                    litellm.assert_not_called()
+                else:
+                    litellm.assert_called_once()
+                self.assertEqual(
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    "gemini-3.1-flash-tts-preview:generateContent",
+                    post.call_args.args[0],
+                )
+                self.assertEqual("test-key", post.call_args.kwargs["headers"]["x-goog-api-key"])
+                self.assertNotIn("Authorization", post.call_args.kwargs["headers"])
+                self.assertEqual(tts_handler.TTS_GENERATION_TIMEOUT_SECONDS,
+                                 post.call_args.kwargs["timeout"])
+                body = post.call_args.kwargs["json"]
+                self.assertEqual(["AUDIO"], body["generationConfig"]["responseModalities"])
+                self.assertEqual("Kore", body["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"])
+                prompt = body["contents"][0]["parts"][0]["text"]
+                self.assertIn("Speaking directions:\nSpeak calmly.", prompt)
+                self.assertIn("Transcript:\nHello.", prompt)
+                with wave.open(io.BytesIO(audio.content), "rb") as wav_file:
+                    self.assertEqual(16000, wav_file.getframerate())
+                    self.assertEqual(pcm, wav_file.readframes(2))
+
+    def test_gemini_litellm_success_does_not_use_direct_http(self):
+        settings = {"service": tts_handler.GEMINI_SERVICE,
+                    "xtts_model": "gemini-3.1-flash-tts-preview"}
+        audio = Mock()
+        with (
+            patch("pandrator.logic.tts_handler._request_litellm_audio",
+                  return_value=audio) as litellm,
+            patch("pandrator.logic.tts_handler.requests.post") as post,
+        ):
+            self.assertIs(audio, tts_handler._request_openai_compatible_audio("Hello.", settings))
+        litellm.assert_called_once()
+        post.assert_not_called()
+
+    def test_gemini_native_preserves_non_success_and_rejects_invalid_audio(self):
+        settings = {
+            "service": tts_handler.GEMINI_SERVICE,
+            "xtts_model": "gemini-3.1-flash-tts-preview",
+            "provider_configs": [{"id": "gemini", "direct_http": True}],
+        }
+        failure = Mock(ok=False, status_code=429)
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=failure):
+            self.assertIs(
+                failure, tts_handler._request_openai_compatible_audio("Hello.", settings)
+            )
+        for parts in ([{"text": "no audio"}],
+                      [{"inlineData": {"mimeType": "audio/L16;rate=24000", "data": "?"}}],
+                      [{"inlineData": {"mimeType": "audio/mp3", "data": "AAAA"}}]):
+            with self.subTest(parts=parts):
+                response = Mock(ok=True)
+                response.json.return_value = {"candidates": [{"content": {"parts": parts}}]}
+                with patch("pandrator.logic.tts_handler.requests.post", return_value=response):
+                    with self.assertRaisesRegex(RuntimeError, "no decodable audio"):
+                        tts_handler._request_openai_compatible_audio("Hello.", settings)
+
+    def test_custom_gemini_proxy_keeps_its_direct_http_contract(self):
+        settings = {
+            "service": tts_handler.OPENAI_COMPAT_SERVICE,
+            "openai_audio_endpoint": "gemini-proxy",
+            "xtts_model": "gemini-3.1-flash-tts-preview",
+            "provider_configs": [{
+                "id": "gemini-proxy", "provider": "gemini",
+                "api_base": "https://proxy.example.test",
+                "speech_path": "/openai/audio/speech", "direct_http": True,
+                "api_key": "proxy-key",
+            }],
+        }
+        response = Mock(status_code=200)
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post:
+            self.assertIs(response, tts_handler._request_openai_compatible_audio("Hi.", settings))
+        self.assertEqual("https://proxy.example.test/openai/audio/speech", post.call_args.args[0])
+        self.assertEqual("gemini-3.1-flash-tts-preview", post.call_args.kwargs["json"]["model"])
+        self.assertNotIn("generationConfig", post.call_args.kwargs["json"])
+
+    def test_vertex_default_location_is_global(self):
+        self.assertEqual("global", tts_handler.VERTEX_AUDIO_DEFAULT_LOCATION)
+        service = tts_handler.get_service_config({}, tts_handler.VERTEX_PROVIDER)
+        self.assertEqual("global", service["vertex_location"])
+        response = Mock(ok=True)
+        response.json.return_value = {"candidates": [{"content": {"parts": [
+            {"inlineData": {"data": base64.b64encode(b"\x00\x00").decode()}}
+        ]}}]}
+        with (
+            patch("pandrator.logic.tts_handler._vertex_access_token",
+                  return_value=("token", "project")),
+            patch("pandrator.logic.tts_handler.requests.post",
+                  return_value=response) as post,
+        ):
+            tts_handler._request_vertex_ai_audio("Hello.", {"service": tts_handler.VERTEX_SERVICE})
+        self.assertIn("/locations/global/", post.call_args.args[0])
 
     def test_vertex_request_maps_gemini_api_ids_to_vertex_model_ids(self):
         cases = (

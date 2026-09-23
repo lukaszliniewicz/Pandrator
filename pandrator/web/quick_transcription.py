@@ -16,10 +16,10 @@ from typing import Any
 from sqlalchemy import select
 
 from pandrator.logic.cancellable_process import ProcessCancelled, run_cancellable
-from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.logic.dubbing.stt_backends import normalize_stt_backend
 from pandrator.logic.dubbing.stt_languages import validate_stt_language
 from pandrator.logic.dubbing.stt_provider_profiles import CLOUD_STT_ENGINE_IDS
+from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.logic.dubbing.transcription import transcribe_source_file_with_metadata
 from pandrator.runtime import DataPaths
 

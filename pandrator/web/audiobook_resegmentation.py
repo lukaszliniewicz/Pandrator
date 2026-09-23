@@ -326,7 +326,7 @@ def prepare_resegmentation(
     }
     replacements, preview = [], []
     cuts = [0, *boundaries, len(text)]
-    for index, (start, end) in enumerate(zip(cuts, cuts[1:])):
+    for index, (start, end) in enumerate(zip(cuts, cuts[1:], strict=False)):
         while start < end and text[start].isspace():
             start += 1
         while end > start and text[end - 1].isspace():

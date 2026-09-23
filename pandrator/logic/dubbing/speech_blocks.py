@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from .text_units import clean_text, fragment_separator
-
 import json
 import logging
 import os
@@ -27,13 +25,14 @@ from .natural_boundaries import (
 )
 from .pause_policy import MAX_CONTINUATION_SPAN_MS, may_bridge_unfinished_pause
 from .srt_utils import parse_srt
+from .text_units import clean_text, fragment_separator
 
 logger = logging.getLogger(__name__)
 
 try:
-    from sentence_splitter import SentenceSplitter  # type: ignore[import-untyped]
+    from sentence_splitter import SentenceSplitter
 except Exception:  # noqa: BLE001  # pragma: no cover - optional runtime dependency
-    SentenceSplitter = None  # type: ignore[assignment]
+    SentenceSplitter = None
 
 
 SENTENCE_SPLITTER_LANGUAGES = {

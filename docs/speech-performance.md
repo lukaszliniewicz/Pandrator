@@ -8,7 +8,7 @@ prosody reference.
 ## Workflow and interface
 
 In the review workflow, select the intended **Speech plan**, then expand
-**Context and performance · pSSML**. This is available for narration/audiobooks
+**Speech direction**. This is available for narration/audiobooks
 as well as timed voiceovers.
 
 General speech direction is independent of the optional analysis pass. For
@@ -99,6 +99,8 @@ The initial compiler supports:
 | Gemini / Vertex Gemini TTS | Prompt envelope | Phrase tags and bounded preceding/following semantic context |
 | Supported OpenAI mini-TTS models | Separate instruction | Phrase intent approximated in the whole-request instruction |
 | Breeze's audio.cpp instruction path | Separate instruction | Whole-request direction |
+| ElevenLabs `eleven_v3` | Inline natural-language audio tags | Soft phrase directions and explicit supported vocal events; no request stitching |
+| ElevenLabs supported v2 / v2.5 models | No general direction field | Previous/next text in native stitching fields; no v3 audio tags |
 | Native Chatterbox Turbo | Listed vocal-event tags | No claim of general instruction following |
 
 Qwen Base/cloning and 0.6B CustomVoice do not inherit 1.7B instruction support.
@@ -178,3 +180,41 @@ regeneration snapshots and provider/generation regressions. These tests do not
 prove the acoustic quality of a model's interpretation. Compare representative
 short utterances with and without direction and listen before enabling this
 across a production recording.
+
+## Gemini and ElevenLabs setup
+
+Gemini combines general direction, labelled preceding/following context, and the
+current transcript in one prompt. Pandrator keeps the transcript last and uses
+accepted neighbouring speech blocks, including when regenerating only a selected
+block. Context is text, not previously generated audio. Inline tags and prompt
+separation remain model-interpreted; they do not guarantee an inaudible hidden
+channel or exact phrase timing. See [Google's TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
+
+ElevenLabs `eleven_v3` receives compiled directions and supported events inside
+`text`; there is no separate `instructions` parameter. Phrase restoration is a
+soft direction. The currently mapped vocal events are laugh, sigh, and throat
+clearing, gated by `performance_allow_vocalizations`. Other events are reported
+as unsupported. These are vocal performances, not a background-effects mixing
+workflow. See [ElevenLabs audio tags](https://elevenlabs.io/docs/overview/capabilities/text-to-dialogue).
+
+For supported older ElevenLabs models, preceding/following context uses
+`previous_text` and `next_text`. Eleven v3 does not support this stitching path.
+Unknown models receive no inferred expressive capabilities. See
+[ElevenLabs request stitching](https://elevenlabs.io/docs/eleven-api/guides/how-to/text-to-speech/request-stitching).
+
+Optional `elevenlabs_voice_settings` is an object. An empty object keeps provider
+defaults. Requests can use `stability`, `similarity_boost`, and `style` from 0 to
+1, `speed` from 0.25 to 4, and boolean `use_speaker_boost`. Invalid types,
+ranges, and unknown keys are rejected before the HTTP request. Provider
+documentation disagrees on non-stability settings for Eleven v3; Pandrator
+forwards those REST options but marks their effect as approximate because the
+model may ignore them. See the [ElevenLabs REST settings reference](https://github.com/elevenlabs/skills/blob/main/text-to-speech/references/voice-settings.md).
+Voice settings, compiled directions, and supplied context affect whether
+existing audio can be reused.
+
+The catalogue distinguishes request-level directions from phrase hints. FireRed
+Instruct can take directions without a reference; its reference mode uses that
+slot for the reference transcript. Azure style choices depend on the selected
+voice and use `azure_speech_style`, not general pSSML emotion annotations. Sound
+and music models marked **Catalogue only** have no generation workflow in this
+release.

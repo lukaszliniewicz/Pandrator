@@ -7,8 +7,6 @@ time, so a successful rebalance cannot cascade through an entire transcript.
 
 from __future__ import annotations
 
-from .text_units import clean_text, join_fragments
-
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -19,6 +17,7 @@ from .subtitle_finalization import (
     SubtitleFinalizationConfig,
     wrap_subtitle_text,
 )
+from .text_units import clean_text, join_fragments
 
 _REVIEW_FIELDS = (
     "review_state",
@@ -49,7 +48,6 @@ _FUNCTION_WORDS = {
     "if",
     "that",
     "auf",
-    "an",
     "mit",
     "für",
     "von",
@@ -256,7 +254,7 @@ def _window_gates(
     )
     if estimated and source_silences:
         return False
-    for left, right in zip(window, window[1:]):
+    for left, right in zip(window, window[1:], strict=False):
         left_end = _interval(left)[1]
         right_start = _interval(right)[0]
         gap = right_start - left_end
@@ -309,7 +307,7 @@ def _matched_token_times(
         right_index,
         right_offset,
         right_time,
-    ) in zip(anchors, anchors[1:]):
+    ) in zip(anchors, anchors[1:], strict=False):
         distance = max(1, right_offset - left_offset)
         for index in range(left_index + 1, right_index):
             fraction = (offsets[index] - left_offset) / distance
@@ -406,7 +404,7 @@ def _score_partition_fast(
     """Score a partition without relying on tuple lookup for duplicate ranges."""
 
     score = sum(_cue_score(join_fragments(tokens[start:end])) for start, end in ranges)
-    for previous, following in zip(ranges, ranges[1:]):
+    for previous, following in zip(ranges, ranges[1:], strict=False):
         left_text = tokens[previous[1] - 1]
         right_text = join_fragments(tokens[following[0] : following[1]])
         score += _boundary_score(left_text)

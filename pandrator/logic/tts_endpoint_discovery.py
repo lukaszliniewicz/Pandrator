@@ -1,11 +1,9 @@
 import concurrent.futures
 import json
-import re
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
-
 
 DISCOVERY_TIMEOUT_SECONDS = 4
 OPENAI_ADAPTER = "openai_compatible"

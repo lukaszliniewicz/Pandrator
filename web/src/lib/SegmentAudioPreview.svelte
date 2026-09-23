@@ -78,8 +78,7 @@
     aria-label={`Play audio for segment ${segmentNumber}: ${takeLabel}`}
     title={`Play audio for segment ${segmentNumber}`}
   >
-    <span class="preview-transport"
-      ><Play size={13} fill="currentColor" /></span
+    <span class="preview-transport"><Play size={13} fill="currentColor" /></span
     >
     <span class="preview-label">{takeLabel}</span>
   </button>

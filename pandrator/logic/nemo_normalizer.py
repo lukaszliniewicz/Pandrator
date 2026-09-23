@@ -5,7 +5,6 @@ import os
 import re
 import threading
 
-
 NEMO_TEXT_NORMALIZATION_LANGUAGES = frozenset(
     {
         "ar",

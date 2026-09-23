@@ -89,6 +89,13 @@ for (const kind of ['export.create', 'export.variant']) {
       page.getByRole('button', { name: 'Create export' })
     ).toBeVisible();
     await expect(page.getByText('Export activity')).toHaveCount(0);
+    // Keep HTTP snapshots consistent with the persisted state behind the event.
+    Object.assign(job, {
+      status: 'running',
+      progress: 0.82,
+      progress_detail: 'Muxing the selected soundtrack'
+    });
+    items = [job];
     // Progress must be processed directly, even when only jobs are invalidated.
     await page.evaluate(
       ({ sid, jobKind }) => {
@@ -111,6 +118,10 @@ for (const kind of ['export.create', 'export.variant']) {
     await expect(
       page.getByRole('progressbar', { name: 'Export live-job progress' })
     ).toHaveAttribute('aria-valuenow', '82');
+    Object.assign(job, {
+      progress: 0.9,
+      progress_detail: 'Attaching subtitle tracks'
+    });
     await page.evaluate(
       ({ sid, jobKind }) => {
         window.__emitExportTestEvent?.('job.progress', {

@@ -4,19 +4,31 @@ from __future__ import annotations
 
 import re
 
-from .identity import ApplicationIdentityDocument
-from .schemas import SCHEMA_MODELS
-from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
-from .quick_transcription_schemas import TranscriptionCreate, TranscriptionWait, TranscriptionSnapshot, TranscriptionResultPage
-from .quick_transcription_openapi import transcription_paths
-from .repair_batch_openapi import repair_batch_paths
-from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
-from .generation_control_openapi import GENERATION_CONTROL_SCHEMAS, generation_control_paths
-from .voice_catalog_openapi import VOICE_CATALOG_SCHEMAS, extend_voice_lifecycle_paths, voice_catalog_paths
-from .repair_batch_schemas import RepairBatchUndoRequest
-from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 from .audiobook_openapi import AUDIOBOOK_SCHEMAS, audiobook_paths
+from .generation_control_openapi import (
+    GENERATION_CONTROL_SCHEMAS,
+    generation_control_paths,
+)
+from .identity import ApplicationIdentityDocument
+from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
+from .quick_transcription_openapi import transcription_paths
+from .quick_transcription_schemas import (
+    TranscriptionCreate,
+    TranscriptionResultPage,
+    TranscriptionSnapshot,
+    TranscriptionWait,
+)
+from .repair_batch_openapi import repair_batch_paths
+from .repair_batch_schemas import RepairBatchUndoRequest
+from .schemas import SCHEMA_MODELS
+from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 from .speech_selection_openapi import SPEECH_SELECTION_SCHEMAS, speech_selection_paths
+from .voice_catalog_openapi import (
+    VOICE_CATALOG_SCHEMAS,
+    extend_voice_lifecycle_paths,
+    voice_catalog_paths,
+)
+from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
 
 
 def build_openapi_document() -> dict:

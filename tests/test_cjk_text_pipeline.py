@@ -5,17 +5,32 @@ from unittest.mock import patch
 import pytest
 import regex
 
-from pandrator.logic.dubbing.languages import normalize_language_code, ffmpeg_subtitle_language_code
+from pandrator.logic.dubbing.languages import (
+    ffmpeg_subtitle_language_code,
+    normalize_language_code,
+)
 from pandrator.logic.dubbing.models import SubtitleSegment
+from pandrator.logic.dubbing.speech_blocks import (
+    UnsplittableSpeechBlockError,
+    _join_variant,
+    create_speech_blocks,
+)
 from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
-from pandrator.logic.dubbing.speech_blocks import _join_variant, create_speech_blocks, UnsplittableSpeechBlockError
 from pandrator.logic.dubbing.subtitle_finalization import (
-    SubtitleFinalizationConfig, finalize_srt_content, wrap_subtitle_text,
+    SubtitleFinalizationConfig,
     compose_transcript_segments,
+    finalize_srt_content,
+    wrap_subtitle_text,
 )
 from pandrator.logic.dubbing.text_units import (
-    clean_text, contains_cjk, display_length, join_fragments, subtitle_units,
-    strip_latin_diacritics, NO_LINE_START, NO_LINE_END,
+    NO_LINE_END,
+    NO_LINE_START,
+    clean_text,
+    contains_cjk,
+    display_length,
+    join_fragments,
+    strip_latin_diacritics,
+    subtitle_units,
 )
 
 
@@ -90,13 +105,15 @@ def test_cjk_subtitle_conservation_capacity_and_timing(text):
     source = compose_srt([SubtitleSegment(1, 1000, 17000, text, "")])
     output = parse_srt(finalize_srt_content(source, {"subtitle_language_defaults": True}))
     config = SubtitleFinalizationConfig.from_settings({}, text=text)
-    compact = lambda value: regex.sub(r"\s+", "", value)
+    def compact(value):
+        return regex.sub(r"\s+", "", value)
+
     assert compact("".join(cue.text for cue in output)) == compact(text)
     assert len(output) >= 3
     assert all(isinstance(cue.start_ms, int) and isinstance(cue.end_ms, int) for cue in output)
     assert all(1000 <= cue.start_ms < cue.end_ms <= 17000 for cue in output)
     assert all(cue.end_ms - cue.start_ms <= 7000 for cue in output)
-    assert all(a.end_ms <= b.start_ms for a, b in zip(output, output[1:]))
+    assert all(a.end_ms <= b.start_ms for a, b in zip(output, output[1:], strict=False))
     for cue in output:
         assert len(cue.text.splitlines()) <= 2
         for line in cue.text.splitlines():
@@ -188,6 +205,7 @@ def test_canary_incompatibility_is_explicit(language, text):
 def test_japanese_caption_does_not_call_incompatible_ctc_runner(tmp_path):
     import wave
     from unittest.mock import Mock
+
     from pandrator.logic.dubbing.caption_alignment import align_caption_cues
     from pandrator.logic.media_edit import MediaCue
     audio = tmp_path / "source.wav"
@@ -209,7 +227,9 @@ def test_japanese_caption_does_not_call_incompatible_ctc_runner(tmp_path):
 
 
 def test_oversized_asr_japanese_word_is_display_split_without_fake_word_anchors():
-    from pandrator.logic.dubbing.subtitle_finalization import compose_transcript_segments_with_ownership
+    from pandrator.logic.dubbing.subtitle_finalization import (
+        compose_transcript_segments_with_ownership,
+    )
     text = "私たちは信教の自由について考えます。" * 4
     payload = {"language": "ja", "segments": [{"start": 0, "end": 20, "text": text, "words": [{"word": text, "start": 0, "end": 20}]}]}
     config = SubtitleFinalizationConfig.from_settings({}, language="ja")
@@ -232,7 +252,10 @@ def test_native_and_passive_subtitle_projection_match_for_japanese():
 
 
 def test_audio_cpp_and_kokoro_cjk_language_aliases():
-    from pandrator.logic.tts_handler import normalize_kokoro_language_code, _audio_cpp_language
+    from pandrator.logic.tts_handler import (
+        _audio_cpp_language,
+        normalize_kokoro_language_code,
+    )
     assert normalize_kokoro_language_code("jpn") == "ja"
     assert normalize_kokoro_language_code("zh-Hant") == "zh-cn"
     with patch("pandrator.logic.tts_handler._audio_cpp_model_metadata", return_value={"family": "qwen3_tts"}):
@@ -258,7 +281,12 @@ def test_reviewed_japanese_name_can_adjoin_particles_but_latin_words_stay_bounde
 
 
 def test_speech_planning_handles_native_script_and_combining_marks():
-    from pandrator.web.speech_planning import tokenize, _comparison_key, _lexical_tokens, speech_pronunciation_guidance
+    from pandrator.web.speech_planning import (
+        _comparison_key,
+        _lexical_tokens,
+        speech_pronunciation_guidance,
+        tokenize,
+    )
     text = "か\u3099きくけこ👩‍💻です。"
     boundaries = {0, *[match.end() for match in regex.finditer(r"\X", text)]}
     for token in tokenize(text):
@@ -272,7 +300,11 @@ def test_speech_planning_handles_native_script_and_combining_marks():
 
 
 def test_legacy_prompt_migration_preserves_user_written_prompt():
-    from pandrator.web.tts_optimization import prompt_sequence, DEFAULT_PROMPT, _clean_response
+    from pandrator.web.tts_optimization import (
+        DEFAULT_PROMPT,
+        _clean_response,
+        prompt_sequence,
+    )
     custom = "Apply my reviewed glossary only."
     assert prompt_sequence({"combined_prompt": custom}) == [custom]
     assert prompt_sequence({}) == [DEFAULT_PROMPT]

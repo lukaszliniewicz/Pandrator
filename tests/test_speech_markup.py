@@ -11,8 +11,10 @@ from pandrator.logic.speech_markup import (
     parse_speech_markup,
     plain_speech_markup,
 )
-from pandrator.logic.speech_performance import validate_annotation
-
+from pandrator.logic.speech_performance import (
+    compile_performance,
+    validate_annotation,
+)
 
 CHARACTERS = [
     {
@@ -84,6 +86,62 @@ def test_scoped_controls_inherit_override_and_restore():
     assert parsed.spans[1].delivery["emotion"] == "sad"
     assert parsed.spans[2].delivery["instruction"] == "calm"
     assert parsed.spans[2].delivery["emotion"] == ""
+    annotation = markup_to_annotation(parsed)
+    assert annotation["delivery"]["instruction"] == ""
+    assert [span["anchor"]["quote"] for span in annotation["spans"]] == [
+        "Before ",
+        "inside",
+        " after",
+    ]
+    assert [
+        (span["delivery"]["instruction"], span["delivery"]["emotion"])
+        for span in annotation["spans"]
+    ] == [("calm", ""), ("calm", "sad"), ("calm", "")]
+
+
+def test_single_interior_direction_keeps_its_exact_anchor():
+    parsed = parse_speech_markup(
+        '<segment id="s">Before <span><emphasis>strong</emphasis>yes</span> after</segment>',
+        expected_segment_id="s",
+        expected_text="Before yes after",
+    )
+    annotation = markup_to_annotation(parsed)
+    assert annotation["delivery"]["emphasis"] == ""
+    assert annotation["spans"][0]["anchor"] == {"quote": "yes", "occurrence": 1}
+    assert annotation["spans"][0]["delivery"]["emphasis"] == "strong"
+
+
+def test_repeated_identical_directions_keep_anchors_across_undirected_gap():
+    parsed = parse_speech_markup(
+        '<segment id="s">Start <span><pace>brisk</pace>one</span> and '
+        '<span><pace>brisk</pace>two</span> end</segment>',
+        expected_segment_id="s",
+        expected_text="Start one and two end",
+    )
+    annotation = markup_to_annotation(parsed)
+    assert annotation["delivery"]["pace"] == ""
+    assert [span["anchor"] for span in annotation["spans"]] == [
+        {"quote": "one", "occurrence": 1},
+        {"quote": "two", "occurrence": 1},
+    ]
+    assert [span["delivery"]["pace"] for span in annotation["spans"]] == [
+        "brisk",
+        "brisk",
+    ]
+
+
+def test_uniform_delivery_covers_segment_across_speaker_boundaries():
+    parsed = parse_speech_markup(
+        '<segment id="s"><ins>calm</ins><dialogue><speaker ref="c7">Hello </speaker>'
+        '<speaker ref="c8">there.</speaker></dialogue></segment>',
+        expected_segment_id="s",
+        expected_text="Hello there.",
+        characters=CHARACTERS,
+    )
+    annotation = markup_to_annotation(parsed)
+    assert [span.speaker_id for span in parsed.spans] == ["c7", "c8"]
+    assert annotation["delivery"]["instruction"] == "calm"
+    assert annotation["spans"] == []
 
 
 def test_repeated_quotes_get_exact_occurrences_and_speaker_differences_do_not_steer():
@@ -95,8 +153,20 @@ def test_repeated_quotes_get_exact_occurrences_and_speaker_differences_do_not_st
     )
     annotation = markup_to_annotation(parsed)
     assert annotation["decision"] == "steer"
-    assert annotation["delivery"]["emphasis"] == "strong"
-    assert annotation["spans"] == []
+    assert annotation["delivery"]["emphasis"] == ""
+    assert annotation["spans"][0]["anchor"] == {"quote": "yes", "occurrence": 1}
+    assert annotation["spans"][0]["delivery"]["emphasis"] == "strong"
+    compiled = compile_performance(
+        parsed.transcript,
+        {
+            "service": "audio_cpp",
+            "model": "fish_audio_s2_pro_q8_0",
+            "performance_enabled": True,
+            "_performance": annotation,
+        },
+    )
+    assert compiled.transcript == parsed.transcript
+    assert compiled.input == "[strong emphasis]yes[natural delivery] yes"
 
     parsed = parse_speech_markup(
         '<segment id="s"><speaker ref="c7">yes</speaker><speaker ref="c8"> yes</speaker></segment>',

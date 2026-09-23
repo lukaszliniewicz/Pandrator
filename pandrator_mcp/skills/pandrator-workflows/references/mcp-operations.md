@@ -64,7 +64,7 @@ until terminal. Quick transcription has its own polling and cancellation tools.
 2. Execute the reviewed generation plan and wait for terminal work.
 3. Inspect `pandrator_list_generation_runs` and
    `pandrator_list_generation_segments`. Use
-   `pandrator_update_generation_segment` for actual text/settings changes,
+   `pandrator_update_generation_segment` for actual text, voice, or language changes,
    `pandrator_regenerate_segments` for new takes, and `pandrator_select_take`
    for selection. Timing/block changes may require
    `pandrator_revise_speech_block_plan`; inspect its contract first.
@@ -108,3 +108,11 @@ revisions before the gated `pandrator_update_media_edit(reviewed=true)` action.
 Render only a reviewed revision. Apply the user's review policy and obtain
 any missing approval required by the returned action. Preserve the original
 recording and verify the requested rendered outputs.
+
+For delivery/emotion changes on a whole segment or part, use
+`pandrator_preview_speech_selection` then `pandrator_apply_speech_selection`
+with its preview token, or edit and adopt a performance plan. Inspect the full
+TTS catalogue before `pandrator_configure_tts`; the setup tool can save directions,
+Gemini context windows, vocalization opt-in, and model-specific ElevenLabs voice
+settings together. Read `generation-controls` and `providers-and-voices` for
+exact tool contracts. Do not put native provider tags in the saved transcript.

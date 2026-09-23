@@ -1,8 +1,7 @@
 """Store the source and optional target language on each session."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0006_session_languages"
 down_revision = "0005_generation_segment_kinds"

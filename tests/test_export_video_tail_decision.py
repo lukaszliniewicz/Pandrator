@@ -1,8 +1,8 @@
 """A duration warning stops rendering; a decision reuses the captured export."""
 
-from copy import deepcopy
 import tempfile
 import unittest
+from copy import deepcopy
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore

@@ -68,7 +68,7 @@ BOILERPLATE_TEXT_RE = re.compile(
 CHAPTER_CLASS_EXACT = {
     "chapter", "chap", "chapters", "chapter-title", "chaptertitle",
     "chapter-head", "chapterhead", "chapterheada", "chapter-heading",
-    "chapterheading", "chapter-number", "chapternumber", "chapter-number",
+    "chapterheading", "chapter-number", "chapternumber",
     "chap-num", "chapnum", "chap_no", "chap-no", "ch-title", "chtitle",
     "chap-title", "chaptitle", "part", "part-title", "parttitle", "partno",
     "book-title", "booktitle", "volume-title", "vol-title", "stave",

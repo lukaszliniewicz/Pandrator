@@ -2,9 +2,12 @@
 
 from .audiobook import (
     AUDIOBOOK_INPUT_MODELS,
+    ApplySpeechSelectionInput,
     ConfigureAudiobookInput,
     GetAudiobookSetupInput,
     PreviewSpeechSegmentInput,
+    PreviewSpeechSelectionInput,
+    SpeechSelectionDeliveryInput,
 )
 from .common import ToolEnvelope, ToolInput, WorkReference
 from .dispatch import (
@@ -27,6 +30,7 @@ from .e2e import (
     ConfigureTtsInput,
     CreateTextSourceInput,
     DownloadArtifactInput,
+    ElevenLabsVoiceSettingsInput,
     ImportLocalSourceInput,
     ListGenerationRunsInput,
     PlanExportVariantInput,
@@ -334,6 +338,9 @@ __all__ = [
     "ConfigureAudiobookInput",
     "GetAudiobookSetupInput",
     "PreviewSpeechSegmentInput",
+    "PreviewSpeechSelectionInput",
+    "ApplySpeechSelectionInput",
+    "SpeechSelectionDeliveryInput",
     "AdoptPerformancePlanInput", "AnalysePerformancePlanInput", "ClaimPerformanceBatchInput",
     "CreatePerformancePlanInput", "EditPerformancePlanInput", "GetPerformancePlanInput",
     "ListPerformancePlansInput", "PreviewPerformancePlanInput", "ReleasePerformanceBatchInput",
@@ -362,6 +369,7 @@ __all__ = [
     "DispatchTranslationItemInput",
     "DispatchTranslationResultInput",
     "DownloadArtifactInput",
+    "ElevenLabsVoiceSettingsInput",
     "DescribeParametersInput",
     "ExplainSystemInput",
     "GUIDE_TOPICS",

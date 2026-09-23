@@ -18,9 +18,10 @@ Services benchmarked (in order):
 """
 
 import os
+import subprocess
 import sys
 import time
-import subprocess
+
 import psutil
 from pydub import AudioSegment
 
@@ -35,7 +36,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # ---------------------------------------------------------------------------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from pandrator.logic import tts_handler, text_preprocessor, audio_processor
+from pandrator.logic import audio_processor, text_preprocessor, tts_handler
 
 # ---------------------------------------------------------------------------
 # Benchmark text (Stave One, A Christmas Carol)

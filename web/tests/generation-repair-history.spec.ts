@@ -40,6 +40,7 @@ async function fixture(page: Page) {
       settings_hash: 'current-settings'
     } as GenerationRun['assembly'],
     timing_repair: {
+      kind: 'repair',
       result_generation_run_id: 'repair-133',
       result_plan_revision_id: 'repair-plan-133',
       result_sequence_number: 134,
@@ -140,10 +141,16 @@ test('drawer groups repairs and selects final, original and intermediate audio',
   await expect(picker.locator('option')).toHaveCount(2);
   await picker.selectOption('root');
   const row = page.locator('tbody tr[data-segment-id]');
-  await expect(row.locator('audio')).toHaveAttribute(
-    'src',
-    '/api/v1/artifacts/audio-repair-133/content'
-  );
+  async function expectAudio(runId: string) {
+    await expect(row).toHaveAttribute('data-segment-id', `segment-${runId}`);
+    const play = row.getByRole('button', { name: /^Play audio for segment / });
+    if (await play.isVisible()) await play.click();
+    await expect(row.locator('audio')).toHaveAttribute(
+      'src',
+      `/api/v1/artifacts/audio-${runId}/content`
+    );
+  }
+  await expectAudio('repair-133');
   expect(segmentRequests.at(-1)).toBe('repair-133');
   await expect(page.getByText('$1.3000', { exact: true })).toBeVisible();
   const history = page.getByRole('region', { name: 'Timing repair history' });
@@ -165,10 +172,7 @@ test('drawer groups repairs and selects final, original and intermediate audio',
     history.getByText('133 blocks split', { exact: false })
   ).toBeVisible();
   await history.getByRole('button', { name: 'View original' }).click();
-  await expect(row.locator('audio')).toHaveAttribute(
-    'src',
-    '/api/v1/artifacts/audio-root/content'
-  );
+  await expectAudio('root');
   await page
     .getByRole('button', { name: 'Display options', exact: true })
     .click();
@@ -179,10 +183,7 @@ test('drawer groups repairs and selects final, original and intermediate audio',
   await expect(hideHistory).toHaveAttribute('aria-pressed', 'true');
   await hideHistory.click();
   await expect(history).toHaveCount(0);
-  await expect(row.locator('audio')).toHaveAttribute(
-    'src',
-    '/api/v1/artifacts/audio-root/content'
-  );
+  await expectAudio('root');
   await page.screenshot({
     path: testInfo.outputPath('repair-history-hidden-desktop.png')
   });
@@ -192,26 +193,17 @@ test('drawer groups repairs and selects final, original and intermediate audio',
   await page
     .getByRole('button', { name: 'Show split / repair history', exact: true })
     .click();
-  await expect(row.locator('audio')).toHaveAttribute(
-    'src',
-    '/api/v1/artifacts/audio-root/content'
-  );
+  await expectAudio('root');
   await history.locator('summary').click();
   await expect(history.getByRole('listitem')).toHaveCount(134);
   await history
     .getByRole('button', { name: 'Inspect repair 1 audio', exact: true })
     .click();
-  await expect(row.locator('audio')).toHaveAttribute(
-    'src',
-    '/api/v1/artifacts/audio-repair-1/content'
-  );
+  await expectAudio('repair-1');
   await history
     .getByRole('button', { name: 'Final audio', exact: true })
     .click();
-  await expect(row.locator('audio')).toHaveAttribute(
-    'src',
-    '/api/v1/artifacts/audio-repair-133/content'
-  );
+  await expectAudio('repair-133');
   await page.screenshot({
     path: testInfo.outputPath('repair-history-desktop.png')
   });

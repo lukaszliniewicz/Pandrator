@@ -16,23 +16,23 @@ except ImportError:
     PackagingSpecifierSet = None
 
 from .catalog import BACKEND_COMPONENT_KEYS, COMPONENTS
-from .crispasr import detect_compute_backends
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
+    FISHS2_API_REPO_DIRNAME,
     KOBOLD_QWEN_API_REPO_DIRNAME,
     KOBOLD_QWEN_GPU_SUPPORT_CONFIG_FLAG,
-    MAGPIE_API_REPO_DIRNAME,
-    FISHS2_API_REPO_DIRNAME,
     KOKORO_API_REPO_DIRNAME,
     KOKORO_ENV_NAME,
     KOKORO_GPU_SUPPORT_CONFIG_FLAG,
     KOKORO_PYTHON_VERSION,
+    MAGPIE_API_REPO_DIRNAME,
     RVC_API_REPO_DIRNAME,
     RVC_GPU_SUPPORT_CONFIG_FLAG,
     VOXCPM_API_REPO_DIRNAME,
     VOXTRAL_API_REPO_DIRNAME,
     XTTS_API_REPO_DIRNAME,
 )
+from .crispasr import detect_compute_backends
 from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows
 

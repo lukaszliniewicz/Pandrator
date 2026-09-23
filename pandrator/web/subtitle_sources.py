@@ -20,7 +20,6 @@ from .models import (
     Segment,
     SessionRecord,
 )
-
 from .source_resolution import PrimarySourceResolution
 
 _SUBTITLE_KINDS = {"srt", "vtt"}

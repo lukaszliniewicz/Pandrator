@@ -6,8 +6,8 @@ import unittest
 from contextlib import closing
 from datetime import datetime, timezone
 
-from pandrator.logic.state_db_handler import StateDBHandler
 from pandrator.logic import audio_variant_handler
+from pandrator.logic.state_db_handler import StateDBHandler
 
 
 class StateDBHandlerTests(unittest.TestCase):

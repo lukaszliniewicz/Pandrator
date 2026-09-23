@@ -10,7 +10,6 @@ from pandrator.web.generation_rendering import (
     execute_render_parts,
 )
 
-
 CHARACTERS = [
     {"id": "c-one", "display_name": "One", "voice_category": "male"},
     {"id": "c-two", "display_name": "Two", "voice_category": "female"},

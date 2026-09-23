@@ -173,7 +173,10 @@
       >{undoing ? 'Undoing repairs…' : 'Undo automatic repairs'}</button
     >
   </div>
-  {#if current.undo_checked === false}<p class="muted explanation" role="status">
+  {#if current.undo_checked === false}<p
+      class="muted explanation"
+      role="status"
+    >
       Checking undo eligibility with the server…
     </p>{/if}
   {#if current.undo_disabled_reason}<p class="muted explanation">

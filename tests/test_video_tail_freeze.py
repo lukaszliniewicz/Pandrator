@@ -467,6 +467,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                 threading.Event(),
             )
         from sqlalchemy import select
+
         from pandrator.web.models import Artifact
 
         with self.services.database.session() as session:
@@ -505,6 +506,7 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                 threading.Event(),
             )
         from sqlalchemy import select
+
         from pandrator.web.models import Artifact
 
         with self.services.database.session() as session:

@@ -28,8 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..cancellable_process import ProcessCancelled, run_cancellable
 from ..audio_cpp_execution import native_audio_cpp_guard
+from ..cancellable_process import ProcessCancelled, run_cancellable
 from . import qwen_alignment
 from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, normalize_stt_language
 
@@ -1203,7 +1203,7 @@ def transcribe(
     nframes, rate = _wav_info(source)
     _ = nframes, rate
     segments: list[dict] = []
-    for chunk, text, chunk_words in zip(chunks, texts, words_by_chunk):
+    for chunk, text, chunk_words in zip(chunks, texts, words_by_chunk, strict=False):
         if not text.strip() and not chunk_words:
             continue
         if not text.strip() and chunk_words:

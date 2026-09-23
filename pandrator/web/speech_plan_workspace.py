@@ -322,8 +322,8 @@ def freeze_generation_performance_snapshot(
 
         freeze_performance_snapshot(session, revision_id, snapshot)
     elif settings.get("casting_enabled"):
-        from .performance_plans import freeze_performance_snapshot
         from .models import PerformancePlan
+        from .performance_plans import freeze_performance_snapshot
         if session.scalar(select(PerformancePlan.id).where(
             PerformancePlan.plan_revision_id == revision_id,
             PerformancePlan.status == "adopted",

@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 
 from pandrator.logic.dubbing.audio_sync import build_mix_filter_complex
+
 from .models import Artifact, new_id
 
 SAMPLE_RATE = 48_000
@@ -166,7 +167,7 @@ def run_audio_command(command: list[str], cancel_event: threading.Event) -> None
             try:
                 _stdout, stderr = process.communicate(timeout=0.25)
                 break
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as error:
                 if cancel_event.is_set():
                     process.terminate()
                     try:
@@ -174,7 +175,7 @@ def run_audio_command(command: list[str], cancel_event: threading.Event) -> None
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.communicate()
-                    raise InterruptedError("Soundtrack export cancelled.")
+                    raise InterruptedError("Soundtrack export cancelled.") from error
         if process.returncode:
             raise ValueError(f"Soundtrack rendering failed: {stderr[-1800:]}")
 

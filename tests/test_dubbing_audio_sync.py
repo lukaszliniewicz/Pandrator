@@ -16,7 +16,6 @@ from pydub.generators import Sine
 from pandrator.logic import dubbing_handler
 from pandrator.logic.dubbing import audio_sync
 
-
 SAMPLE_SRT = """1
 00:00:00,000 --> 00:00:01,000
 Hello.
@@ -507,7 +506,7 @@ Wrong.
             samples = mono.get_array_of_samples()
             crossings = sum(
                 previous < 0 <= current or previous >= 0 > current
-                for previous, current in zip(samples, samples[1:])
+                for previous, current in zip(samples, samples[1:], strict=False)
             )
             return crossings / (2 * (len(samples) / mono.frame_rate))
 

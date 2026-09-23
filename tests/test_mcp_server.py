@@ -105,6 +105,8 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_audiobook_setup",
                         "pandrator_configure_audiobook",
                         "pandrator_preview_speech_segment",
+                        "pandrator_preview_speech_selection",
+                        "pandrator_apply_speech_selection",
                         "pandrator_get_capabilities",
                         "pandrator_get_dispatch_run",
                         "pandrator_get_media_edit",

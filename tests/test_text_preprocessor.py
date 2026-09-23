@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import call, patch
+
 from pandrator.logic.text_preprocessor import (
     CHUNK_SIZE,
     _ensure_line_terminal_punctuation,
@@ -9,6 +10,7 @@ from pandrator.logic.text_preprocessor import (
     preprocess_text,
     split_into_sentences,
 )
+
 
 class TextPreprocessorTests(unittest.TestCase):
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")

@@ -11,7 +11,6 @@ from pathlib import Path
 from pandrator.runtime import DataPaths
 from pandrator.web.database import upgrade_database
 
-
 _TEMPLATE_DIRECTORY = tempfile.TemporaryDirectory(prefix="pandrator-web-test-schema-")
 atexit.register(_TEMPLATE_DIRECTORY.cleanup)
 _TEMPLATE_LOCK = threading.Lock()

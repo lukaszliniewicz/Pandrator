@@ -238,11 +238,8 @@ class RecoveryManagerGateway:
                 "The Manager recovery resource was not found.",
             )
         if status_code == 409:
-            error = (
-                payload.get("error")
-                if isinstance(payload.get("error"), dict)
-                else {}
-            )
+            supplied_error = payload.get("error")
+            error = supplied_error if isinstance(supplied_error, dict) else {}
             downstream_code = str(error.get("code") or "")
             code = (
                 "confirmation_required"

@@ -13,7 +13,8 @@ OUTPUT_PATH = REPOSITORY_ROOT / "pandrator_manager" / "audio_cpp_model_metadata.
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from pandrator.logic.audio_cpp_catalogue import (
+# Keep project imports after the repository-root sys.path bootstrap above.
+from pandrator.logic.audio_cpp_catalogue import (  # noqa: E402
     inventory,
     package_metadata,
 )

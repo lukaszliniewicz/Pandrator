@@ -1,5 +1,6 @@
 """Executable examples for the soft-minimum / sentence-preference policy."""
 from copy import deepcopy
+
 import pytest
 
 from pandrator.logic.dubbing.logical_passages import build_source_passages
@@ -21,7 +22,7 @@ def example(stops):
     text = ' '.join(parts)
     candidates = {}
     position = 0
-    for part, (_, reason) in zip(parts, stops):
+    for part, (_, reason) in zip(parts, stops, strict=False):
         position += len(part.split())
         candidates[position] = reason
     return text, candidates

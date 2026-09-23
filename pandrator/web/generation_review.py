@@ -102,7 +102,10 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
                 if not removed:
                     values["active"] += count
             if include_audio_reuse:
-                from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
+                from .generation_audio_identity import (
+                    AudioIdentityContext,
+                    take_reuse_reason,
+                )
 
                 audio_identity = AudioIdentityContext(session, snapshot)
                 # Drive from the visible revision IDs: the three-table join lets

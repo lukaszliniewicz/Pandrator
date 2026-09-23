@@ -510,6 +510,7 @@ def _safe_tts_service(
     compact_keys = (
         "id",
         "name",
+        "adapter",
         "kind",
         "catalogue_role",
         "replacement_service_id",
@@ -530,19 +531,22 @@ def _safe_tts_service(
     result = {key: service.get(key) for key in compact_keys if key in service}
     if _normalized_id(service.get("adapter") or service.get("id")) == "audio_cpp":
         selected = set(model_ids if model_ids is not None else service.get("models") or [])
+        model_catalog = service.get("model_catalog")
+        model_catalog = model_catalog if isinstance(model_catalog, list) else []
         result["model_states"] = [
             {"id": str(item["id"]),
              "selectable": bool(service.get("available") and item["id"] in selected),
              "loaded": item.get("loaded") if isinstance(item.get("loaded"), bool) else None}
-            for item in (service.get("model_catalog") or [])[:64]
+            for item in model_catalog[:64]
             if isinstance(item, dict) and item.get("id")
             and (model_ids is None or item["id"] in selected)
         ]
-    if model_ids is not None and isinstance(result.get("models"), list):
+    raw_models = result.get("models")
+    if model_ids is not None and isinstance(raw_models, list):
         retained = {str(value).casefold() for value in model_ids}
         result["models"] = [
             value
-            for value in result["models"]
+            for value in raw_models
             if str(value).casefold() in retained
         ]
     if "catalogue_role" not in result:
@@ -737,6 +741,40 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
         model = model or arguments.model
     else:
         model = str(service.get("default_model") or (models[0] if models else ""))
+    profiles = service.get("expressive_capabilities")
+    profile = profiles.get(model) if isinstance(profiles, dict) else None
+    if arguments.tts_context_mode not in (None, "off"):
+        if not isinstance(profile, dict) or profile.get("semantic_context") not in {"prompt", "field"}:
+            raise PandratorMcpError(
+                "validation_error",
+                "The selected model does not advertise semantic context support.",
+            )
+    if arguments.style_instructions:
+        if isinstance(profile, dict):
+            instructions_supported = profile.get("instructions") not in {None, "", "none"}
+        elif profile is None:
+            instructions_supported = model in (service.get("generation_prompt_models") or [])
+        else:
+            instructions_supported = False
+        if not instructions_supported:
+            raise PandratorMcpError(
+                "validation_error",
+                "The selected model does not advertise style instructions support.",
+            )
+    if arguments.performance_allow_vocalizations is True:
+        if not isinstance(profile, dict) or not profile.get("event_tags"):
+            raise PandratorMcpError(
+                "validation_error",
+                "The selected model does not advertise vocalization events.",
+            )
+    voice_settings = arguments.elevenlabs_voice_settings
+    if voice_settings is not None:
+        adapter = _normalized_id(service.get("adapter") or service_id)
+        if adapter not in {"elevenlabs", "elevenlabs_native"}:
+            raise PandratorMcpError(
+                "validation_error",
+                "Native ElevenLabs voice settings require the ElevenLabs service.",
+            )
     voice = ""
     if arguments.voice:
         catalogue = service.get("voice_catalogues")
@@ -832,25 +870,34 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
                 "validation_error",
                 "Choose a ready audio.cpp reference link for this cloning model before switching.",
             )
-        override.update(
-            service=service_id,
-            tts_service=service_id,
-            model=model,
-            xtts_model=model,
-            voice=voice,
-            speaker=voice,
-            provider_switch_reviewed=True,
-        )
-    override.update({"service": service_id})
-    if model:
-        override["model"] = model
-    if voice:
-        override["voice"] = voice
+        override["provider_switch_reviewed"] = True
+    override.pop("elevenlabs_model", None)
+    override.pop("elevenlabs_voice_id", None)
+    override.update(
+        service=service_id,
+        tts_service=service_id,
+        model=model,
+        xtts_model=model,
+        voice=voice,
+        speaker=voice,
+    )
     if arguments.language:
         override["language"] = arguments.language
     if arguments.style_instructions is not None:
         override["generation_prompt"] = arguments.style_instructions
         override["openai_audio_instructions"] = arguments.style_instructions
+    for key in (
+        "tts_context_mode",
+        "performance_context_before",
+        "performance_context_after",
+        "performance_context_max_chars",
+        "performance_allow_vocalizations",
+    ):
+        value = getattr(arguments, key)
+        if value is not None:
+            override[key] = value
+    if voice_settings is not None:
+        override["elevenlabs_voice_settings"] = voice_settings.model_dump(exclude_unset=True)
     result = application.update_session_settings(
         arguments.session_id,
         section="tts",
@@ -867,6 +914,17 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
                 "voice": voice or None,
                 "language": arguments.language,
                 "style_instructions_applied": arguments.style_instructions is not None,
+                "context": {
+                    "mode": override.get("tts_context_mode", "off"),
+                    "before": override.get("performance_context_before", 2),
+                    "after": override.get("performance_context_after", 1),
+                    "max_chars": override.get("performance_context_max_chars", 4000),
+                    "allow_vocalizations": override.get("performance_allow_vocalizations", False),
+                },
+                "elevenlabs_voice_settings": (
+                    voice_settings.model_dump(exclude_unset=True)
+                    if voice_settings is not None else None
+                ),
             },
             "settings_revision": result.get("revision"),
         },

@@ -79,14 +79,12 @@ async function fixture(page: Page) {
     .filter({ has: page.getByRole('heading', { name: /^Transcribe/ }) })
     .first();
   await card.getByRole('button', { name: 'Settings', exact: true }).click();
-  const dialog = page
-    .getByRole('dialog')
-    .filter({
-      has: page.getByRole('combobox', {
-        name: 'Recognition model',
-        exact: true
-      })
-    });
+  const dialog = page.getByRole('dialog').filter({
+    has: page.getByRole('combobox', {
+      name: 'Recognition model',
+      exact: true
+    })
+  });
   await expect(dialog).toBeVisible();
   return { id, dialog, errors };
 }

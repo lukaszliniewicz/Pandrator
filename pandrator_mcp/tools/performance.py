@@ -60,7 +60,7 @@ def register_performance_tools(
             return validated_call(handle, runtime, model, values)
 
         parameters = []
-        annotations = {"return": dict[str, Any]}
+        annotations: dict[str, object] = {"return": dict[str, Any]}
         for field_name, field in model.model_fields.items():
             annotation = Annotated[field.annotation, field]
             annotations[field_name] = annotation

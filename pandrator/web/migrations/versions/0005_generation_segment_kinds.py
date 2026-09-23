@@ -1,8 +1,7 @@
 """Preserve chapter and typed-node identity in generation plans."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0005_generation_segment_kinds"
 down_revision = "0004_output_assembly_jobs"

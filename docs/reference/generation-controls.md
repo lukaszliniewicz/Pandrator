@@ -138,6 +138,24 @@ renaming a character or editing notes does not require new audio.
 
 ## Passive MCP workflow
 
+For a direct edit, use `pandrator_preview_speech_selection` with the current
+`revision_id`, `segment_id`, `expected_segment_revision`, and half-open `start`
+and `end` offsets in Unicode codepoints. Select `0` through the codepoint length
+for a whole segment, or a smaller range for a phrase. Pass a partial `delivery`
+object (`instruction`, `emotion`, `pace`, `cadence`, `emphasis`) and optional
+speaker/voice changes. Omitted fields stay unchanged; explicit `null` clears a
+voice or delivery field. Inspect the preview, then send the same edit through
+`pandrator_apply_speech_selection` with its `expected_preview_revision` and a
+fresh idempotency key. Stale previews and locked directions are rejected; set
+`unlock_locked` only when deliberately changing a lock. Enable casting or
+performance explicitly if the edited directions should affect generation.
+
+Use `pandrator_configure_tts` to automate model-specific defaults, including
+style instructions, vocalization permission, and preceding/following context.
+These settings require the selected model's advertised capabilities. Inspect
+each compiled request part: a multivoice segment can have separate instructions
+and provider options for each part.
+
 The existing `performance` tool names remain stable for client compatibility;
 the UI calls the stage **Speech direction review**.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pandrator-mcp"
-version = "0.4.2"
+version = "0.5.0"
 description = "Secure local MCP sidecar for Pandrator guidance and automation"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -70,8 +70,4 @@ pandrator_mcp = [
 ]
 
 [tool.ruff]
-target-version = "py311"
-line-length = 100
-
-[tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "B"]
+extend = "../pyproject.toml"

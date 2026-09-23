@@ -805,33 +805,44 @@ def markup_to_annotation(parsed: ParsedSpeechMarkup) -> dict[str, Any]:
 
     if not isinstance(parsed, ParsedSpeechMarkup):
         raise TypeError("parsed must be ParsedSpeechMarkup")
-    directed = [
-        span
+    normalized_spans = [
+        (span, Delivery.model_validate(span.delivery).model_dump(mode="json"))
         for span in parsed.spans
-        if any(bool(value) for value in span.delivery.values())
     ]
-    distinct = {
-        tuple(Delivery.model_validate(span.delivery).model_dump(mode="json").items())
-        for span in directed
-    }
+    directed = [
+        (span, delivery)
+        for span, delivery in normalized_spans
+        if any(bool(value) for value in delivery.values())
+    ]
+    distinct = {tuple(delivery.items()) for _, delivery in directed}
+    covers_transcript = bool(parsed.transcript) and bool(parsed.spans)
+    if covers_transcript:
+        cursor = 0
+        for span, _ in normalized_spans:
+            if span.start != cursor or span.end <= span.start:
+                covers_transcript = False
+                break
+            cursor = span.end
+        covers_transcript = covers_transcript and cursor == len(parsed.transcript)
     annotation: dict[str, Any] = {
         "schema": _SCHEMA,
         "decision": "steer" if directed or parsed.events else "none",
     }
-    if directed and len(distinct) == 1:
-        annotation["delivery"] = dict(
-            Delivery.model_validate(directed[0].delivery).model_dump(mode="json")
-        )
+    if (
+        directed
+        and len(directed) == len(normalized_spans)
+        and len(distinct) == 1
+        and covers_transcript
+    ):
+        annotation["delivery"] = dict(directed[0][1])
     elif directed:
         annotation["delivery"] = Delivery().model_dump(mode="json")
         annotation["spans"] = [
             {
                 "anchor": _anchor(parsed.transcript, span.text, span.start),
-                "delivery": Delivery.model_validate(span.delivery).model_dump(
-                    mode="json"
-                ),
+                "delivery": delivery,
             }
-            for span in directed
+            for span, delivery in directed
         ]
     if parsed.events:
         annotation["events"] = [

@@ -16,7 +16,6 @@ from typing import Any, Mapping
 
 from .audio_cpp_catalogue import family_metadata
 
-
 _UINT32_MAX = 2**32 - 1
 _SAFE_INTEGER_MAX = 2**53 - 1
 _CHUNK_MODES = ["default", "tag_aware", "japanese", "endline"]

@@ -1,8 +1,7 @@
 """Add durable XTTS training records."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0002_training_runs"
 down_revision = "0001_web_schema"

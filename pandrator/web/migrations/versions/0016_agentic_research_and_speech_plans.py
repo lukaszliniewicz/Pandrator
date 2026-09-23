@@ -1,8 +1,7 @@
 """Add bounded research, pronunciation library, and structured speech plans."""
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision = "0016_agentic_research_and_speech_plans"
 down_revision = "0015_generation_segment_voice"
