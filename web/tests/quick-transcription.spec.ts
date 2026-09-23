@@ -18,6 +18,7 @@ async function mockTranscription(page: Page) {
   let starts = 0;
   let removed = false;
   const requestedFormats: string[] = [];
+  const uploadedBodies: string[] = [];
   const texts: Record<string, string> = {
     txt: 'Hello from a temporary transcription.',
     srt: '1\n00:00:00,000 --> 00:00:02,000\nHello from a temporary transcription.\n',
@@ -52,6 +53,7 @@ async function mockTranscription(page: Page) {
     }
     if (request.method() === 'POST') {
       starts += 1;
+      uploadedBodies.push(request.postData() || '');
       expect(request.headers()['idempotency-key']).toBeTruthy();
       expect(request.headers()['content-type']).toContain(
         'multipart/form-data'
@@ -77,8 +79,81 @@ async function mockTranscription(page: Page) {
     }
     return route.fulfill({ json: status });
   });
-  return { starts: () => starts, removed: () => removed, requestedFormats };
+  return {
+    starts: () => starts,
+    removed: () => removed,
+    requestedFormats,
+    uploadedBodies
+  };
 }
+
+test('Qwen quick transcription explains timing limits and submits local model and isolation choices', async ({
+  page
+}, testInfo) => {
+  const mock = await mockTranscription(page);
+  await signIn(page);
+  await page.getByLabel('Audio or video file', { exact: true }).setInputFiles({
+    name: 'qwen-sample.wav',
+    mimeType: 'audio/wav',
+    buffer: Buffer.from('fixture audio')
+  });
+  await page
+    .getByRole('combobox', { name: 'Transcription service', exact: true })
+    .selectOption('qwen3');
+  const qwen = page.getByRole('region', {
+    name: 'Qwen3 transcription options'
+  });
+  await expect(qwen).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Transcribe', exact: true })
+  ).toBeDisabled();
+  await expect(page.getByRole('alert')).toContainText('source language');
+  await qwen
+    .getByRole('combobox', { name: 'Source language', exact: true })
+    .selectOption('ar');
+  await expect(page.getByRole('alert')).toContainText('word alignment');
+  await expect(
+    page.getByRole('button', { name: 'Transcribe', exact: true })
+  ).toBeDisabled();
+  await qwen
+    .getByRole('combobox', { name: 'Source language', exact: true })
+    .selectOption('pl');
+  await expect(qwen.getByTestId('qwen-timing-explanation')).toContainText(
+    'Canary CTC'
+  );
+  await qwen.getByLabel('Qwen model size').selectOption('qwen3_asr_1_7b');
+  await qwen.getByText('Local processing settings', { exact: true }).click();
+  await qwen.getByLabel('Compute backend').selectOption('cpu');
+  await page
+    .getByText('Audio preprocessing · optional', { exact: true })
+    .click();
+  await page
+    .getByRole('combobox', { name: 'Vocal isolation', exact: true })
+    .selectOption('mel_band_roformer');
+  expect(mock.starts()).toBe(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth
+    )
+  ).toBe(true);
+  await page.screenshot({
+    path: testInfo.outputPath('quick-qwen-mobile.png'),
+    fullPage: true
+  });
+  await page.getByRole('button', { name: 'Transcribe', exact: true }).click();
+  await expect(page.getByLabel('Transcript', { exact: true })).toHaveValue(
+    'Hello from a temporary transcription.'
+  );
+  expect(mock.starts()).toBe(1);
+  expect(mock.uploadedBodies[0]).toContain('"engine":"qwen3"');
+  expect(mock.uploadedBodies[0]).toContain('"language":"pl"');
+  expect(mock.uploadedBodies[0]).toContain('"qwen_asr_model":"qwen3_asr_1_7b"');
+  expect(mock.uploadedBodies[0]).toContain('"compute_backend":"cpu"');
+  expect(mock.uploadedBodies[0]).toContain(
+    '"transcription_vocal_isolation":"mel_band_roformer"'
+  );
+});
 
 test('upload, switch formats, reload result and delete without a session', async ({
   page

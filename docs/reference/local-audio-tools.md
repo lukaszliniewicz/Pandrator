@@ -12,7 +12,7 @@ State labels use evidence: Loaded means the runtime reports it loaded; Installed
 
 ## Qwen3 recognition and word alignment
 
-Choose **Qwen3 ASR** in a transcription stage's Recognition model control. Select 0.6B for the smaller recognizer or 1.7B for the larger recognizer. Their pinned Q8 downloads are approximately 1.15 GB and 2.47 GB respectively.
+Choose **Qwen3 ASR** in a transcription stage's Recognition model control or in Quick Transcribe's Transcription service control. Select 0.6B for the smaller recognizer or 1.7B for the larger recognizer. Their pinned Q8 downloads are approximately 1.15 GB and 2.47 GB respectively.
 
 Qwen recognition supports 30 languages, but Qwen Forced Aligner supports only 11. An aligner locates supplied words in a recording; it is not a recognizer.
 
@@ -24,11 +24,13 @@ For timestamped transcription, select the **source** language explicitly:
 
 The translation target is not used to choose a word aligner. Unsupported timing combinations fail before normalization, vocal isolation, model downloads or inference. The existing Qwen Forced Aligner is also selectable for aligning supplied captions. Low-level transcript-only requests do not load the forced aligner.
 
+Quick Transcribe prepares a timed result that can be downloaded as text, subtitles or structured JSON from the same job. Its Qwen requests therefore require an explicit source language and a supported timing path even when the initial download format is plain text.
+
 Long recordings are processed in bounded chunks with original offsets retained. The automatic Qwen chunk setting resolves to a non-VAD native mode for these bounded chunks, avoiding an implicit dependency on an uninstalled Silero model. Explicit VAD mode remains an advanced choice and requires its runtime assets. Token-budget, output, timestamp-bound and cancellation checks reject incomplete results rather than inventing word timing. Original transcript punctuation is restored onto safely matched word surfaces before subtitle composition.
 
 ## Vocal isolation before transcription
 
-Open **Audio preprocessing** in the transcription settings. Vocal isolation defaults to **Off**. The choices are:
+Open **Audio preprocessing** in the transcription settings or Quick Transcribe. Vocal isolation defaults to **Off**. The choices are:
 
 - **BS-RoFormer**, approximately 173 MB.
 - **Mel-RoFormer**, approximately 252 MB.

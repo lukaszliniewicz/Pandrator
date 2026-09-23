@@ -7252,10 +7252,20 @@ export interface components {
              * @default null
              */
             model_quantization?: string | null;
+            /**
+             * Qwen Asr Model
+             * @default null
+             */
+            qwen_asr_model?: ("qwen3_asr_0_6b" | "qwen3_asr_1_7b") | null;
             /** Sha256 */
             sha256: string;
             /** Size Bytes */
             size_bytes: number;
+            /**
+             * Transcription Vocal Isolation
+             * @default null
+             */
+            transcription_vocal_isolation?: ("off" | "bs_roformer" | "mel_band_roformer") | null;
         };
         /** TranscriptionResult */
         TranscriptionResult: {
@@ -14674,7 +14684,7 @@ export interface operations {
                 "multipart/form-data": {
                     /** Format: binary */
                     file: string;
-                    /** @description JSON object with format, language, engine, model_quantization, compute_backend overrides. */
+                    /** @description JSON object with format, language, engine, model_quantization, compute_backend, qwen_asr_model (qwen3_asr_0_6b or qwen3_asr_1_7b), and transcription_vocal_isolation (off, bs_roformer, or mel_band_roformer) overrides. */
                     options?: string;
                 };
             };

@@ -139,6 +139,8 @@ class QuickTranscriptionService:
                 "engine": "stt_engine",
                 "model_quantization": "stt_model_quantization",
                 "compute_backend": "stt_compute_backend",
+                "qwen_asr_model": "qwen_asr_model",
+                "transcription_vocal_isolation": "transcription_vocal_isolation",
             }.items():
                 value = getattr(payload, field)
                 if value is not None:
@@ -146,7 +148,24 @@ class QuickTranscriptionService:
             canonical_engine = normalize_stt_backend(
                 settings.get("stt_engine") or settings.get("stt_backend")
             )
-            if canonical_engine not in CLOUD_STT_ENGINE_IDS:
+            if canonical_engine == "qwen3":
+                if payload.compute_backend is not None:
+                    settings["qwen_asr_backend"] = payload.compute_backend
+                from pandrator.logic.dubbing.qwen_asr import (
+                    QwenASRError,
+                    validate_transcription_settings,
+                )
+
+                try:
+                    validated = validate_transcription_settings(
+                        settings, require_word_timestamps=True
+                    )
+                except QwenASRError as error:
+                    raise TranscriptionError(
+                        "unsupported_language", str(error), 400
+                    ) from error
+                settings["stt_language"] = validated["language"]
+            elif canonical_engine not in CLOUD_STT_ENGINE_IDS:
                 try:
                     settings["stt_language"] = validate_stt_language(
                         canonical_engine,

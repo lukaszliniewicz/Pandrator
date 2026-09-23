@@ -8591,6 +8591,22 @@
             "default": null,
             "title": "Model Quantization"
           },
+          "qwen_asr_model": {
+            "anyOf": [
+              {
+                "enum": [
+                  "qwen3_asr_0_6b",
+                  "qwen3_asr_1_7b"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Qwen Asr Model"
+          },
           "sha256": {
             "pattern": "^[a-fA-F0-9]{64}$",
             "title": "Sha256",
@@ -8601,6 +8617,23 @@
             "maximum": 268435456,
             "title": "Size Bytes",
             "type": "integer"
+          },
+          "transcription_vocal_isolation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "bs_roformer",
+                  "mel_band_roformer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Transcription Vocal Isolation"
           }
         },
         "required": [
@@ -19720,7 +19753,7 @@
                     "type": "string"
                   },
                   "options": {
-                    "description": "JSON object with format, language, engine, model_quantization, compute_backend overrides.",
+                    "description": "JSON object with format, language, engine, model_quantization, compute_backend, qwen_asr_model (qwen3_asr_0_6b or qwen3_asr_1_7b), and transcription_vocal_isolation (off, bs_roformer, or mel_band_roformer) overrides.",
                     "type": "string"
                   }
                 },

@@ -1,8 +1,7 @@
 """Bounded public settings for quick transcription (no credentials or paths)."""
 
 from pathlib import PurePath
-from typing import Literal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -27,6 +26,10 @@ class TranscriptionCreate(BaseModel):
         default=None, max_length=40, pattern=r"^[A-Za-z0-9_.-]+$"
     )
     compute_backend: Literal["auto", "cpu", "cuda", "vulkan", "metal"] | None = None
+    qwen_asr_model: Literal["qwen3_asr_0_6b", "qwen3_asr_1_7b"] | None = None
+    transcription_vocal_isolation: Literal[
+        "off", "bs_roformer", "mel_band_roformer"
+    ] | None = None
 
     @field_validator("filename")
     @classmethod

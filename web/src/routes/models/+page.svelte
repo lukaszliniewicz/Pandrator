@@ -151,9 +151,10 @@
     </div>
   </form>
   <p class="muted text-sm">
-    The catalogue includes models that are not installed. Non-speech tasks and
-    speech editing are listed for discovery; this release extends speech
-    synthesis. Recommendations describe useful roles, not a quality ranking.
+    The catalogue includes models that are not installed. Transcription and
+    audio preprocessing also have model controls in their workflows. Other
+    listed tasks may be available only for discovery. Recommendations describe
+    useful roles, not a quality ranking.
   </p>
   {#if error}<div
       role="alert"

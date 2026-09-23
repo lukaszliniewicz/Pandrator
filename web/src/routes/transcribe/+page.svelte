@@ -10,6 +10,8 @@
     Trash2
   } from '@lucide/svelte';
   import QuickRecorder from '$lib/QuickRecorder.svelte';
+  import QwenTranscriptionControls from '$lib/QwenTranscriptionControls.svelte';
+  import VocalIsolationControl from '$lib/VocalIsolationControl.svelte';
   import {
     quickTranscriptionApi as api,
     type QuickTranscription,
@@ -20,7 +22,10 @@
   import { errorMessage } from '$lib/errors';
 
   import { sessionApi } from '$lib/domain-api';
-  import { sttLanguageProblem } from '$lib/stt-language-policy';
+  import {
+    qwenTimedLanguageProblem,
+    sttLanguageProblem
+  } from '$lib/stt-language-policy';
 
   let configuredEngine = $state('');
   let capabilities = $state<RuntimeCapabilities>({});
@@ -31,8 +36,18 @@
   let format = $state<TranscriptFormat>('txt');
   let language = $state('auto');
   let engine = $state('');
+  let qwenModel = $state('qwen3_asr_0_6b');
+  let qwenBackend = $state('auto');
+  let vocalIsolation = $state('off');
+  const effectiveEngine = $derived(
+    engine || configuredEngine || capabilities.stt?.default_engine || ''
+  );
+  const isQwen = $derived(
+    ['qwen3', 'qwen3_asr', 'qwen3-asr', 'qwen'].includes(effectiveEngine)
+  );
   const languageProblem = $derived(
-    sttLanguageProblem(capabilities, engine || configuredEngine, language)
+    sttLanguageProblem(capabilities, effectiveEngine, language) ||
+      (isQwen ? qwenTimedLanguageProblem(capabilities, language) : '')
   );
   let services = $state<SttService[]>([]);
   let job = $state<QuickTranscription | null>(null);
@@ -45,6 +60,13 @@
   let error = $state('');
   let notice = $state('');
   let retryKey = '';
+  $effect(() => {
+    void qwenModel;
+    void qwenBackend;
+    void vocalIsolation;
+    void language;
+    retryKey = '';
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let destroyed = false;
   let resultGeneration = 0;
@@ -135,7 +157,15 @@
     try {
       const result = await api.upload(
         file,
-        { format, language, ...(engine ? { engine } : {}) },
+        {
+          format,
+          language,
+          ...(engine ? { engine } : {}),
+          transcription_vocal_isolation: vocalIsolation,
+          ...(isQwen
+            ? { qwen_asr_model: qwenModel, compute_backend: qwenBackend }
+            : {})
+        },
         retryKey,
         (percent) => {
           uploadPercent = percent;
@@ -198,6 +228,17 @@
       .defaults('stt')
       .then((payload) => {
         configuredEngine = String(payload.effective?.stt_engine || '');
+        qwenModel = String(
+          payload.effective?.qwen_asr_model || 'qwen3_asr_0_6b'
+        );
+        qwenBackend = String(
+          payload.effective?.qwen_asr_backend ||
+            payload.effective?.stt_compute_backend ||
+            'auto'
+        );
+        vocalIsolation = String(
+          payload.effective?.transcription_vocal_isolation || 'off'
+        );
       })
       .catch(() => {});
     void diagnosticsApi
@@ -343,19 +384,19 @@
           ><option value="json">Structured transcript (.json)</option>
         </select>
       </label>
-      <label class="text-sm"
-        >Language
-        <input
-          class="mt-2 w-full"
-          bind:value={language}
-          disabled={busy}
-          placeholder="auto, en, pl…"
-          oninput={() => (retryKey = '')}
-        />
-        <span class="muted mt-1 block text-xs"
-          >Use auto to detect the language.</span
-        >
-      </label>
+      {#if !isQwen}<label class="text-sm"
+          >Language
+          <input
+            class="mt-2 w-full"
+            bind:value={language}
+            disabled={busy}
+            placeholder="auto, en, pl…"
+            oninput={() => (retryKey = '')}
+          />
+          <span class="muted mt-1 block text-xs"
+            >Use auto to detect the language.</span
+          >
+        </label>{/if}
       <label class="text-sm"
         >Transcription service
         <select
@@ -374,7 +415,7 @@
               ? ` (${configuredEngine || capabilities.stt?.default_engine})`
               : ''}</option
           >
-          {#each [['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B']] as [id, label]}
+          {#each [['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B'], ['qwen3', 'Qwen3 ASR · audio.cpp']] as [id, label]}
             <option
               value={id}
               disabled={Boolean(sttLanguageProblem(capabilities, id, language))}
@@ -392,6 +433,23 @@
         </select>
       </label>
     </div>
+    <fieldset disabled={busy} class="mt-4 space-y-3">
+      {#if isQwen}
+        <QwenTranscriptionControls
+          bind:model={qwenModel}
+          bind:language
+          bind:backend={qwenBackend}
+          {capabilities}
+        />
+        <p class="muted text-xs">
+          Quick Transcribe prepares word timings so you can download text,
+          subtitles, or structured results from the same job. Qwen therefore
+          needs an explicit source language and a supported alignment path for
+          every output format.
+        </p>
+      {/if}
+      <VocalIsolationControl bind:value={vocalIsolation} />
+    </fieldset>
     {#if languageProblem}<p class="mt-3 text-sm text-red-600" role="alert">
         {languageProblem}
       </p>{/if}

@@ -605,6 +605,117 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
             offset = payload["next_offset"]
         self.assertEqual(text, "".join(pages))
 
+    def test_qwen_options_are_snapshotted_and_claim_native_resources(self):
+        content = b"qwen source"
+        created = self._create(
+            content,
+            key="quick-qwen-options",
+            engine="qwen3",
+            language="pl",
+            format="srt",
+            compute_backend="cuda",
+            qwen_asr_model="qwen3_asr_1_7b",
+            transcription_vocal_isolation="bs_roformer",
+        )
+        with self.extension["database"].session() as session:
+            record = session.get(QuickTranscription, created["id"])
+            settings = dict(record.settings_json)
+        self.assertEqual("pl", settings["stt_language"])
+        self.assertEqual("qwen3_asr_1_7b", settings["qwen_asr_model"])
+        self.assertEqual("bs_roformer", settings["transcription_vocal_isolation"])
+        self.assertEqual("cuda", settings["stt_compute_backend"])
+        self.assertEqual("cuda", settings["qwen_asr_backend"])
+
+        self.assertEqual(200, self._upload(created["id"], 0, content).status_code)
+        started = self._start(created["id"])
+        self.assertEqual(202, started.status_code, started.get_json())
+        job = self.extension["jobs"].get(started.get_json()["job_id"])
+        self.assertEqual(sorted(stt_resource_keys(settings)), job.resource_keys_json)
+        self.assertIn("gpu:cuda", job.resource_keys_json)
+        self.assertIn("service:tts:audio_cpp", job.resource_keys_json)
+
+    def test_qwen_timestamp_preflight_rejects_before_records_or_jobs(self):
+        cases = tuple(
+            (language, transcript_format)
+            for transcript_format in ("txt", "srt", "json")
+            for language in ("auto", "Arabic")
+        )
+        for index, (language, transcript_format) in enumerate(cases):
+            with self.subTest(language=language, format=transcript_format):
+                response = self.client.post(
+                    "/api/v1/transcriptions",
+                    json=self._payload(
+                        b"invalid qwen source",
+                        engine="qwen3",
+                        language=language,
+                        format=transcript_format,
+                        transcription_vocal_isolation="mel_band_roformer",
+                    ),
+                    headers={
+                        **self.headers,
+                        "Idempotency-Key": f"quick-qwen-invalid-{index}",
+                    },
+                )
+                self.assertEqual(400, response.status_code, response.get_json())
+
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                0,
+                session.scalar(
+                    select(func.count()).select_from(QuickTranscription)
+                ),
+            )
+            self.assertEqual(
+                0, session.scalar(select(func.count()).select_from(Job))
+            )
+        self.assertEqual(
+            [], list(self.extension["quick_transcriptions"].root.iterdir())
+        )
+
+    def test_invalid_qwen_literals_are_rejected_by_schema(self):
+        for index, override in enumerate(
+            (
+                {"qwen_asr_model": "qwen3_asr_9_9b"},
+                {"transcription_vocal_isolation": "demucs"},
+            )
+        ):
+            with self.subTest(override=override):
+                response = self.client.post(
+                    "/api/v1/transcriptions",
+                    json=self._payload(**override),
+                    headers={
+                        **self.headers,
+                        "Idempotency-Key": f"quick-qwen-schema-{index}",
+                    },
+                )
+                self.assertEqual(400, response.status_code, response.get_json())
+        with self.extension["database"].session() as session:
+            self.assertEqual(
+                0,
+                session.scalar(
+                    select(func.count()).select_from(QuickTranscription)
+                ),
+            )
+        self.assertEqual(
+            [], list(self.extension["quick_transcriptions"].root.iterdir())
+        )
+
+    def test_non_qwen_quick_transcription_skips_qwen_preflight(self):
+        with patch(
+            "pandrator.logic.dubbing.qwen_asr.validate_transcription_settings",
+            side_effect=AssertionError("Qwen preflight must not run"),
+        ):
+            created = self._create(
+                b"whisper source",
+                key="quick-whisper-arabic",
+                engine="whisper",
+                language="Arabic",
+            )
+        with self.extension["database"].session() as session:
+            record = session.get(QuickTranscription, created["id"])
+            self.assertEqual("whisper", record.settings_json["stt_engine"])
+            self.assertEqual("ar", record.settings_json["stt_language"])
+
     def test_validation_auth_and_stt_resource_key_contract(self):
         base_headers = {**self.headers, "Idempotency-Key": "quick-invalid-1"}
         invalid_format = self.client.post(
