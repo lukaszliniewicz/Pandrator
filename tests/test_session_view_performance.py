@@ -17,7 +17,7 @@ import uuid
 import wave
 from unittest.mock import patch
 
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
@@ -288,6 +288,105 @@ class SessionViewPerformanceTests(unittest.TestCase):
         self.assertEqual(3, item["reusable_segment_count"])
         self.assertEqual(0, item["stale_segment_count"])
         self.assertEqual(0, item["audio_identity_unknown_segment_count"])
+
+    def test_generation_progress_counts_use_revision_removed_status_covering_index(self):
+        session_id = self._create_session()
+        plan = self._plan(session_id, 1)
+        revision_id = plan["active_revision_id"]
+        other_session_id = self._create_session("Other progress plan")
+        other_plan = self._plan(other_session_id, 1)
+
+        with self.database.session() as session:
+            current_segment = session.scalar(
+                select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id == revision_id
+                )
+            )
+            current_segment.status = "ready"
+            session.add_all(
+                [
+                    GenerationSegment(
+                        plan_revision_id=revision_id,
+                        ordinal=2,
+                        text="Included completed segment",
+                        status="completed",
+                    ),
+                    GenerationSegment(
+                        plan_revision_id=revision_id,
+                        ordinal=3,
+                        text="Removed completed segment",
+                        status="completed",
+                        removed=True,
+                    ),
+                    GenerationSegment(
+                        plan_revision_id=revision_id,
+                        ordinal=4,
+                        text="Removed ready segment",
+                        status="ready",
+                        removed=True,
+                    ),
+                ]
+            )
+            other_segment = session.scalar(
+                select(GenerationSegment).where(
+                    GenerationSegment.plan_revision_id
+                    == other_plan["active_revision_id"]
+                )
+            )
+            other_segment.status = "completed"
+
+        with self.database.session() as session:
+            total = session.scalar(
+                select(func.count())
+                .select_from(GenerationSegment)
+                .where(
+                    GenerationSegment.plan_revision_id == revision_id,
+                    GenerationSegment.removed.is_(False),
+                )
+            )
+            completed = session.scalar(
+                select(func.count())
+                .select_from(GenerationSegment)
+                .where(
+                    GenerationSegment.plan_revision_id == revision_id,
+                    GenerationSegment.removed.is_(False),
+                    GenerationSegment.status == "completed",
+                )
+            )
+            ready = session.scalar(
+                select(func.count())
+                .select_from(GenerationSegment)
+                .where(
+                    GenerationSegment.plan_revision_id == revision_id,
+                    GenerationSegment.removed.is_(False),
+                    GenerationSegment.status == "ready",
+                )
+            )
+        self.assertEqual(2, total)
+        self.assertEqual(1, completed)
+        self.assertEqual(1, ready)
+
+        with self.database.engine.connect() as connection:
+            self.assertIsNone(
+                connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'sqlite_stat1'"
+                ).scalar_one_or_none()
+            )
+            query_plan = connection.exec_driver_sql(
+                "EXPLAIN QUERY PLAN SELECT count(*) FROM generation_segments "
+                "WHERE plan_revision_id = ? AND removed IS 0 AND status = ?",
+                (revision_id, "completed"),
+            ).all()
+        details = [str(row[3]).upper() for row in query_plan]
+        self.assertTrue(
+            any(
+                "USING COVERING INDEX IX_GENERATION_SEGMENTS_REVISION_REMOVED_STATUS"
+                in detail
+                for detail in details
+            ),
+            details,
+        )
 
     def test_repair_state_hash_is_deterministic(self):
         from pandrator.web import repair_batches as batches

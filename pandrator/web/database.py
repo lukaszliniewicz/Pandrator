@@ -12,7 +12,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0048_voice_collections"
+SCHEMA_HEAD = "0049_segment_count_index"
 
 
 def sqlite_url(path: Path) -> str:

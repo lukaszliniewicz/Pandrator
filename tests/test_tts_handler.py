@@ -115,6 +115,24 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(42, usage["output_audio_tokens"])
         self.assertAlmostEqual(0.000564, usage["cost_usd"])
 
+    def test_gemini_and_vertex_price_aliases_reuse_existing_model_rates(self):
+        cases = (
+            (tts_handler.GEMINI_SERVICE, "gemini-2.5-flash-tts"),
+            (tts_handler.GEMINI_SERVICE, "gemini-2.5-flash-preview-tts"),
+            (tts_handler.VERTEX_SERVICE, "gemini-2.5-flash-tts"),
+            (tts_handler.VERTEX_SERVICE, "gemini-2.5-flash-preview-tts"),
+        )
+        costs = [
+            tts_handler.estimate_tts_usage(
+                "A" * 400,
+                2_000,
+                {"service": service, "model": model},
+            )["cost_usd"]
+            for service, model in cases
+        ]
+
+        self.assertEqual([0.00055] * len(cases), costs)
+
     def test_local_tts_does_not_create_a_commercial_cost_estimate(self):
         self.assertIsNone(
             tts_handler.estimate_tts_usage(
@@ -414,6 +432,54 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertIn("Speak brightly", prompt)
         self.assertIn("Transcript:\nHello", prompt)
 
+    def test_provider_model_ids_and_defaults_are_distinct(self):
+        self.assertEqual(
+            [
+                "gemini-3.1-flash-tts-preview",
+                "gemini-2.5-flash-preview-tts",
+                "gemini-2.5-pro-preview-tts",
+            ],
+            tts_handler.GEMINI_TTS_MODELS,
+        )
+        self.assertEqual(
+            [
+                "gemini-3.1-flash-tts-preview",
+                "gemini-2.5-flash-tts",
+                "gemini-2.5-pro-tts",
+            ],
+            tts_handler.VERTEX_TTS_MODELS,
+        )
+        self.assertEqual(
+            "gemini-2.5-flash-preview-tts",
+            tts_handler._normalize_model_for_provider(
+                "gemini-2.5-flash-tts", tts_handler.GEMINI_PROVIDER
+            ),
+        )
+        self.assertEqual(
+            "gemini-2.5-flash-tts",
+            tts_handler._normalize_model_for_provider(
+                "gemini-2.5-flash-preview-tts", tts_handler.VERTEX_PROVIDER
+            ),
+        )
+        self.assertEqual(
+            "gemini-3.1-flash-tts-preview",
+            tts_handler._normalize_model_for_provider(
+                "gemini-3.1-flash-tts-preview", tts_handler.VERTEX_PROVIDER
+            ),
+        )
+
+        services = {item["id"]: item for item in tts_handler.get_service_configs({})}
+        self.assertEqual(tts_handler.GEMINI_TTS_MODELS, services["gemini"]["models"])
+        self.assertEqual(tts_handler.VERTEX_TTS_MODELS, services["vertex_ai"]["models"])
+        self.assertEqual(
+            tts_handler.GEMINI_TTS_MODELS,
+            services["gemini"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+        self.assertEqual(
+            tts_handler.VERTEX_TTS_MODELS,
+            services["vertex_ai"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+        )
+
     def test_generation_prompt_capabilities_are_model_specific(self):
         services = {item["id"]: item for item in tts_handler.get_service_configs({})}
         self.assertEqual(
@@ -425,7 +491,7 @@ class TTSHandlerTests(unittest.TestCase):
             services["gemini"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
         self.assertEqual(
-            tts_handler.GEMINI_TTS_MODELS,
+            tts_handler.VERTEX_TTS_MODELS,
             services["vertex_ai"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
         self.assertIn(
@@ -484,6 +550,109 @@ class TTSHandlerTests(unittest.TestCase):
             "Transcript:\nThe transcript must remain unchanged.", payload["input"]
         )
         self.assertNotEqual("The transcript must remain unchanged.", payload["input"])
+
+    def test_gemini_api_uses_gemini_model_ids_for_litellm_and_direct_requests(self):
+        cases = (
+            ("gemini-2.5-flash-tts", "gemini-2.5-flash-preview-tts"),
+            ("gemini-2.5-flash-preview-tts", "gemini-2.5-flash-preview-tts"),
+        )
+        for selected_model, expected_model in cases:
+            with self.subTest(selected_model=selected_model):
+                payload = tts_handler._build_openai_compatible_audio_payload(
+                    "Hello",
+                    {"xtts_model": selected_model, "speaker": "Kore"},
+                    {
+                        "name": tts_handler.GEMINI_SERVICE,
+                        "provider": tts_handler.GEMINI_PROVIDER,
+                    },
+                )
+                speech = Mock()
+                raw_response = Mock()
+                raw_response.status_code = 200
+                raw_response.headers = {}
+                raw_response.url = "https://example.test"
+                litellm_response = Mock()
+                litellm_response.content = b"audio"
+                litellm_response.response = raw_response
+                speech.return_value = litellm_response
+                with patch(
+                    "pandrator.logic.tts_handler._get_litellm_speech_client",
+                    return_value=speech,
+                ):
+                    tts_handler._request_litellm_audio(
+                        payload,
+                        {
+                            "name": tts_handler.GEMINI_SERVICE,
+                            "provider": tts_handler.GEMINI_PROVIDER,
+                            "base_url": tts_handler.GEMINI_AUDIO_BASE_URL,
+                            "api_key": "test-key",
+                        },
+                    )
+                self.assertEqual(
+                    f"gemini/{expected_model}",
+                    speech.call_args.kwargs["model"],
+                )
+
+                settings = {
+                    "service": tts_handler.GEMINI_SERVICE,
+                    "xtts_model": selected_model,
+                    "speaker": "Kore",
+                    "provider_configs": [{"id": "gemini", "direct_http": True}],
+                }
+                response = Mock(status_code=200)
+                with patch(
+                    "pandrator.logic.tts_handler.requests.post",
+                    return_value=response,
+                ) as post:
+                    tts_handler._request_openai_compatible_audio("Hello", settings)
+                self.assertEqual(expected_model, post.call_args.kwargs["json"]["model"])
+                self.assertEqual(selected_model, settings["xtts_model"])
+
+    def test_vertex_request_maps_gemini_api_ids_to_vertex_model_ids(self):
+        cases = (
+            ("gemini-2.5-flash-preview-tts", "gemini-2.5-flash-tts"),
+            ("gemini-2.5-flash-tts", "gemini-2.5-flash-tts"),
+        )
+        pcm = b"\x00\x00\x01\x00"
+        for selected_model, expected_model in cases:
+            with self.subTest(selected_model=selected_model):
+                response = Mock()
+                response.ok = True
+                response.json.return_value = {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"inlineData": {"data": base64.b64encode(pcm).decode()}}
+                                ]
+                            }
+                        }
+                    ]
+                }
+                settings = {
+                    "service": tts_handler.VERTEX_SERVICE,
+                    "model": selected_model,
+                    "voice": "Kore",
+                    "provider_configs": [
+                        {"id": "vertex_ai", "vertex_location": "us-central1"}
+                    ],
+                }
+                with (
+                    patch(
+                        "pandrator.logic.tts_handler._vertex_access_token",
+                        return_value=("token", "project"),
+                    ),
+                    patch(
+                        "pandrator.logic.tts_handler.requests.post",
+                        return_value=response,
+                    ) as post,
+                ):
+                    tts_handler._request_vertex_ai_audio("Hello", settings)
+                self.assertIn(
+                    f"/models/{expected_model}:generateContent",
+                    post.call_args.args[0],
+                )
+                self.assertEqual(selected_model, settings["model"])
 
     def test_json_speech_response_reports_provider_error_instead_of_audio_decode_noise(
         self,

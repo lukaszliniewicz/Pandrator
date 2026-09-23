@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest import mock
 
-from pandrator.logic import tts_provider_profiles
+from pandrator.logic import tts_handler, tts_provider_profiles
 from pandrator.logic.audio_cpp_catalogue import inventory, package_metadata
 from pandrator.logic.model_catalogue import _catalogue_rows, catalogue_page
 
@@ -63,15 +63,24 @@ def test_cloud_capabilities_are_model_and_provider_specific():
     for model_id in ("tts-1", "tts-1-hd"):
         assert _item("openai", model_id)["capabilities"] == ["prebuilt_voices"]
 
-    gemini = _item("gemini", "gemini-2.5-flash-tts")
+    gemini = _item("gemini", "gemini-2.5-flash-preview-tts")
     vertex = _item("vertex_ai", "gemini-2.5-flash-tts")
     expected = ["emotion_control", "instructions", "prebuilt_voices"]
     assert gemini["capabilities"] == expected
     assert vertex["capabilities"] == expected
+    assert gemini["catalogue_id"] == "gemini:gemini-2.5-flash-preview-tts"
+    assert vertex["catalogue_id"] == "vertex_ai:gemini-2.5-flash-tts"
     assert "vocal_events" not in gemini["capabilities"]
     assert gemini["pandrator_features"]["vocal_events"] == "none"
     assert vertex["pandrator_features"]["vocal_events"] == "none"
     assert gemini["catalogue_id"] != vertex["catalogue_id"]
+
+    rows = catalogue_page(provider="gemini", limit=100)["items"]
+    assert {row["id"] for row in rows if row["provider_id"] == "gemini"} >= set(
+        tts_handler.GEMINI_TTS_MODELS
+    )
+    vertex_rows = catalogue_page(provider="vertex_ai", limit=100)["items"]
+    assert {row["id"] for row in vertex_rows} >= set(tts_handler.VERTEX_TTS_MODELS)
 
 
 def test_provider_filter_search_and_capability_alias_keep_facets_independent():

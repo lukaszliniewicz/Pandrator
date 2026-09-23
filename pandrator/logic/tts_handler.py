@@ -436,6 +436,7 @@ def infer_kokoro_voice_language_code(voice_id: str | None) -> str:
 OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
+VERTEX_AUDIO_DEFAULT_MODEL = GEMINI_AUDIO_DEFAULT_MODEL
 GEMINI_AUDIO_DEFAULT_VOICE = "Kore"
 VERTEX_AUDIO_DEFAULT_LOCATION = "us-central1"
 OPENAI_AUDIO_BASE_URL = "https://api.openai.com/v1"
@@ -471,6 +472,12 @@ OPENAI_TTS_MODELS = [
 OPENAI_GENERATION_PROMPT_MODELS = ["gpt-4o-mini-tts"]
 
 GEMINI_TTS_MODELS = [
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
+]
+
+VERTEX_TTS_MODELS = [
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-tts",
     "gemini-2.5-pro-tts",
@@ -585,6 +592,12 @@ GEMINI_TTS_VOICES = [
 ]
 
 GEMINI_MODEL_ALIASES = {
+    "gemini-3.1-flash-tts": "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-tts": "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-tts": "gemini-2.5-pro-preview-tts",
+}
+
+VERTEX_MODEL_ALIASES = {
     "gemini-3.1-flash-tts": "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-preview-tts": "gemini-2.5-flash-tts",
     "gemini-2.5-pro-preview-tts": "gemini-2.5-pro-tts",
@@ -1028,13 +1041,13 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "api_key_env": "",
                 "api_key": "",
                 "is_custom": False,
-                "models": list(GEMINI_TTS_MODELS),
-                "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
+                "models": list(VERTEX_TTS_MODELS),
+                "default_model": VERTEX_AUDIO_DEFAULT_MODEL,
                 "voices": list(GEMINI_TTS_VOICES),
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 "vertex_project": "",
                 "vertex_location": VERTEX_AUDIO_DEFAULT_LOCATION,
-                GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
+                GENERATION_PROMPT_MODELS_FIELD: list(VERTEX_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
                 "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
             },
@@ -1314,9 +1327,12 @@ def estimate_tts_usage(
     model = str(
         _read_setting(tts_settings, "model", "") or service.get("default_model") or ""
     ).strip()
-    model_pricing = pricing.get(model)
-    if not isinstance(model_pricing, dict):
-        model_pricing = {}
+    service_provider = str(service.get("provider") or service.get("id") or "")
+    model_pricing = _model_pricing_for_provider(
+        pricing,
+        model,
+        service_provider,
+    )
     commercial = str(service.get("kind") or "").lower() == "commercial" or bool(
         model_pricing
     )
@@ -2423,13 +2439,15 @@ def _infer_audio_provider(
 def _provider_default_model(provider: str) -> str:
     if provider == GEMINI_PROVIDER:
         return GEMINI_AUDIO_DEFAULT_MODEL
+    if provider == VERTEX_PROVIDER:
+        return VERTEX_AUDIO_DEFAULT_MODEL
     if provider == ELEVENLABS_PROVIDER:
         return ELEVENLABS_TTS_DEFAULT_MODEL
     return OPENAI_AUDIO_DEFAULT_MODEL
 
 
 def _provider_default_voice(provider: str) -> str:
-    if provider == GEMINI_PROVIDER:
+    if provider in {GEMINI_PROVIDER, VERTEX_PROVIDER}:
         return GEMINI_AUDIO_DEFAULT_VOICE
     if provider == ELEVENLABS_PROVIDER:
         return ""
@@ -2439,13 +2457,15 @@ def _provider_default_voice(provider: str) -> str:
 def _provider_model_catalog(provider: str) -> list[str]:
     if provider == GEMINI_PROVIDER:
         return list(GEMINI_TTS_MODELS)
+    if provider == VERTEX_PROVIDER:
+        return list(VERTEX_TTS_MODELS)
     if provider == ELEVENLABS_PROVIDER:
         return [ELEVENLABS_TTS_DEFAULT_MODEL]
     return list(OPENAI_TTS_MODELS)
 
 
 def _provider_voice_catalog(provider: str, model_name: str = "") -> list[str]:
-    if provider == GEMINI_PROVIDER:
+    if provider in {GEMINI_PROVIDER, VERTEX_PROVIDER}:
         return list(GEMINI_TTS_VOICES)
 
     if provider == ELEVENLABS_PROVIDER:
@@ -2540,11 +2560,39 @@ def _normalize_model_for_provider(model_name: str, provider: str) -> str:
     normalized = _strip_provider_prefix(model_name)
     if normalized.lower().startswith("models/"):
         normalized = normalized.split("/", 1)[1].strip()
-    if provider == GEMINI_PROVIDER:
-        alias = GEMINI_MODEL_ALIASES.get(normalized.lower())
+    normalized_provider = str(provider or "").strip().lower()
+    aliases = {
+        GEMINI_PROVIDER: GEMINI_MODEL_ALIASES,
+        VERTEX_PROVIDER: VERTEX_MODEL_ALIASES,
+    }.get(normalized_provider)
+    if aliases:
+        alias = aliases.get(normalized.lower())
         if alias:
             return alias
     return normalized
+
+
+def _model_pricing_for_provider(
+    pricing: dict, model_name: str, provider: str
+) -> dict:
+    """Find the configured price while accepting saved model-ID aliases."""
+    if not isinstance(pricing, dict):
+        return {}
+    model_id = str(model_name or "").strip()
+    normalized = _normalize_model_for_provider(model_id, provider)
+    candidates = [model_id, normalized]
+    candidates.extend(
+        key
+        for key in pricing
+        if isinstance(key, str)
+        and key not in candidates
+        and _normalize_model_for_provider(key, provider) == normalized
+    )
+    for candidate in candidates:
+        model_pricing = pricing.get(candidate)
+        if isinstance(model_pricing, dict):
+            return model_pricing
+    return {}
 
 
 def _normalize_voice_for_provider(voice_name: str, provider: str) -> str:
@@ -6519,9 +6567,9 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         tts_settings.get("xtts_model")
         or tts_settings.get("model")
         or service.get("default_model")
-        or GEMINI_AUDIO_DEFAULT_MODEL
+        or VERTEX_AUDIO_DEFAULT_MODEL
     ).strip()
-    model = _normalize_model_for_provider(model, GEMINI_PROVIDER)
+    model = _normalize_model_for_provider(model, VERTEX_PROVIDER)
     voice = str(
         tts_settings.get("speaker")
         or tts_settings.get("voice")

@@ -35,6 +35,8 @@ _OFFICIAL_PROVIDER_SOURCES = {
 }
 _KNOWN_GEMINI_MODELS = {
     "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
     "gemini-2.5-flash-tts",
     "gemini-2.5-pro-tts",
 }

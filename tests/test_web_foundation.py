@@ -438,6 +438,122 @@ class SchemaUpgradeTests(unittest.TestCase):
                     ],
                 )
 
+    def test_generation_segment_count_index_fresh_and_populated_upgrade(self):
+        index_name = "ix_generation_segments_revision_removed_status"
+
+        def assert_index(connection):
+            names = {
+                row[1]
+                for row in connection.execute("PRAGMA index_list(generation_segments)")
+            }
+            self.assertIn(index_name, names)
+            columns = [
+                row[2]
+                for row in connection.execute(f"PRAGMA index_info({index_name})")
+            ]
+            self.assertEqual(["plan_revision_id", "removed", "status"], columns)
+
+        migration_dir = Path(__file__).parents[1] / "pandrator" / "web" / "migrations"
+
+        def config_for(database_path):
+            config = Config()
+            config.set_main_option("script_location", str(migration_dir))
+            config.set_main_option("sqlalchemy.url", sqlite_url(database_path))
+            return config
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "fresh.sqlite3"
+            upgrade_database(database_path)
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual(
+                    SCHEMA_HEAD,
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                assert_index(connection)
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "previous-head.sqlite3"
+            command.upgrade(config_for(database_path), "0048_voice_collections")
+            database = Database(database_path)
+            try:
+                with database.session() as session:
+                    session_record = SessionRecord(name="0048 segment fixture")
+                    session.add(session_record)
+                    session.flush()
+                    plan = GenerationPlan(session_id=session_record.id)
+                    session.add(plan)
+                    session.flush()
+                    plan_revision = GenerationPlanRevision(
+                        plan_id=plan.id,
+                        revision_number=1,
+                        content_hash="0048-segment-fixture",
+                    )
+                    session.add(plan_revision)
+                    session.flush()
+                    plan.active_revision_id = plan_revision.id
+                    segments = [
+                        GenerationSegment(
+                            plan_revision_id=plan_revision.id,
+                            ordinal=ordinal,
+                            text=f"Existing block {ordinal}",
+                            status=status,
+                            removed=removed,
+                        )
+                        for ordinal, status, removed in (
+                            (1, "completed", False),
+                            (2, "ready", True),
+                        )
+                    ]
+                    session.add_all(segments)
+                    session.flush()
+                    expected_rows = {
+                        segment.id: (segment.text, segment.status, segment.removed)
+                        for segment in segments
+                    }
+            finally:
+                database.dispose()
+
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual(
+                    "0048_voice_collections",
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                # The historical base migration creates current ORM metadata.
+                # Remove this index to model a database that was actually
+                # upgraded through 0048 before this index was introduced.
+                connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+                connection.commit()
+                self.assertNotIn(
+                    index_name,
+                    {
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA index_list(generation_segments)"
+                        )
+                    },
+                )
+
+            upgrade_database(database_path)
+            with closing(sqlite3.connect(database_path)) as connection:
+                self.assertEqual(
+                    SCHEMA_HEAD,
+                    connection.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()[0],
+                )
+                assert_index(connection)
+                actual_rows = {
+                    row[0]: (row[1], row[2], bool(row[3]))
+                    for row in connection.execute(
+                        "SELECT id, text, status, removed FROM generation_segments"
+                    )
+                }
+                self.assertEqual(expected_rows, actual_rows)
+
     def test_populated_generation_graph_survives_0040_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "pandrator.sqlite3"

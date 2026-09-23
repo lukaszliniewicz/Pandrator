@@ -967,6 +967,12 @@ class GenerationSegment(Base):
         UniqueConstraint(
             "plan_revision_id", "ordinal", name="uq_generation_segment_ordinal"
         ),
+        Index(
+            "ix_generation_segments_revision_removed_status",
+            "plan_revision_id",
+            "removed",
+            "status",
+        ),
     )
 
 
