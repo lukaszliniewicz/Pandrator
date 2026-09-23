@@ -35,7 +35,8 @@ from .models import (
     SourceCleaningDispatchRun,
     utcnow,
 )
-from .workspace import WorkspaceSettingsService, resolve_primary_source
+from .workspace import resolve_primary_source
+from .workspace_settings import WorkspaceSettingsService
 
 _PHASE_ALLOWED_OPERATIONS: dict[str, tuple[str, ...]] = {
     "metadata": ("set_metadata",),

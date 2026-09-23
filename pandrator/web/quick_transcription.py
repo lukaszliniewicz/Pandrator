@@ -128,7 +128,7 @@ class QuickTranscriptionService:
                     429,
                 )
             # Snapshot ordinary non-secret configured defaults, then resolve credentials only in the worker.
-            from .workspace import BUILTIN_DEFAULTS
+            from .settings_policy import BUILTIN_DEFAULTS
 
             settings = copy.deepcopy(BUILTIN_DEFAULTS["stt"])
             defaults = session.get(AppSetting, "defaults.stt")

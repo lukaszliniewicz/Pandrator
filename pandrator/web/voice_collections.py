@@ -11,13 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import Voice, VoiceCollection, VoiceCollectionMember, utcnow
+from .settings_policy import RevisionConflict
 from .voice_catalog_schemas import (
     VoiceCollectionCreate,
     VoiceCollectionUpdate,
     VoiceReference,
     canonical_voice_key,
 )
-from .workspace import RevisionConflict
 
 
 def _collection_name_exists(

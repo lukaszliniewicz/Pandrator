@@ -67,7 +67,7 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
 
 
 def revision_history(database, session_id: str, *, limit: int = 50, before_revision_number: int | None = None, revision_ids: list[str] | None = None, include_audio_reuse: bool = True) -> dict[str, Any]:
-    from .workspace import WorkspaceSettingsService
+    from .workspace_settings import WorkspaceSettingsService
 
     limit = max(1, min(int(limit), 100))
     snapshot = None
@@ -315,7 +315,7 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
     followed through lineage; labels such as 'opening.left' resolve prior batch
     results without another round trip. Ambiguous descendants are never guessed.
     """
-    from .workspace import RevisionConflict
+    from .settings_policy import RevisionConflict
 
     if not operations or len(operations) > 50:
         raise ValueError("Topology batches must contain between 1 and 50 operations.")

@@ -34,6 +34,7 @@ from .performance_plans import (
     _assert_current,
     speech_markup_for_segment,
 )
+from .settings_policy import RevisionConflict, adapt_runtime_settings
 from .speech_annotation_records import record_annotation, record_markup
 from .speech_plan_workspace import (
     frozen_semantic_contexts,
@@ -41,7 +42,6 @@ from .speech_plan_workspace import (
     semantic_context_units,
     semantic_context_window,
 )
-from .workspace import RevisionConflict, adapt_runtime_settings
 
 
 def _get_services_value(services: Any, key: str) -> Any:

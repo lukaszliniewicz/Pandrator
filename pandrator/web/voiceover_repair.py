@@ -44,13 +44,10 @@ from .models import (
     Segment,
     utcnow,
 )
+from .settings_policy import stable_hash
 from .speech_plan_workspace import freeze_speech_snapshot, plan_signature
-from .workspace import (
-    GenerationService,
-    WorkspaceSettingsService,
-    mark_output_assemblies_stale,
-    stable_hash,
-)
+from .workspace import GenerationService, mark_output_assemblies_stale
+from .workspace_settings import WorkspaceSettingsService
 
 logger = logging.getLogger(__name__)
 

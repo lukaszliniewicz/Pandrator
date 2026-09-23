@@ -26,7 +26,7 @@ def register_speech_selection_routes(app, context) -> None:
             return guards.error_response(
                 error.code, str(error), 409, {"retryable": error.retryable}
             )
-        from .workspace import RevisionConflict
+        from .settings_policy import RevisionConflict
 
         if isinstance(error, RevisionConflict):
             return guards.error_response("revision_conflict", str(error), 409)

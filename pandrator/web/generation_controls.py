@@ -21,7 +21,7 @@ from .generation_control_schemas import (
     GenerationControlsUpdateRequest,
     VoiceBinding,
 )
-from .workspace import RevisionConflict
+from .settings_policy import RevisionConflict
 
 GENERATION_CONTROLS_KIND = "generation_controls"
 _CHARACTER_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._:-]{0,79}$")

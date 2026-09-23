@@ -561,7 +561,7 @@ def source_passage_effective_snapshot(
     session_id: str,
 ) -> dict[str, Any]:
     """Read the live `source_passages` effective settings (read-only)."""
-    from .workspace import WorkspaceSettingsService
+    from .workspace_settings import WorkspaceSettingsService
 
     fetched = WorkspaceSettingsService.get_in_session(
         WorkspaceSettingsService.__new__(WorkspaceSettingsService),

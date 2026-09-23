@@ -17,7 +17,7 @@ from .performance_schemas import (
     PerformanceRenewRequest,
     PerformanceSubmitRequest,
 )
-from .workspace import RevisionConflict, adapt_runtime_settings
+from .settings_policy import RevisionConflict, adapt_runtime_settings
 
 
 def register_performance_routes(app, context) -> None:

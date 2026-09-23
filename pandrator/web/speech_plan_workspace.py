@@ -9,8 +9,8 @@ import regex
 from sqlalchemy import select
 
 from . import models as m
+from .settings_policy import RevisionConflict, adapt_runtime_settings, stable_hash
 from .source_management import assert_session_idle
-from .workspace import RevisionConflict, adapt_runtime_settings, stable_hash
 
 SIGNATURE_FIELDS = (
     "ordinal",

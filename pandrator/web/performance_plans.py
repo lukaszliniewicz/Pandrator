@@ -29,6 +29,7 @@ from .generation_controls import get_generation_controls
 from .performance_annotations import performance_batches as _batches
 from .performance_annotations import plan_annotations as _annotations
 from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
+from .settings_policy import RevisionConflict
 from .speech_annotation_records import (
     normalized_record,
     record_annotation,
@@ -39,7 +40,6 @@ from .speech_plan_workspace import (
     semantic_context_units,
     semantic_context_window,
 )
-from .workspace import RevisionConflict
 
 PLANNER_VERSION = "contextual-performance-1"
 ANNOTATION_FILTERS = {

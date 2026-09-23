@@ -74,7 +74,8 @@ from .models import (
     SubtitleEvidence,
     utcnow,
 )
-from .workspace import WorkspaceSettingsService, adapt_runtime_settings
+from .settings_policy import adapt_runtime_settings
+from .workspace_settings import WorkspaceSettingsService
 
 
 class DispatchError(RuntimeError):

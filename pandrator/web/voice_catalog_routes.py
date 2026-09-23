@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .models import Voice, VoiceCatalogOverride, utcnow
+from .settings_policy import RevisionConflict
 from .voice_catalog import (
     VoiceCatalogQuery,
     catalog_entries,
@@ -32,7 +33,6 @@ from .voice_library import (
     validate_profile_evidence,
     voice_payloads,
 )
-from .workspace import RevisionConflict
 
 
 class CatalogVoiceChanges(BaseModel):

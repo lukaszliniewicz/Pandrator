@@ -48,7 +48,7 @@ from .managed_services import (
 )
 from .manager_proxy import LocalManagerProxy, ManagerProxyError
 from .models import AppSetting, Artifact
-from .workspace import BUILTIN_DEFAULTS
+from .settings_policy import BUILTIN_DEFAULTS
 
 
 def normalize_service_id(value: object) -> str:

@@ -18,13 +18,13 @@ from sqlalchemy import delete, select
 from . import models as m
 from .artifact_selection import select_source_path
 from .artifacts import sha256_file
+from .settings_policy import RevisionConflict
 from .source_resolution import (
     classify_source,
     resolve_media_source,
     resolve_primary_source,
 )
 from .subtitle_sources import parse_subtitle_source, subtitle_source_status_in_session
-from .workspace import RevisionConflict
 
 TERMINAL = {
     "completed",

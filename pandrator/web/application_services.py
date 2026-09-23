@@ -41,12 +41,8 @@ from .work import WorkService
 from .workflow_handlers import WorkflowHandlers
 from .workflow_plans import WorkflowExecutionPlanService
 from .workflows import WorkflowService
-from .workspace import (
-    GenerationService,
-    OutcomePlanService,
-    SourceLibraryService,
-    WorkspaceSettingsService,
-)
+from .workspace import GenerationService, OutcomePlanService, SourceLibraryService
+from .workspace_settings import WorkspaceSettingsService
 
 
 @dataclass(slots=True)

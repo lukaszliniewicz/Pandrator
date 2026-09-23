@@ -11,11 +11,8 @@ from sqlalchemy.orm import Session
 from pandrator.logic.audiobook_chunking import audiobook_chunk_budget
 
 from .models import OutcomePlan, SessionRecord
-from .workspace import (
-    RevisionConflict,
-    derive_legacy_outcome,
-    stable_hash,
-)
+from .settings_policy import RevisionConflict, stable_hash
+from .workspace import derive_legacy_outcome
 
 AudiobookMode = Literal["single_voice", "multi_voice"]
 

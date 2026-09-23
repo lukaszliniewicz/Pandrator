@@ -10,7 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
+from .settings_policy import BUILTIN_DEFAULTS, SETTING_SECTIONS
 
 DOCUMENTED_SECTIONS = SETTING_SECTIONS
 WORKFLOW_SECTIONS = {

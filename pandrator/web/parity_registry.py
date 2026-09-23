@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .workspace import BUILTIN_DEFAULTS
+from .settings_policy import BUILTIN_DEFAULTS
 
 FEATURES = (
     ("navigation", "application_routes", "replaced", "complete", "Qt tabs are replaced by real URL-addressable application and session routes."),

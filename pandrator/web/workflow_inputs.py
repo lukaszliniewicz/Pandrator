@@ -20,7 +20,7 @@ def workflow_transformations(
 
     # MCP sessions can be configured directly without creating an outcome plan.
     # Use their effective text settings at every planning/execution boundary.
-    from .workspace import WorkspaceSettingsService
+    from .workspace_settings import WorkspaceSettingsService
 
     settings = WorkspaceSettingsService(database).get_in_session(session, session_id, "text")["effective"]
     return {key: bool(settings.get(key)) for key in (

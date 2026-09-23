@@ -10,8 +10,8 @@ from .audiobook_schemas import (
 )
 from .audiobook_setup import configure_audiobook_setup, get_audiobook_setup
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .settings_policy import RevisionConflict
 from .speech_plan_preview import preview_speech_segment
-from .workspace import RevisionConflict
 
 
 def register_audiobook_routes(app, context) -> None:

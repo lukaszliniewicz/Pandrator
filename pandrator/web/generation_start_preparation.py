@@ -8,8 +8,8 @@ from . import models as m
 
 def snapshot_guard(session: Session, session_id: str, revision_id: str) -> str:
     from .generation_controls import get_generation_controls
+    from .settings_policy import stable_hash
     from .speech_plan_workspace import plan_signature
-    from .workspace import stable_hash
 
     revision = session.get(m.GenerationPlanRevision, revision_id)
     record = session.get(m.SessionRecord, session_id)

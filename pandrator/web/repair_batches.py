@@ -20,8 +20,8 @@ from sqlalchemy import select
 
 from . import models as m
 from .generation_review import revision_history
+from .settings_policy import RevisionConflict, stable_hash
 from .source_management import assert_session_idle
-from .workspace import RevisionConflict, stable_hash
 
 REPAIR_REASON = "early_timing_repair"
 REGROUP_REASON = "passage_regroup"

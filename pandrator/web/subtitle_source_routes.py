@@ -4,11 +4,11 @@ from flask import jsonify, request
 
 from .models import Artifact, SessionRecord
 from .schemas import SubtitleAlignRequest
+from .settings_policy import RevisionConflict
 from .subtitle_sources import (
     adopt_subtitle_source_in_session,
     subtitle_source_status_in_session,
 )
-from .workspace import RevisionConflict
 
 
 def register_subtitle_source_routes(app, services, require_auth, error_response):

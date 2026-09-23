@@ -53,18 +53,14 @@ from .models import (
     Segment,
     utcnow,
 )
+from .settings_policy import RevisionConflict, stable_hash
 from .speech_plan_workspace import freeze_speech_snapshot, plan_signature
 from .voiceover_repair import (
     RepairCancellation,
     _record_repair_outcome,
     _selection_state,
 )
-from .workspace import (
-    GenerationService,
-    RevisionConflict,
-    mark_output_assemblies_stale,
-    stable_hash,
-)
+from .workspace import GenerationService, mark_output_assemblies_stale
 
 logger = logging.getLogger(__name__)
 

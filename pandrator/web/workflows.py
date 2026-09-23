@@ -1653,11 +1653,8 @@ class WorkflowService:
         # Resolve persisted defaults before the run is enqueued.  The resulting
         # snapshot is immutable job input: later settings edits affect only
         # future runs, and Run Now values still take highest precedence.
-        from .workspace import (
-            WorkspaceSettingsService,
-            adapt_runtime_settings,
-            normalize_subtitle_limit_override,
-        )
+        from .settings_policy import adapt_runtime_settings, normalize_subtitle_limit_override
+        from .workspace_settings import WorkspaceSettingsService
 
         section_map: dict[str, tuple[str, ...]] = {
             "transcribe": ("stt", "subtitles"),

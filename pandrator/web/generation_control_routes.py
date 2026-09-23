@@ -5,7 +5,7 @@ from flask import jsonify, request
 from .generation_control_schemas import GenerationControlsUpdateRequest
 from .generation_controls import get_generation_controls, save_generation_controls
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
-from .workspace import RevisionConflict
+from .settings_policy import RevisionConflict
 
 
 def register_generation_control_routes(app, context):

@@ -17,6 +17,7 @@ from . import models as m
 from . import performance_plans as plans
 from .generation_controls import get_generation_controls
 from .performance_schemas import PerformancePlanCreateRequest
+from .settings_policy import RevisionConflict, stable_hash
 from .source_management import assert_session_idle
 from .speech_annotation_records import record_markup
 from .speech_plan_preview import _runtime_settings
@@ -25,7 +26,6 @@ from .speech_selection_schemas import (
     SpeechSelectionApplyRequest,
     SpeechSelectionRequest,
 )
-from .workspace import RevisionConflict, stable_hash
 
 
 def _service(services: Any, key: str) -> Any:

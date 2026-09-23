@@ -16,7 +16,7 @@ from .logical_passages import (
 from .models import SessionRecord
 from .route_context import RouteContext
 from .schemas import SourcePassagePreviewRequest, SourcePassageRebuildRequest
-from .workspace import RevisionConflict
+from .settings_policy import RevisionConflict
 
 
 def register_source_passage_routes(app: DomainBlueprints, context: RouteContext) -> None:

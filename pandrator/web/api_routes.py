@@ -164,6 +164,8 @@ from .schemas import (
     TtsVoicePreviewRequest,
 )
 from .sessions import RevisionConflict
+from .settings_policy import BUILTIN_DEFAULTS, SETTING_SECTIONS
+from .settings_policy import RevisionConflict as WorkspaceRevisionConflict
 from .source_cleaning_dispatch_routes import (
     register_source_cleaning_dispatch_routes,
 )
@@ -173,8 +175,6 @@ from .speech_optimization_dispatch_routes import (
 )
 from .voice_routes import register_voice_routes
 from .workflow_plan_routes import register_workflow_plan_routes
-from .workspace import BUILTIN_DEFAULTS, SETTING_SECTIONS
-from .workspace import RevisionConflict as WorkspaceRevisionConflict
 
 XTTS_MODEL_BUNDLE_FILENAMES = (
     "config.json",
@@ -1881,7 +1881,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     else payload.value
                 )
                 if setting_key == "defaults.tts":
-                    from .workspace import validate_voiceover_repair_settings
+                    from .settings_policy import validate_voiceover_repair_settings
 
                     validate_voiceover_repair_settings(prepared_value)
                     previous = {

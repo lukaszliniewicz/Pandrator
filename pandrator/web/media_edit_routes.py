@@ -20,7 +20,7 @@ from .schemas import (
     MediaEditRenderRequest,
     MediaEditUpdateRequest,
 )
-from .workspace import adapt_runtime_settings, stable_hash
+from .settings_policy import adapt_runtime_settings, stable_hash
 
 
 def _safe_job_payload(job) -> dict[str, Any]:

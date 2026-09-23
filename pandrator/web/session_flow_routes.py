@@ -9,6 +9,7 @@ from flask import jsonify, request
 from pydantic import BaseModel, ConfigDict, Field
 
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .settings_policy import RevisionConflict
 from .source_management import (
     change_source_in_session,
     cleanup_reset_files,
@@ -24,7 +25,6 @@ from .speech_plan_workspace import (
     select_speech_plan,
     speech_plan_status,
 )
-from .workspace import RevisionConflict
 
 
 class SourceChangePreviewRequest(BaseModel):

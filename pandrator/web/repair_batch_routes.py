@@ -9,7 +9,7 @@ from .repair_batches import (
     repair_batch_detail,
     undo_repair_batch_in_session,
 )
-from .workspace import RevisionConflict
+from .settings_policy import RevisionConflict
 
 
 def register_repair_batch_routes(app, context) -> None:

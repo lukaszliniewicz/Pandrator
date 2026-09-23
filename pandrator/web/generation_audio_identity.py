@@ -44,7 +44,7 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
         validate_audio_cpp_model_options,
     )
 
-    from .workspace import (
+    from .settings_policy import (
         BUILTIN_DEFAULTS,
         RUNTIME_SETTING_ALIASES,
         _secret_free,
@@ -181,9 +181,9 @@ class AudioIdentityContext:
     """Resolve one settings snapshot and managed voice inventory per inspection."""
 
     def __init__(self, session: Session, snapshot: dict[str, Any]):
+        from .settings_policy import adapt_runtime_settings
         from .tts_providers import TtsProviderRegistry
         from .voice_library import sample_file_status
-        from .workspace import adapt_runtime_settings
 
         self.session = session
         self.snapshot = snapshot
@@ -373,7 +373,7 @@ class AudioIdentityContext:
             settings.update(voice=voice, speaker=voice)
         if self.selected_tts:
             # These overrides have precedence over persistent segment choices.
-            from .workspace import adapt_runtime_settings
+            from .settings_policy import adapt_runtime_settings
 
             settings = adapt_runtime_settings("tts", {**settings, **self.selected_tts}, self._service_config_cache)
             language = str(
