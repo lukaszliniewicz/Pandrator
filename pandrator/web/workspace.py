@@ -1147,16 +1147,15 @@ class WorkspaceSettingsService:
                 value,
             )
             return self.get_in_session(db_session, session_id, section)
-        with self.database.session() as session:
-            result = self.update_in_session(
+        with self.database.immediate_session() as session:
+            self.update_in_session(
                 session,
                 session_id,
                 section,
                 expected_revision,
                 value,
             )
-            revision = int(result["revision"])
-        return self.get(session_id, section) | {"revision": revision}
+            return self.get_in_session(session, session_id, section)
 
     def patch(
         self,
@@ -1180,15 +1179,14 @@ class WorkspaceSettingsService:
             )
             return self.get_in_session(db_session, session_id, section)
         with self.database.immediate_session() as session:
-            result = self.patch_in_session(
+            self.patch_in_session(
                 session,
                 session_id,
                 section,
                 expected_revision,
                 value,
             )
-            revision = int(result["revision"])
-        return self.get(session_id, section) | {"revision": revision}
+            return self.get_in_session(session, session_id, section)
 
     def patch_in_session(
         self,

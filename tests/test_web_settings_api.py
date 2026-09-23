@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -30,6 +31,7 @@ from pandrator.web.tts_optimization import (
     DEFAULT_THIRD_PROMPT,
 )
 from pandrator.web.tts_providers import TtsHealth, TtsProviderError
+from pandrator.web.workspace import RevisionConflict, WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -47,6 +49,105 @@ class SettingsApiTests(unittest.TestCase):
     def tearDown(self):
         self.app.extensions["pandrator"]["database"].dispose()
         self.temporary.cleanup()
+
+    def _assert_settings_reply_matches_committed_revision(self, method):
+        session_id = self.client.post(
+            "/api/v1/sessions", json={"name": "Settings handoff"}, headers=self.headers,
+        ).get_json()["id"]
+        database = self.app.extensions["pandrator"]["database"]
+        service = WorkspaceSettingsService(database)
+        original_session = database.session
+        original_immediate = database.immediate_session
+        changed = False
+
+        def inject_after_commit(original):
+            @contextmanager
+            def transaction():
+                nonlocal changed
+                with original() as db_session:
+                    yield db_session
+                if not changed:
+                    changed = True
+                    with original_immediate() as writer:
+                        service.update_in_session(
+                            writer, session_id, "text", 1, {"max_sentence_length": 333},
+                        )
+            return transaction
+
+        with mock.patch.object(database, "session", inject_after_commit(original_session)), mock.patch.object(
+            database, "immediate_session", inject_after_commit(original_immediate),
+        ):
+            saved = getattr(service, method)(session_id, "text", 0, {"max_sentence_length": 222})
+        self.assertTrue(changed)
+        self.assertEqual(1, saved["revision"])
+        self.assertEqual({"max_sentence_length": 222}, saved["override"])
+        self.assertEqual(222, saved["effective"]["max_sentence_length"])
+        current = service.get(session_id, "text")
+        self.assertEqual(2, current["revision"])
+        self.assertEqual({"max_sentence_length": 333}, current["override"])
+
+    def test_settings_update_reply_matches_its_committed_revision(self):
+        self._assert_settings_reply_matches_committed_revision("update")
+
+    def test_settings_patch_reply_matches_its_committed_revision(self):
+        self._assert_settings_reply_matches_committed_revision("patch")
+
+    def test_competing_settings_replacements_cannot_both_accept_same_revision(self):
+        session_id = self.client.post(
+            "/api/v1/sessions", json={"name": "Competing settings"}, headers=self.headers,
+        ).get_json()["id"]
+        database = self.app.extensions["pandrator"]["database"]
+        service = WorkspaceSettingsService(database)
+        service.update(session_id, "text", 0, {"max_sentence_length": 200})
+        first_writing = threading.Event()
+        second_started = threading.Event()
+        second_finished = threading.Event()
+        outcomes = {}
+
+        def before_write(_connection, _cursor, statement, _parameters, _context, _many):
+            if threading.current_thread().name == "settings-first" and statement.startswith("UPDATE session_settings "):
+                first_writing.set()
+                if not second_started.wait(5):
+                    raise AssertionError("The competing writer did not start.")
+                # Without serialization the second writer can commit here.
+                # With BEGIN IMMEDIATE it waits until this transaction finishes.
+                second_finished.wait(1)
+
+        def write(name, length):
+            try:
+                if name == "second":
+                    if not first_writing.wait(5):
+                        raise AssertionError("The first writer never reached its update.")
+                    second_started.set()
+                outcomes[name] = service.update(session_id, "text", 1, {"max_sentence_length": length})
+            except Exception as error:
+                outcomes[name] = error
+            finally:
+                if name == "second":
+                    second_finished.set()
+
+        first = threading.Thread(target=write, args=("first", 222), name="settings-first")
+        second = threading.Thread(target=write, args=("second", 333), name="settings-second")
+        event.listen(database.engine, "before_cursor_execute", before_write)
+        try:
+            first.start()
+            second.start()
+            first.join(10)
+            second.join(10)
+            self.assertFalse(first.is_alive() or second.is_alive(), "Settings writers did not finish.")
+        finally:
+            event.remove(database.engine, "before_cursor_execute", before_write)
+        self.assertIsInstance(outcomes["first"], dict)
+        self.assertIsInstance(outcomes["second"], RevisionConflict)
+        current = service.get(session_id, "text")
+        self.assertEqual(2, current["revision"])
+        self.assertEqual({"max_sentence_length": 222}, current["override"])
+        with database.session() as reader:
+            history = list(reader.scalars(select(SessionSettingHistory).where(
+                SessionSettingHistory.session_id == session_id,
+            )))
+            self.assertEqual(1, len(history))
+            self.assertEqual({"max_sentence_length": 200}, history[0].value_json)
 
     def test_wizard_visibility_is_revisioned_and_history_is_retained(self):
         missing = self.client.get("/api/v1/settings/wizard")
