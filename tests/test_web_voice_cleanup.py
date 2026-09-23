@@ -12,23 +12,26 @@ from __future__ import annotations
 
 import io
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import types
 import unittest
 import wave
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session
 
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService, sha256_file
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.database import Database
-from pandrator.web.models import Artifact, Job, Voice, VoiceSample
+from pandrator.web.models import Artifact, ArtifactEdge, Job, Voice, VoiceSample
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -517,3 +520,183 @@ def test_recording_request_failure_leaves_no_orphans(recording_route_case, repla
         assert sample.artifact_id == artifact.id
         assert sample.transcript == "Keep this"
         assert sample.transcript_reviewed
+
+
+@pytest.fixture
+def normalization_case(tmp_path):
+    paths = prepare_web_test_data_root(tmp_path)
+    database = Database(paths.database)
+    try:
+        with database.session() as session:
+            voice = Voice(name="S2 reference", metadata_json={
+                "providers": {"test": {"voice_id": "reference", "status": "ready"}}
+            })
+            session.add(voice)
+            session.flush()
+            voice_id = voice.id
+        artifacts = ArtifactService(database, paths)
+        old_path = paths.voices / voice_id / "original.wav"
+        old_path.parent.mkdir(parents=True)
+        old_path.write_bytes(silent_wav())
+        old_artifact = artifacts.register(old_path, kind="audio", role="voice_sample")
+        with database.session() as session:
+            sample = VoiceSample(voice_id=voice_id, artifact_id=old_artifact.id,
+                                 transcript="Keep me", transcript_language="en",
+                                 transcript_reviewed=True)
+            session.add(sample)
+            session.flush()
+            sample_id = sample.id
+        source = paths.uploads / "replacement.wav"
+        source.write_bytes(silent_wav(framerate=22050))
+        upload = artifacts.register(source, kind="audio", role="recording_upload")
+        handlers = WorkflowHandlers(database, paths)
+        yield types.SimpleNamespace(
+            database=database, paths=paths, handlers=handlers, voice_id=voice_id,
+            sample_id=sample_id, old_path=old_path, source=source,
+            payload={"voice_id": voice_id, "source_artifact_id": upload.id,
+                     "expected_voice_revision": 1, "reviewed_transcript": "New words"},
+        )
+    finally:
+        database.dispose()
+
+
+def normalization_state(case):
+    with case.database.session() as session:
+        voice = session.get(Voice, case.voice_id)
+        return (
+            voice.revision, voice.metadata_json,
+            sorted((a.id, a.state) for a in session.scalars(select(Artifact))),
+            sorted((e.parent_artifact_id, e.child_artifact_id)
+                   for e in session.scalars(select(ArtifactEdge))),
+            sorted((s.id, s.artifact_id, s.transcript, s.transcript_language, s.transcript_reviewed)
+                   for s in session.scalars(select(VoiceSample))),
+        )
+
+
+def fake_normalization(command, **_kwargs):
+    destination = Path(command[-1])
+    destination.write_bytes(silent_wav(framerate=int(command[command.index("-ar") + 1])))
+    return subprocess.CompletedProcess(command, 0, "", "")
+
+
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("noise_reduction", ["none", "deepfilternet2"])
+@pytest.mark.parametrize("failure", ["ffmpeg", "prepare", "registration", "commit"])
+def test_normalization_failure_removes_only_uncommitted_output(
+    normalization_case, replace, noise_reduction, failure
+):
+    case = normalization_case
+    payload = {**case.payload, "noise_reduction": noise_reduction}
+    if replace:
+        payload["replace_sample_id"] = case.sample_id
+    before = normalization_state(case)
+    original_files = {p: p.read_bytes() for p in case.paths.root.rglob("*.wav")}
+    reached = []
+
+    def ffmpeg(command, **kwargs):
+        result = fake_normalization(command, **kwargs)
+        if failure == "ffmpeg" and Path(command[-1]).parent == case.old_path.parent:
+            Path(command[-1]).write_bytes(b"partial final WAV")
+            reached.append(failure)
+            raise subprocess.CalledProcessError(1, command, stderr="S2 partial output")
+        return result
+
+    def fail_prepare(*_args, **_kwargs):
+        reached.append(failure)
+        raise RuntimeError("S2 prepare failed")
+
+    register = case.handlers.artifacts.register_in_session
+
+    def fail_registration(*args, **kwargs):
+        register(*args, **kwargs)
+        reached.append(failure)
+        raise RuntimeError("S2 registration failed after flush")
+
+    def fail_commit(session):
+        voice = session.get(Voice, case.voice_id)
+        if voice is not None and voice.revision == 2:
+            reached.append(failure)
+            raise RuntimeError("S2 commit rejected")
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch("pandrator.web.workflow_handlers.subprocess.run", ffmpeg))
+        stack.enter_context(mock.patch.dict(sys.modules, {
+            "pandrator.logic.audio_cpp_processing": stub_cleanup_module({})
+        }))
+        if failure == "prepare":
+            stack.enter_context(mock.patch.object(case.handlers.artifacts, "prepare_registration", fail_prepare))
+        elif failure == "registration":
+            stack.enter_context(mock.patch.object(case.handlers.artifacts, "register_in_session", fail_registration))
+        elif failure == "commit":
+            event.listen(Session, "before_commit", fail_commit)
+            stack.callback(event.remove, Session, "before_commit", fail_commit)
+        with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+            case.handlers.normalize_voice_recording(payload, lambda *_args: None, threading.Event())
+    assert reached == [failure]
+    assert normalization_state(case) == before
+    assert {p: p.read_bytes() for p in case.paths.root.rglob("*.wav")} == original_files
+
+
+@pytest.mark.parametrize("failure", ["retirement", "progress"])
+def test_postcommit_failure_preserves_new_normalized_sample(normalization_case, failure):
+    case = normalization_case
+    from pandrator.web.voice_library import remove_managed_files
+
+    def remove(paths):
+        if failure == "retirement" and case.old_path in paths:
+            raise OSError("S2 retirement failed")
+        remove_managed_files(paths)
+
+    def progress(value, _detail):
+        if value == 1.0 and failure == "progress":
+            raise OSError("S2 progress failed")
+
+    raw = case.source.read_bytes()
+    with (
+        mock.patch("pandrator.web.workflow_handlers.subprocess.run", fake_normalization),
+        mock.patch("pandrator.web.workflow_handlers.remove_managed_files", remove),
+        pytest.raises(OSError, match=f"S2 {failure} failed"),
+    ):
+        case.handlers.normalize_voice_recording(
+            {**case.payload, "replace_sample_id": case.sample_id}, progress, threading.Event()
+        )
+    with case.database.session() as session:
+        sample = session.get(VoiceSample, case.sample_id)
+        artifact = session.get(Artifact, sample.artifact_id)
+        assert sample.transcript == "New words"
+        assert sample.transcript_reviewed
+        assert session.get(Voice, case.voice_id).revision == 2
+        assert session.get(Voice, case.voice_id).metadata_json["providers"]["test"]["status"] == "stale"
+        _, output = case.handlers.artifacts.resolve(artifact.id)
+        assert output != case.old_path
+        assert wav_params(output) == (1, 24000)
+    assert case.source.read_bytes() == raw
+    assert case.old_path.exists() is (failure == "retirement")
+
+
+@pytest.mark.parametrize("noise_reduction", ["none", "deepfilternet2"])
+def test_canceled_normalization_preserves_existing_reference(normalization_case, noise_reduction):
+    case = normalization_case
+    cancel = threading.Event()
+    before = normalization_state(case)
+    original_files = {p: p.read_bytes() for p in case.paths.root.rglob("*.wav")}
+
+    def ffmpeg(command, **kwargs):
+        result = fake_normalization(command, **kwargs)
+        if Path(command[-1]).parent == case.old_path.parent:
+            cancel.set()
+        return result
+
+    with (
+        mock.patch("pandrator.web.workflow_handlers.subprocess.run", ffmpeg),
+        mock.patch.dict(sys.modules, {
+            "pandrator.logic.audio_cpp_processing": stub_cleanup_module({})
+        }),
+    ):
+        result = case.handlers.normalize_voice_recording(
+            {**case.payload, "replace_sample_id": case.sample_id, "noise_reduction": noise_reduction},
+            lambda *_args: None, cancel,
+        )
+    assert result == {}
+    assert normalization_state(case) == before
+    assert {p: p.read_bytes() for p in case.paths.root.rglob("*.wav")} == original_files

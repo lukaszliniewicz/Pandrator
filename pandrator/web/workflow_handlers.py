@@ -5899,6 +5899,8 @@ class WorkflowHandlers:
         normalize_source_path = source_path
         cleanup_report: dict[str, Any] | None = None
         cleanup_temporary: list[Path] = []
+        destination = voice_dir / f"sample-{source_artifact.id}-{uuid.uuid4().hex}.wav"
+        output_committed = False
         try:
             if noise_reduction == VOICE_NOISE_REDUCTION_DEEPFILTERNET2:
                 progress(0.05, "Preparing audio for DeepFilterNet2 cleanup")
@@ -5969,7 +5971,6 @@ class WorkflowHandlers:
                         "DeepFilterNet2 cleanup did not produce cleaned audio."
                     )
                 normalize_source_path = cleaned
-            destination = voice_dir / f"sample-{source_artifact.id}-{uuid.uuid4().hex}.wav"
             progress(
                 0.8 if cleanup_report is not None else 0.1, "Normalizing recording"
             )
@@ -5988,87 +5989,87 @@ class WorkflowHandlers:
             ]
             subprocess.run(command, check=True, capture_output=True, text=True)
             if cancel_event.is_set():
-                destination.unlink(missing_ok=True)
                 return {}
-        finally:
-            for temporary in cleanup_temporary:
-                temporary.unlink(missing_ok=True)
-        sample_metadata: dict[str, Any] | None = (
-            {"sample_provenance": sample_provenance}
-            if sample_provenance is not None
-            else None
-        )
-        if cleanup_report is not None:
-            reduction_metadata: dict[str, Any] = {
-                "method": VOICE_NOISE_REDUCTION_DEEPFILTERNET2
-            }
-            if isinstance(cleanup_report, dict):
-                for key, value in cleanup_report.items():
-                    if str(key) == "output_path":
-                        continue
-                    if value is None or isinstance(value, (str, int, float, bool)):
-                        reduction_metadata[str(key)] = value
-            sample_metadata = {
-                **(sample_metadata or {}),
-                "noise_reduction": reduction_metadata,
-            }
-        prepared = self.artifacts.prepare_registration(destination)
-        removable: list[Path] = []
-        with self.database.session() as session:
-            voice = session.get(Voice, voice_id)
-            if voice is None:
-                destination.unlink(missing_ok=True)
-                raise ValueError("Voice was removed before the sample could be saved.")
-            if expected_revision is not None and voice.revision != expected_revision:
-                destination.unlink(missing_ok=True)
-                raise ValueError("The voice changed before the sample could be saved.")
-            artifact = self.artifacts.register_in_session(
-                session,
-                destination,
-                kind="audio",
-                role="voice_sample",
-                parent_ids=[source_artifact.id],
-                metadata=sample_metadata,
-                _prepared=prepared,
+            sample_metadata: dict[str, Any] | None = (
+                {"sample_provenance": sample_provenance}
+                if sample_provenance is not None
+                else None
             )
-            if replace_sample_id:
-                sample = session.get(VoiceSample, replace_sample_id)
-                if sample is None or sample.voice_id != voice_id:
-                    destination.unlink(missing_ok=True)
-                    raise ValueError(
-                        "Voice sample was removed before it could be replaced."
-                    )
-                old_path = retire_sample_artifact(session, self.paths, sample)
-                if old_path is not None:
-                    removable.append(old_path)
-                sample.artifact_id = artifact.id
-                sample.transcript = transcript or None
-                sample.transcript_language = (
-                    transcript_language if transcript else None
+            if cleanup_report is not None:
+                reduction_metadata: dict[str, Any] = {
+                    "method": VOICE_NOISE_REDUCTION_DEEPFILTERNET2
+                }
+                if isinstance(cleanup_report, dict):
+                    for key, value in cleanup_report.items():
+                        if str(key) == "output_path":
+                            continue
+                        if value is None or isinstance(value, (str, int, float, bool)):
+                            reduction_metadata[str(key)] = value
+                sample_metadata = {
+                    **(sample_metadata or {}),
+                    "noise_reduction": reduction_metadata,
+                }
+            prepared = self.artifacts.prepare_registration(destination)
+            removable: list[Path] = []
+            with self.database.session() as session:
+                voice = session.get(Voice, voice_id)
+                if voice is None:
+                    raise ValueError("Voice was removed before the sample could be saved.")
+                if expected_revision is not None and voice.revision != expected_revision:
+                    raise ValueError("The voice changed before the sample could be saved.")
+                artifact = self.artifacts.register_in_session(
+                    session,
+                    destination,
+                    kind="audio",
+                    role="voice_sample",
+                    parent_ids=[source_artifact.id],
+                    metadata=sample_metadata,
+                    _prepared=prepared,
                 )
-                sample.transcript_reviewed = bool(reviewed_transcript)
-                sample.created_at = utcnow()
-            else:
-                sample = VoiceSample(
-                    voice_id=voice_id,
-                    artifact_id=artifact.id,
-                    transcript=transcript or None,
-                    transcript_language=(
+                if replace_sample_id:
+                    sample = session.get(VoiceSample, replace_sample_id)
+                    if sample is None or sample.voice_id != voice_id:
+                        raise ValueError(
+                            "Voice sample was removed before it could be replaced."
+                        )
+                    old_path = retire_sample_artifact(session, self.paths, sample)
+                    if old_path is not None:
+                        removable.append(old_path)
+                    sample.artifact_id = artifact.id
+                    sample.transcript = transcript or None
+                    sample.transcript_language = (
                         transcript_language if transcript else None
-                    ),
-                    transcript_reviewed=bool(reviewed_transcript),
+                    )
+                    sample.transcript_reviewed = bool(reviewed_transcript)
+                    sample.created_at = utcnow()
+                else:
+                    sample = VoiceSample(
+                        voice_id=voice_id,
+                        artifact_id=artifact.id,
+                        transcript=transcript or None,
+                        transcript_language=(
+                            transcript_language if transcript else None
+                        ),
+                        transcript_reviewed=bool(reviewed_transcript),
+                    )
+                    session.add(sample)
+                session.flush()
+                sample_id = sample.id
+                mark_provider_registrations_stale(
+                    voice,
+                    "The local reference audio changed.",
+                    sample_id=replace_sample_id,
                 )
-                session.add(sample)
-            session.flush()
-            sample_id = sample.id
-            mark_provider_registrations_stale(
-                voice,
-                "The local reference audio changed.",
-                sample_id=replace_sample_id,
-            )
-            voice.revision += 1
-            voice.updated_at = utcnow()
-            voice_revision = voice.revision
+                voice.revision += 1
+                voice.updated_at = utcnow()
+                voice_revision = voice.revision
+            # Only a successful transaction exit transfers ownership to the
+            # voice library. Later retirement/progress errors must not remove it.
+            output_committed = True
+        finally:
+            if not output_committed:
+                cleanup_temporary.append(destination)
+            remove_managed_files(cleanup_temporary)
         remove_managed_files(removable)
         progress(1.0, "Voice sample ready")
         return {
