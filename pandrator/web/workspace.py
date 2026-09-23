@@ -271,7 +271,7 @@ class OutcomePlanService:
         self.database = database
 
     def get(self, session_id: str) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
@@ -293,7 +293,7 @@ class OutcomePlanService:
     def update(
         self, session_id: str, expected_revision: int, value: dict[str, Any]
     ) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             result = self.update_in_session(
                 session, session_id, expected_revision, value
             )
@@ -434,7 +434,7 @@ class SourceLibraryService:
         display_name: str | None = None,
         kind: str | None = None,
     ) -> SourceAsset:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             asset = self.ensure_for_artifact_in_session(
                 session,
                 artifact_id,
@@ -495,7 +495,7 @@ class SourceLibraryService:
                 role=role,
                 expected_session_revision=(expected_session_revision),
             )
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             return self.attach_in_session(
                 session,
                 session_id,
@@ -517,6 +517,8 @@ class SourceLibraryService:
         asset = session.get(SourceAsset, source_asset_id)
         if session_record is None or asset is None:
             raise KeyError(session_id)
+        if asset.state == "trashed":
+            raise ValueError("Restore this source before attaching it to a session.")
         if (
             expected_session_revision is not None
             and session_record.revision != expected_session_revision
@@ -633,7 +635,7 @@ class SourceLibraryService:
     def detach(
         self, session_id: str, attachment_id: str, expected_revision: int
     ) -> None:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             attachment = session.get(SessionSource, attachment_id)
             if attachment is None or attachment.session_id != session_id:
                 raise KeyError(attachment_id)
@@ -648,7 +650,7 @@ class SourceLibraryService:
     def rename(
         self, source_asset_id: str, expected_revision: int, display_name: str
     ) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             asset = session.get(SourceAsset, source_asset_id)
             if asset is None:
                 raise KeyError(source_asset_id)
@@ -686,7 +688,7 @@ class SourceLibraryService:
     ) -> dict[str, Any]:
         if state not in {"current", "trashed"}:
             raise ValueError("Unsupported source lifecycle state.")
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             asset = session.get(SourceAsset, source_asset_id)
             if asset is None:
                 raise KeyError(source_asset_id)
