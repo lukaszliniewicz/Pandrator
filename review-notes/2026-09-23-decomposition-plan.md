@@ -1,10 +1,11 @@
 # Whole-app decomposition and correctness plan
 
-Status: **Phase 1 and W1 complete; W2 next** (2026-09-23). The approved sequence was
+Status: **Phase 1 and W1–W2 complete; W3 next** (2026-09-23). The approved sequence was
 committed as `bf987e13`; S1 and S2 implementations are committed on `main` as
 `292f4eec` and `050d1133` respectively; S3 is committed as `60fdc2c7`,
 and S4 as `93c325ee`. W1 is committed as `6bf8e877` (save races) and
-`1c0199f4` (settings ownership and type debt).
+`1c0199f4` (settings ownership and type debt). W2 is committed as `569c8daa`
+(lifecycle races) and `97e59e99` (outcome/source ownership and type debt).
 Planning source baseline: `10fb2bb5` (2026-09-23).
 Update this file as units finish; do not select a new area solely because it is
 large or interesting. This is internal engineering working material, not a
@@ -137,6 +138,8 @@ recorded below; the other open entries still need bounded reproduction.
 | R7 | Source-level inconsistency: `retire_sample_artifact` preserves files shared by other sample rows but marks their common artifact deleted first. The schema permits sharing; creation by a normal supported API sequence was not established. | During voice-worker extraction, check supported import/legacy/bundled cases before changing retirement semantics. Current sample APIs normalize to a unique destination; artifact registration reuses IDs by path, not content hash. No shared user data was inspected or runtime defect claimed here. | G1 / bounded evidence backlog |
 | R8 | Fixed in `6bf8e877`: standalone settings replacements could both accept the same revision, losing an update. | Immediate transaction owns revision check, mutation, history and response snapshot. Competing-writer regression proves one success and one conflict. | W1 closed |
 | R9 | Fixed in `6bf8e877`: standalone settings update/patch could return another writer's values with the earlier revision. | Capture response before commit; a later committed edit remains visible to the next read without contaminating the saved response. | W1 closed |
+| R10 | Fixed in `569c8daa`: concurrent outcome initialization could raise a duplicate-key error; competing updates could accept the same revision and lose an edit. | Serialize lazy creation and standalone revision-check/update/history transitions. Supplied-session updates remain caller-owned. | W2 closed |
+| R11 | Fixed in `569c8daa`: concurrent source promotion could duplicate identities, attachments could leave two current primaries, rename could lose edits, detach could remove a newly reattached source, and trash could race attachment. Trashed sources were also attachable without restoration. | Serialize supported standalone lifecycle decisions; reject trashed attachments before side effects. Preserve original artifacts/files and require explicit restoration. Existing duplicate data is not automatically merged. | W2 closed |
 
 ## S1 execution contract (completed)
 
@@ -606,3 +609,93 @@ settings diagnostics and three existing-cycle reports; settings diagnostics were
 corrected before the final check. An intermediate scratch-baseline construction
 omitted seven unchanged performance-plan entries; those were restored before the
 final run, not treated as fixes or new debt.
+
+
+### W2 complete — 2026-09-23 — `97e59e99`
+
+- Starting checkpoint: clean `main` at `2fce40d3`.
+- Owned boundary: outcome derivation/pipeline projection/revisioned plan service;
+  source-asset promotion, attachment/adoption, rename/detach/trash/restore and
+  library projections. Preserve IDs, revisions/history, selected-source lineage,
+  original files, source/media roles and caller-owned transactions. No generation
+  or UI restructuring, schema migration, automatic deduplication or deployment.
+- Caller evidence: audiobook setup, chunk-upload completion, source attach HTTP
+  and source-change/reset already supply immediate writer transactions. Standalone
+  outcome PUT, multipart upload helpers, download/reuse workers and source-library
+  lifecycle operations use the service wrappers. Keep both entry paths; do not
+  insert nested transactions into the supplied-session methods.
+- Eight new regression cases failed against `2fce40d3`, with the three existing
+  path tests passing. They reproduced duplicate outcome creation, lost outcome
+  updates/history, duplicate source promotion, two current primary sources, lost
+  source renames, removal of a newly reactivated attachment, a trash/attach race,
+  and attachment of a trashed source without restoration. Seven cases coordinate
+  two real database writers at the first SQL mutation; the eighth exercises the
+  ordinary sequential trash/attach/restore lifecycle. All fixtures are disposable.
+- Fix `569c8daa`: immediate transactions precede mutable reads for standalone
+  outcome get/update and source ensure/attach/detach/rename/set-state. Lazy outcome
+  initialization is a write-capable operation. Attach rejects a trashed asset
+  before changing selections or attachment records. Existing caller-supplied
+  writers and subtitle-adoption transaction ownership remain intact. All eleven
+  focused tests passed after the fix, before extraction.
+- Extraction `97e59e99`: `outcome_plans.py` owns legacy derivation, pipeline
+  projection and `OutcomePlanService`; `source_library.py` owns
+  `SourceLibraryService`. Four production callers import the new owners directly.
+  Workspace compatibility exports preserve the same class/function objects.
+  `workspace.py` falls from 4,258 to 3,578 lines; the new files contain 213 and 504
+  lines. Source-management calls stay injected through the service container,
+  avoiding a back-import to the workspace facade.
+- Mechanical acceptance: both extracted bodies initially matched their original
+  ASTs; all four consumer changes are imports only, and the five remaining
+  workspace definitions are unchanged. Subsequent type refinements bind mapping
+  values before checking their type, explicitly unpack reference-count rows and
+  guard null subtitle artifact IDs. The latter preserves the existing
+  `KeyError(None)` contract; two additional controls verify attachment rollback
+  and original-file retention for the nullable-schema case.
+- Query parity: a disposable library with a shared source and different current
+  attachments produced identical payloads, SQL statements and parameters using
+  the old and new `list` methods. Both session and library views used three SQL
+  statements. This is parity evidence, not a throughput claim.
+- Acceptance: the initial six-file lifecycle/upload/selection/security suite
+  passed 91 tests. After type refinements, the seven-file lifecycle/outcome/
+  workflow-worker/planning/export suite passed 155 tests: **187 distinct tests**
+  across both runs, including the two added missing-artifact controls. Ruff,
+  Vulture, test-lane, documentation and staged whitespace checks passed.
+- Basedpyright: 0 errors/warnings/notes. All 28 inherited diagnostics exposed by
+  extraction were fixed without casts, ignores or baseline relocation. The
+  baseline shrinks from **1,251 to 1,223**, entirely through reductions in the
+  old workspace entry; cycle reports remain **38**. Neither extracted module has
+  a baseline entry, and no new diagnostic is accepted.
+- Researcher configured GPT-6 Luna/max mapped callers and transaction ownership;
+  reviewer configured GPT-6 Sol/high found no material regression. Parent owned
+  architecture, the concurrency protocol, fixes, extraction and final acceptance.
+- Limits: Linux/disposable-data testing, no live providers, Windows/browser or
+  full-project qualification. Existing duplicate source records are not merged.
+  The deprecated `backfill_legacy` compatibility hook is moved unchanged and is
+  not part of the normal concurrent runtime contract; migration 0022 owns normal
+  promotion. Existing bounded subtitle-file adoption remains in its caller's
+  transaction. No push or deployment.
+- Next unit: **W3**, generation read/history projection. Inventory read methods
+  and their callers, build on the existing `generation_run_history.py` boundary,
+  and preserve pagination, take/segment provenance and batched query behavior.
+  Keep W4 topology mutations and their atomic transactions separate.
+
+Commands (repository root; `.pixi/envs/default/bin` tools):
+
+```bash
+python -m pytest -q tests/test_session_source_paths.py --tb=short
+python -m pytest -q tests/test_session_source_paths.py tests/test_session_source_plan_controls.py tests/test_web_artifact_selection.py tests/test_audiobook_setup.py tests/test_web_parity_workspace.py tests/test_web_security.py --tb=short
+python -m pytest -q tests/test_session_source_paths.py tests/test_web_workflow_plans.py tests/test_web_workflow_handlers.py tests/test_web_translation_source_repair.py tests/test_export_input_resolution.py tests/test_audiobook_setup.py tests/test_web_parity_workspace.py --tb=short
+ruff check .
+vulture
+python scripts/test_lanes.py check
+python scripts/check_types.py --baselinefile /tmp/pandrator-w2-type-baseline.json
+python scripts/check_docs.py
+git diff --check
+git diff --cached --check
+```
+
+The first command recorded eight pre-fix failures and three passes, then eleven
+passes after the fix. AST/object-identity checks and the disposable SQL/payload
+comparison used the implementation from `git show 569c8daa` as the extraction
+baseline. The first type run exposed 28 moved diagnostics; the final run accepted
+no new entries and removed all 28 from the old workspace baseline.
