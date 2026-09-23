@@ -1470,30 +1470,6 @@
                 }
             },
             {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 57,
@@ -1518,41 +1494,9 @@
                     "endColumn": 0,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
             }
         ],
         "./pandrator/web/generation_edit_audio.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportImportCycles",
                 "range": {
@@ -2647,14 +2591,6 @@
             }
         ],
         "./pandrator/web/performance_plans.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportOptionalOperand",
                 "range": {

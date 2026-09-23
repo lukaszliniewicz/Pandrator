@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from .generation_scheduling import regeneration_baton_descendants
 from .models import (
     Artifact,
     AudioTake,
@@ -42,13 +43,6 @@ def edit_copy_ancestors(session: Any, revision: GenerationPlanRevision) -> list[
     return result
 
 
-def interrupted_run_id(run: GenerationRun) -> str | None:
-    """Scheduling ownership is distinct from the output's immutable revision."""
-    return (run.settings_snapshot_json or {}).get(
-        "interrupted_generation_run_id"
-    ) or run.source_generation_run_id
-
-
 def running_edit_ancestor(session: Any, revision_id: str) -> GenerationRun | None:
     """Find the active full run behind an editorial copy, never an unrelated run."""
     revision = session.get(GenerationPlanRevision, revision_id)
@@ -67,89 +61,16 @@ def running_edit_ancestor(session: Any, revision_id: str) -> GenerationRun | Non
         GenerationRun.output_generation_run_id.is_(None),
         GenerationRun.status.in_(("running", "queued", "pausing", "paused")),
     ).order_by(GenerationRun.sequence_number.desc())))
-    from .workspace import GenerationService
 
     for candidate in candidates:
         if candidate.cancel_requested:
             continue
         if candidate.status in {"paused", "pausing"} and not (
-            GenerationService._regeneration_baton_descendants(session, candidate.id)
+            regeneration_baton_descendants(session, candidate.id)
         ):
             continue  # An explicit user pause must remain an explicit pause.
         return candidate
     return None
-
-
-def resume_segment_ids(session: Any, run: GenerationRun) -> list[str]:
-    """Resume the original request, not every row of a targeted output plan."""
-    from .models import Job
-
-    snapshot = run.settings_snapshot_json or {}
-    if "generation_request_segment_ids" in snapshot:
-        return list(snapshot["generation_request_segment_ids"] or [])
-    job = session.get(Job, run.job_id) if run.job_id else None
-    return list((job.payload_json or {}).get("segment_ids") or []) if job else []
-
-
-def release_interrupted_run(session: Any, jobs: Any, child: GenerationRun) -> str | None:
-    """Release a temporary pause, even if a queued replacement is canceled.
-
-    This is called inside a short write transaction. User pauses revoke the
-    permission flag, so neither completion nor cancellation can undo them.
-    """
-    if not child.resume_source_on_completion:
-        return None
-    source_id = interrupted_run_id(child)
-    source = session.get(GenerationRun, source_id) if source_id else None
-    if source is None or source.session_id != child.session_id:
-        return None
-    from .models import Job
-    from .workspace import GenerationService
-
-    GenerationService._clear_regeneration_baton(session, child, source.id)
-    if source.cancel_requested or not source.pause_requested:
-        return None
-    # If the last queued replacement is canceled, an earlier replacement may
-    # still be waiting. Transfer the resume responsibility instead of reviving
-    # the full run ahead of it.
-    sibling = session.scalar(select(GenerationRun).where(
-        GenerationRun.id != child.id,
-        GenerationRun.session_id == source.session_id,
-        GenerationRun.operation == "regenerate",
-        GenerationRun.cancel_requested.is_(False),
-        GenerationRun.status.in_(("queued", "running")),
-        (GenerationRun.source_generation_run_id == source.id)
-        | (GenerationRun.settings_snapshot_json["interrupted_generation_run_id"].as_string() == source.id),
-    ).order_by(GenerationRun.sequence_number.desc()))
-    if sibling is not None and child.status in {"canceled", "cancelled"}:
-        sibling.resume_source_on_completion = True
-        sibling_job = session.get(Job, sibling.job_id) if sibling.job_id else None
-        if sibling_job is not None:
-            sibling_job.payload_json = {
-                **(sibling_job.payload_json or {}),
-                "auto_resume_source_generation_run_id": source.id,
-            }
-        return None
-    if source.status == "pausing":
-        source_job = session.get(Job, source.job_id) if source.job_id else None
-        if source_job is not None and source_job.status in {"running", "queued"}:
-            source.pause_requested = False
-            source.status = source_job.status
-            source.updated_at = utcnow()
-        return None
-    if source.status != "paused":
-        return None
-    source.pause_requested = False
-    source.status = "queued"
-    source.updated_at = utcnow()
-    job = jobs.enqueue_in_session(
-        session, "generation.run",
-        {"generation_run_id": source.id, "segment_ids": resume_segment_ids(session, source), "operation": "resume"},
-        session_id=source.session_id,
-        resource_keys=GenerationService._resource_keys(source.session_id, dict(source.settings_snapshot_json or {})),
-    )
-    source.job_id = job.id
-    return job.id
 
 
 def _same_input(source: GenerationSegment, target: GenerationSegment) -> bool:

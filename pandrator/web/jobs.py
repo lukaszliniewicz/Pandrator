@@ -326,7 +326,7 @@ class JobQueue:
         if run is not None:
             transitioned = self._apply_generation_job_status(run, job)
             if transitioned and run.resume_source_on_completion:
-                from .generation_edit_audio import release_interrupted_run
+                from .generation_scheduling import release_interrupted_run
 
                 release_interrupted_run(session, self, run)
 

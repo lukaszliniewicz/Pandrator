@@ -728,7 +728,7 @@ class WorkflowHandlers:
         with self.database.immediate_session() as session:
             child_run = session.get(GenerationRun, child_run_id)
             source_run = session.get(GenerationRun, source_run_id)
-            from .generation_edit_audio import interrupted_run_id
+            from .generation_scheduling import interrupted_run_id, release_interrupted_run
 
             if (
                 child_run is None
@@ -738,8 +738,6 @@ class WorkflowHandlers:
                 or child_run.session_id != source_run.session_id
             ):
                 return None
-            from .generation_edit_audio import release_interrupted_run
-
             return release_interrupted_run(session, self.jobs, child_run)
 
     @staticmethod

@@ -26,6 +26,8 @@ from pandrator.logic.speech_performance import (
 
 from . import models as m
 from .generation_controls import get_generation_controls
+from .performance_annotations import performance_batches as _batches
+from .performance_annotations import plan_annotations as _annotations
 from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
 from .speech_annotation_records import (
     normalized_record,
@@ -125,27 +127,6 @@ def _assert_current(
         raise RevisionConflict(
             "Adopted/historical performance is immutable. Create an editable copy first."
         )
-
-
-def _batches(session, plan_id: str) -> list[m.PerformanceBatch]:
-    return list(
-        session.scalars(
-            select(m.PerformanceBatch)
-            .where(m.PerformanceBatch.performance_plan_id == plan_id)
-            .order_by(m.PerformanceBatch.ordinal)
-        )
-    )
-
-
-def _annotations(session, plan: m.PerformancePlan) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
-    for batch in _batches(session, plan.id):
-        if batch.status == "completed":
-            result.update(deepcopy(batch.annotations_json or {}))
-    # Manual edits always take precedence, including edits made while a batch
-    # was leased. No automatic submission can overwrite a locked user choice.
-    result.update(deepcopy(plan.manual_annotations_json or {}))
-    return result
 
 
 def _unit_map(plan: m.PerformancePlan) -> dict[str, dict[str, Any]]:

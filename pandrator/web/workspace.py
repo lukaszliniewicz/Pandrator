@@ -30,6 +30,13 @@ from .generation_run_history import (
     GenerationRunHistory,
     build_generation_run_history,
 )
+from .generation_scheduling import (
+    canonical_regeneration_root,
+    enqueue_generation_resume,
+    generation_resource_keys,
+    interrupt_generation,
+    revoke_regeneration_batons,
+)
 from .jobs import JobQueue
 from .models import (
     AppSetting,
@@ -4452,124 +4459,6 @@ class GenerationService:
             public["blocked_reason"] = selection["blocked_reason"]
         return public
 
-    @staticmethod
-    def _canonical_regeneration_root(
-        session: Session,
-        source_run: GenerationRun,
-        session_id: str,
-        plan_revision_id: str,
-    ) -> GenerationRun:
-        """Resolve a legacy regeneration chain to its full-generation root.
-
-        New targeted runs are always rooted directly at the original full
-        generation run.  Older databases can contain chains of regeneration
-        children, so follow only regeneration links and fail closed when a
-        malformed or cross-session/plan link is encountered.
-        """
-        current = source_run
-        visited: set[str] = set()
-        while current.operation == "regenerate":
-            if current.id in visited:
-                raise ValueError(
-                    "The generation regeneration lineage contains a cycle."
-                )
-            visited.add(current.id)
-            parent_id = str(current.source_generation_run_id or "")
-            if not parent_id:
-                # Regeneration on an edited plan can legitimately be an
-                # independent output with no same-plan full-generation root.
-                break
-            parent = session.get(GenerationRun, parent_id)
-            if (
-                parent is None
-                or parent.session_id != session_id
-                or parent.plan_revision_id != plan_revision_id
-                or parent.operation == "rvc"
-            ):
-                raise ValueError(
-                    "The selected source generation run does not match this session and plan."
-                )
-            current = parent
-        if (
-            current.session_id != session_id
-            or current.plan_revision_id != plan_revision_id
-            or current.operation == "rvc"
-        ):
-            raise ValueError(
-                "The selected source generation run does not match this session and plan."
-            )
-        return current
-
-    @staticmethod
-    def _clear_regeneration_baton(
-        session: Session,
-        child_run: GenerationRun,
-        source_run_id: str,
-    ) -> None:
-        """Revoke one child's durable resume baton, including its job marker."""
-        child_run.resume_source_on_completion = False
-        child_run.updated_at = utcnow()
-        child_job = session.get(Job, child_run.job_id) if child_run.job_id else None
-        if child_job is None or not isinstance(child_job.payload_json, dict):
-            return
-        payload = dict(child_job.payload_json)
-        if payload.get("auto_resume_source_generation_run_id") == source_run_id:
-            payload.pop("auto_resume_source_generation_run_id", None)
-            child_job.payload_json = payload
-            child_job.updated_at = utcnow()
-
-    @classmethod
-    def _regeneration_baton_descendants(
-        cls,
-        session: Session,
-        source_run_id: str,
-    ) -> list[GenerationRun]:
-        """Find baton-bearing regeneration descendants, including legacy chains.
-
-        The durable flag, rather than the child's status, owns the baton.  A
-        completed child commits its terminal status immediately before it
-        consumes this flag in the resume transaction; filtering on status
-        would leave a race in which a replacement request misses the baton.
-        """
-        pending = {source_run_id}
-        visited: set[str] = set()
-        batons: list[GenerationRun] = []
-        while pending:
-            parent_ids = pending - visited
-            if not parent_ids:
-                break
-            visited.update(parent_ids)
-            descendants = list(
-                session.scalars(
-                    select(GenerationRun).where(
-                        (
-                            GenerationRun.source_generation_run_id.in_(parent_ids)
-                            | GenerationRun.settings_snapshot_json[
-                                "interrupted_generation_run_id"
-                            ].as_string().in_(parent_ids)
-                        ),
-                        GenerationRun.operation == "regenerate",
-                    )
-                ).all()
-            )
-            pending.update(child.id for child in descendants)
-            batons.extend(
-                child for child in descendants if child.resume_source_on_completion
-            )
-        return batons
-
-    @classmethod
-    def _revoke_regeneration_batons(
-        cls,
-        session: Session,
-        source_run_id: str,
-    ) -> list[GenerationRun]:
-        """Revoke all existing batons below a root before assigning a replacement."""
-        batons = cls._regeneration_baton_descendants(session, source_run_id)
-        for child in batons:
-            cls._clear_regeneration_baton(session, child, source_run_id)
-        return batons
-
     def _start_source(
         self, session: Session, session_id: str, prepared: dict[str, Any]
     ) -> tuple[str, GenerationRun | None]:
@@ -4658,7 +4547,7 @@ class GenerationService:
                 )
             )
             if source_run is not None:
-                source_run = self._canonical_regeneration_root(
+                source_run = canonical_regeneration_root(
                     session,
                     source_run,
                     session_id,
@@ -4726,25 +4615,7 @@ class GenerationService:
 
             scheduling_run = running_edit_ancestor(session, plan_revision_id) or source_run
         if scheduling_run is not None:
-            if operation == "regenerate":
-                # A descendant edit has independent output ownership, but must
-                # still yield the single worker at the original run's checkpoint.
-                live_batons = self._regeneration_baton_descendants(session, scheduling_run.id)
-                if scheduling_run.status in {"queued", "running"}:
-                    self._revoke_regeneration_batons(session, scheduling_run.id)
-                    scheduling_run.pause_requested = True
-                    scheduling_run.status = "pausing"
-                    scheduling_run.updated_at = utcnow()
-                    auto_resume_source_id = scheduling_run.id
-                elif scheduling_run.status in {"pausing", "paused"} and live_batons:
-                    self._revoke_regeneration_batons(session, scheduling_run.id)
-                    scheduling_run.pause_requested = True
-                    scheduling_run.updated_at = utcnow()
-                    auto_resume_source_id = scheduling_run.id
-            elif scheduling_run.status in {"queued", "running"}:
-                scheduling_run.pause_requested = True
-                scheduling_run.status = "pausing"
-                scheduling_run.updated_at = utcnow()
+            auto_resume_source_id = interrupt_generation(session, scheduling_run, operation)
         snapshot.pop("interrupted_generation_run_id", None)
         if auto_resume_source_id and (source_run is None or source_run.id != auto_resume_source_id):
             snapshot["interrupted_generation_run_id"] = auto_resume_source_id
@@ -4840,7 +4711,7 @@ class GenerationService:
             "generation.run",
             job_payload,
             session_id=session_id,
-            resource_keys=self._resource_keys(session_id, snapshot),
+            resource_keys=generation_resource_keys(session_id, snapshot),
         )
         run.job_id = job.id
         run.updated_at = utcnow()
@@ -4849,16 +4720,6 @@ class GenerationService:
         # Kept for compatibility with clients that used the old response flag.
         result["reused_run"] = False
         return result
-
-    @staticmethod
-    def _resource_keys(session_id: str, snapshot: dict[str, Any]) -> list[str]:
-        tts = snapshot.get("tts", {})
-        service = str(tts.get("service") or "tts").lower().replace(" ", "_")
-        resource_keys = [f"session:{session_id}", f"service:tts:{service}"]
-        compute = str(tts.get("compute_backend") or tts.get("device") or "auto").lower()
-        if compute in {"cuda", "vulkan", "metal", "gpu"}:
-            resource_keys.append(f"gpu:{compute}")
-        return resource_keys
 
     def request_pause(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
@@ -4874,18 +4735,7 @@ class GenerationService:
             # An explicit pause wins over a temporary pause requested by a
             # targeted regeneration. Remove the child's durable resume marker
             # so it cannot revive the source run behind the user's back.
-            all_batons = list(
-                session.scalars(
-                    select(GenerationRun).where(
-                        GenerationRun.source_generation_run_id == run.id,
-                        GenerationRun.operation == "regenerate",
-                        GenerationRun.resume_source_on_completion.is_(True),
-                    )
-                ).all()
-            )
-            for child_run in all_batons:
-                self._clear_regeneration_baton(session, child_run, run.id)
-            self._revoke_regeneration_batons(session, run.id)
+            revoke_regeneration_batons(session, run.id)
             return {"id": run.id, "job_id": run.job_id, "status": run.status}
 
     def resume(self, run_id: str) -> dict[str, Any]:
@@ -4895,23 +4745,7 @@ class GenerationService:
                 raise KeyError(run_id)
             if run.status != "paused":
                 raise ValueError("Only a paused generation run can be resumed.")
-            run.pause_requested = False
-            run.cancel_requested = False
-            run.status = "queued"
-            run.updated_at = utcnow()
-            session_id = run.session_id
-            snapshot = dict(run.settings_snapshot_json or {})
-            from .generation_edit_audio import resume_segment_ids
-
-            selected_ids = resume_segment_ids(session, run)
-            job = self.jobs.enqueue_in_session(
-                session,
-                "generation.run",
-                {"generation_run_id": run_id, "segment_ids": selected_ids, "operation": "resume"},
-                session_id=session_id,
-                resource_keys=self._resource_keys(session_id, snapshot),
-            )
-            run.job_id = job.id
+            job = enqueue_generation_resume(session, self.jobs, run)
         return {"id": run_id, "job_id": job.id, "status": "queued"}
 
     def cancel(self, run_id: str) -> dict[str, Any]:

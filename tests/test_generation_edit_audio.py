@@ -303,6 +303,63 @@ def test_cancel_replacement_does_not_undo_explicit_pause(case):
         assert session.get(GenerationRun, original["id"]).pause_requested
 
 
+@pytest.mark.parametrize("edited_plan", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_paused_replacement_retains_parent_resume_permission(case, edited_plan, fails):
+    original = case._start()
+    selected_id = edit(case, 0, "Replacement")["id"] if edited_plan else case.segment_ids[0]
+    child = case._start(operation="regenerate", segment_ids=[selected_id],
+                        speech_plan_revision_id=page(case)["plan_revision_id"])
+    result, _ = execute(case, original)
+    assert result["status"] == "paused"
+    generation = case.app.extensions["pandrator"]["generation"]
+    generation.request_pause(child["id"])
+    result, _ = execute(case, child, [selected_id])
+    assert result["status"] == "paused"
+
+    resumed = generation.resume(child["id"])
+    with case.database.session() as session:
+        payload = dict(session.get(Job, resumed["job_id"]).payload_json)
+    assert payload["segment_ids"] == [selected_id]
+    assert payload.get("auto_resume_source_generation_run_id") == original["id"]
+    handlers = case.app.extensions["pandrator"]["workflow_handlers"]
+    if fails:
+        with patch.object(handlers.tts_providers, "synthesize", side_effect=RuntimeError("test failure")):
+            with pytest.raises(RuntimeError, match="test failure"):
+                case._run_job(handlers, payload)
+    else:
+        with case._fake_tts([], [], batch_size=1) as handlers:
+            case._run_job(handlers, payload)
+    with case.database.session() as session:
+        root = session.get(GenerationRun, original["id"])
+        assert root.status == "queued"
+        assert not root.pause_requested
+        assert not session.get(GenerationRun, child["id"]).resume_source_on_completion
+
+
+def test_resuming_replacement_does_not_restore_revoked_parent_permission(case):
+    original = case._start()
+    selected_id = edit(case, 0, "Replacement")["id"]
+    child = case._start(operation="regenerate", segment_ids=[selected_id],
+                        speech_plan_revision_id=page(case)["plan_revision_id"])
+    assert execute(case, original)[0]["status"] == "paused"
+    generation = case.app.extensions["pandrator"]["generation"]
+    generation.request_pause(child["id"])
+    assert execute(case, child, [selected_id])[0]["status"] == "paused"
+    generation.request_pause(original["id"])
+
+    resumed = generation.resume(child["id"])
+    with case.database.session() as session:
+        payload = dict(session.get(Job, resumed["job_id"]).payload_json)
+    assert "auto_resume_source_generation_run_id" not in payload
+    with case._fake_tts([], [], batch_size=1) as handlers:
+        case._run_job(handlers, payload)
+    with case.database.session() as session:
+        root = session.get(GenerationRun, original["id"])
+        assert root.status == "paused"
+        assert root.pause_requested
+
+
 def test_interrupting_a_targeted_output_does_not_expand_resume_to_full_plan(case):
     original = case._start()
     execute(case, original)
