@@ -77,7 +77,34 @@ class VoiceLifecycleIdempotencyTests(unittest.TestCase):
         self.assertEqual(201, replay.status_code)
         self.assertEqual(first.get_json()["id"], replay.get_json()["id"])
         self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        self.assertEqual(f'"{first.get_json()["revision"]}"', first.headers["ETag"])
+        self.assertEqual(first.headers["ETag"], replay.headers["ETag"])
         self.assertEqual(409, conflict.status_code)
+        self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
+
+    def test_transcription_replays_after_sample_removal(self):
+        voice = self._voice("Transcription retry")
+        extension = self.app.extensions["pandrator"]
+        sample_path = extension["paths"].uploads / "transcription.wav"
+        sample_path.write_bytes(silent_wav())
+        artifact = extension["artifacts"].register(sample_path, kind="audio", role="voice_sample")
+        with extension["database"].session() as session:
+            sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id)
+            session.add(sample)
+            session.flush()
+            sample_id = sample.id
+        path = f"/api/v1/voices/{voice['id']}/samples/{sample_id}/transcribe"
+        headers = self._headers("transcribe-key")
+        first = self.client.post(path, json={}, headers=headers)
+        self.assertEqual(202, first.status_code, first.get_json())
+        with extension["database"].session() as session:
+            session.delete(session.get(VoiceSample, sample_id))
+        replay = self.client.post(path, json={}, headers=headers)
+        self.assertEqual(202, replay.status_code, replay.get_json())
+        self.assertEqual(first.get_json(), replay.get_json())
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        conflict = self.client.post(path, json={"stt_language": "pl"}, headers=headers)
+        self.assertEqual(409, conflict.status_code, conflict.get_json())
         self.assertEqual("idempotency_conflict", conflict.get_json()["error"]["code"])
 
     def test_promote_replays_after_voice_revision_changes(self):

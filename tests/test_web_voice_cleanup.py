@@ -21,6 +21,7 @@ import wave
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from sqlalchemy import select
 
 from pandrator.web.api import create_app
@@ -332,6 +333,11 @@ class VoiceCleanupRouteTests(unittest.TestCase):
             headers={"X-CSRF-Token": self.csrf},
         )
         self.assertEqual(202, upload.status_code, upload.get_json())
+        source_artifact, source_path = self.app.extensions["pandrator"]["artifacts"].resolve(
+            upload.get_json()["payload_json"]["source_artifact_id"]
+        )
+        self.assertEqual("recording_upload", source_artifact.role)
+        self.assertEqual(silent_wav(), source_path.read_bytes())
         with self.database.session() as session:
             keys = session.get(Job, upload.get_json()["id"]).resource_keys_json
         self.assertEqual(
@@ -445,3 +451,69 @@ class VoiceCleanupRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.fixture
+def recording_route_case():
+    case = VoiceCleanupRouteTests()
+    case.setUp()
+    try:
+        yield case
+    finally:
+        case.tearDown()
+
+
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("failure", ["save", "registration", "queue"])
+def test_recording_request_failure_leaves_no_orphans(recording_route_case, replace, failure):
+    case = recording_route_case
+    voice = case._create_voice()
+    extension = case.app.extensions["pandrator"]
+    paths, artifacts, jobs = extension["paths"], extension["artifacts"], extension["jobs"]
+    original_path = paths.uploads / "existing.wav"
+    original_bytes = silent_wav()
+    original_path.write_bytes(original_bytes)
+    artifact = artifacts.register(original_path, kind="audio", role="voice_sample")
+    with case.database.session() as session:
+        sample = VoiceSample(voice_id=voice["id"], artifact_id=artifact.id,
+                             transcript="Keep this", transcript_reviewed=True)
+        session.add(sample)
+        session.flush()
+        sample_id = sample.id
+        original_artifact_ids = set(session.scalars(select(Artifact.id)))
+        original_job_ids = set(session.scalars(select(Job.id)))
+    existing_files = set(paths.temporary.rglob("*"))
+    url = f"/api/v1/voices/{voice['id']}/samples"
+    if replace:
+        url += f"/{sample_id}/replace"
+
+    def partial_save(_upload, destination, *_args, **_kwargs):
+        Path(destination).write_bytes(b"partial recording")
+        raise OSError("injected save failure")
+
+    target, attribute = (artifacts, "register_in_session") if failure == "registration" else (jobs, "enqueue_in_session")
+    original = getattr(target, attribute)
+
+    def write_then_fail(*args, **kwargs):
+        original(*args, **kwargs)
+        raise OSError(f"injected {failure} failure")
+
+    patcher = (mock.patch("werkzeug.datastructures.FileStorage.save", partial_save)
+               if failure == "save" else mock.patch.object(target, attribute, side_effect=write_then_fail))
+    with patcher, pytest.raises(OSError, match=f"injected {failure} failure"):
+        case.client.post(
+            url,
+            data={"file": (io.BytesIO(original_bytes), "capture.wav")},
+            content_type="multipart/form-data",
+            headers={"X-CSRF-Token": case.csrf, "If-Match": f'"{voice["revision"]}"'},
+        )
+    assert set(paths.temporary.rglob("*")) == existing_files
+    assert original_path.read_bytes() == original_bytes
+    with case.database.session() as session:
+        assert set(session.scalars(select(Artifact.id))) == original_artifact_ids
+        assert set(session.scalars(select(Job.id))) == original_job_ids
+        assert session.get(Voice, voice["id"]).revision == voice["revision"]
+        sample = session.get(VoiceSample, sample_id)
+        assert sample.artifact_id == artifact.id
+        assert sample.transcript == "Keep this"
+        assert sample.transcript_reviewed
