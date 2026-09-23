@@ -989,7 +989,7 @@ class WorkflowHandlers:
     def download_source_url(self, payload, progress, cancel_event):
         import yt_dlp
 
-        from .workspace import SourceLibraryService
+        from .source_library import SourceLibraryService
 
         session_id = str(payload.get("session_id") or "")
         url = self._validate_download_url(str(payload.get("url") or ""))
@@ -1102,7 +1102,7 @@ class WorkflowHandlers:
         return {"artifact_id": artifact.id, "filename": output.name}
 
     def reuse_source(self, payload, progress, cancel_event):
-        from .workspace import SourceLibraryService
+        from .source_library import SourceLibraryService
 
         session_id = str(payload.get("session_id") or "")
         source, source_path = self._resolve_input(str(payload.get("artifact_id") or ""))

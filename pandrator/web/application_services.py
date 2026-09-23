@@ -26,11 +26,13 @@ from .manager_proxy import LocalManagerProxy
 from .media_edit import MediaEditService
 from .media_edit_dispatch import MediaEditDispatchRunService
 from .models import AppSetting, SessionRecord
+from .outcome_plans import OutcomePlanService
 from .pronunciations import PronunciationLibrary
 from .quick_transcription import QuickTranscriptionService
 from .session_forks import SessionForkService
 from .sessions import SessionService
 from .source_cleaning_dispatch import SourceCleaningDispatchRunService
+from .source_library import SourceLibraryService
 from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
 from .startup import StartupMaintenance
 from .subtitle_evidence import SubtitleEvidenceService
@@ -41,7 +43,7 @@ from .work import WorkService
 from .workflow_handlers import WorkflowHandlers
 from .workflow_plans import WorkflowExecutionPlanService
 from .workflows import WorkflowService
-from .workspace import GenerationService, OutcomePlanService, SourceLibraryService
+from .workspace import GenerationService
 from .workspace_settings import WorkspaceSettingsService
 
 

@@ -21,7 +21,7 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService
 from .database import Database
 from .models import SessionRecord, UploadSessionRecord, utcnow
-from .workspace import SourceLibraryService
+from .source_library import SourceLibraryService
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 MAX_CHUNK_SIZE = 16 * 1024 * 1024

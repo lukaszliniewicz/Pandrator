@@ -241,6 +241,26 @@ class SessionSourcePathTests(unittest.TestCase):
         current = [item for item in service.list(session_id=self.session_id) if item["attachment"]["is_current"]]
         self.assertEqual([self.asset_id], [item["id"] for item in current])
 
+    def _assert_missing_subtitle_artifact_is_rejected(self, method):
+        # SourceAsset permits a null artifact reference (including ON DELETE
+        # SET NULL). Retain the existing KeyError contract and atomic rollback.
+        with self.extension["database"].session() as session:
+            asset = session.get(SourceAsset, self.asset_id)
+            asset.kind = "srt"
+            asset.artifact_id = None
+        before = self.source()
+        with self.assertRaises(KeyError) as raised:
+            getattr(self.extension["source_library"], method)(self.session_id, self.asset_id)
+        self.assertEqual((None,), raised.exception.args)
+        self.assertEqual(before, self.source())
+        self.assertTrue(self.path.is_file())
+
+    def test_attach_missing_subtitle_artifact_preserves_attachment(self):
+        self._assert_missing_subtitle_artifact_is_rejected("attach")
+
+    def test_adopt_missing_subtitle_artifact_preserves_attachment(self):
+        self._assert_missing_subtitle_artifact_is_rejected("adopt_subtitles")
+
     def test_uploaded_source_exposes_absolute_unicode_path(self):
         source = self.source()
         self.assertIsNone(source["external_path"])
