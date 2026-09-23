@@ -1,115 +1,51 @@
 # Pandrator 0.10.0
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-windows-x86_64.exe) [![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-x86_64.AppImage)
 
-For a normal installation, download the Windows `.exe` or Linux `.AppImage`
-above. The Manager installs and updates Pandrator and local services. GitHub's
-**Source code** archives are for developers.
+**Pandrator 0.10.0 brings a richer voice catalogue, multi-voice generation, and detailed control over speech delivery.** Find suitable voices, assign them to narrators and characters, and direct individual passages with instructions, emotions, and supported vocalizations.
 
-This release includes **Pandrator 0.10.0**, **Manager 0.9.25**, and **MCP 0.5.0**.
-The audio.cpp runtime remains **0.8.1**.
+Download the Windows `.exe` or Linux `.AppImage` above to install or update through Pandrator Manager. GitHub’s **Source code** archives are for developers.
 
-## Speech direction and multiple voices
+Includes **Pandrator 0.10.0**, **Manager 0.9.25**, and **MCP 0.5.0**. The audio.cpp runtime remains **0.8.1**.
 
-- Direct whole-segment and phrase editing for speakers, voices, instructions,
-  emotions, pace, cadence, emphasis, and supported vocal events. Compact speech
-  XML preserves the accepted transcript and character identities.
-- Contextual performance planning, manual review and locks, casting, and frozen
-  generation settings. Preview shows the compiled input, instructions, provider
-  options, and support report for each voice part before synthesis.
-- Gemini can use general directions plus preceding and following text from the
-  accepted speech plan. Setup can enable both context directions through MCP;
-  regeneration still receives its neighbouring context. Native Google TTS now
-  handles direct requests and LiteLLM fallback, and Vertex defaults to `global`.
-- Eleven v3 directions and mapped laugh, sigh, and throat-clearing tags now reach
-  the native API. Supported older ElevenLabs models receive previous/next text
-  in stitching fields. Native voice settings are validated, previewed, and
-  included in audio-reuse identity.
+**Explore the expanded Voice Library**
 
-Phrase cues remain model-interpreted: they are not guaranteed acoustic boundaries.
-Gemini context is labelled prompt text, not an enforced hidden channel. Eleven
-v3 does not use the older-model stitching path. Its non-stability voice settings
-are forwarded but marked approximate because provider documentation differs on
-their effect. Vocal events are distinct from a background sound-effects workflow.
+- Browse saved voices and provider catalogues, with profiles describing available voice characteristics.
+- Search and filter by language, accent, presentation, pitch, texture, perceived age, delivery, intended use, tags, and compatible services or models.
+- Listen to samples and compare voices before choosing your cast.
+- Organize voices into collections, manage reference recordings, and keep descriptions, provider links, and provenance together. Voice design workflows let you create and save new voices with supported models.
 
-## Models, voices, and automation
+**Generate narration and dialogue with multiple voices**
 
-- A unified catalogue with model details, languages, licences, reference
-  requirements, instruction scope, context support, and availability. Expanded
-  audio.cpp discovery and grouped Manager model selection make variants easier
-  to compare. Catalogue membership does not imply an installed or runnable model.
-- Voice Library collections, saved references, metadata and provenance, voice
-  design, publishing and casting. The default library view focuses on saved
-  references.
-- MCP adds catalogue/model-management workflows, atomic TTS setup for directions,
-  context and vocalizations, and speech-selection preview/apply tools with
-  revision, lock and idempotency checks. Provider switching now updates model and
-  voice aliases together so an old local model cannot silently override a cloud
-  selection. Update to MCP 0.5.0 and reconnect clients to discover the new schema.
-- Capability corrections include Gemini vocal events, FireRed Instruct's
-  reference-mode restriction, voice-specific Azure styles, and ElevenLabs model
-  distinctions. Deprecated Turbo v2.5 stays discoverable; Flash v2.5 is the
-  upstream recommendation for new selections.
+- Assign voices to a narrator, named characters, or source speakers, and reuse those assignments throughout a project.
+- Use different voices within the same speech segment, with overrides for an entire segment or a selected phrase. Pandrator renders the voice parts and assembles them into the resulting segment.
+- Review casting and preview each part’s synthesis request before generating audio.
+- Generation runs retain their chosen voices and settings, so resuming a run preserves the original cast and completed work.
 
-## Transcription, generation, and export
+**Direct how the speech is performed**
 
-- Qwen3 transcription and forced alignment through audio.cpp, quick-transcription
-  access to Qwen and vocal isolation, and improvements to CJK/native-script
-  subtitles and speech processing.
-- Audiobook chunking, speech editing, generation recovery and missing-only
-  generation preserve completed takes. Generation history, progress counts,
-  virtualized rows, and on-demand model/history loading improve large sessions.
-- Generation search remains available with Ctrl+K when segment option menus
-  are closed, while open dialogs retain their own keyboard input.
-- Block settings wait for the selected plan to load, so saving changes reliably
-  offers preparation of a new plan even on a slow connection.
-- Plan review waits for refreshed speech rows and their review status, keeping
-  the approval button unavailable while the inspected content is loading.
-- Live export progress survives older HTTP snapshots arriving afterward.
-- Manager retains process ownership and recovery state when a service's exit
-  cannot be confirmed, instead of reporting it stopped or starting a replacement.
-- A simpler session workflow, casting controls, mobile navigation, and completed
-  stage folding keep active work visible.
-- Video export measures an overlong audio tail and asks whether to extend the
-  final video frame for the full required duration. Existing work is retained;
-  there is no arbitrary two-second truncation cap.
+- Add general instructions or direct individual segments and phrases with emotion, pace, cadence, emphasis, and supported vocal events.
+- Prepare directions manually or use optional contextual performance analysis, then review, edit, and lock the choices you want to keep.
+- Preview how directions will reach the selected model, including controls that are approximated or unsupported. Available controls depend on the model and backend.
+- **Gemini TTS:** automatically include preceding text, or both preceding and following text, alongside your instructions. Regenerating an individual block retains its surrounding context.
+- **ElevenLabs:** Eleven v3 supports inline performance directions and mapped vocal events such as laughter, sighs, and throat clearing. Supported earlier models use native previous/next-text stitching. Native voice settings are validated and included in generation previews.
 
-## Development quality and debt reduction
+**Choose models and automate setup**
 
-- A pinned Ruff policy now covers all Python packages, scripts, and tests.
-  The cleanup resolves import/name issues, makes existing `zip` truncation
-  explicit, and fixes callbacks that captured changing loop variables.
-- Basedpyright replaces ad hoc mypy tooling, with explicit cross-platform type
-  checks and import-cycle detection. A committed legacy baseline prevents new
-  diagnostics from being silently accepted; it does not imply all historical
-  typing debt is resolved. The catalogue, speech/provider and MCP cleanup fixes
-  138 existing type errors; the initial repository baseline contains 1,288
-  remaining diagnostics, including import cycles.
-- High-confidence Python dead-code checks and the existing frontend formatter,
-  linter, type checker, and dead-code checks are documented and enforced in CI.
-  Unused frontend helpers and an unused subtitle component have been removed.
-- The full cross-platform test workflow now runs on `main`, and every Python
-  test file is assigned to an explicit execution lane.
+The unified model catalogue now exposes languages, licences, reference requirements, instruction scope, context support, and availability. Expanded audio.cpp discovery and grouped model selection make variants easier to compare.
 
-See the [code quality policy](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/docs/development/code-quality.md) for commands and the
-remaining type-debt boundary.
+MCP-connected assistants can browse voices and model capabilities, configure speech directions and context, manage casting, and preview or apply speech edits. Provider switching keeps the model and voice selection consistent. Update to **MCP 0.5.0** and reconnect your clients to discover the new tools and parameters.
 
-## Upgrade and verification
+**Other improvements**
 
-Install Manager 0.9.25 to receive the new launcher/catalogue package, then update
-Pandrator. Existing workspace data and generation history remain in place;
-database upgrades include performance plans, voice collections, and a segment
-count index. As usual, retain a backup of valuable project data before upgrading.
+- Qwen3 transcription and forced alignment through audio.cpp, vocal isolation in Quick Transcription, and improved CJK and native-script subtitle processing.
+- Better audiobook chunking, generation recovery, missing-only generation, history browsing, and performance in large sessions.
+- A clearer session workflow, improved casting controls and mobile navigation, and collapsible completed stages.
+- More reliable plan review, settings saves, export progress, and Manager service recovery.
+- When generated audio outlasts a video, export can extend the final frame for the full required duration.
 
-The release-readiness pass covered model documentation, catalogue projection,
-compiler/request consistency, MCP transport, migration preservation, generation
-recovery, export-tail behavior, and browser workflows at desktop/mobile sizes.
-Provider HTTP tests use mocked responses; no paid cloud synthesis or exhaustive
-acoustic comparison of every model was performed. Native Windows/Linux Manager
-packages, Python distribution audits, signed update metadata, and SHA-256
-checksums accompany the release.
+**Upgrading**
 
-See [speech performance](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/docs/speech-performance.md),
-[generation controls](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/docs/reference/generation-controls.md), and the
-[MCP guide](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/pandrator_mcp/README.md) for details.
+Install Manager **0.9.25**, then update Pandrator. Existing workspace data and generation history are retained. Keep a backup of valuable projects before upgrading.
+
+Learn more: [Speech performance](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/docs/speech-performance.md) · [Generation and casting controls](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/docs/reference/generation-controls.md) · [MCP guide](https://github.com/lukaszliniewicz/Pandrator/blob/v.0.10.0/pandrator_mcp/README.md)
