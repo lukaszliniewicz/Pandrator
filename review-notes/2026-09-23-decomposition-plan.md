@@ -1,8 +1,8 @@
 # Whole-app decomposition and correctness plan
 
-Status: **S1 and S2 complete; S3 next** (2026-09-23). The approved sequence was
+Status: **S1–S3 complete; S4 next** (2026-09-23). The approved sequence was
 committed as `bf987e13`; S1 and S2 implementations are committed on `main` as
-`292f4eec` and `050d1133` respectively.
+`292f4eec` and `050d1133` respectively; S3 is committed as `60fdc2c7`.
 Planning source baseline: `10fb2bb5` (2026-09-23).
 Update this file as units finish; do not select a new area solely because it is
 large or interesting. This is internal engineering working material, not a
@@ -129,7 +129,7 @@ recorded below; the other open entries still need bounded reproduction.
 | R1 | Fixed in `292f4eec`: a resumed older replacement could wait behind the current owner; that owner's failure or success requeued the parent too early. Also, cancellation could transfer permission to an already-running sibling whose loaded payload lacked the marker, leaving the parent paused. | Terminal outcomes now transfer permission to remaining active replacements; terminal cleanup reads durable ownership. Real worker tests cover queued/running siblings, unchanged/edited plans and explicit pause. | S1 closed |
 | R2 | Fixed in `292f4eec`: revocation via a different output ancestor left a stale job marker in current edit-copy and legacy nested chains. Durable permission checks already prevented that stale marker from resuming the parent. | Revocation removes the child's marker regardless of ancestor ID. Tests separately prove explicit pause cannot be undone and no new job is queued. | S1 closed |
 | R3 | Fixed in `050d1133`: normalization left a new WAV after final FFmpeg, preparation, registration or commit failure. Database rollback already preserved the existing reference. | One cleanup boundary retains ownership of the destination until successful transaction exit. Sixteen failure regressions plus cancellation and post-commit preservation controls pass. Request-side upload cleanup remains unchanged. | S2 closed |
-| R4 | Video export checks cancellation before artifact registration; job completion is a separate operation. Existing video tests cover pre-registration cancellation and ordinary success, not durable cancel/lease loss during or after registration. | Trace the commit boundary and record artifact, selection, job and lease outcomes. Distinguish cancellation before publication from cancellation after committed output; define the completion rule before changing it. | S3 |
+| R4 | Fixed in `60fdc2c7`: final video publication could ignore durable cancellation or lease takeover, leak output on registration/commit failure, and let a stale attempt overwrite/delete a newer owner's committed file. | Serialized claim validation, final path allocation, promotion and registration; rejected output is removed, committed output survives later cancellation/loss. Before/during/after tests verify queue state, files and provenance. Process termination and other output domains are not covered by this guarantee. | S3 closed (final video) |
 | R5 | Direct `WorkflowService.resolve_stage` uses separate settings, selection and queue operations. Planned workflows have stale-state tests; equivalent direct-run protection was not established here. | Change source/settings at the handoff boundary. A queued run must use one coherent explicit input snapshot or reject stale preparation, never silently mix versions. | S4 |
 | R6 | Multipart voice upload accepts `expected_revision` in the form, while OpenAPI describes required If-Match. | Clarify the contract and generated client/schema coverage when that endpoint is next changed; retain both working input paths. This does not currently invalidate the documented header path. | F3 / contract backlog |
 | R7 | Source-level inconsistency: `retire_sample_artifact` preserves files shared by other sample rows but marks their common artifact deleted first. The schema permits sharing; creation by a normal supported API sequence was not established. | During voice-worker extraction, check supported import/legacy/bundled cases before changing retirement semantics. Current sample APIs normalize to a unique destination; artifact registration reuses IDs by path, not content hash. No shared user data was inspected or runtime defect claimed here. | G1 / bounded evidence backlog |
@@ -334,3 +334,81 @@ git diff --check
 The first command was run before the fix (16 failures, 4 controls passed);
 the three-file acceptance run passed all 70 tests after it. The type check used
 a copy of the committed baseline, verified byte-identical after checking.
+
+### S3 complete — 2026-09-23 — `60fdc2c7`
+
+- Starting checkpoint: clean `main` at `4eb949b9`.
+- Executable scope: R4's final video export publication boundary, using real
+  queue/worker transitions with disposable databases and stubbed media rendering.
+  Other export formats and helper artifacts are not an all-or-nothing export job.
+- Completion rule: cancellation or lost claim recorded before publication must
+  prevent a new final video artifact and remove its uncommitted destination.
+  Artifact publication and the guard must share a serialized write transaction.
+  Hashing/rendering stay outside it. After publication commits, cancellation or
+  lease loss may prevent successful job completion but must not delete the
+  committed artifact, its file or provenance. Job outcome and durable output
+  existence are deliberately distinct; this does not promise crash-atomic file/DB
+  publication or atomic job completion with the artifact.
+- Verification will inspect job status, claim generation, artifacts, lineage,
+  stage selections and files before, during and after the commit boundary.
+  Record reproduced defects before changing production behavior.
+- Reproduced: five initial failing cases (durable cancellation and reclaimed
+  lease before registration, in-memory cancellation after registration flush,
+  registration failure, commit rejection); two post-commit retention controls
+  passed. A separate stale-attempt case reproduced deletion of the newer owner's
+  committed file: the old renderer had allocated the same path before rendering,
+  overwrote it on promotion, then removed it when noticing the lost claim.
+- The final stale-attempt regression was run against the `4eb949b9` renderer
+  loaded into an isolated Python module from `git show`, without replacing working
+  files. Its failure was the winner's missing file. The fixture advances only the
+  claim clock while excluding concurrent heartbeat updates from that artificial
+  clock; reclaims use the real queue API. The winning file/record is seeded via
+  real artifact registration to represent the newer owner's completed work.
+- Implementation: `export_publication.py` owns the final video commit boundary.
+  It hashes scratch output outside the writer transaction, validates current
+  job/session/kind/generation/lease and cancellation, allocates the final path,
+  atomically renames, registers artifact/provenance and rechecks before commit.
+  Failed publication removes only its allocated output. The output-settings
+  snapshot now commits with the artifact. Direct invocations retain event-based
+  cancellation; durable workers must provide both internal claim fields.
+- Initial acceptance: 71 tests passed across video cleanup/commands, queue
+  concurrency and audio assembly. The 10 new cases include real competing writers
+  during publication: the transaction holding the writer lock publishes first,
+  then cancellation/reclaim proceeds, retaining that committed output. An older
+  allocation-failure test now expects rendering before final-path allocation.
+- Final acceptance: another 35 export/video compatibility tests passed, including
+  existing audio/subtitle matrix and tail-decision cases: **106 distinct tests
+  passed** across the two runs. Ruff, Vulture, test-lane manifest, documentation
+  and whitespace checks passed. Basedpyright reported 0 errors/warnings/notes;
+  scratch baseline remained byte-identical (1,266 legacy entries).
+- Researcher configured GPT-6 Luna/max traced queue and existing publication
+  contracts; reviewer configured GPT-6 Sol/high found no material regression.
+  Parent retained policy, implementation and acceptance. Review clarified that
+  an assigned owner means non-null, matching the queue's existing allowance of
+  empty-string worker IDs; fencing uses the per-job claim generation, without
+  introducing a new worker-name validation rule.
+- Limits: Linux/disposable data, stubbed rendering in concurrency tests and
+  existing export compatibility checks; no Windows/browser/live-provider/full
+  project qualification or deployment. A process killed between rename and
+  database commit can still leave an unregistered file. Durable sidecars and
+  other export formats retain their existing independent publication semantics.
+- Next unit: **S4**, direct workflow input/settings freshness (R5), followed by
+  the phase-1 state-contract review checkpoint. No reprioritization.
+
+Commands (repository root; `.pixi/envs/default/bin` tools):
+
+```bash
+python -m pytest -q tests/test_export_video_cleanup.py -k 'publication or registration_rolls' --tb=short
+python -m pytest -q tests/test_export_video_cleanup.py tests/test_export_video_commands.py tests/test_web_job_concurrency.py tests/test_web_audio_assembly.py --tb=short
+python -m pytest -q tests/test_web_workflow_handlers.py tests/test_video_tail_freeze.py tests/test_export_video_tail_decision.py -k 'export or video' --tb=short
+ruff check .
+vulture
+python scripts/test_lanes.py check
+python scripts/check_types.py --baselinefile /tmp/pandrator-s3-type-baseline.json
+python scripts/check_docs.py
+git diff --check
+```
+
+The first command captured five pre-fix failures and two passing late-interruption
+controls. The baseline stale-file reproduction used the isolated module described
+above; the final acceptance runs passed 71 and 35 tests respectively.
