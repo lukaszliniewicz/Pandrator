@@ -707,7 +707,6 @@
       class="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
     >
       <div>
-        <div class="eyebrow">Subtitle review</div>
         <h2
           id="review-title"
           class="mt-1 flex items-center gap-2 text-xl font-semibold"
@@ -913,7 +912,9 @@
       </div>{/if}
     <div bind:this={rowsViewport} class="min-h-0 flex-1 overflow-auto">
       {#if loading}<div class="grid h-full place-items-center">
-          <div class="eyebrow animate-pulse">Aligning subtitle lineage…</div>
+          <div class="section-label animate-pulse">
+            Aligning subtitle lineage…
+          </div>
         </div>
       {:else if !visibleRows.length}<div class="grid h-full place-items-center">
           <p class="muted">No comparable subtitle rows are available.</p>

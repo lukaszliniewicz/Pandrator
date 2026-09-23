@@ -197,7 +197,6 @@
 <div class="mx-auto max-w-[92rem]">
   <header class="flex flex-wrap items-end justify-between gap-5">
     <div class="max-w-3xl">
-      <div class="eyebrow">Speech workspace</div>
       <h1 class="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">
         Pronunciation library
       </h1>
@@ -286,7 +285,7 @@
 
     {#if loading}
       <div class="grid min-h-64 place-items-center">
-        <span class="eyebrow animate-pulse">Loading pronunciations…</span>
+        <span class="section-label animate-pulse">Loading pronunciations…</span>
       </div>
     {:else if !items.length}
       <div class="grid min-h-72 place-items-center px-6 text-center">
@@ -406,7 +405,6 @@
           class="flex items-start gap-4 border-b border-[var(--line)] px-6 py-5"
         >
           <div class="min-w-0 flex-1">
-            <div class="eyebrow">{editing ? 'Edit entry' : 'New entry'}</div>
             <h2
               id="pronunciation-editor-title"
               class="mt-1 text-2xl font-semibold"

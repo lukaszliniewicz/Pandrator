@@ -21,7 +21,6 @@
       class="flex items-center justify-between border-b border-[var(--line)] px-6 py-4"
     >
       <div>
-        <div class="eyebrow">Providers & services</div>
         <h2 id="tts-services-modal-title" class="mt-1 text-xl font-semibold">
           TTS connections and defaults
         </h2>

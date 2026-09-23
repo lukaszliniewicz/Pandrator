@@ -629,6 +629,7 @@ test('Pandrator installs selected audio.cpp models and mutes absent compatibilit
   await audioCard.screenshot({
     path: testInfo.outputPath('audio-model-installation.png')
   });
+  await audioCard.getByRole('button', { name: /^FireRed 1$/ }).click();
   await audioCard.getByRole('button', { name: /^FireRedTTS3/ }).click();
   await audioCard
     .getByRole('checkbox', { name: /FireRedTTS3 Base Q8_0/ })
@@ -777,6 +778,11 @@ for (const width of [1280, 390]) {
         label: id,
         family: id.startsWith('qwen') ? 'qwen3_tts' : 'pocket_tts',
         supported_languages: id.includes('german') ? ['de'] : ['en'],
+        capabilities: id.includes('customvoice')
+          ? ['prebuilt_voices', 'instructions']
+          : id.includes('voicedesign')
+            ? ['voice_design', 'instructions']
+            : ['voice_cloning'],
         recommended_for: index === 0 ? 'Multilingual cloned narration' : ''
       }
     }));
@@ -836,6 +842,18 @@ for (const width of [1280, 390]) {
     ).toBeChecked();
     await base.getByRole('checkbox', { name: new RegExp(ids[1]) }).check();
     await card.getByLabel('Recommended and selected packages').uncheck();
+    await card
+      .getByRole('combobox', { name: 'Capability', exact: true })
+      .selectOption('instructions');
+    await expect(
+      card.getByRole('checkbox', { name: new RegExp(ids[2]) })
+    ).toBeVisible();
+    await expect(
+      card.getByRole('checkbox', { name: new RegExp(ids[0]) })
+    ).toBeHidden();
+    await card
+      .getByRole('combobox', { name: 'Capability', exact: true })
+      .selectOption('');
     await card.getByLabel('Find a package').fill('German');
     await expect(
       card.getByRole('checkbox', { name: new RegExp(ids[5]) })

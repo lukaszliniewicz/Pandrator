@@ -569,7 +569,6 @@
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <div class="eyebrow">External speech services</div>
       <h2 class="mt-1 text-2xl font-semibold">External connections</h2>
       <p class="muted mt-2 max-w-2xl text-sm">
         Manage remote or independently hosted endpoints, API keys, defaults, and
@@ -800,7 +799,6 @@
         class="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
       >
         <div>
-          <div class="eyebrow">TTS service</div>
           <h2 id="service-settings-title" class="mt-1 text-2xl font-semibold">
             {editing.name}
           </h2>
@@ -993,7 +991,6 @@
       <div class="modal-scroll p-5 sm:p-7">
         <div class="flex justify-between gap-4">
           <div>
-            <div class="eyebrow">Connect TTS</div>
             <h2 class="mt-1 text-2xl font-semibold">Discover an endpoint</h2>
           </div>
           <button

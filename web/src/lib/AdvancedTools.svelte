@@ -248,7 +248,6 @@
         class="muted mb-3 flex items-center gap-2 text-sm"
         ><ArrowLeft size={15} /> Workspace</button
       >
-      <div class="eyebrow">Speech laboratory</div>
       <h1 class="mt-2 text-3xl font-semibold">
         {mode === 'rvc'
           ? 'RVC conversion'

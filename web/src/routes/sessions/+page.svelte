@@ -76,8 +76,7 @@
 <div class="mx-auto max-w-7xl">
   <header class="flex flex-wrap items-end justify-between gap-5">
     <div>
-      <div class="eyebrow">Sessions</div>
-      <h1 class="mt-2 text-4xl font-semibold">Your workspaces</h1>
+      <h1 class="mt-2 text-4xl font-semibold">Sessions</h1>
       <p class="muted mt-3">
         Inspect sources, generated artifacts, revisions, and recoverable trash.
       </p>
@@ -144,7 +143,7 @@
         </div>
         {#if expanded === item.id}
           <div class="border-t border-[var(--line)] bg-[var(--paper)] p-4">
-            <div class="eyebrow mb-3">Artifacts</div>
+            <div class="section-label mb-3">Artifacts</div>
             <div class="grid gap-2 md:grid-cols-2">
               {#each artifacts[item.id] ?? [] as artifact}
                 <button

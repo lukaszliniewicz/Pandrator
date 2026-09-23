@@ -19,6 +19,18 @@
     >Languages, licence and controls</summary
   >
   <div class="mt-3 space-y-3 leading-relaxed">
+    {#if model.capabilities?.length}
+      <div>
+        <strong>Available controls:</strong>
+        <ul class="mt-1 flex flex-wrap gap-1" aria-label="Available controls">
+          {#each model.capabilities as capability}<li
+              class="rounded border border-[var(--line)] px-2 py-0.5"
+            >
+              {featureLabels[capability] ?? readable(capability)}
+            </li>{/each}
+        </ul>
+      </div>
+    {/if}
     <div>
       <strong>Languages:</strong>
       {languages.length ? languages.join(', ') : 'Not specified by upstream.'}
@@ -36,7 +48,9 @@
           rel="noreferrer">{model.license.name ?? 'Model terms'}</a
         >
       {:else}{model.license?.name ?? 'Not verified'}{/if}
-      <span class="muted"> · {readable(model.license?.commercial_use)}</span>
+      {#if model.license?.commercial_use}<span class="muted">
+          · {readable(model.license.commercial_use)}</span
+        >{/if}
     </div>
     <dl class="grid gap-x-4 gap-y-1 sm:grid-cols-2">
       <div>

@@ -32,6 +32,35 @@ from pandrator.web.tts_providers import TtsCapabilities
 
 
 class GenerationAudioIdentityTests(unittest.TestCase):
+    def test_material_settings_memo_uses_complete_input_and_isolates_results(self):
+        from pandrator.web import generation_audio_identity
+
+        context = object.__new__(AudioIdentityContext)
+        context._service_config_cache = {}
+        context._material_settings_cache = {}
+        with patch.object(
+            generation_audio_identity,
+            "_material_settings",
+            side_effect=lambda snapshot, _cache: {
+                "provider": {"config": snapshot["tts"]["provider_configs"][0]["value"]}
+            },
+        ) as material:
+            first_settings = {"provider_configs": [{"value": "one"}], "voice": "A"}
+            first = context._memoized_material_settings(first_settings)
+            first["provider"]["config"] = "mutated"
+            self.assertEqual(
+                context._memoized_material_settings(first_settings)["provider"]["config"],
+                "one",
+            )
+            self.assertEqual(material.call_count, 1)
+            context._memoized_material_settings(
+                {"provider_configs": [{"value": "one"}], "voice": "B"}
+            )
+            context._memoized_material_settings(
+                {"provider_configs": [{"value": "two"}], "voice": "A"}
+            )
+            self.assertEqual(material.call_count, 3)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

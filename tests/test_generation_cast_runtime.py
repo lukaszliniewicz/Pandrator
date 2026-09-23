@@ -343,6 +343,25 @@ def test_repeated_cast_binding_is_resolved_once(case):
         assert resolve.call_count == 1
 
 
+def test_distinct_cast_bindings_share_one_catalogue_build(case):
+    from pandrator.logic import tts_handler
+    from pandrator.web import generation_cast_runtime as runtime
+
+    with case["services"]["database"].session() as session:
+        session.get(m.GenerationSegment, case["segment_ids"][0]).voice = "Kore"
+        session.get(m.GenerationSegment, case["segment_ids"][1]).voice = "Puck"
+        snapshot = overrides(performance_enabled=False)
+        with patch.object(
+            tts_handler,
+            "_default_service_configs",
+            wraps=tts_handler._default_service_configs,
+        ) as build:
+            runtime.freeze_cast_snapshot(
+                session, case["revision_id"], snapshot, snapshot["tts"]
+            )
+        assert build.call_count == 1
+
+
 def test_generation_commit_rejects_source_run_swap_with_identical_settings(case):
     from pandrator.web.workspace import RevisionConflict
 

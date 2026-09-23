@@ -280,7 +280,6 @@
 
 <div class="mx-auto max-w-5xl space-y-7">
   <header>
-    <div class="eyebrow">Quick tools</div>
     <h1 class="mt-2 text-4xl font-semibold tracking-[-.04em]">
       Quick Transcribe
     </h1>

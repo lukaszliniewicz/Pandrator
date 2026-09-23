@@ -56,7 +56,7 @@
       class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4"
     >
       <div class="min-w-0 flex-1">
-        <div class="eyebrow">Generation segment {item.ordinal + 1}</div>
+        <div class="section-label">Generation segment {item.ordinal + 1}</div>
         <div class="mt-1 flex flex-wrap items-center gap-2">
           <h2 id="segment-optimization-title" class="text-xl font-semibold">
             Review speech plan

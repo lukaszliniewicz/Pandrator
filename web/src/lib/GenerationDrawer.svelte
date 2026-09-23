@@ -2887,6 +2887,7 @@
         >
           {#if viewMode === 'segments'}
             <GenerationSegmentTable
+              compactRows={workflowKind === 'audiobook'}
               bind:this={segmentTable}
               scrollRoot={segmentScrollRoot}
               activeSegmentId={activePlayingId}
@@ -3110,7 +3111,6 @@
     >
       <header class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">Speech-to-speech</div>
           <h2 id="rvc-conversion-title" class="mt-1 text-xl font-semibold">
             RVC conversion
           </h2>
@@ -3204,7 +3204,6 @@
     >
       <header class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">Alternate take</div>
           <h2
             id="alternate-regeneration-title"
             class="mt-1 text-xl font-semibold"

@@ -10,11 +10,13 @@
   import { errorMessage } from '$lib/errors';
   import AudioCppModelDetails from '$lib/AudioCppModelDetails.svelte';
   import { readable, type AudioCppCatalogue } from '$lib/audio-cpp-catalogue';
+  import { MODEL_CAPABILITY_OPTIONS } from '$lib/local-model-groups';
 
   let catalogue = $state<AudioCppCatalogue | null>(null);
   let query = $state('');
   let category = $state('');
   let capability = $state('');
+  let provider = $state('');
   let language = $state('');
   let commercialUse = $state('');
   let recommended = $state(true);
@@ -30,6 +32,7 @@
       query,
       category,
       capability,
+      provider,
       language,
       commercial_use: commercialUse,
       recommended_only: String(recommended),
@@ -38,7 +41,7 @@
     });
     try {
       const result = await apiJson<AudioCppCatalogue>(
-        `/api/v1/services/audio-cpp/catalogue?${params}`
+        `/api/v1/services/models/catalogue?${params}`
       );
       if (current === requestId) catalogue = result;
     } catch (caught) {
@@ -59,15 +62,9 @@
 <div class="mx-auto max-w-6xl space-y-6 pb-8">
   <header class="flex flex-wrap items-start justify-between gap-4">
     <div class="max-w-3xl">
-      <div class="eyebrow">
-        audio.cpp · {catalogue?.runtime_version ?? 'Model catalogue'}
-      </div>
-      <h1 class="mt-2 text-3xl font-semibold tracking-tight">
-        Find a model for the job
-      </h1>
+      <h1 class="mt-2 text-3xl font-semibold tracking-tight">Audio models</h1>
       <p class="muted mt-3 leading-relaxed">
-        Start with a few useful choices, or browse every family and variant.
-        Compare languages, voice controls and model licences before installing.
+        Compare local and cloud models by language, voice controls and licence.
       </p>
     </div>
     <a href="/providers" class="btn btn-secondary"
@@ -82,6 +79,15 @@
     }}
   >
     <div class="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <label class="text-xs font-semibold"
+        >Provider
+        <select class="field mt-1 w-full" bind:value={provider}>
+          <option value="">All providers</option>
+          {#each catalogue?.providers ?? [] as entry}<option value={entry.id}
+              >{entry.name}</option
+            >{/each}
+        </select>
+      </label>
       <label class="text-xs font-semibold sm:col-span-2 lg:col-span-1"
         >Search models
         <input
@@ -108,13 +114,11 @@
       <label class="text-xs font-semibold"
         >Capability
         <select class="field mt-1 w-full" bind:value={capability}>
-          <option value="">Any capability</option><option value="voice_cloning"
-            >Voice cloning</option
-          ><option value="voice_design">Voice design</option><option
-            value="instructions">Directions</option
-          ><option value="emotion_control">Emotion controls</option><option
-            value="vocal_events">Vocal sounds</option
-          ><option value="streaming">Upstream streaming</option><option
+          <option value="">Any capability</option>
+          {#each MODEL_CAPABILITY_OPTIONS as entry}<option value={entry.id}
+              >{entry.label}</option
+            >{/each}
+          <option value="streaming">Upstream streaming</option><option
             value="sound_generation">Sound effects</option
           ><option value="speech_editing">Upstream speech editing</option>
         </select>
@@ -151,10 +155,9 @@
     </div>
   </form>
   <p class="muted text-sm">
-    The catalogue includes models that are not installed. Transcription and
-    audio preprocessing also have model controls in their workflows. Other
-    listed tasks may be available only for discovery. Recommendations describe
-    useful roles, not a quality ranking.
+    Capabilities reflect the controls available through each Pandrator adapter.
+    Local models may need installation; cloud models need provider setup.
+    Recommendations are starting points, not a quality ranking.
   </p>
   {#if error}<div
       role="alert"
@@ -165,13 +168,12 @@
       >
     </div>{/if}
   <div aria-live="polite" class="muted text-sm">
-    {#if catalogue}{catalogue.total} matching package{catalogue.total === 1
+    {#if catalogue}{catalogue.total} matching model{catalogue.total === 1
         ? ''
-        : 's'} · {catalogue.families.length} upstream families{:else if busy}Loading
-      the catalogue…{/if}
+        : 's'}{:else if busy}Loading the catalogue…{/if}
   </div>
   <div class="grid gap-4 lg:grid-cols-2" aria-busy={busy}>
-    {#each catalogue?.items ?? [] as model (model.id)}
+    {#each catalogue?.items ?? [] as model (model.catalogue_id ?? model.id)}
       <article
         class="surface min-w-0 rounded-2xl border border-[var(--line)] p-5"
       >
@@ -182,9 +184,11 @@
           </p>{/if}
         <h2 class="mt-1 text-lg font-semibold">{model.label}</h2>
         <p class="muted mt-1 text-xs">
-          {model.family_label ?? model.family} · {readable(
-            model.upstream_status
-          )}{size(model.estimated_download_bytes)
+          {model.provider_name ?? 'audio.cpp'}
+          {#if model.family_label !== model.provider_name}
+            · {model.family_label ?? model.family}{/if}{model.upstream_status
+            ? ` · ${readable(model.upstream_status)}`
+            : ''}{size(model.estimated_download_bytes)
             ? ` · ${size(model.estimated_download_bytes)}`
             : ''}
         </p>

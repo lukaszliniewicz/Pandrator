@@ -97,7 +97,6 @@
       class="flex items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-7"
     >
       <div>
-        <div class="eyebrow">Review exact plan</div>
         <h2 id="manager-plan-title" class="mt-1 text-2xl font-semibold">
           {plan.kind.replaceAll('_', ' ')}
         </h2>

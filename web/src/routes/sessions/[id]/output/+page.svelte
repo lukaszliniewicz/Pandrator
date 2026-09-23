@@ -538,7 +538,7 @@
       {error}
     </p>{/if}
   {#if exportJobs.length}<section class="surface rounded-2xl p-5">
-      <div class="eyebrow">Export activity</div>
+      <div class="section-label">Export activity</div>
       <div class="mt-4 space-y-3">
         {#each exportJobs.slice(0, 4) as job (job.id)}<div
             class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--line)] p-3"
@@ -633,7 +633,7 @@
     }}
   />
   <section class="surface rounded-2xl p-5">
-    <div class="eyebrow">Completed outputs</div>
+    <div class="section-label">Completed outputs</div>
     {#if artifacts.length}<div class="mt-4 space-y-5">
         {#each outputGroups as group}
           {#if group.items.length}<div>

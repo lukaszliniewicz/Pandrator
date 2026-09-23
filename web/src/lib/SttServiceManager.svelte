@@ -195,7 +195,6 @@
 <section>
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div>
-      <div class="eyebrow">Cloud transcription</div>
       <h2 class="mt-1 text-2xl font-semibold">Recognition connections</h2>
       <p class="muted mt-2 max-w-3xl text-sm">
         Configure timed speech-to-text services for dubbing and subtitle
@@ -307,7 +306,6 @@
       <div class="modal-scroll p-5 sm:p-7">
         <div class="flex items-start justify-between gap-4">
           <div>
-            <div class="eyebrow">Recognition connection</div>
             <h2 class="mt-1 text-2xl font-semibold">{editing.name}</h2>
           </div>
           <button

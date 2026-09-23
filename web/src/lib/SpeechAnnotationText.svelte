@@ -5,6 +5,7 @@
     annotationSpans,
     deliveryDescription,
     speakerLabel,
+    speakerColorKey,
     selectedSpeechRange,
     type SpeechSelection,
     type SpeechPreview,
@@ -15,12 +16,14 @@
     item,
     layer = 'display',
     preview,
+    colors = {},
     oninspect,
     onselection
   }: {
     item: GenerationSegment;
     layer?: 'display' | 'speech';
     preview?: SpeechPreview;
+    colors?: Record<string, string>;
     oninspect: (
       item: GenerationSegment,
       offset: number,
@@ -65,6 +68,7 @@
 <span class="annotated-text" tabindex="-1" data-speech-annotations={item.id} use:selectionActions>{#if mapped}{#each spans as span, index}<button
       type="button"
       class="speech-span"
+      style:--speaker-color={colors[speakerColorKey(span)] ?? 'var(--speaker-narrator)'}
       class:character={span.role !== 'narrator'}
       class:directed={Boolean(deliveryDescription(span.delivery))}
       aria-label={`${description(span)}. Inspect voice and delivery for segment ${item.ordinal + 1}, phrase ${index + 1}`}
@@ -98,13 +102,13 @@
     text-align: inherit;
     white-space: inherit;
     cursor: pointer;
-    text-decoration: underline dotted var(--muted);
+    text-decoration: underline solid var(--speaker-color);
     text-underline-offset: 0.22em;
-    text-decoration-thickness: 1px;
+    text-decoration-thickness: 2.5px;
   }
   .speech-span.character {
     text-decoration-style: solid;
-    text-decoration-color: var(--accent);
+    text-decoration-color: var(--speaker-color);
   }
   .speech-span.directed {
     text-decoration-style: double;

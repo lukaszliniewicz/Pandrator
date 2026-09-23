@@ -553,7 +553,7 @@
     <aside
       class="overflow-auto border-r border-[var(--line)] bg-[var(--paper-strong)] p-3"
     >
-      <div class="eyebrow mb-3 px-1">Pages</div>
+      <div class="section-label mb-3 px-1">Pages</div>
       <div class="grid grid-cols-3 gap-2 lg:grid-cols-2">
         {#each metadata?.pages ?? [] as page}<button
             onclick={() => {

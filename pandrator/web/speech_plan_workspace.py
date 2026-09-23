@@ -300,12 +300,16 @@ def frozen_semantic_contexts(snapshot: dict[str, Any]) -> dict[str, dict[str, st
     return semantic_context_window(raw.get("units") or [], dict(raw.get("settings") or {}))
 
 
-def freeze_generation_performance_snapshot(session, revision_id: str, snapshot: dict[str, Any]) -> bool:
+def freeze_generation_performance_snapshot(
+    session, revision_id: str, snapshot: dict[str, Any], _service_config_cache=None
+) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
     Resume/retry consumes the existing run snapshot rather than reselecting it.
     The text is stored once, not repeated for every context window in a book.
     """
+    if _service_config_cache is None:
+        _service_config_cache = {}
     settings = performance_runtime_settings(snapshot)
     mode = str(settings.get("tts_context_mode") or "off")
     if mode not in {"off", "before", "both"}:
@@ -332,7 +336,9 @@ def freeze_generation_performance_snapshot(session, revision_id: str, snapshot: 
     ).limit(1)) is not None
     if settings.get("performance_enabled") or settings.get("casting_enabled") or has_block_voice:
         from .generation_cast_runtime import freeze_cast_snapshot
-        freeze_cast_snapshot(session, revision_id, snapshot, settings)
+        freeze_cast_snapshot(
+            session, revision_id, snapshot, settings, _service_config_cache
+        )
     if mode != "off":
         context_settings = {
             key: settings[key]

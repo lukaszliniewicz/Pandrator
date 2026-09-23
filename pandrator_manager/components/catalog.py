@@ -950,52 +950,81 @@ PRESENTATIONS: dict[str, ComponentPresentation] = {
 
 
 def _audio_cpp_models() -> tuple[ComponentModel, ...]:
-    from ..audio_cpp_inventory import curation, inventory
+    import json
+    from pathlib import Path
+
+    from ..audio_cpp_inventory import inventory
     from .audiocpp import MODEL_PACKAGES
 
-    data, reviewed = inventory(), curation()
-    families = {item["id"]: item for item in data["families"]}
+    data = inventory()
     packages = {item["id"]: item for item in data["packages"]}
     existing = {item.id: item for item in PRESENTATIONS["audio_cpp"].models}
+    metadata_path = (
+        Path(__file__).resolve().parents[1] / "audio_cpp_model_metadata.json"
+    )
+    projection = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if projection.get("schema_version") != 1:
+        raise RuntimeError("Unsupported generated audio.cpp metadata schema.")
+    if projection.get("runtime_version") != data.get("runtime_version"):
+        raise RuntimeError(
+            "Generated audio.cpp metadata does not match the Manager inventory runtime."
+        )
+    projected_models = projection.get("models")
+    if not isinstance(projected_models, dict):
+        raise RuntimeError("Generated audio.cpp metadata has no model projection.")
     models = []
     for model_id, package in MODEL_PACKAGES.items():
-        raw = packages.get(model_id, {})
-        family = families.get(package.family, {})
-        curated = {**reviewed.get("families", {}).get(package.family, {}),
-                   **reviewed.get("models", {}).get(model_id, {})}
-        license_info = curated.get("license", {"name": "Not verified", "commercial_use": "unknown"})
-        languages = curated.get("supported_languages", family.get("languages", []))
-        reference = curated.get("reference_audio", "required" if "clone" in family.get("tasks", []) else "not_used")
-        transcript = curated.get("reference_text", "unverified" if reference != "not_used" else "not_used")
-        if "customvoice" in model_id or "voicedesign" in model_id:
-            reference = transcript = "not_used"
-        if package.family == "pocket_tts":
-            languages = [code for name, code in {"english":"en", "german":"de", "italian":"it", "portuguese":"pt", "spanish":"es", "french":"fr"}.items() if name in model_id] or languages
-        if package.family == "fireredtts3":
-            reference = "optional" if "instruct" in model_id else "required"
-        size = sum(item.get("size") or 0 for item in raw.get("weight_manifest", {}).get("files", [])) or None
+        info = projected_models.get(model_id)
+        if not isinstance(info, dict) or info.get("id") != model_id:
+            raise RuntimeError(
+                f"Generated audio.cpp metadata is missing model {model_id!r}."
+            )
+        raw = packages.get(model_id)
+        if raw is None:
+            raise RuntimeError(
+                f"Manager inventory is missing installable model {model_id!r}."
+            )
+        size = sum(
+            item.get("size") or 0
+            for item in raw.get("weight_manifest", {}).get("files", [])
+        ) or None
+        if info.get("estimated_download_bytes") != size:
+            raise RuntimeError(
+                f"Generated audio.cpp metadata has a stale size for {model_id!r}."
+            )
         old = existing.get(model_id)
-        label = raw.get("label") or (old.label if old else package.label or model_id)
-        description = curated.get("description", family.get("description", ""))
-        info = {
-            "id":model_id, "label":label, "family":package.family,
-            "family_label":family.get("display_name", package.family),
-            "description":description, "supported_languages":languages,
-            "language_note":curated.get("language_note", "Coverage is reported by the upstream family."),
-            "license":license_info, "recommended_for":curated.get("recommended_for", ""),
-            "reference_audio":reference, "reference_text":transcript,
-            "estimated_download_bytes":size,
-            "sources":family.get("docs", []), "verified_runtime":data["runtime_version"],
-        }
-        models.append(ComponentModel(
-            id=model_id, label=label, description=description,
-            license_name=license_info.get("name"), license_url=license_info.get("url"),
-            usage_note=old.usage_note if old and old.license_name == license_info.get("name") else "Review the linked model licence before use.",
-            model_info=info, estimated_download_bytes=size,
-            size_provenance=SizeProvenance.PUBLISHED if size else SizeProvenance.UNKNOWN,
-            capabilities=old.capabilities if old else (),
-        ))
-    return tuple(sorted(models, key=lambda item: (not bool(item.model_info.get("recommended_for")), item.id)))
+        label = info.get("label") or (old.label if old else package.label or model_id)
+        description = info.get("description", "")
+        license_info = info.get("license", {})
+        models.append(
+            ComponentModel(
+                id=model_id,
+                label=label,
+                description=description,
+                license_name=license_info.get("name"),
+                license_url=license_info.get("url"),
+                usage_note=(
+                    old.usage_note
+                    if old and old.license_name == license_info.get("name")
+                    else "Review the linked model licence before use."
+                ),
+                model_info=info,
+                estimated_download_bytes=size,
+                size_provenance=(
+                    SizeProvenance.PUBLISHED if size else SizeProvenance.UNKNOWN
+                ),
+                capabilities=tuple(info.get("capabilities", [])),
+            )
+        )
+    return tuple(
+        sorted(
+            models,
+            key=lambda item: (
+                not bool(item.model_info.get("recommended_for")),
+                item.id,
+            ),
+        )
+    )
 
 
 def presentation_for(component_id: str) -> ComponentPresentation:

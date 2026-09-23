@@ -192,6 +192,7 @@ class AudioIdentityContext:
         # hashes the complete input settings, never a subset, so a settings,
         # voice, or casting change always misses and recomputes.
         self._service_config_cache: dict = {}
+        self._material_settings_cache: dict[str, dict[str, Any]] = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
         self._registry = TtsProviderRegistry()
@@ -268,6 +269,16 @@ class AudioIdentityContext:
                     self.voices.setdefault(_voice_key(name), []).append(identity)
         self.cache: dict[tuple[str, str, str], dict[str, Any]] = {}
 
+    def _memoized_material_settings(
+        self, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        key = _hash(settings)
+        result = self._material_settings_cache.get(key)
+        if result is None:
+            result = _material_settings({"tts": settings}, self._service_config_cache)
+            self._material_settings_cache[key] = deepcopy(result)
+        return deepcopy(result)
+
     def _with_performance(
         self, segment: GenerationSegment, identity: dict[str, Any], settings: dict[str, Any]
     ) -> dict[str, Any]:
@@ -294,7 +305,9 @@ class AudioIdentityContext:
                 frozen_revision = (pinned.get("generation_control_snapshot") or pinned.get("performance_snapshot") or pinned.get("semantic_context_snapshot") or {}).get("plan_revision_id")
                 if not frozen_revision or frozen_revision != revision_id:
                     pinned = deepcopy(self.snapshot)
-                    freeze_generation_performance_snapshot(self.session, revision_id, pinned)
+                    freeze_generation_performance_snapshot(
+                        self.session, revision_id, pinned, self._service_config_cache
+                    )
                 self.performance_states[revision_id] = (pinned, frozen_semantic_contexts(pinned))
             pinned, contexts = self.performance_states[revision_id]
             if pinned.get("_performance_error"):
@@ -314,7 +327,7 @@ class AudioIdentityContext:
                         references = [*references, *self.voices.get(_voice_key(managed_id), [])]
                     requests.append({
                         "range": [part["start"], part["end"]],
-                        "settings": _material_settings({"tts": part_settings}, self._service_config_cache),
+                        "settings": self._memoized_material_settings(part_settings),
                         "references": sorted({_hash(item) for item in references}),
                         "request": compile_performance(part["text"], part_settings, None, self._service_config_cache).fingerprint,
                     })
@@ -447,7 +460,7 @@ class AudioIdentityContext:
             "schema_version": IDENTITY_VERSION,
             "settings_hash": _hash(
                 {
-                    "tts": _material_settings({"tts": settings}, self._service_config_cache),
+                    "tts": self._memoized_material_settings(settings),
                     "rvc": self.selected_rvc
                     if self.selected_rvc.get("enabled")
                     else {},

@@ -1033,8 +1033,12 @@ function makeModelList(definition, component, state, nodes) {
 }
 
 function buildModelBrowser(root, models, rows, component, state, nodes) {
-  const { resolveLocalModels, groupLocalModels, filterLocalGroups } =
-    PandratorModelGroups;
+  const {
+    resolveLocalModels,
+    groupLocalModels,
+    filterLocalGroups,
+    MODEL_CAPABILITY_OPTIONS,
+  } = PandratorModelGroups;
   const groups = groupLocalModels(
     resolveLocalModels(
       models.map((model) => ({
@@ -1051,6 +1055,12 @@ function buildModelBrowser(root, models, rows, component, state, nodes) {
   search.type = "search";
   search.placeholder = "Family, variant, language or quantization";
   searchLabel.append(search);
+  const capabilityLabel = text("label", "Capability");
+  const capability = document.createElement("select");
+  capability.append(new Option("All capabilities", ""));
+  for (const option of MODEL_CAPABILITY_OPTIONS)
+    capability.append(new Option(option.label, option.id));
+  capabilityLabel.append(capability);
   const filterLabel = document.createElement("label");
   filterLabel.className = "model-browser-filter";
   const recommended = document.createElement("input");
@@ -1064,6 +1074,7 @@ function buildModelBrowser(root, models, rows, component, state, nodes) {
   count.setAttribute("aria-live", "polite");
   toolbar.append(
     searchLabel,
+    capabilityLabel,
     filterLabel,
     text(
       "small",
@@ -1117,10 +1128,11 @@ function buildModelBrowser(root, models, rows, component, state, nodes) {
     const selected = new Set(state.options.models || []);
     const installed = new Set(installedModels(currentComponent));
     const matches = new Set(
-      filterLocalGroups(groups, search.value).flatMap((group) =>
-        group.subgroups.flatMap((subgroup) =>
-          subgroup.models.map((model) => model.id),
-        ),
+      filterLocalGroups(groups, search.value, capability.value).flatMap(
+        (group) =>
+          group.subgroups.flatMap((subgroup) =>
+            subgroup.models.map((model) => model.id),
+          ),
       ),
     );
     const visible = new Set(
@@ -1137,7 +1149,7 @@ function buildModelBrowser(root, models, rows, component, state, nodes) {
         .map((model) => model.id),
     );
     for (const [id, row] of rows) row.hidden = !visible.has(id);
-    const nextSearching = Boolean(search.value.trim());
+    const nextSearching = Boolean(search.value.trim() || capability.value);
     for (const item of branches) {
       const shown = item.ids.filter((id) => visible.has(id));
       item.details.hidden = !shown.length;
@@ -1151,6 +1163,7 @@ function buildModelBrowser(root, models, rows, component, state, nodes) {
     empty.hidden = Boolean(visible.size);
   };
   search.addEventListener("input", () => refresh());
+  capability.addEventListener("change", () => refresh());
   recommended.addEventListener("change", () => refresh());
   if (nodes) nodes.refreshModelBrowser = refresh;
   refresh();

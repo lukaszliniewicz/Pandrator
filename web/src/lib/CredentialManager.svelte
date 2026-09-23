@@ -121,7 +121,6 @@
 
 <section>
   <header>
-    <div class="eyebrow">Other API keys</div>
     <h2 class="mt-1 text-2xl font-semibold">Supporting services</h2>
     <p class="muted mt-2 max-w-2xl text-sm">
       Keys used outside the LLM and speech provider catalogues are managed here

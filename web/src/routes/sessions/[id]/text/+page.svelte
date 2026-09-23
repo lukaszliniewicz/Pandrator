@@ -147,7 +147,7 @@
     </div>
   {:else}
     <section class="surface rounded-2xl p-5">
-      <div class="eyebrow">Document history</div>
+      <div class="section-label">Document history</div>
       <p class="muted mt-2 text-sm">
         Documents are collapsed by default. Expand one to inspect its revisions
         and managed files.

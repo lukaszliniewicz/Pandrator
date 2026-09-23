@@ -22,6 +22,7 @@
   import {
     badgeLabelFor,
     filterLocalGroups,
+    MODEL_CAPABILITY_OPTIONS,
     groupLocalModels,
     resolveLocalModels
   } from './local-model-groups';
@@ -152,6 +153,7 @@
   let selectedModelIds = $state<Record<string, string[]>>({});
   let compatibilityOpen = $state(false);
   let audioModelQuery = $state('');
+  let audioCapability = $state('');
   let audioRecommendedOnly = $state(true);
   let audioExpandedGroups = $state<string[]>([]);
   let audioExpandedSubgroups = $state<string[]>([]);
@@ -180,7 +182,7 @@
       )
     );
     const query = audioModelQuery.trim();
-    return query ? filterLocalGroups(groups, query) : groups;
+    return filterLocalGroups(groups, query, audioCapability);
   }
   function audioLeafCount(component: Component) {
     return audioGroups(component).reduce(
@@ -211,7 +213,7 @@
     kind: 'group' | 'subgroup',
     key: string
   ) {
-    if (audioModelQuery.trim()) return true;
+    if (audioModelQuery.trim() || audioCapability) return true;
     const toggled =
       kind === 'group' ? audioExpandedGroups : audioExpandedSubgroups;
     const selected = audioSelectedKeys(component);
@@ -939,36 +941,35 @@
 </script>
 
 <section>
-  <div class="flex flex-wrap items-end justify-between gap-4">
+  <div class="flex flex-wrap items-end gap-4">
     <div>
-      <div class="eyebrow">Local speech services</div>
       <h2 class="mt-1 text-2xl font-semibold">
         Install and run speech providers
       </h2>
       <p class="muted mt-2 max-w-3xl text-sm">
-        Pandrator shows the controls here; the independent local manager
-        performs and journals every host change. External endpoints remain
-        available without it.
+        Install models and start or stop local speech providers.
       </p>
     </div>
-    <button class="btn btn-secondary" onclick={load} disabled={loading}>
-      <RefreshCw size={16} class={loading ? 'animate-spin' : ''} /> Refresh
-    </button>
-    <button
-      class="btn btn-secondary"
-      disabled={loading ||
-        Boolean(planning) ||
-        Boolean(runtimeBusy) ||
-        operationBusy ||
-        !updateCandidates.length}
-      onclick={createBatchPlan}
-    >
-      {#if planning === 'batch'}<LoaderCircle
-          class="animate-spin"
-          size={15}
-        />{:else}<RefreshCw size={15} />{/if}
-      Review updates ({updateCandidates.length})
-    </button>
+    <div class="flex flex-wrap items-center gap-2">
+      <button class="btn btn-secondary" onclick={load} disabled={loading}>
+        <RefreshCw size={16} class={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <button
+        class="btn btn-secondary"
+        disabled={loading ||
+          Boolean(planning) ||
+          Boolean(runtimeBusy) ||
+          operationBusy ||
+          !updateCandidates.length}
+        onclick={createBatchPlan}
+      >
+        {#if planning === 'batch'}<LoaderCircle
+            class="animate-spin"
+            size={15}
+          />{:else}<RefreshCw size={15} />{/if}
+        Review updates ({updateCandidates.length})
+      </button>
+    </div>
   </div>
 
   {#if error}
@@ -1066,7 +1067,7 @@
               >
             </div>
             {#if !group.collapsed || compatibilityOpen}
-              <div class="grid gap-3 lg:grid-cols-2">
+              <div class="grid gap-3">
                 {#each group.items as component}
                   {@const service = serviceFor(component)}
                   {@const runtimeState = runtimeStateFor(component, service)}
@@ -1279,6 +1280,18 @@
                               bind:value={audioModelQuery}
                               placeholder="Model or family"
                             />
+                          </label>
+                          <label
+                            >Capability
+                            <select
+                              class="ml-2 rounded border border-[var(--line)] bg-[var(--paper)] p-2"
+                              bind:value={audioCapability}
+                            >
+                              <option value="">All capabilities</option>
+                              {#each MODEL_CAPABILITY_OPTIONS as option}<option
+                                  value={option.id}>{option.label}</option
+                                >{/each}
+                            </select>
                           </label>
                           <label class="flex items-center gap-2"
                             ><input
@@ -1538,7 +1551,6 @@
     <section class="mt-8 rounded-2xl border border-[var(--line)] p-5">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div class="eyebrow">Host maintenance</div>
           <h3 class="mt-1 text-xl font-semibold">
             Diagnostics, signed updates, and uninstall
           </h3>

@@ -514,7 +514,6 @@
     >
       <header class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">Local voice design</div>
           <h2 id="voice-design-title" class="mt-1 text-2xl font-semibold">
             Design a reusable voice
           </h2>
@@ -845,24 +844,23 @@
             ></span
           ></label
         >
-
-        <div
-          class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-5"
-        >
-          <p class="muted max-w-lg text-xs leading-relaxed">
-            Model licence: {designInfo?.license?.name ?? 'Not verified'}.
-            Commercial use: {readable(
-              designInfo?.catalogue_info?.license?.commercial_use
-            )}.
-            {#if designInfo?.license?.url}<a
-                href={designInfo.license.url}
-                target="_blank"
-                rel="noreferrer"
-                class="font-semibold text-[var(--accent)] underline"
-                >Read the model license.</a
-              >{/if}
-          </p>
-        </div>
+      </div>
+      <div
+        class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-5"
+      >
+        <p class="muted max-w-lg text-xs leading-relaxed">
+          Model licence: {designInfo?.license?.name ?? 'Not verified'}.
+          Commercial use: {readable(
+            designInfo?.catalogue_info?.license?.commercial_use
+          )}.
+          {#if designInfo?.license?.url}<a
+              href={designInfo.license.url}
+              target="_blank"
+              rel="noreferrer"
+              class="font-semibold text-[var(--accent)] underline"
+              >Read the model license.</a
+            >{/if}
+        </p>
       </div>
     </div>
     <footer

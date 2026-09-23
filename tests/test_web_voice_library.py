@@ -25,6 +25,7 @@ from pandrator.web.models import (
     Voice,
     VoiceSample,
 )
+from pandrator.web.voice_library import BUNDLED_VOICE_KEY
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -403,6 +404,136 @@ class VoiceLibraryApiTests(unittest.TestCase):
         self.assertEqual(bundled["name"], "Pandrator sample voice")
         self.assertEqual(len(samples), 1)
         self.assertTrue(samples[0]["transcript_reviewed"])
+
+    def test_repeated_voice_list_does_not_reregister_an_unchanged_bundled_sample(self):
+        self.assertEqual(200, self.client.get("/api/v1/voices").status_code)
+        extension = self.app.extensions["pandrator"]
+        database = extension["database"]
+        with database.session() as session:
+            voice = session.get(Voice, BUNDLED_VOICE_KEY)
+            sample = session.scalar(
+                select(VoiceSample).where(VoiceSample.voice_id == BUNDLED_VOICE_KEY)
+            )
+            artifact = session.get(Artifact, sample.artifact_id)
+            before = (
+                artifact.id,
+                artifact.updated_at,
+                artifact.state,
+                artifact.content_hash,
+                artifact.relative_path,
+                dict(artifact.metadata_json),
+                voice.updated_at,
+                sample.id,
+            )
+
+        with mock.patch.object(
+            extension["artifacts"],
+            "register",
+            wraps=extension["artifacts"].register,
+        ) as register:
+            response = self.client.get("/api/v1/voices")
+        self.assertEqual(200, response.status_code)
+        register.assert_not_called()
+
+        with database.session() as session:
+            voice = session.get(Voice, BUNDLED_VOICE_KEY)
+            sample = session.get(VoiceSample, before[-1])
+            artifact = session.get(Artifact, before[0])
+            after = (
+                artifact.id,
+                artifact.updated_at,
+                artifact.state,
+                artifact.content_hash,
+                artifact.relative_path,
+                dict(artifact.metadata_json),
+                voice.updated_at,
+                sample.id,
+            )
+        self.assertEqual(before, after)
+
+    def test_bundled_voice_recreates_a_missing_target_without_losing_its_sample(self):
+        self.assertEqual(200, self.client.get("/api/v1/voices").status_code)
+        extension = self.app.extensions["pandrator"]
+        target = extension["paths"].voices / BUNDLED_VOICE_KEY / "sample.wav"
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "tts_voices"
+            / "sample_male_new.wav"
+        )
+        with extension["database"].session() as session:
+            sample = session.scalar(
+                select(VoiceSample).where(VoiceSample.voice_id == BUNDLED_VOICE_KEY)
+            )
+            sample_id = sample.id
+            artifact_id = sample.artifact_id
+        target.unlink()
+
+        with mock.patch.object(
+            extension["artifacts"],
+            "register",
+            wraps=extension["artifacts"].register,
+        ) as register:
+            response = self.client.get("/api/v1/voices")
+        self.assertEqual(200, response.status_code)
+        register.assert_not_called()
+        self.assertEqual(source.read_bytes(), target.read_bytes())
+        with extension["database"].session() as session:
+            self.assertIsNotNone(session.get(VoiceSample, sample_id))
+            self.assertIsNotNone(session.get(Artifact, artifact_id))
+
+    def test_bundled_voice_repairs_a_missing_artifact_registration(self):
+        self.assertEqual(200, self.client.get("/api/v1/voices").status_code)
+        extension = self.app.extensions["pandrator"]
+        database = extension["database"]
+        with database.session() as session:
+            sample = session.scalar(
+                select(VoiceSample).where(VoiceSample.voice_id == BUNDLED_VOICE_KEY)
+            )
+            old_artifact_id = sample.artifact_id
+            session.delete(sample)
+            session.delete(session.get(Artifact, old_artifact_id))
+
+        with mock.patch.object(
+            extension["artifacts"],
+            "register",
+            wraps=extension["artifacts"].register,
+        ) as register:
+            response = self.client.get("/api/v1/voices")
+        self.assertEqual(200, response.status_code)
+        register.assert_called_once()
+        with database.session() as session:
+            sample = session.scalar(
+                select(VoiceSample).where(VoiceSample.voice_id == BUNDLED_VOICE_KEY)
+            )
+            self.assertIsNotNone(sample)
+            self.assertNotEqual(old_artifact_id, sample.artifact_id)
+            artifact = session.get(Artifact, sample.artifact_id)
+            self.assertEqual("current", artifact.state)
+            self.assertEqual("audio", artifact.kind)
+            self.assertEqual("voice_sample", artifact.role)
+            self.assertTrue(sample.transcript_reviewed)
+
+    def test_bundled_voice_reregisters_an_externally_changed_target(self):
+        self.assertEqual(200, self.client.get("/api/v1/voices").status_code)
+        extension = self.app.extensions["pandrator"]
+        target = extension["paths"].voices / BUNDLED_VOICE_KEY / "sample.wav"
+        target.write_bytes(silent_wav() + b"external change")
+
+        with mock.patch.object(
+            extension["artifacts"],
+            "register",
+            wraps=extension["artifacts"].register,
+        ) as register:
+            response = self.client.get("/api/v1/voices")
+        self.assertEqual(200, response.status_code)
+        register.assert_called_once()
+        with extension["database"].session() as session:
+            sample = session.scalar(
+                select(VoiceSample).where(VoiceSample.voice_id == BUNDLED_VOICE_KEY)
+            )
+            artifact = session.get(Artifact, sample.artifact_id)
+            self.assertEqual(sha256_file(target), artifact.content_hash)
+            self.assertEqual("current", artifact.state)
 
     def test_provider_publish_requires_sample_then_queues_exact_service(self):
         voice = self.client.post(

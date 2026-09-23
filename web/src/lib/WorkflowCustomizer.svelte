@@ -186,7 +186,6 @@
   >
     <header class="flex justify-between">
       <div>
-        <div class="eyebrow">Customize workflow</div>
         <h2 id="workflow-customizer-title" class="mt-1 text-2xl font-semibold">
           Choose transformations and deliverables
         </h2>
@@ -199,7 +198,7 @@
     {#if payload}
       {#if session?.workflow_kind !== 'audiobook'}
         <div class="mt-6 rounded-2xl border border-[var(--line)] p-5">
-          <div class="eyebrow">Workspace type</div>
+          <div class="section-label">Workspace type</div>
           <div class="mt-3 grid gap-3 sm:grid-cols-2">
             <button
               type="button"
@@ -240,7 +239,7 @@
       </div>
       <div class="mt-7 grid gap-4 md:grid-cols-2">
         <div class="rounded-2xl border border-[var(--line)] p-5">
-          <div class="eyebrow">Transformations</div>
+          <div class="section-label">Transformations</div>
           <div class="mt-4 space-y-3">
             {#each [{ key: 'transcribe', label: 'Transcribe media' }, { key: 'correct', label: 'Correct same-language subtitles' }, { key: 'translate', label: 'Translate' }, { key: 'deterministic_normalization', label: 'Deterministic speech normalization' }, { key: 'generate_audio', label: 'Generate speech' }, { key: 'rvc', label: 'Create RVC variants' }].filter((item) => payload?.value.workflow_kind !== 'subtitles' || !['deterministic_normalization', 'generate_audio', 'rvc'].includes(item.key)) as item}<label
                 class="flex items-start gap-3 text-sm"
@@ -277,7 +276,7 @@
           </div>
         </div>
         <div class="rounded-2xl border border-[var(--line)] p-5">
-          <div class="eyebrow">Deliverables</div>
+          <div class="section-label">Deliverables</div>
           <div class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm">
             <strong
               >{payload.value.workflow_kind === 'audiobook'
@@ -324,7 +323,7 @@
         </div>
       </div>
       <div class="mt-5 rounded-2xl bg-[var(--accent-soft)] p-5">
-        <div class="eyebrow">Resolved pipeline</div>
+        <div class="section-label">Resolved pipeline</div>
         <div class="mt-3 flex flex-wrap items-center gap-2">
           {#each payload.pipeline as stage, index}<span
               class="rounded-lg bg-[var(--paper-strong)] px-3 py-2 text-sm font-semibold"

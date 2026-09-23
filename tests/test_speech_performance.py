@@ -6,6 +6,7 @@ from pandrator.logic.speech_performance import (
     PerformanceAnnotation,
     capabilities_for_model,
     compile_performance,
+    resolve_capabilities,
     validate_annotation,
 )
 from pandrator.logic import tts_handler
@@ -43,6 +44,53 @@ def steer(instruction="Measured contrast", **extra):
 def test_capability_is_model_and_route_specific(model, route, supported):
     profile = capabilities_for_model(model, backend=route)
     assert (profile["instructions"] != "none") is supported
+
+
+def test_resolved_capability_cache_is_input_complete_and_mutation_isolated(monkeypatch):
+    calls = 0
+    original = tts_handler.get_service_config
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tts_handler, "get_service_config", counted)
+    cache = {}
+    base = settings("fireredtts3_base_q8_0")
+    first = resolve_capabilities(base, _service_config_cache=cache)
+    first["notes"].append("caller mutation")
+    assert resolve_capabilities(base, _service_config_cache=cache) == resolve_capabilities(base)
+    assert "caller mutation" not in resolve_capabilities(base, _service_config_cache=cache)["notes"]
+    assert calls == 2  # one cached computation and one uncached comparison
+
+    variants = [
+        {**base, "model": "unrecognized"},
+        {**base, "audio_cpp_voice_ref": {"type": "base64", "data": "example"}},
+        {**base, "service_configs": [{"id": "audio_cpp", "backend_version": "changed"}]},
+    ]
+    for variant in variants:
+        before = calls
+        cached = resolve_capabilities(variant, _service_config_cache=cache)
+        assert calls == before + 1
+        assert cached == resolve_capabilities(variant)
+        assert resolve_capabilities(variant, _service_config_cache=cache) == cached
+    assert resolve_capabilities(variants[1], _service_config_cache=cache)["instructions"] == "none"
+
+
+def test_explicit_endpoint_bypasses_resolved_capability_cache():
+    cache = {}
+    base = {"service": "openai", "model": "gpt-4o-mini-tts"}
+    default = resolve_capabilities(base, _service_config_cache=cache)
+    explicit = resolve_capabilities(
+        base,
+        {"id": "custom", "provider": "custom", "backend_version": "different"},
+        _service_config_cache=cache,
+    )
+    assert explicit == resolve_capabilities(
+        base, {"id": "custom", "provider": "custom", "backend_version": "different"}
+    )
+    assert resolve_capabilities(base, _service_config_cache=cache) == default
 
 
 def test_fish_compiles_inline_without_changing_transcript():

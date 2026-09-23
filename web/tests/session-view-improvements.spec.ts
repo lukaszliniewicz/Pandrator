@@ -23,6 +23,72 @@ async function createSession(page: Page, workflowKind: string) {
   return response.json();
 }
 
+test('audiobook rows expose compact options and merge adjacent segments', async ({
+  page
+}, info) => {
+  await signIn(page);
+  const session = await createSession(page, 'audiobook');
+  const { csrf_token } = await (
+    await page.request.get('/api/v1/auth/status')
+  ).json();
+  const plan = await page.request.post(
+    `/api/v1/sessions/${session.id}/generation-plan`,
+    {
+      headers: { 'X-CSRF-Token': csrf_token },
+      data: {
+        segments: [{ text: 'First passage.' }, { text: 'Second passage.' }]
+      }
+    }
+  );
+  expect(plan.ok()).toBeTruthy();
+  await page.goto(`/sessions/${session.id}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const table = page.getByTestId('generation-segment-table');
+  await expect(table.locator('tbody tr[data-segment-id]')).toHaveCount(2);
+  await expect(table.locator('.boundary-row')).toHaveCount(0);
+  await expect(
+    page.locator('.session-shell > a[href="/sessions"]')
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Show waveform', exact: true })
+  ).toHaveCount(0);
+  const row = table.locator('tbody tr[data-segment-id]').first();
+  const alignment = await row.evaluate((node) => {
+    const check = node.querySelector('input')!.getBoundingClientRect();
+    const number = node.querySelector('td:nth-child(2)')!;
+    const range = document.createRange();
+    range.selectNodeContents(number);
+    const box = range.getBoundingClientRect();
+    return Math.abs(check.top + check.height / 2 - (box.top + box.height / 2));
+  });
+  expect(alignment).toBeLessThan(5);
+  await page
+    .getByRole('button', { name: 'Options for segment 1', exact: true })
+    .click();
+  const options = page.getByRole('dialog', {
+    name: 'Options for segment 1',
+    exact: true
+  });
+  await expect(
+    options.getByRole('combobox', { name: 'Segment role', exact: true })
+  ).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath('compact-segment-options.png')
+  });
+  await page.keyboard.press('Escape');
+  await expect(options).toBeHidden();
+  await page
+    .getByRole('button', { name: 'Merge segment 1 with next', exact: true })
+    .click();
+  await expect(table.locator('tbody tr[data-segment-id]')).toHaveCount(1);
+  await expect(
+    table.getByRole('button', {
+      name: 'Narrator. Inspect voice and delivery for segment 1, phrase 1',
+      exact: true
+    })
+  ).toHaveText('First passage. Second passage.');
+});
+
 test('session tabs sit above the title and stay sticky', async ({ page }) => {
   await signIn(page);
   const session = await createSession(page, 'voiceover');

@@ -143,13 +143,11 @@ a {
   justify-content: flex-end;
 }
 
-.eyebrow {
+.section-label {
   margin-bottom: 0.35rem;
   color: var(--accent-strong);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .muted,
@@ -184,7 +182,7 @@ a {
   outline: none;
 }
 
-.failure-panel .eyebrow {
+.failure-panel .section-label {
   color: var(--danger);
 }
 
@@ -1154,7 +1152,7 @@ input[type="file"]::file-selector-button {
   list-style: none;
 }
 
-.network-panel > details > summary .eyebrow {
+.network-panel > details > summary .section-label {
   display: block;
 }
 

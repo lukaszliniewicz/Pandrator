@@ -180,10 +180,13 @@ def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict
 
 
 def freeze_cast_snapshot(
-    session, revision_id: str, snapshot: dict, settings: dict
+    session, revision_id: str, snapshot: dict, settings: dict,
+    _service_config_cache=None,
 ) -> None:
     from .generation_rendering import build_render_parts
 
+    if _service_config_cache is None:
+        _service_config_cache = {}
     revision = session.get(m.GenerationPlanRevision, revision_id)
     plan = session.get(m.GenerationPlan, revision.plan_id) if revision else None
     if plan is None:
@@ -196,7 +199,9 @@ def freeze_cast_snapshot(
         if binding:
             key = _binding_key(binding)
             if key not in resolutions:
-                resolutions[key] = resolve_binding(session, binding, base)
+                resolutions[key] = resolve_binding(
+                    session, binding, base, _service_config_cache
+                )
         return apply_resolved_binding(binding, base, resolutions)
 
     for segment in session.scalars(

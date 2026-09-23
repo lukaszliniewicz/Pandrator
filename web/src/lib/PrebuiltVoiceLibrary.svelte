@@ -468,7 +468,6 @@
 <section>
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <div class="eyebrow">Pre-built catalogue</div>
       <h2 class="mt-1 text-2xl font-semibold">Browse voices</h2>
       <p class="muted mt-2 max-w-2xl text-sm">
         Compare provider voices with the same text, grouped by language, without

@@ -5,7 +5,6 @@
   import {
     Activity,
     AudioLines,
-    ChevronLeft,
     Check,
     FileText,
     Layers3,
@@ -203,7 +202,7 @@
 
 {#if contextState.loading}
   <div class="surface grid min-h-64 place-items-center rounded-3xl">
-    <div class="eyebrow animate-pulse">Loading session…</div>
+    <div class="section-label animate-pulse">Loading session…</div>
   </div>
 {:else if contextState.session}
   <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-clip">
@@ -219,16 +218,8 @@
           ><Icon size={16} />{tab.label}</a
         >{/each}
     </nav>
-    <a
-      href="/sessions"
-      class="muted mt-4 flex items-center gap-1 text-sm font-semibold"
-      ><ChevronLeft size={16} /> Sessions</a
-    >
     <header class="mt-5 flex flex-wrap items-end justify-between gap-5">
       <div class="min-w-0">
-        <div class="eyebrow capitalize">
-          {contextState.session.workflow_kind} workspace
-        </div>
         {#if editingName}
           <form
             class="mt-2 flex flex-wrap items-center gap-2"
@@ -322,9 +313,9 @@
     {contextState.error || 'Session not found.'}
   </p>{/if}
 {#if Boolean(contextState.session) && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}{#key page.params.id}<GenerationDrawerComponent
-    sessionId={page.params.id ?? ''}
-    workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
-  />{/key}{/if}
+      sessionId={page.params.id ?? ''}
+      workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
+    />{/key}{/if}
 
 <style>
   .session-tabs {

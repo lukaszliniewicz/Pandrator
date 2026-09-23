@@ -914,10 +914,7 @@
 <div class="min-w-0 max-w-full space-y-5 overflow-x-hidden">
   <header class="flex flex-wrap items-end justify-between gap-4">
     <div class="min-w-0">
-      <div class="eyebrow">Transcript-guided edit</div>
-      <h2 class="mt-1 text-2xl font-semibold">
-        Cut the recording, not your patience
-      </h2>
+      <h2 class="mt-1 text-2xl font-semibold">Edit the recording</h2>
       <p class="muted mt-2 max-w-3xl text-sm">
         Red ranges are removed. Pandrator stores every plan revision and only
         creates new media when you explicitly render the reviewed timeline.
@@ -1046,7 +1043,6 @@
         class="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,.85fr)]"
       >
         <div class="min-w-0">
-          <div class="eyebrow">Inputs</div>
           <h3 class="mt-1 text-xl font-semibold">
             Prepare the editable timeline
           </h3>
@@ -1206,7 +1202,6 @@
         <section class="surface rounded-2xl p-5">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <div class="eyebrow">Removal list</div>
               <h3 class="mt-1 text-lg font-semibold">Exact cut boundaries</h3>
             </div>
             <span class="badge">revision {plan.revision}</span>
@@ -1409,7 +1404,6 @@
         <section class="surface rounded-2xl p-5">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <div class="eyebrow">Transcript</div>
               <h3 class="mt-1 font-semibold">
                 {plan.cues.length} timed cues
               </h3>
@@ -1488,7 +1482,6 @@
     >
       <div class="flex items-start justify-between gap-5">
         <div class="min-w-0">
-          <div class="eyebrow">Transcript-guided edit</div>
           <h2 id="proposal-title" class="mt-1 text-2xl font-semibold">
             Process the transcript
           </h2>
@@ -1647,7 +1640,6 @@
     >
       <div class="flex items-start justify-between gap-5">
         <div class="min-w-0">
-          <div class="eyebrow">Reviewed edit</div>
           <h2 id="render-title" class="mt-1 text-2xl font-semibold">
             Render the recording
           </h2>

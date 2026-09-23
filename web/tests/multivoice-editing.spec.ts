@@ -85,7 +85,7 @@ async function login(page: Page) {
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'What shall we make?' })
+    page.getByRole('heading', { name: 'Create a session' })
   ).toBeVisible();
   const tour = page.getByRole('button', { name: 'Close tour' });
   if (await tour.isVisible()) await tour.click();
@@ -273,6 +273,33 @@ test('speaker inspection preserves exact text and reports unsupported acting dir
   const { bodies } = await setup(page);
   const root = page.locator('[data-speech-annotations="speech-a"]');
   await expect(root).toHaveText(text);
+  const underlineStyles = await root
+    .locator('.speech-span')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        color: getComputedStyle(node).textDecorationColor,
+        width: getComputedStyle(node).textDecorationThickness
+      }))
+    );
+  expect(underlineStyles[0].color).not.toBe(underlineStyles[1].color);
+  expect(underlineStyles[0].color).toBe(underlineStyles[2].color);
+  expect(parseFloat(underlineStyles[0].width)).toBeGreaterThanOrEqual(2);
+  await expect(page.getByText('Show waveform', { exact: true })).toHaveCount(0);
+  const optionsButton = page.getByRole('button', {
+    name: 'Options for segment 1',
+    exact: true
+  });
+  await optionsButton.click();
+  const options = page.getByRole('dialog', {
+    name: 'Options for segment 1',
+    exact: true
+  });
+  await expect(
+    options.getByRole('combobox', { name: 'Segment role', exact: true })
+  ).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(options).toBeHidden();
+  await expect(optionsButton).toBeFocused();
   await root.getByRole('button', { name: /phrase 2/ }).click();
   const inspector = page.getByRole('dialog', {
     name: 'Voices and delivery for segment 1'

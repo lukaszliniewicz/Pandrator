@@ -1,15 +1,21 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-async function signIn(page: import('@playwright/test').Page) {
+async function signIn(page: Page) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(
-    page.getByRole('heading', { name: 'What shall we make?' })
+    page.getByRole('heading', { name: 'Create a session' })
   ).toBeVisible();
   const tour = page.getByRole('button', { name: 'Close tour' });
   if (await tour.isVisible()) await tour.click();
   await page.goto('/models');
+  await page
+    .getByRole('combobox', { name: 'Provider', exact: true })
+    .selectOption('audio_cpp');
+  await page
+    .getByRole('button', { name: 'Apply filters', exact: true })
+    .click();
 }
 
 test('model catalogue exposes reviewed choices, licence filters and all-package pagination', async ({
@@ -17,7 +23,7 @@ test('model catalogue exposes reviewed choices, licence filters and all-package 
 }, info) => {
   await signIn(page);
   await expect(
-    page.getByRole('heading', { name: 'Find a model for the job' })
+    page.getByRole('heading', { name: 'Audio models' })
   ).toBeVisible();
   await expect(page.locator('article')).toHaveCount(10);
   const breeze = page
@@ -53,7 +59,7 @@ test('model catalogue exposes reviewed choices, licence filters and all-package 
   await page.getByLabel('Recommended starting points').uncheck();
   await page.getByRole('button', { name: 'Apply filters' }).click();
   await expect(
-    page.getByText('256 matching packages', { exact: false })
+    page.getByText('256 matching models', { exact: false })
   ).toBeVisible();
   await expect(page.locator('article')).toHaveCount(20);
   await page.getByRole('button', { name: 'Next', exact: true }).click();
@@ -88,7 +94,7 @@ test('model catalogue stays usable on a narrow screen and recovers from an API e
     path: info.outputPath('catalogue-mobile.png'),
     fullPage: true
   });
-  await page.route('**/api/v1/services/audio-cpp/catalogue?**', (route) =>
+  await page.route('**/api/v1/services/models/catalogue?**', (route) =>
     route.fulfill({
       status: 503,
       json: { error: { message: 'Catalogue temporarily unavailable' } }
@@ -96,7 +102,7 @@ test('model catalogue stays usable on a narrow screen and recovers from an API e
   );
   await page.getByRole('button', { name: 'Apply filters' }).click();
   await expect(page.getByRole('alert')).toBeVisible();
-  await page.unroute('**/api/v1/services/audio-cpp/catalogue?**');
+  await page.unroute('**/api/v1/services/models/catalogue?**');
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.locator('article')).toHaveCount(10);
@@ -162,4 +168,50 @@ test('voice design uses catalogue models, languages and their own licence', asyn
     path: info.outputPath('catalogue-voice-design.png'),
     fullPage: true
   });
+});
+
+test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', async ({
+  page
+}, info) => {
+  await signIn(page);
+  await page.getByLabel('Recommended starting points').uncheck();
+  const provider = page.getByRole('combobox', {
+    name: 'Provider',
+    exact: true
+  });
+  const capability = page.getByRole('combobox', {
+    name: 'Capability',
+    exact: true
+  });
+  const apply = page.getByRole('button', {
+    name: 'Apply filters',
+    exact: true
+  });
+  await provider.selectOption('openai');
+  await capability.selectOption('instructions');
+  await apply.click();
+  await expect(page.locator('article')).toHaveCount(1);
+  await expect(page.locator('article')).toContainText('gpt-4o-mini-tts');
+  await provider.selectOption('gemini');
+  await apply.click();
+  await expect(page.locator('article')).toHaveCount(3);
+  await provider.selectOption('azure');
+  await capability.selectOption('emotion_control');
+  await apply.click();
+  await expect(page.locator('article')).toHaveCount(2);
+  await expect(page.locator('article').first()).toContainText('MAI');
+  await page
+    .locator('article')
+    .first()
+    .getByText('Languages, licence and controls', { exact: true })
+    .click();
+  await page.screenshot({
+    path: info.outputPath('azure-mai-capabilities.png'),
+    fullPage: true
+  });
+  await capability.selectOption('voice_cloning');
+  await apply.click();
+  await expect(
+    page.getByText('No models match.', { exact: false })
+  ).toBeVisible();
 });

@@ -65,7 +65,7 @@
   >
     <header class="flex items-start justify-between gap-4">
       <div>
-        <p class="eyebrow">
+        <p class="section-label">
           Block {item.ordinal + 1} · Passages {boundary.left_reference} / {boundary.right_reference}
         </p>
         <h3 id="passage-split-title" class="mt-1 text-xl font-semibold">

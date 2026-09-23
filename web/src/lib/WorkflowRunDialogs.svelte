@@ -115,7 +115,6 @@
     >
       <div class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">Create another version</div>
           <h2 id="rerun-title" class="mt-1 text-2xl font-semibold">
             Run {pendingRun.stage.title.toLowerCase()} again?
           </h2>
@@ -193,7 +192,6 @@
     >
       <div class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">Before generation</div>
           <h2 id="mismatch-title" class="mt-1 text-2xl font-semibold">
             Generate with the selected text?
           </h2>

@@ -529,7 +529,6 @@
   {#if !detail && !samplesOpen}
     <header class="mb-4 flex flex-wrap items-end justify-between gap-4 sm:mb-6">
       {#if !embedded}<div>
-          <div class="eyebrow">Your cast starts here</div>
           <h1 class="mt-2 text-3xl font-semibold sm:text-4xl">Voice library</h1>
           <p class="muted mt-2 max-w-2xl text-sm">
             Find a familiar voice, audition a new one, or design the speaker you
@@ -572,9 +571,6 @@
     <article class="surface rounded-2xl p-4 sm:p-7">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div class="min-w-0">
-          <div class="eyebrow">
-            {detail.kind === 'managed' ? 'Saved voice' : 'Provider voice'}
-          </div>
           <h2 class="mt-2 break-words text-2xl font-semibold">{detail.name}</h2>
           <p class="muted mt-2 text-sm">
             {detail.description || 'Add a description to help with casting.'}

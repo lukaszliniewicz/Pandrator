@@ -27,8 +27,7 @@
 
 <div class="mx-auto max-w-7xl">
   <header>
-    <div class="eyebrow">Providers & services</div>
-    <h1 class="mt-2 text-4xl font-semibold">Connections</h1>
+    <h1 class="mt-2 text-4xl font-semibold">Providers &amp; services</h1>
     <p class="muted mt-3">
       Application-wide model, cost, endpoint, catalogue, credential, readiness,
       and local component settings.

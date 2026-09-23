@@ -1334,6 +1334,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/services/models/catalogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Static model catalogue across local and external TTS providers. */
+        get: operations["listModelCatalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/services/stt": {
         parameters: {
             query?: never;
@@ -10035,6 +10052,44 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Versioned audio.cpp family and package catalogue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Invalid catalogue filters */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listModelCatalogue: {
+        parameters: {
+            query?: {
+                category?: string;
+                family?: string;
+                query?: string;
+                language?: string;
+                capability?: string;
+                provider?: string;
+                commercial_use?: "" | "permitted" | "noncommercial" | "conditional" | "unknown";
+                recommended_only?: boolean;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Versioned provider-neutral model catalogue */
             200: {
                 headers: {
                     [name: string]: unknown;

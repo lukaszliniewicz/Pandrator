@@ -1213,12 +1213,12 @@ def _service_config_cache_key(tts_settings) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def get_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
+def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
     if _cache is not None:
         cache_key = ("service_configs", _service_config_cache_key(tts_settings))
         hit = _cache.get(cache_key)
         if hit is not None:
-            return copy.deepcopy(hit)
+            return hit
     services = {
         str(item["id"]): copy.deepcopy(item) for item in _default_service_configs()
     }
@@ -1268,22 +1268,25 @@ def get_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
     for service in first_class:
         decorate_service_capabilities(service)
     if _cache is not None:
-        # Store a private copy; callers may mutate the list they receive.
-        _cache[cache_key] = copy.deepcopy(first_class)
+        # Only private lookups may access this shared catalogue. Public
+        # results always copy before returning mutable records.
+        _cache[cache_key] = first_class
     return first_class
+
+
+def get_service_configs(tts_settings, _cache=None) -> list[dict[str, object]]:
+    services = _shared_service_configs(tts_settings, _cache)
+    return copy.deepcopy(services) if _cache is not None else services
 
 
 def get_service_config(
     tts_settings, service_name_or_id: str, _cache=None
 ) -> dict[str, object] | None:
-    if _cache is not None:
-        services = get_service_configs(tts_settings, _cache=_cache)
-    else:
-        services = get_service_configs(tts_settings)
+    services = _shared_service_configs(tts_settings, _cache)
     service_id = _normalize_service_id(service_name_or_id)
     for service in services:
         if str(service.get("id") or "") == service_id:
-            return service
+            return copy.deepcopy(service) if _cache is not None else service
     return None
 
 

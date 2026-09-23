@@ -275,10 +275,11 @@
     )
   );
   const disclosureSelected = $derived(
-    stage.artifact ??
-      stage.artifacts?.find(
-        (artifact) => artifact.id === stage.selected_artifact_id
-      ) ??
+    stage.artifacts?.find(
+      (artifact) =>
+        artifact.id === (stage.selected_artifact_id ?? stage.artifact?.id)
+    ) ??
+      stage.artifact ??
       null
   );
   const disclosureSelectedLabel = $derived.by(() => {
@@ -288,7 +289,8 @@
     const filename =
       typeof original === 'string' && original.trim() ? original.trim() : '';
     const identity = filename || artifactRoleLabel(disclosureSelected.role);
-    return `Selected v${disclosureSelected.version} · ${identity}`;
+    const version = disclosureSelected.version;
+    return `Selected${typeof version === 'number' ? ` v${version}` : ''} · ${identity}`;
   });
   const toggleDisclosure = () => {
     disclosureUserExpanded = !disclosureExpanded;

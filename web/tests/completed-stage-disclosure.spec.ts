@@ -162,6 +162,27 @@ function card(page: Page, title: string) {
     .filter({ has: page.getByRole('heading', { name: title, exact: true }) });
 }
 
+test('selected artifact summaries do not display an undefined version', async ({
+  page
+}) => {
+  await login(page);
+  const id = await createSession(page, 'Version summary');
+  await mockWorkflow(page, id, () => [
+    stage('segment', 'Segment narration', 2, 'completed', {
+      artifact: {
+        id: 'summary-only',
+        role: 'prepared_text',
+        metadata_json: {}
+      },
+      selected_artifact_id: 'summary-only'
+    })
+  ]);
+  await page.goto(`/sessions/${id}`);
+  const segment = card(page, 'Segment narration');
+  await expect(segment).toContainText('Selected ·');
+  await expect(segment).not.toContainText('undefined');
+});
+
 test('completed preprocessing stage starts folded and expands with keyboard', async ({
   page
 }) => {

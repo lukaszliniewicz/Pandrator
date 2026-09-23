@@ -495,7 +495,6 @@
 <section class="surface rounded-2xl p-5">
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div>
-      <div class="eyebrow">Output profile</div>
       <h2 class="mt-1 text-xl font-semibold">
         {audiobookWorkspace
           ? 'Audiobook file, metadata, and artwork'

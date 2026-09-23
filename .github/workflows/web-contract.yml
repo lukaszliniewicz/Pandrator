@@ -19,6 +19,10 @@ on:
       - "web/src/lib/audio-cpp-catalogue.ts"
       - "web/scripts/build-manager-model-groups.mjs"
       - "pandrator_manager/recovery_ui/static/model-groups.js"
+      - "pandrator/logic/audio_cpp*"
+      - "pandrator/logic/speech_performance.py"
+      - "scripts/generate_audio_cpp_model_metadata.py"
+      - "pandrator_manager/audio_cpp_model_metadata.json"
   workflow_dispatch:
 
 permissions:
@@ -52,3 +56,5 @@ jobs:
           git diff --exit-code -- openapi.json web/src/lib/api.generated.ts
       - name: Verify standalone Manager uses current model grouping
         run: npm --prefix web run check:manager-models
+      - name: Verify standalone Manager model metadata
+        run: python scripts/generate_audio_cpp_model_metadata.py --check

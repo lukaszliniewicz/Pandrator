@@ -1049,7 +1049,6 @@
       class="mb-5 flex shrink-0 flex-wrap items-end justify-between gap-4"
     >
       <div>
-        <div class="eyebrow">Voices</div>
         <h1 class="mt-2 text-4xl font-semibold">Voice Library</h1>
         <p class="muted mt-2 text-sm">
           Design, record, and manage cloning references, or compare provider

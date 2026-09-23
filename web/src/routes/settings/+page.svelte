@@ -83,8 +83,7 @@
 <div class="mx-auto max-w-5xl">
   <header class="flex items-end justify-between gap-4">
     <div>
-      <div class="eyebrow">Application settings</div>
-      <h1 class="mt-2 text-4xl font-semibold">Pandrator</h1>
+      <h1 class="mt-2 text-4xl font-semibold">Application settings</h1>
       <p class="muted mt-3">
         Global behavior, readiness, privacy, storage, and maintenance.
       </p>
@@ -98,7 +97,6 @@
     </p>{/if}
   <div class="mt-8 grid gap-5 md:grid-cols-2">
     <section class="surface rounded-2xl p-6">
-      <div class="eyebrow">Onboarding</div>
       <h2 class="mt-2 text-xl font-semibold">Setup and tours</h2>
       <label class="mt-5 flex items-start gap-3"
         ><input
@@ -114,7 +112,6 @@
       >
     </section>
     <section class="surface rounded-2xl p-6">
-      <div class="eyebrow">Runtime</div>
       <h2 class="mt-2 text-xl font-semibold">Capability snapshot</h2>
       <div class="muted mt-4 space-y-2 text-sm">
         <div>
@@ -152,7 +149,6 @@
       >
     </section>
     <section class="surface rounded-2xl p-6">
-      <div class="eyebrow">Retention</div>
       <h2 class="mt-2 text-xl font-semibold">Temporary data</h2>
       <label class="mt-5 block text-sm font-semibold"
         >Keep compactable logs and temporary history for<input
@@ -172,7 +168,6 @@
       <div class="flex items-center gap-3">
         <ShieldCheck class="text-[var(--accent)]" />
         <div>
-          <div class="eyebrow">Privacy</div>
           <h2 class="mt-1 text-xl font-semibold">Single-owner workspace</h2>
         </div>
       </div>
@@ -184,7 +179,6 @@
   </div>
   <McpLocalPathsPanel />
   <section class="surface mt-6 rounded-2xl p-6">
-    <div class="eyebrow">Defaults</div>
     <h2 class="mt-2 text-xl font-semibold">
       Defaults for new and existing sessions
     </h2>

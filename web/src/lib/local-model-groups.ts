@@ -54,6 +54,7 @@ export type ResolvedLocalModel = {
   family: string;
   familyLabel: string;
   voiceMode: string;
+  capabilities: string[];
   languages: string[];
   precision: string;
   precisionLabel: string;
@@ -84,6 +85,23 @@ export type LocalModelGroup = {
 };
 
 export const UNKNOWN_GROUP_ID = '__unknown';
+
+export const MODEL_CAPABILITY_OPTIONS = [
+  { id: 'voice_cloning', label: 'Voice cloning' },
+  { id: 'prebuilt_voices', label: 'Pre-built voices' },
+  { id: 'voice_design', label: 'Voice design' },
+  { id: 'instructions', label: 'Instructions' },
+  { id: 'emotion_control', label: 'Emotions' },
+  { id: 'vocal_events', label: 'Vocal sounds' }
+];
+
+function umbrellaFamily(family: string): string {
+  if (family === 'chatterbox' || family === 'chatterbox_turbo')
+    return 'chatterbox';
+  if (family === 'firered_audio' || /^fireredtts\d*$/.test(family))
+    return 'firered';
+  return family;
+}
 
 const VOICE_MODE_LABELS: Record<string, string> = {
   cloning: 'Voice cloning',
@@ -400,6 +418,7 @@ export function resolveLocalModels(
       family,
       familyLabel,
       voiceMode: voiceMode.trim().toLowerCase(),
+      capabilities: asStringList(entry?.capabilities ?? info.capabilities),
       languages,
       precision,
       precisionLabel: precisionLabelFor(precision),
@@ -418,6 +437,31 @@ function subgroupFor(
   family: string,
   members: ResolvedLocalModel[]
 ): LocalModelSubgroup[] {
+  if (family === 'chatterbox' || family === 'firered') {
+    const buckets = new Map<string, LocalModelSubgroup>();
+    for (const model of members) {
+      const variant =
+        model.family === 'fireredtts3'
+          ? /instruct/i.test(model.id)
+            ? 'Instruct'
+            : 'Base'
+          : '';
+      const key = `${model.family}:${variant}`;
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = {
+          id: key,
+          label: [model.familyLabel, variant].filter(Boolean).join(' · '),
+          detail: voiceModeLabel(model.voiceMode),
+          voiceMode: model.voiceMode,
+          models: []
+        };
+        buckets.set(key, bucket);
+      }
+      bucket.models.push(model);
+    }
+    return [...buckets.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }
   if (family === 'qwen3_tts') {
     // Manager rows often carry no voice_mode; the variant identity implies
     // the capability (Base clones, CustomVoice uses built-ins, VoiceDesign
@@ -516,7 +560,7 @@ export function groupLocalModels(
 ): LocalModelGroup[] {
   const buckets = new Map<string, ResolvedLocalModel[]>();
   for (const model of models ?? []) {
-    const key = model.family || UNKNOWN_GROUP_ID;
+    const key = umbrellaFamily(model.family) || UNKNOWN_GROUP_ID;
     const bucket = buckets.get(key);
     if (bucket) bucket.push(model);
     else buckets.set(key, [model]);
@@ -526,7 +570,14 @@ export function groupLocalModels(
     const known = family !== UNKNOWN_GROUP_ID;
     groups.push({
       id: known ? `family:${family}` : UNKNOWN_GROUP_ID,
-      label: known ? members[0]?.familyLabel || family : 'Other models',
+      label:
+        family === 'chatterbox'
+          ? 'Chatterbox'
+          : family === 'firered'
+            ? 'FireRed'
+            : known
+              ? members[0]?.familyLabel || family
+              : 'Other models',
       family: known ? family : '',
       total: members.length,
       subgroups: known
@@ -578,16 +629,19 @@ function haystackFor(
  */
 export function filterLocalGroups(
   groups: LocalModelGroup[],
-  query: string
+  query: string,
+  capability = ''
 ): LocalModelGroup[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return groups;
+  if (!needle && !capability) return groups;
   const pruned: LocalModelGroup[] = [];
   for (const group of groups ?? []) {
     const subgroups: LocalModelSubgroup[] = [];
     for (const subgroup of group.subgroups) {
-      const models = subgroup.models.filter((model) =>
-        haystackFor(group, subgroup, model).includes(needle)
+      const models = subgroup.models.filter(
+        (model) =>
+          haystackFor(group, subgroup, model).includes(needle) &&
+          (!capability || model.capabilities.includes(capability))
       );
       if (models.length) subgroups.push({ ...subgroup, models });
     }

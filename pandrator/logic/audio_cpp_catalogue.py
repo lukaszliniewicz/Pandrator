@@ -212,14 +212,43 @@ def package_metadata(model_id: str) -> dict[str, Any]:
             "emotion_control": controls["emotion"]["mode"],
         }
     )
+    # Keep documented upstream task flags; derive runtime controls separately.
+    normalized_capabilities = {
+        feature
+        for feature, enabled in result["upstream_features"].items()
+        if enabled is True
+        and feature
+        not in {
+            "voice_cloning",
+            "voice_design",
+            "instructions",
+            "emotion_control",
+            "vocal_events",
+        }
+    }
+    if (
+        result["voice_mode"] in {"cloning", "optional_cloning", "hybrid"}
+        and result["upstream_features"].get("voice_cloning") is True
+    ):
+        normalized_capabilities.add("voice_cloning")
+    if result["voice_mode"] in {"prebuilt", "hybrid"}:
+        normalized_capabilities.add("prebuilt_voices")
+    if controls["voice_design"]:
+        normalized_capabilities.add("voice_design")
+    if controls["instructions"] != "none":
+        normalized_capabilities.add("instructions")
+    if controls["emotion"]["mode"] != "none":
+        normalized_capabilities.add("emotion_control")
+    if controls["event_tags"]:
+        normalized_capabilities.add("vocal_events")
+    # Preserve the Manager's legacy tag only when multiple languages are listed.
+    if len(result["supported_languages"]) > 1:
+        normalized_capabilities.add("multilingual")
+    result["capabilities"] = sorted(normalized_capabilities)
     if result["license"].get("url"):
         result["sources"] = list(
             dict.fromkeys([result["license"]["url"], *result["sources"]])
         )
-    if result["pandrator_features"]["instructions"] != "none":
-        result["upstream_features"]["instructions"] = True
-    if controls["event_tags"]:
-        result["upstream_features"]["vocal_events"] = True
     return result
 
 
@@ -257,6 +286,9 @@ def catalogue_page(
         raise ValueError("Unknown commercial-use filter.")
     rows = [package_metadata(package["id"]) for package in inventory()["packages"]]
     selected = []
+    normalized_capability = {"emotions": "emotion_control"}.get(
+        capability, capability
+    )
     for row in rows:
         if category and row["category"] != category:
             continue
@@ -287,7 +319,7 @@ def catalogue_page(
             )
         ):
             continue
-        if capability and not row["upstream_features"].get(capability):
+        if normalized_capability and normalized_capability not in row["capabilities"]:
             continue
         searchable = " ".join(
             str(row.get(key, ""))

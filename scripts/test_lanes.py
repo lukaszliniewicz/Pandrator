@@ -17,6 +17,9 @@ FAST_LANE = "fast-xdist"
 TEST_LANES: dict[str, tuple[str, ...]] = {
     FAST_LANE: (
         "tests/test_audio_cpp_assets.py",
+        "tests/test_audio_cpp_metadata_projection.py",
+        "tests/test_model_catalogue.py",
+        "tests/test_model_catalogue_api.py",
         "tests/test_audio_cpp_execution.py",
         "tests/test_audio_cpp_processing.py",
         "tests/test_qwen_asr_transcription.py",

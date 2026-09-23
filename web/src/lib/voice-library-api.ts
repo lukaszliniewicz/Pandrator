@@ -1,4 +1,5 @@
 import { apiJson } from './api';
+import { dedupeInflight } from './inflight-dedupe';
 
 export type TraitEvidence = {
   source: 'user' | 'provider' | 'design_request' | 'audition_review';
@@ -92,13 +93,19 @@ export const emptyVoiceProfile = (): VoiceProfile => ({
 export const voiceFacetLabel = (value: string) =>
   value.replaceAll('_', ' ').replace(/^\w/, (v) => v.toUpperCase());
 
+const catalogRequests = new Map<string, Promise<VoiceCatalogPage>>();
+
 export const voiceLibraryApi = {
   query: (params: Record<string, string | boolean | number | undefined>) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== '') query.set(key, String(value));
     }
-    return apiJson<VoiceCatalogPage>(`/voice-catalog?${query}`);
+    query.sort();
+    const path = `/voice-catalog?${query}`;
+    return dedupeInflight(catalogRequests, path, () =>
+      apiJson<VoiceCatalogPage>(path)
+    );
   },
   collections: () =>
     apiJson<{ items: VoiceCollection[] }>('/voice-collections'),

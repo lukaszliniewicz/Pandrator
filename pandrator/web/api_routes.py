@@ -31,6 +31,7 @@ from sqlalchemy import func, select
 from werkzeug.utils import secure_filename
 
 from pandrator.logic.audio_cpp_catalogue import catalogue_page, package_metadata
+from pandrator.logic.model_catalogue import catalogue_page as model_catalogue_page
 from pandrator.logic.tts_provider_profiles import AUDIO_CPP_VOICE_DESIGN_MODELS
 from pandrator.logic.tts_provider_switch import (
     normalize_tts_voice_aliases,
@@ -1402,6 +1403,78 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
 
         try:
             payload = catalogue_page(
+                **string_filters,
+                commercial_use=commercial_use,
+                recommended_only=recommended_only == "true",
+                limit=limit,
+                offset=offset,
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(payload)
+
+    @app.get("/api/v1/services/models/catalogue")
+    @require_auth
+    def model_catalogue():
+        string_filters = {
+            name: request.args.get(name, "")
+            for name in (
+                "category",
+                "family",
+                "query",
+                "language",
+                "capability",
+                "provider",
+            )
+        }
+        for name, value in string_filters.items():
+            if len(value) > 160:
+                return error_response(
+                    "validation_error",
+                    f"{name} must be at most 160 characters.",
+                    422,
+                )
+
+        commercial_use = request.args.get("commercial_use", "")
+        if commercial_use not in {
+            "",
+            "permitted",
+            "noncommercial",
+            "conditional",
+            "unknown",
+        }:
+            return error_response(
+                "validation_error",
+                "commercial_use must be one of: permitted, noncommercial, conditional, unknown.",
+                422,
+            )
+
+        recommended_only = request.args.get("recommended_only", "false").strip().lower()
+        if recommended_only not in {"true", "false"}:
+            return error_response(
+                "validation_error",
+                "recommended_only must be true or false.",
+                422,
+            )
+
+        try:
+            raw_limit = request.args.get("limit")
+            limit = int(raw_limit) if raw_limit is not None else 30
+            raw_offset = request.args.get("offset")
+            offset = int(raw_offset) if raw_offset is not None else 0
+            if not 1 <= limit <= 100:
+                raise ValueError
+            if not 0 <= offset <= 10_000:
+                raise ValueError
+        except (TypeError, ValueError):
+            return error_response(
+                "validation_error",
+                "limit must be an integer from 1 through 100 and offset must be an integer from 0 through 10000.",
+                422,
+            )
+
+        try:
+            payload = model_catalogue_page(
                 **string_filters,
                 commercial_use=commercial_use,
                 recommended_only=recommended_only == "true",

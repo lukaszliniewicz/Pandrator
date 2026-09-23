@@ -66,7 +66,6 @@
 <section class="surface mt-6 rounded-2xl p-6">
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div>
-      <div class="eyebrow">Automation</div>
       <h2 class="mt-2 text-xl font-semibold">Local MCP filesystem access</h2>
       <p class="muted mt-2 max-w-3xl text-sm leading-relaxed">
         These directories are the only local files an MCP client may browse and

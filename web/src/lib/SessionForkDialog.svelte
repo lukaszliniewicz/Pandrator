@@ -74,7 +74,6 @@
           ><GitFork size={20} /></span
         >
         <div class="min-w-0 flex-1">
-          <div class="eyebrow">Branch session</div>
           <h2 id="session-fork-title" class="mt-1 text-xl font-semibold">
             Fork after {stageLabel.toLowerCase()}
           </h2>

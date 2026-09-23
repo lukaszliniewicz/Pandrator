@@ -6,7 +6,11 @@
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
   import SpeechAnnotationText from './SpeechAnnotationText.svelte';
-  import type { SpeechSelection, SpeechPreview } from './speech-annotations';
+  import {
+    speakerColors,
+    type SpeechSelection,
+    type SpeechPreview
+  } from './speech-annotations';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
 
@@ -80,6 +84,12 @@
     ) => void;
     topologyDisabled?: boolean;
   } = $props();
+  const annotationColors = $derived(
+    speakerColors(
+      blocks.flatMap((block) => block.items),
+      speechPreviews
+    )
+  );
 </script>
 
 <div class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8">
@@ -87,7 +97,6 @@
     class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"
   >
     <div>
-      <div class="eyebrow">Continuous review</div>
       <h3 class="mt-1 text-xl font-semibold">Narration text</h3>
       <p class="muted mt-1 text-xs">
         Reviewing {selectedRunLabel ?? 'the active takes'}. Display text is
@@ -140,6 +149,7 @@
             {#if showSpeechAnnotations && (item.speech_annotation_xml || item.speech_plan?.speech_xml || speechPreviews[item.id])}
               <SpeechAnnotationText
                 {item}
+                colors={annotationColors}
                 layer={textMode}
                 preview={speechPreviews[item.id]}
                 oninspect={onspeech ?? (() => {})}

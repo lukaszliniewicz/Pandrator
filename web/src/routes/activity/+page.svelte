@@ -7,8 +7,7 @@
 <div class="mx-auto max-w-7xl">
   <header class="flex flex-wrap items-end justify-between gap-4">
     <div>
-      <div class="eyebrow">Activity & logs</div>
-      <h1 class="mt-2 text-4xl font-semibold">Background work</h1>
+      <h1 class="mt-2 text-4xl font-semibold">Activity &amp; logs</h1>
       <p class="muted mt-3">
         Inspect durable job logs, errors, retries, and replayable progress.
       </p>

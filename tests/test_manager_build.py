@@ -157,11 +157,19 @@ class ManagerBootstrapBuildTests(unittest.TestCase):
         specification = (repository / "pandrator_manager_bootstrap.spec").read_text(
             encoding="utf-8"
         )
-        for filename in ("audio_cpp_inventory.json", "audio_cpp_curation.json"):
+        package_configuration = (
+            repository / "pandrator_manager" / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+        for filename in (
+            "audio_cpp_inventory.json",
+            "audio_cpp_curation.json",
+            "audio_cpp_model_metadata.json",
+        ):
             self.assertIn(
                 f'(str(manager_package / "{filename}"), "pandrator_manager")',
                 specification,
             )
+            self.assertIn(f'"{filename}"', package_configuration)
             self.assertTrue((repository / "pandrator_manager" / filename).is_file())
 
     def test_release_bundle_uses_public_platform_names(self) -> None:

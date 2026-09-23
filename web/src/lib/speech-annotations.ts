@@ -17,6 +17,37 @@ export type SpeechSpan = {
   fallback?: boolean;
 };
 
+export function speakerColorKey(span: SpeechSpan): string {
+  return span.role === 'narrator'
+    ? '__narrator'
+    : span.speaker_id || span.speaker_name || span.role;
+}
+
+/** Allocate distinct colours across the session, not independently in each row. */
+export function speakerColors(
+  items: GenerationSegment[],
+  previews: Record<string, SpeechPreview>
+): Record<string, string> {
+  const keys = [
+    ...new Set(
+      items.flatMap((item) =>
+        (previews[item.id]?.spans ?? annotationSpans(item)).map(speakerColorKey)
+      )
+    )
+  ]
+    .filter((key) => key !== '__narrator')
+    .sort();
+  return Object.fromEntries([
+    ['__narrator', 'var(--speaker-narrator)'],
+    ...keys.map((key, index) => [
+      key,
+      index < 8
+        ? `var(--speaker-${index + 1})`
+        : `hsl(${(index * 137.508) % 360} 60% var(--speaker-lightness))`
+    ])
+  ]);
+}
+
 export type SpeechSelection = {
   item: GenerationSegment;
   start: number;

@@ -837,7 +837,7 @@
   {#if collapsible}
     <summary class="flex cursor-pointer list-none items-start gap-4">
       <span class="min-w-0 flex-1">
-        <span class="eyebrow block">{sectionName(section)}</span>
+        <span class="section-label block">{sectionName(section)}</span>
         <span class="mt-1 block text-xl font-semibold">{title}</span>
         {#if description}<span class="muted mt-2 block max-w-2xl text-sm">
             {description}
@@ -853,7 +853,6 @@
   {:else}
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <div class="eyebrow">{sectionName(section)}</div>
         <h2 class="mt-1 text-xl font-semibold">{title}</h2>
         {#if description}<p class="muted mt-2 max-w-2xl text-sm">
             {description}

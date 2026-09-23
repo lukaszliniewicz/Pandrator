@@ -1,5 +1,10 @@
 export type AudioCppModelInfo = {
   id: string;
+  catalogue_id?: string;
+  provider_id?: string;
+  provider_name?: string;
+  provider_kind?: string;
+  capabilities?: string[];
   label: string;
   family: string;
   family_label?: string;
@@ -28,9 +33,11 @@ export type AudioCppCatalogue = {
   next_offset: number | null;
   items: AudioCppModelInfo[];
   families: { id: string; display_name: string; category: string }[];
+  providers?: { id: string; name: string; kind: string }[];
 };
 
 export const featureLabels: Record<string, string> = {
+  prebuilt_voices: 'Pre-built voices',
   voice_cloning: 'Voice cloning',
   voice_design: 'Voice design',
   instructions: 'Natural-language directions',

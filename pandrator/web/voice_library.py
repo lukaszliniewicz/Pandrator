@@ -19,7 +19,7 @@ from pandrator.logic.dubbing.stt_languages import (
 )
 from pandrator.runtime import DataPaths
 
-from .artifacts import ArtifactService
+from .artifacts import ArtifactService, sha256_file
 from .database import Database
 from .models import Artifact, Voice, VoiceSample, utcnow
 
@@ -377,6 +377,57 @@ def ensure_bundled_voice(
     target = target_dir / "sample.wav"
     if not target.is_file():
         shutil.copy2(source, target)
+
+    with database.session() as session:
+        voice = session.get(Voice, BUNDLED_VOICE_KEY)
+        if voice is None:
+            name_owner = session.scalar(
+                select(Voice).where(Voice.name == BUNDLED_VOICE_NAME)
+            )
+            if (
+                name_owner is not None
+                and (name_owner.metadata_json or {}).get("bundled_voice")
+                == BUNDLED_VOICE_KEY
+            ):
+                voice = name_owner
+        if voice is not None:
+            try:
+                canonical_target = target.resolve(strict=True)
+                voices_root = paths.voices.resolve(strict=True)
+                if not canonical_target.is_relative_to(voices_root):
+                    raise ValueError("Bundled voice sample is outside its managed directory.")
+                target_hash = sha256_file(target)
+            except (OSError, RuntimeError, ValueError):
+                target_hash = ""
+                canonical_target = None
+            if target_hash and canonical_target is not None:
+                samples = session.scalars(
+                    select(VoiceSample).where(VoiceSample.voice_id == voice.id)
+                ).all()
+                for sample in samples:
+                    artifact = session.get(Artifact, sample.artifact_id)
+                    if (
+                        artifact is None
+                        or artifact.state != "current"
+                        or artifact.kind != "audio"
+                        or artifact.role != "voice_sample"
+                        or artifact.content_hash != target_hash
+                        or (artifact.metadata_json or {}).get("bundled_voice")
+                        != BUNDLED_VOICE_KEY
+                    ):
+                        continue
+                    status, artifact_path = sample_file_status(session, paths, sample)
+                    if status != "ready" or artifact_path is None:
+                        continue
+                    try:
+                        canonical_artifact_path = artifact_path.resolve(strict=True)
+                    except (OSError, RuntimeError):
+                        continue
+                    if canonical_artifact_path != canonical_target:
+                        continue
+                    session.expunge(voice)
+                    return voice
+
     artifact = artifacts.register(
         target,
         kind="audio",

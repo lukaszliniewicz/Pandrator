@@ -34,7 +34,7 @@
     >
       <div class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">
+          <div class="section-label">
             {current.section ?? 'Guided tour'} · {index + 1}/{steps.length}
           </div>
           <h2 id={`${tourId}-tour-title`} class="mt-2 text-xl font-semibold">

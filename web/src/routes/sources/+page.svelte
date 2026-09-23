@@ -98,8 +98,7 @@
 <div class="mx-auto max-w-7xl">
   <header class="flex flex-wrap items-end justify-between gap-5">
     <div>
-      <div class="eyebrow">Source library</div>
-      <h1 class="mt-2 text-4xl font-semibold">Reusable material</h1>
+      <h1 class="mt-2 text-4xl font-semibold">Source library</h1>
       <p class="muted mt-3">
         One managed source can serve several sessions. Reference counts prevent
         accidental removal while a session still uses it.

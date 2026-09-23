@@ -2538,6 +2538,91 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/services/models/catalogue": {
+                "get": {
+                    "operationId": "listModelCatalogue",
+                    "description": (
+                        "Static model catalogue across local and external TTS providers."
+                    ),
+                    "parameters": [
+                        {
+                            "name": name,
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "maxLength": 160,
+                                "default": "",
+                            },
+                        }
+                        for name in (
+                            "category",
+                            "family",
+                            "query",
+                            "language",
+                            "capability",
+                            "provider",
+                        )
+                    ]
+                    + [
+                        {
+                            "name": "commercial_use",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "string",
+                                "enum": [
+                                    "",
+                                    "permitted",
+                                    "noncommercial",
+                                    "conditional",
+                                    "unknown",
+                                ],
+                                "default": "",
+                            },
+                        },
+                        {
+                            "name": "recommended_only",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "boolean", "default": False},
+                        },
+                        {
+                            "name": "limit",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 100,
+                                "default": 30,
+                            },
+                        },
+                        {
+                            "name": "offset",
+                            "in": "query",
+                            "required": False,
+                            "schema": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10000,
+                                "default": 0,
+                            },
+                        },
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Versioned provider-neutral model catalogue",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"type": "object"}
+                                }
+                            },
+                        },
+                        "422": {"description": "Invalid catalogue filters"},
+                    },
+                }
+            },
             "/api/v1/services/stt": {
                 "get": operation(
                     "listSttServices", "Cloud STT profiles and configured connections"
@@ -3356,6 +3441,7 @@ def build_openapi_document() -> dict:
         ("/api/v1/services/tts", "get", "app.read"),
         ("/api/v1/services/tts/{serviceId}", "get", "app.read"),
         ("/api/v1/services/audio-cpp/catalogue", "get", "app.read"),
+        ("/api/v1/services/models/catalogue", "get", "app.read"),
         ("/api/v1/voices", "get", "app.read"),
         (
             "/api/v1/sessions/{sessionId}/generation-runs",

@@ -3472,7 +3472,6 @@
       <div class="modal-scroll p-7">
         <div class="flex justify-between gap-5">
           <div>
-            <div class="eyebrow">Stage settings</div>
             <h2 id="settings-title" class="mt-1 text-2xl font-semibold">
               {settingsStage.title}
             </h2>
@@ -4015,7 +4014,9 @@
                     : 'Recognition model'}
                 /><select
                   bind:value={sttEngine}
-                  aria-label={hasAttachedCaptions ? 'Fallback recognition model' : 'Recognition model'}
+                  aria-label={hasAttachedCaptions
+                    ? 'Fallback recognition model'
+                    : 'Recognition model'}
                   onchange={() =>
                     (sttQuantization = String(
                       capabilities?.stt?.models?.[sttEngine]?.precision ?? 'f16'

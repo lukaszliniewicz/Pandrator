@@ -10,6 +10,14 @@ The same grouping is used in session speech settings, the full TTS settings pane
 
 State labels use evidence: Loaded means the runtime reports it loaded; Installed requires an installed record; Installable means a package is available. Merely appearing in a catalogue is not proof of installation. Unknown/custom saved selections are retained instead of silently replaced.
 
+## Capabilities across providers
+
+**Audio models** combines the audio.cpp inventory with registered local and cloud provider models, including OpenAI, Gemini, Vertex AI and Azure MAI. Filter by provider, language, licence or supported control: voice cloning, prebuilt voices, voice design, instructions, emotions or vocal events. These controls describe the current Pandrator adapter; a vendor feature that requires a separate, unsupported API is not advertised as available.
+
+Chatterbox and Chatterbox Turbo share a family, as do the FireRed variants. Local package filters use the same capability metadata in Pandrator and the standalone Manager. Filtering does not change saved package selections.
+
+The canonical audio.cpp metadata lives in `pandrator/logic/audio_cpp_catalogue.py` and its pinned inventory. `scripts/generate_audio_cpp_model_metadata.py` produces the Manager's standalone projection; CI checks it for drift. The provider-neutral catalogue in `pandrator/logic/model_catalogue.py` composes that metadata with canonical service defaults and provider profiles. New profiles can supply exact model metadata; unknown capabilities remain unverified. Catalogue browsing does not contact providers, load models, install packages or expose credentials.
+
 ## Qwen3 recognition and word alignment
 
 Choose **Qwen3 ASR** in a transcription stage's Recognition model control or in Quick Transcribe's Transcription service control. Select 0.6B for the smaller recognizer or 1.7B for the larger recognizer. Their pinned Q8 downloads are approximately 1.15 GB and 2.47 GB respectively.

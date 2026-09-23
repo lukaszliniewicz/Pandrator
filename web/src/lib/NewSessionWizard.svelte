@@ -445,7 +445,7 @@
   >
     <header class="flex items-start justify-between gap-4">
       <div>
-        <div class="eyebrow">New {kind} session · step {step} of 4</div>
+        <div class="section-label">New {kind} session · step {step} of 4</div>
         <h1 id="wizard-title" class="mt-1 text-2xl font-semibold">
           {step === 1
             ? 'What would you like to make?'
@@ -732,7 +732,7 @@
         <div
           class="rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-5"
         >
-          <div class="eyebrow">Prepared pipeline</div>
+          <div class="section-label">Prepared pipeline</div>
           <div class="mt-4 flex flex-wrap items-center gap-2">
             {#each pipeline as stage, index}<span
                 class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-sm font-semibold"

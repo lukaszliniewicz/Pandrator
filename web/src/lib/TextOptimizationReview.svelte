@@ -148,7 +148,6 @@
       class="flex flex-wrap items-center gap-3 border-b border-[var(--line)] px-5 py-4 sm:px-6"
     >
       <div class="min-w-0 flex-1">
-        <div class="eyebrow">Speech optimization review</div>
         <h2 id="optimization-review-title" class="mt-1 text-xl font-semibold">
           Original and LLM-optimized narration
         </h2>

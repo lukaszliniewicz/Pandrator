@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -396,6 +397,21 @@ def resolve_capabilities(
     from . import tts_handler
 
     service_name = str(settings.get("service") or settings.get("tts_service") or "")
+    cache_key = None
+    if endpoint is None and _service_config_cache is not None:
+        cache_key = (
+            "resolved_capabilities",
+            tts_handler._service_config_cache_key(settings),
+            str(settings.get("service") or ""),
+            str(settings.get("tts_service") or ""),
+            str(settings.get("openai_audio_endpoint") or ""),
+            str(settings.get("xtts_model") or ""),
+            str(settings.get("model") or ""),
+            bool(settings.get("audio_cpp_voice_ref")),
+        )
+        hit = _service_config_cache.get(cache_key)
+        if hit is not None:
+            return deepcopy(hit)
     if endpoint is None:
         selected = str(settings.get("openai_audio_endpoint") or service_name)
         endpoint = tts_handler.get_service_config(settings, selected, _cache=_service_config_cache) or {}
@@ -443,6 +459,8 @@ def resolve_capabilities(
         # v0.8.1 reuses the instruction slot for the reference transcript.
         profile.update(instructions="none", voice_design=False)
         profile["notes"].append("FireRed cloning uses the instruction slot for the reference transcript; delivery directions are unavailable in this mode.")
+    if cache_key is not None:
+        _service_config_cache[cache_key] = deepcopy(profile)
     return profile
 
 

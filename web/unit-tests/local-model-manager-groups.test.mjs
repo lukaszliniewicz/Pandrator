@@ -85,6 +85,25 @@ function merged(entries) {
   return entries.map((model) => ({ ...(model.model_info ?? {}), ...model }));
 }
 
+function testUmbrellasAndCapabilitiesKeepExactIds() {
+  const source = [
+    { id: 'chatterbox_q8_0', family: 'chatterbox', capabilities: ['voice_cloning'] },
+    { id: 'chatterbox_turbo_q8_0', family: 'chatterbox_turbo', capabilities: ['prebuilt_voices', 'vocal_events'] },
+    { id: 'firered_audio_tts_q8_0', family: 'firered_audio', capabilities: ['voice_cloning'] },
+    { id: 'fireredtts3_base_q8_0', family: 'fireredtts3', capabilities: ['voice_cloning'] },
+    { id: 'fireredtts3_instruct_q8_0', family: 'fireredtts3', capabilities: ['voice_cloning', 'instructions'] }
+  ];
+  const groups = groupLocalModels(resolveLocalModels(source));
+  assert.deepEqual(groups.map(group => group.label), ['Chatterbox', 'FireRed']);
+  const ids = groups.flatMap(group => group.subgroups.flatMap(sub => sub.models.map(model => model.id)));
+  assert.deepEqual([...ids].sort(), source.map(model => model.id).sort());
+  const filtered = filterLocalGroups(groups, '', 'instructions');
+  assert.equal(filtered.length, 1);
+  assert.deepEqual(filtered[0].subgroups.flatMap(sub => sub.models.map(model => model.id)), ['fireredtts3_instruct_q8_0']);
+  assert.equal(groups[1].total, 3);
+}
+testUmbrellasAndCapabilitiesKeepExactIds();
+
 function testManagerRowsGroupLikeCatalogue() {
   const groups = groupLocalModels(
     resolveLocalModels(merged(managerEntries()), [], [], {

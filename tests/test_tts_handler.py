@@ -530,6 +530,34 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(services["openai"]["api_base"], "https://openai.example/v1")
         self.assertEqual(services["magpie"]["api_base"], "http://127.0.0.1:9999")
 
+    def test_service_config_cache_copies_only_selected_record_and_isolates_mutations(self):
+        settings = {"service_configs": [{"id": "openai", "api_base": "https://one.example"}]}
+        cache = {}
+        with patch.object(
+            tts_handler, "_default_service_configs",
+            wraps=tts_handler._default_service_configs,
+        ) as build:
+            selected = tts_handler.get_service_config(settings, "OpenAI", cache)
+            selected["api_base"] = "https://changed.example"
+            selected["models"].append("changed-model")
+            self.assertEqual(
+                tts_handler.get_service_config(settings, "openai", cache)["api_base"],
+                "https://one.example",
+            )
+            catalogue = tts_handler.get_service_configs(settings, cache)
+            catalogue[0]["models"].append("another-model")
+            self.assertNotIn(
+                "another-model",
+                tts_handler.get_service_config(settings, "openai", cache)["models"],
+            )
+            self.assertEqual(build.call_count, 1)
+            changed_settings = {"service_configs": [{"id": "openai", "api_base": "https://two.example"}]}
+            self.assertEqual(
+                tts_handler.get_service_config(changed_settings, "openai", cache)["api_base"],
+                "https://two.example",
+            )
+            self.assertEqual(build.call_count, 2)
+
     def test_first_class_cloud_service_and_custom_endpoint_resolve_separately(self):
         settings = {
             "service": tts_handler.GEMINI_SERVICE,

@@ -235,7 +235,6 @@
   >
     <header class="flex items-start justify-between gap-4">
       <div>
-        <div class="eyebrow">Session input</div>
         <h2 id="add-source-title" class="mt-1 text-2xl font-semibold">
           Add a source
         </h2>

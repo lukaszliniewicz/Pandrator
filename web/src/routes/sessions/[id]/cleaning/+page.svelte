@@ -123,7 +123,7 @@
     />
     <div class="grid gap-5 lg:grid-cols-[18rem_1fr]">
       <aside class="surface rounded-2xl p-4">
-        <div class="eyebrow mb-3">Runs</div>
+        <div class="section-label mb-3">Runs</div>
         {#each runs as item}<button
             onclick={() => selectRun(item)}
             class:active={selectedRun?.id === item.id}
@@ -136,7 +136,7 @@
       <section class="surface rounded-2xl p-5">
         <div class="flex justify-between">
           <div>
-            <div class="eyebrow">Agent audit</div>
+            <div class="section-label">Agent audit</div>
             <p class="muted mt-2 text-sm">
               Phase summaries, operations, validation warnings, tool results,
               and costs. Chain-of-thought is never stored.

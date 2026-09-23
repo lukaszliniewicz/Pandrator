@@ -40,7 +40,7 @@
       class="flex items-start justify-between gap-4 border-b border-[var(--line)] px-6 py-5"
     >
       <div>
-        <div class="eyebrow">
+        <div class="section-label">
           {sessionId ? 'Session settings' : 'Application defaults'}
         </div>
         <h2 id="settings-modal-title" class="mt-1 text-2xl font-semibold">

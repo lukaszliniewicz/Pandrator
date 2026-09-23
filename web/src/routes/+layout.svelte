@@ -7,22 +7,24 @@
   import type { Snippet } from 'svelte';
   import {
     Activity,
-    AudioLines,
-    AudioWaveform,
+    FileAudio,
+    Boxes,
+    GraduationCap,
+    Repeat2,
     ChevronLeft,
     ChevronRight,
     ExternalLink,
-    FolderClock,
+    Folders,
     Github,
     Home,
     Languages,
-    Library,
+    LibraryBig,
     LogOut,
     Menu,
     Mic2,
     Moon,
-    ServerCog,
-    Settings2,
+    Plug,
+    SlidersHorizontal,
     ShieldAlert,
     Sun,
     X
@@ -56,17 +58,21 @@
 
   const navigation = [
     { href: '/', label: 'Home', icon: Home },
-    { href: '/sessions', label: 'Sessions', icon: FolderClock },
-    { href: '/transcribe', label: 'Quick Transcribe', icon: AudioLines },
-    { href: '/sources', label: 'Source library', icon: Library },
+    { href: '/sessions', label: 'Sessions', icon: Folders },
+    { href: '/transcribe', label: 'Quick Transcribe', icon: FileAudio },
+    { href: '/sources', label: 'Source library', icon: LibraryBig },
     { href: '/voices', label: 'Voices', icon: Mic2 },
-    { href: '/models', label: 'Audio models', icon: AudioLines },
+    { href: '/models', label: 'Audio models', icon: Boxes },
     { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
-    { href: '/providers', label: 'Providers & services', icon: ServerCog },
-    { href: '/rvc', label: 'RVC conversion', icon: AudioWaveform },
-    { href: '/training', label: 'XTTS training', icon: AudioLines },
+    { href: '/providers', label: 'Providers & services', icon: Plug },
+    { href: '/rvc', label: 'RVC conversion', icon: Repeat2 },
+    { href: '/training', label: 'XTTS training', icon: GraduationCap },
     { href: '/activity', label: 'Activity & logs', icon: Activity },
-    { href: '/settings', label: 'Application settings', icon: Settings2 }
+    {
+      href: '/settings',
+      label: 'Application settings',
+      icon: SlidersHorizontal
+    }
   ];
 
   function active(href: string) {
@@ -147,7 +153,7 @@
 
 {#if appState.loading}
   <main class="grid min-h-screen place-items-center">
-    <div class="eyebrow animate-pulse">Preparing Pandrator…</div>
+    <div class="section-label animate-pulse">Preparing Pandrator…</div>
   </main>
 {:else if !appState.authenticated}
   <main class="grid min-h-screen place-items-center p-6">
@@ -167,7 +173,6 @@
           class="size-12 rounded-2xl border border-[var(--line)] object-cover"
         />
         <div>
-          <div class="eyebrow">Pandrator</div>
           <h1 class="mt-1 text-2xl font-semibold">Open your workspace</h1>
         </div>
       </div>
@@ -367,7 +372,10 @@
       class="surface fixed bottom-5 right-5 z-40 w-[min(30rem,calc(100vw-2rem))] rounded-2xl p-5"
     >
       <div class="flex items-start gap-3">
-        <Settings2 class="mt-0.5 shrink-0 text-[var(--accent)]" size={18} />
+        <SlidersHorizontal
+          class="mt-0.5 shrink-0 text-[var(--accent)]"
+          size={18}
+        />
         <div class="min-w-0 flex-1">
           <div class="font-semibold">Return to setup</div>
           <p class="muted mt-1 text-sm leading-relaxed">

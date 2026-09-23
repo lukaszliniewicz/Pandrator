@@ -22,6 +22,7 @@ var PandratorModelGroups = (() => {
   // src/lib/local-model-groups.ts
   var local_model_groups_exports = {};
   __export(local_model_groups_exports, {
+    MODEL_CAPABILITY_OPTIONS: () => MODEL_CAPABILITY_OPTIONS,
     UNKNOWN_GROUP_ID: () => UNKNOWN_GROUP_ID,
     badgeLabelFor: () => badgeLabelFor,
     familyDisplayName: () => familyDisplayName,
@@ -66,6 +67,21 @@ var PandratorModelGroups = (() => {
 
   // src/lib/local-model-groups.ts
   var UNKNOWN_GROUP_ID = "__unknown";
+  var MODEL_CAPABILITY_OPTIONS = [
+    { id: "voice_cloning", label: "Voice cloning" },
+    { id: "prebuilt_voices", label: "Pre-built voices" },
+    { id: "voice_design", label: "Voice design" },
+    { id: "instructions", label: "Instructions" },
+    { id: "emotion_control", label: "Emotions" },
+    { id: "vocal_events", label: "Vocal sounds" }
+  ];
+  function umbrellaFamily(family) {
+    if (family === "chatterbox" || family === "chatterbox_turbo")
+      return "chatterbox";
+    if (family === "firered_audio" || /^fireredtts\d*$/.test(family))
+      return "firered";
+    return family;
+  }
   var VOICE_MODE_LABELS = {
     cloning: "Voice cloning",
     prebuilt: "Built-in voices",
@@ -301,6 +317,7 @@ var PandratorModelGroups = (() => {
         family,
         familyLabel,
         voiceMode: voiceMode.trim().toLowerCase(),
+        capabilities: asStringList(entry?.capabilities ?? info.capabilities),
         languages,
         precision,
         precisionLabel: precisionLabelFor(precision),
@@ -314,6 +331,26 @@ var PandratorModelGroups = (() => {
     });
   }
   function subgroupFor(family, members) {
+    if (family === "chatterbox" || family === "firered") {
+      const buckets = /* @__PURE__ */ new Map();
+      for (const model of members) {
+        const variant = model.family === "fireredtts3" ? /instruct/i.test(model.id) ? "Instruct" : "Base" : "";
+        const key = `${model.family}:${variant}`;
+        let bucket = buckets.get(key);
+        if (!bucket) {
+          bucket = {
+            id: key,
+            label: [model.familyLabel, variant].filter(Boolean).join(" \xB7 "),
+            detail: voiceModeLabel(model.voiceMode),
+            voiceMode: model.voiceMode,
+            models: []
+          };
+          buckets.set(key, bucket);
+        }
+        bucket.models.push(model);
+      }
+      return [...buckets.values()].sort((a, b) => a.label.localeCompare(b.label));
+    }
     if (family === "qwen3_tts") {
       const impliedMode = {
         Base: "cloning",
@@ -399,7 +436,7 @@ var PandratorModelGroups = (() => {
   function groupLocalModels(models) {
     const buckets = /* @__PURE__ */ new Map();
     for (const model of models ?? []) {
-      const key = model.family || UNKNOWN_GROUP_ID;
+      const key = umbrellaFamily(model.family) || UNKNOWN_GROUP_ID;
       const bucket = buckets.get(key);
       if (bucket) bucket.push(model);
       else buckets.set(key, [model]);
@@ -409,7 +446,7 @@ var PandratorModelGroups = (() => {
       const known = family !== UNKNOWN_GROUP_ID;
       groups.push({
         id: known ? `family:${family}` : UNKNOWN_GROUP_ID,
-        label: known ? members[0]?.familyLabel || family : "Other models",
+        label: family === "chatterbox" ? "Chatterbox" : family === "firered" ? "FireRed" : known ? members[0]?.familyLabel || family : "Other models",
         family: known ? family : "",
         total: members.length,
         subgroups: known ? subgroupFor(family, members) : [
@@ -445,15 +482,15 @@ var PandratorModelGroups = (() => {
       model.recommendedFor
     ].join(" ").toLowerCase();
   }
-  function filterLocalGroups(groups, query) {
+  function filterLocalGroups(groups, query, capability = "") {
     const needle = query.trim().toLowerCase();
-    if (!needle) return groups;
+    if (!needle && !capability) return groups;
     const pruned = [];
     for (const group of groups ?? []) {
       const subgroups = [];
       for (const subgroup of group.subgroups) {
         const models = subgroup.models.filter(
-          (model) => haystackFor(group, subgroup, model).includes(needle)
+          (model) => haystackFor(group, subgroup, model).includes(needle) && (!capability || model.capabilities.includes(capability))
         );
         if (models.length) subgroups.push({ ...subgroup, models });
       }

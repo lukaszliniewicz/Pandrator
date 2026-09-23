@@ -650,7 +650,6 @@
   >
   <header class="mb-7 flex flex-wrap items-end justify-between gap-5">
     <div>
-      <div class="eyebrow">Providers</div>
       <h1 class="mt-2 text-4xl font-semibold">LLM connections and models</h1>
       <p class="muted mt-3 max-w-3xl">
         Configure LiteLLM adapters, endpoints, API keys, catalogues, optional
@@ -861,7 +860,6 @@
     >
       <header class="flex items-start justify-between gap-4">
         <div>
-          <div class="eyebrow">LLM provider</div>
           <h2 id="provider-title" class="mt-1 text-2xl font-semibold">
             {editingProvider
               ? `Edit ${editingProvider.label}`
@@ -1087,7 +1085,6 @@
     >
       <div class="flex justify-between">
         <div>
-          <div class="eyebrow">Model settings</div>
           <h2
             id="model-settings-title"
             class="mt-1 font-mono text-xl font-semibold"

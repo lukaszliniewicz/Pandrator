@@ -48,9 +48,8 @@
 <div class="mx-auto max-w-7xl">
   <header class="flex flex-wrap items-end justify-between gap-6">
     <div>
-      <div class="eyebrow">Home</div>
       <h1 class="mt-2 text-4xl font-semibold tracking-[-.04em]">
-        What shall we make?
+        Create a session
       </h1>
       <p class="muted mt-3 max-w-2xl">
         Start with a clear outcome or return to a session. Advanced controls
@@ -108,7 +107,7 @@
   <div class="mt-10 grid gap-7 xl:grid-cols-[1.4fr_.8fr]">
     <section>
       <div class="mb-3 flex items-center justify-between">
-        <div class="eyebrow">Recent sessions</div>
+        <div class="section-label">Recent sessions</div>
         <a
           href="/sessions"
           class="muted flex items-center gap-1 text-xs font-semibold"
@@ -119,7 +118,9 @@
         {#if appState.snapshotLoading && !appState.sessions.length}<div
             class="grid min-h-28 place-items-center"
           >
-            <span class="eyebrow animate-pulse">Loading recent sessions…</span>
+            <span class="section-label animate-pulse"
+              >Loading recent sessions…</span
+            >
           </div>{:else}{#each appState.sessions.slice(0, 6) as session}<a
               href={`/sessions/${session.id}`}
               class="flex items-center gap-4 border-b border-[var(--line)] p-4 last:border-0 hover:bg-[var(--accent-soft)]"
@@ -147,7 +148,7 @@
       </div>
     </section>
     <aside>
-      <div class="eyebrow mb-3">Readiness</div>
+      <div class="section-label mb-3">Readiness</div>
       <div class="surface rounded-2xl p-5">
         <div class="space-y-4">
           <div class="readiness">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     Pencil,
+    GitMerge,
     RotateCcw,
     Scissors,
     Trash2,
@@ -19,12 +20,13 @@
   import SpeechAnnotationText from './SpeechAnnotationText.svelte';
   import {
     textareaSpeechRange,
+    speakerColors,
     type SpeechSelection,
     type SpeechPreview
   } from './speech-annotations';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
-  import WaveformPeaks from './WaveformPeaks.svelte';
+  import SegmentOptionsMenu from './SegmentOptionsMenu.svelte';
   import {
     selectVirtualWindow,
     slotHeights,
@@ -56,6 +58,7 @@
     onregeneratewith,
     onmerge,
     onsplit,
+    compactRows = false,
     showPassageBoundaries = false,
     showSpeechAnnotations = false,
     speechPreviews = {},
@@ -108,6 +111,7 @@
     ) => unknown;
     previewSegmentId?: string;
     onpreviewrequest?: (item: GenerationSegment) => void;
+    compactRows?: boolean;
     showPassageBoundaries?: boolean;
     showSpeechAnnotations?: boolean;
     speechPreviews?: Record<string, SpeechPreview>;
@@ -143,6 +147,7 @@
     /** Accessible non-virtualized fallback; drawer may bind to own it. */
     showAll?: boolean;
   } = $props();
+  const annotationColors = $derived(speakerColors(items, speechPreviews));
 
   type CursorState = {
     layer: 'display' | 'speech';
@@ -297,7 +302,7 @@
         items.length,
         (index) => measured.get(items[index].id),
         estimatedRowHeight,
-        boundaryRowHeight
+        compactRows ? 0 : boundaryRowHeight
       )
     )
   );
@@ -602,7 +607,9 @@
   data-loaded-count={items.length}
   data-rendered-count={visibleIndexes.length}
   data-virtualized={virtualEnabled ? 'true' : 'false'}
-  aria-rowcount={items.length ? items.length * 2 : 1}
+  aria-rowcount={items.length
+    ? items.length * (compactRows ? 1 : 2) + (compactRows ? 1 : 0)
+    : 1}
   onfocusin={handleFocusIn}
   onfocusout={handleFocusOut}
   class="w-full table-fixed border-collapse text-sm"
@@ -647,7 +654,7 @@
       {@const hasPassages = Boolean(
         item.passage_structure?.layers[textMode].boundaries.length
       )}
-      {#if itemIndex > 0}
+      {#if itemIndex > 0 && !compactRows}
         <tr class="boundary-row" aria-rowindex={itemIndex * 2 + 1}>
           <td colspan="5">
             <SpeechBoundaryMarker
@@ -668,7 +675,7 @@
         class:removed={item.removed}
         data-segment-id={item.id}
         data-segment-ordinal={item.ordinal}
-        aria-rowindex={itemIndex * 2 + 2}
+        aria-rowindex={itemIndex * (compactRows ? 1 : 2) + 2}
       >
         <td>
           <input
@@ -693,6 +700,7 @@
             <div class="passage-row p-2 text-sm leading-relaxed">
               <SpeechAnnotationText
                 {item}
+                colors={annotationColors}
                 layer={textMode}
                 preview={speechPreviews[item.id]}
                 oninspect={onspeech ?? (() => {})}
@@ -840,92 +848,9 @@
               >
             {/if}
           {/if}
-          {#if item.optimized_text || selectedTake?.llm_optimized}
-            <button
-              onclick={(event) => {
-                event.stopPropagation();
-                onreview(item);
-              }}
-              class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"
-            >
-              <WandSparkles size={12} />
-              <span class="truncate"
-                >{item.speech_plan?.version
-                  ? 'Review speech plan'
-                  : 'Compare speech optimization'}</span
-              >
-              <span
-                class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase"
-                >{item.speech_plan?.mode_used ??
-                  item.optimization_status ??
-                  'generated'}</span
-              >
-              {#if item.speech_plan?.proposals?.length}
-                <span
-                  class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700"
-                  >{item.speech_plan.proposals.length} proposed</span
-                >
-              {/if}
-            </button>
-          {/if}
-          <div class="flex min-w-0 flex-wrap items-center gap-2">
-            {#if onspeech}<button
-                type="button"
-                class="mini"
-                aria-label={`Inspect voices and delivery for segment ${item.ordinal + 1}`}
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onspeech?.(item, 0, event.currentTarget, true);
-                }}>Voices &amp; delivery</button
-              >{/if}
-            <select
-              value={item.node_kind ?? 'paragraph'}
-              onchange={(event) =>
-                onpatch(item, {
-                  node_kind: event.currentTarget
-                    .value as GenerationSegment['node_kind']
-                })}
-              aria-label="Segment role"
-              class="mini"
-            >
-              <option value="paragraph">Paragraph</option>
-              <option value="heading">Heading</option>
-              <option value="chapter_marker">Chapter start</option>
-              <option value="subtitle_cue">Subtitle cue</option>
-            </select>
-            <select
-              value={item.voice ?? ''}
-              onchange={(event) =>
-                onpatch(item, { voice: event.currentTarget.value || null })}
-              aria-label={`Voice for segment ${item.ordinal + 1}`}
-              title={`${selectedTtsServiceName ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
-              disabled={speechOptionsLoading}
-              class="mini max-w-52"
-            >
-              <option value="">
-                Inherited{inheritedVoice
-                  ? ` · ${onvoices(item).find((voice) => voice.id.toLowerCase() === inheritedVoice.toLowerCase())?.name ?? inheritedVoice}`
-                  : ' · service default'}
-              </option>
-              {#each onvoices(item) as voice}
-                <option value={voice.id}>{onvoicelabel(voice)}</option>
-              {/each}
-            </select>
-            <select
-              value={item.language ?? ''}
-              onchange={(event) =>
-                onlanguagechange(item, event.currentTarget.value)}
-              aria-label={`Language for segment ${item.ordinal + 1}`}
-              disabled={speechOptionsLoading}
-              class="mini max-w-48"
-            >
-              <option value=""
-                >Inherited · {onlanguagelabel(inheritedLanguage)}</option
-              >
-              {#each onlanguages(item) as language}
-                <option value={language.value}>{language.label}</option>
-              {/each}
-            </select>
+          <div
+            class="segment-actions flex min-w-0 flex-wrap items-center justify-end gap-1"
+          >
             <div
               class="inline-flex shrink-0 items-center gap-1"
               role="group"
@@ -964,6 +889,123 @@
                     size={14}
                   />{/if}
               </button>
+              <button
+                type="button"
+                class="action icon-action"
+                aria-label={`Merge segment ${item.ordinal + 1} with next`}
+                title="Merge with next segment"
+                disabled={loading ||
+                  topologyDisabled ||
+                  item.removed ||
+                  !items[itemIndex + 1] ||
+                  items[itemIndex + 1].removed ||
+                  items[itemIndex + 1].ordinal !== item.ordinal + 1}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  const next = items[itemIndex + 1];
+                  if (next && next.ordinal === item.ordinal + 1)
+                    onmerge(item, next);
+                }}><GitMerge size={14} /></button
+              >
+              <SegmentOptionsMenu segmentNumber={item.ordinal + 1}>
+                {#if item.optimized_text || selectedTake?.llm_optimized}
+                  <button
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onreview(item);
+                    }}
+                    class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"
+                  >
+                    <WandSparkles size={12} />
+                    <span class="truncate"
+                      >{item.speech_plan?.version
+                        ? 'Review speech plan'
+                        : 'Compare speech optimization'}</span
+                    >
+                    <span
+                      class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase"
+                      >{item.speech_plan?.mode_used ??
+                        item.optimization_status ??
+                        'generated'}</span
+                    >
+                    {#if item.speech_plan?.proposals?.length}
+                      <span
+                        class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700"
+                        >{item.speech_plan.proposals.length} proposed</span
+                      >
+                    {/if}
+                  </button>
+                {/if}
+
+                {#if onspeech && !showSpeechAnnotations}<button
+                    type="button"
+                    class="mini"
+                    aria-label={`Inspect voices and delivery for segment ${item.ordinal + 1}`}
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onspeech?.(item, 0, event.currentTarget, true);
+                    }}>Voices &amp; delivery</button
+                  >{/if}
+                <label
+                  >Role
+                  <select
+                    value={item.node_kind ?? 'paragraph'}
+                    onchange={(event) =>
+                      onpatch(item, {
+                        node_kind: event.currentTarget
+                          .value as GenerationSegment['node_kind']
+                      })}
+                    aria-label="Segment role"
+                    class="mini"
+                  >
+                    <option value="paragraph">Paragraph</option>
+                    <option value="heading">Heading</option>
+                    <option value="chapter_marker">Chapter start</option>
+                    <option value="subtitle_cue">Subtitle cue</option>
+                  </select></label
+                >
+                <label
+                  >Voice
+                  <select
+                    value={item.voice ?? ''}
+                    onchange={(event) =>
+                      onpatch(item, {
+                        voice: event.currentTarget.value || null
+                      })}
+                    aria-label={`Voice for segment ${item.ordinal + 1}`}
+                    title={`${selectedTtsServiceName ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
+                    disabled={speechOptionsLoading}
+                    class="mini max-w-52"
+                  >
+                    <option value="">
+                      Inherited{inheritedVoice
+                        ? ` · ${onvoices(item).find((voice) => voice.id.toLowerCase() === inheritedVoice.toLowerCase())?.name ?? inheritedVoice}`
+                        : ' · service default'}
+                    </option>
+                    {#each onvoices(item) as voice}
+                      <option value={voice.id}>{onvoicelabel(voice)}</option>
+                    {/each}
+                  </select></label
+                >
+                <label
+                  >Language
+                  <select
+                    value={item.language ?? ''}
+                    onchange={(event) =>
+                      onlanguagechange(item, event.currentTarget.value)}
+                    aria-label={`Language for segment ${item.ordinal + 1}`}
+                    disabled={speechOptionsLoading}
+                    class="mini max-w-48"
+                  >
+                    <option value=""
+                      >Inherited · {onlanguagelabel(inheritedLanguage)}</option
+                    >
+                    {#each onlanguages(item) as language}
+                      <option value={language.value}>{language.label}</option>
+                    {/each}
+                  </select></label
+                >
+              </SegmentOptionsMenu>
             </div>
           </div>
         </td>
@@ -976,7 +1018,6 @@
               active={previewSegmentId === item.id}
               onrequest={() => onpreviewrequest?.(item)}
             />
-            <WaveformPeaks artifactId={selectedTake.artifact_id} />
             <select
               value={selectedTake.id}
               onchange={(event) =>
@@ -1056,6 +1097,9 @@
 </table>
 
 <style>
+  table {
+    min-width: 680px;
+  }
   .mark-toggle {
     appearance: none;
     display: inline-grid;
@@ -1066,7 +1110,7 @@
     border-radius: 50%;
     background: var(--paper);
     cursor: pointer;
-    vertical-align: middle;
+    vertical-align: top;
   }
   .mark-toggle:checked {
     border-color: var(--accent);
@@ -1089,7 +1133,7 @@
     border-bottom: 1px solid var(--line);
     padding: 0.55rem;
     text-align: center;
-    vertical-align: middle;
+    vertical-align: top;
   }
   td.narrative-cell,
   th:nth-child(3) {
@@ -1100,12 +1144,24 @@
   td {
     overflow-wrap: anywhere;
   }
+  td:first-child,
+  td:nth-child(2) {
+    padding-top: 1rem;
+  }
+  .mark-toggle {
+    display: block;
+    margin: 0 auto;
+  }
+  .segment-actions {
+    margin-top: 0.2rem;
+  }
   .passage-row {
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
   }
-  .passage-row :global(.passage-text) {
+  .passage-row :global(.passage-text),
+  .passage-row :global(.annotated-text) {
     flex: 1;
     min-width: 0;
   }

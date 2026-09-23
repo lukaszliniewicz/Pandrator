@@ -32,9 +32,8 @@
   >
     <header class="flex items-start justify-between gap-4">
       <div>
-        <div class="eyebrow">Setup checklist</div>
         <h1 id="setup-checklist-title" class="mt-2 text-3xl font-semibold">
-          Prepare your studio
+          Set up Pandrator
         </h1>
         <p class="muted mt-2 text-sm">
           Configure only what your workflow needs. Pandrator never installs

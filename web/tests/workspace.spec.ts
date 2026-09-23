@@ -53,7 +53,7 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   const sessionName = uniqueName('Playwright subtitles');
   await signIn(page);
   await expect(
-    page.getByRole('heading', { name: 'What shall we make?' })
+    page.getByRole('heading', { name: 'Create a session' })
   ).toBeVisible();
   await page
     .getByRole('button', { name: /Create subtitles/ })
