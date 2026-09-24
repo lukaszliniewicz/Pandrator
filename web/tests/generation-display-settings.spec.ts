@@ -159,7 +159,9 @@ test('full generation preview retains historical settings and queued rows explai
     .poll(() => previewBody)
     .toMatchObject({
       settings_source_run_id: 'history',
-      speech_plan_revision_id: 'r1'
+      speech_plan_revision_id: 'r1',
+      missing_only: false,
+      stale_only: false
     });
   await page
     .getByRole('button', { name: 'Generate 1 block', exact: true })

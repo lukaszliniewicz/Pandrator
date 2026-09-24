@@ -2567,7 +2567,8 @@
       <div class="drawer-actions ml-auto flex flex-wrap gap-2">
         {#if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
           <button
-            onclick={() => openGenerationStart('continue')}
+            onclick={() =>
+              openGenerationStart(selectedRun ? 'all' : 'continue')}
             disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
             class="action primary"
             title={settingsSourceRunId
@@ -2919,7 +2920,8 @@
               type="button"
               class="action mt-2"
               disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
-              onclick={() => openGenerationStart('continue')}
+              onclick={() =>
+                openGenerationStart(selectedRun ? 'all' : 'continue')}
               data-testid="generation-recovery-continue"
               >Continue unfinished audio…</button
             >
