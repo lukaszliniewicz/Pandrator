@@ -1162,6 +1162,12 @@ export type UsageSummary = {
 };
 
 export type GenerationRun = {
+  queued_segment_ids?: string[];
+  waiting_for_job?: {
+    id: string;
+    kind: string;
+    progress_detail?: string | null;
+  } | null;
   id: string;
   session_id: string;
   plan_revision_id: string;

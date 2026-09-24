@@ -22,6 +22,7 @@ from .export_contract import (
     normalize_audio_mode,
     normalize_export_mode,
 )
+from .generation_subtitles import capture_display_subtitle_snapshot
 from .jobs import JobQueue
 from .models import (
     AgentRun,
@@ -1966,6 +1967,9 @@ class WorkflowService:
             )):
                 payload["speech_plan_revision_id"] = generation_revision.id
         if stage_key == "export":
+            payload["display_subtitle_snapshot"] = capture_display_subtitle_snapshot(
+                session, session_id, flattened
+            )
             export_source = resolve_media_source(session, session_id)
             # Converting an edited recording to voiceover retains its cut
             # timeline. Export must keep using the matching render.

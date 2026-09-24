@@ -18,6 +18,7 @@
     sessionId,
     planRevisionId,
     planLabel = '',
+    settingsSourceRunId = '',
     initialMode = 'continue',
     pausedRunLabel = null,
     onclose,
@@ -26,6 +27,7 @@
     sessionId: string;
     planRevisionId: string | null;
     planLabel?: string;
+    settingsSourceRunId?: string;
     initialMode?: GenerationStartMode;
     pausedRunLabel?: string | null;
     onclose: () => void;
@@ -109,7 +111,11 @@
     const flags = startModeFlags(requestedMode);
     previewGenerationStart(
       requestedSession,
-      { speech_plan_revision_id: requestedRevision, ...flags },
+      {
+        speech_plan_revision_id: requestedRevision,
+        settings_source_run_id: settingsSourceRunId || null,
+        ...flags
+      },
       controller.signal
     )
       .then((result) => {
@@ -200,6 +206,7 @@
         requestedSession,
         {
           speech_plan_revision_id: requestedRevision,
+          settings_source_run_id: settingsSourceRunId || null,
           ...flags
         },
         controller.signal
@@ -262,6 +269,7 @@
       const flags = startModeFlags(mode);
       const run = await confirmGenerationStart(sessionId, {
         speech_plan_revision_id: planRevisionId,
+        settings_source_run_id: settingsSourceRunId || null,
         ...flags,
         expected_selection_hash: preview.selection_hash
       });
@@ -321,13 +329,17 @@
         <strong>Resume paused run is separate.</strong> It continues “{pausedRunLabel}”
         with its saved voice and settings, re-checking each recording first, so
         unverified recordings may be regenerated. It does not switch to your
-        current settings. The choices below start a new run with your current
-        settings instead.
+        current settings. The choices below start a new run with
+        {settingsSourceRunId
+          ? 'the selected historical run’s saved settings'
+          : 'your current settings'}.
       </p>
     {:else}
       <p class="muted text-sm">
-        This starts a new run with the current voice and settings. Completed
-        recordings are only replaced where the choice below says so.
+        This starts a new run with {settingsSourceRunId
+          ? 'the selected historical run’s saved voice and settings'
+          : 'the current voice and settings'}. Completed recordings are only
+        replaced where the choice below says so.
       </p>
     {/if}
 
@@ -347,7 +359,9 @@
           <span class="muted block text-xs">
             Keeps every completed recording, even ones made with older or
             different settings. Only blocks that are missing, edited, or
-            previously failed are generated with the current voice and settings.
+            previously failed are generated with {settingsSourceRunId
+              ? 'the saved'
+              : 'the current'} voice and settings.
           </span>
         </span>
       </label>
@@ -363,9 +377,11 @@
         <span>
           <strong>Refresh changed audio</strong>
           <span class="muted block text-xs">
-            Regenerates blocks whose recordings no longer match the current
-            voice or settings, plus any missing, edited, or failed blocks.
-            Matching completed recordings are kept.
+            Regenerates blocks whose recordings no longer match {settingsSourceRunId
+              ? 'the saved'
+              : 'the current'}
+            voice or settings, plus any missing, edited, or failed blocks. Matching
+            completed recordings are kept.
           </span>
         </span>
       </label>
@@ -381,8 +397,9 @@
         <span>
           <strong>Regenerate everything</strong>
           <span class="muted block text-xs">
-            Regenerates every block with the current voice and settings. Every
-            completed recording is replaced.
+            Regenerates every block with {settingsSourceRunId
+              ? 'the saved'
+              : 'the current'} voice and settings. Every completed recording is replaced.
           </span>
         </span>
       </label>
@@ -449,8 +466,9 @@
         {/if}
         {#if preview.settings_summary}
           <p class="muted mt-2 text-xs" data-testid="generation-start-settings">
-            Current settings: {preview.settings_summary.service} · {preview
-              .settings_summary.model} · voice {preview.settings_summary.voice}
+            {settingsSourceRunId ? 'Saved run settings' : 'Current settings'}: {preview
+              .settings_summary.service} · {preview.settings_summary.model} · voice
+            {preview.settings_summary.voice}
           </p>
         {/if}
         {#if noWork}

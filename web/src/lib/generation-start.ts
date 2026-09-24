@@ -38,6 +38,7 @@ export type GenerationPreview = {
 };
 
 export type GenerationPreviewRequest = {
+  settings_source_run_id?: string | null;
   speech_plan_revision_id: string;
   missing_only: boolean;
   stale_only: boolean;

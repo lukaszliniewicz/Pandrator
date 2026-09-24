@@ -152,6 +152,31 @@
   });
   let selectedRunId = $state('');
   let selectedRunVersionId = $state('');
+  // Editing creates a new plan; its settings source survives leaving history.
+  let settingsSourceRunId = $state('');
+  const settingsSourceRun = $derived(
+    generationStore.runs.find((item) => item.id === settingsSourceRunId) ?? null
+  );
+  const pendingGeneration = $derived.by(() => {
+    const messages: Record<string, string> = {};
+    for (const queued of generationStore.runs) {
+      if (
+        queued.status !== 'queued' ||
+        queued.plan_revision_id !== payload.plan_revision_id
+      )
+        continue;
+      const ids = queued.queued_segment_ids ?? [];
+      const message = queued.waiting_for_job
+        ? queued.waiting_for_job.kind.startsWith('export')
+          ? 'Regeneration queued — waiting for export'
+          : 'Generation queued — waiting for other session work'
+        : 'Generation queued — waiting for a worker';
+      for (const item of payload.items) {
+        if (!ids.length || ids.includes(item.id)) messages[item.id] = message;
+      }
+    }
+    return messages;
+  });
   const assembly = $derived(generationStore.assembly);
   let filter = $state<SegmentFilter>('all');
   let error = $state('');
@@ -418,10 +443,16 @@
       Math.max(0, Math.min(1, Number.isFinite(numeric) ? numeric : 0)) * 100
     );
   };
+  const inheritedTtsSettings = $derived.by(() => {
+    const saved = settingsSourceRun?.settings_snapshot?.tts;
+    return saved && typeof saved === 'object'
+      ? (saved as Record<string, unknown>)
+      : ttsSettings;
+  });
   const selectedTtsService = $derived.by(() => {
     const configured = String(
-      ttsSettings.service ??
-        ttsSettings.tts_service ??
+      inheritedTtsSettings.service ??
+        inheritedTtsSettings.tts_service ??
         ttsCatalogue.default_service ??
         ''
     );
@@ -435,18 +466,24 @@
   });
   const selectedTtsModel = $derived(
     String(
-      ttsSettings.model ||
-        ttsSettings.xtts_model ||
+      inheritedTtsSettings.model ||
+        inheritedTtsSettings.xtts_model ||
         selectedTtsService?.default_model ||
         ''
     )
   );
   const inheritedLanguage = $derived(
-    String(ttsSettings.language || ttsSettings.target_language || 'en')
+    String(
+      inheritedTtsSettings.language ||
+        inheritedTtsSettings.target_language ||
+        'en'
+    )
   );
   const selectedTtsServiceId = $derived(
     normalizeId(
-      selectedTtsService?.id ?? ttsSettings.service ?? ttsSettings.tts_service
+      selectedTtsService?.id ??
+        inheritedTtsSettings.service ??
+        inheritedTtsSettings.tts_service
     )
   );
   const modelVoiceDescriptors = $derived.by(() => {
@@ -513,14 +550,14 @@
       const managed = managedRegistrations.get(voice.toLowerCase());
       return {
         ...describeVoice(
-          String(service.id ?? ttsSettings.service ?? ''),
+          String(service.id ?? inheritedTtsSettings.service ?? ''),
           voice,
           service.voice_metadata?.[`${selectedTtsModel}:${voice}`]
         ),
         name:
           managed?.name ??
           describeVoice(
-            String(service.id ?? ttsSettings.service ?? ''),
+            String(service.id ?? inheritedTtsSettings.service ?? ''),
             voice,
             service.voice_metadata?.[`${selectedTtsModel}:${voice}`]
           ).name
@@ -529,7 +566,7 @@
   });
   const supportedSpeechLanguages = $derived.by(() => {
     const discovered = languagesForService(
-      String(selectedTtsService?.id ?? ttsSettings.service ?? ''),
+      String(selectedTtsService?.id ?? inheritedTtsSettings.service ?? ''),
       modelVoiceDescriptors,
       {
         modelId: selectedTtsModel,
@@ -542,8 +579,8 @@
   });
   const inheritedVoice = $derived(
     String(
-      ttsSettings.voice ||
-        ttsSettings.speaker ||
+      inheritedTtsSettings.voice ||
+        inheritedTtsSettings.speaker ||
         selectedTtsService?.default_voices_by_language?.[selectedTtsModel]?.[
           inheritedLanguage
         ] ||
@@ -1044,7 +1081,15 @@
     regenerateMenuOpen = false;
     try {
       const previousRows = payload.items;
-      const updated = await generationStore.updateSegment(item, changes);
+      if (selectedRun) settingsSourceRunId = selectedRun.id;
+      const independentChanges =
+        'text' in changes && !('optimized_text' in changes)
+          ? { ...changes, optimized_text: item.optimized_text ?? item.text }
+          : changes;
+      const updated = await generationStore.updateSegment(
+        item,
+        independentChanges
+      );
       savedEditRows.set(updated.id, { ...item, ...updated });
       // Record the ID mapping directly from the mutation response so an
       // aborted post-save reload cannot drop it; the ordinal rematch below
@@ -1283,6 +1328,7 @@
     error = '';
     regenerationNotice = '';
     try {
+      if (selectedRun) settingsSourceRunId = selectedRun.id;
       ids = await editQueue.settledIds(ids);
       if (
         pinnedRevisionId &&
@@ -1319,7 +1365,8 @@
         run_override,
         selectedSegmentOverride,
         selectedRunId && ids.length ? null : payload.plan_revision_id || null,
-        staleOnly
+        staleOnly,
+        settingsSourceRunId || null
       );
       generationStore.upsertRun(started);
       if (operation === 'regenerate') {
@@ -1358,7 +1405,14 @@
     }
   }
 
-  function openGenerationStart(mode: GenerationStartMode) {
+  async function openGenerationStart(mode: GenerationStartMode) {
+    if (selectedRun) settingsSourceRunId = selectedRun.id;
+    try {
+      await editQueue.settledIds([]);
+    } catch (caught) {
+      error = errorMessage(caught);
+      return;
+    }
     if (!payload.plan_revision_id) {
       error = 'Select the active speech plan first.';
       return;
@@ -1384,7 +1438,8 @@
   }
 
   function sourceSettingsForAlternate() {
-    const snapshot = selectedRun?.settings_snapshot ?? {};
+    const snapshot =
+      (selectedRun ?? settingsSourceRun)?.settings_snapshot ?? {};
     const sourceTts =
       snapshot.tts && typeof snapshot.tts === 'object'
         ? (snapshot.tts as Record<string, unknown>)
@@ -1670,6 +1725,7 @@
     try {
       await generationApi.deleteRun(selectedHistoryRun.id);
       generationStore.removeRun(selectedHistoryRun.id);
+      settingsSourceRunId = '';
       selectedRunId = '';
       await load(true, false);
     } catch (caught) {
@@ -1757,16 +1813,19 @@
   async function changeSelectedRun(event: Event) {
     selectedRunId = (event.currentTarget as HTMLSelectElement).value;
     selectedRunVersionId = '';
+    settingsSourceRunId = selectedRunId;
     selectedRow = '';
     selectedRows = [];
     selectionAnchor = '';
     stopPlayback();
     await load(true, false);
+    if (selectedRun) settingsSourceRunId = selectedRun.id;
   }
 
   async function selectRepairVersion(versionId: string) {
     if (!repairHistoryRun) return;
     selectedRunId = repairHistoryRun.id;
+    settingsSourceRunId = versionId;
     selectedRunVersionId = versionId;
     selectedRow = '';
     selectedRows = [];
@@ -1826,7 +1885,7 @@
   async function applySearchReplacements(updates: TextReplacement[]) {
     error = '';
     try {
-      const voiceoverCueScope = isVoiceover && searchField === 'text';
+      if (selectedRun) settingsSourceRunId = selectedRun.id;
       const changes = updates.flatMap((update) => {
         const item = searchItems[update.index];
         if (!item || update.text === editableTexts[update.index]) return [];
@@ -1834,20 +1893,17 @@
           throw new Error(
             'Replacement would leave a generation segment blank. Remove that segment instead.'
           );
-        // Voiceover cue-scope replacement promises the TTS field untouched.
-        // The backend honors an explicitly supplied optimized_text alongside
-        // a text change, so send the existing override in the same batch.
-        // Null/inherited TTS is omitted and keeps following the cue.
-        // Audiobook keeps the legacy single-field behavior.
+        // Display edits preserve effective speech; the speech layer is explicit.
         return [
           {
             segment: item,
             changes:
               searchField === 'spoken'
                 ? { optimized_text: update.text }
-                : voiceoverCueScope && item.optimized_text != null
-                  ? { text: update.text, optimized_text: item.optimized_text }
-                  : { text: update.text }
+                : {
+                    text: update.text,
+                    optimized_text: item.optimized_text ?? item.text
+                  }
           }
         ];
       });
@@ -2483,6 +2539,7 @@
               expected_plan_revision_id: payload.plan_revision_id
             });
             selectedRunId = '';
+            settingsSourceRunId = '';
             await load(true, false);
           }}
           onrestore={(revisionId) =>
@@ -2513,7 +2570,9 @@
             onclick={() => openGenerationStart('continue')}
             disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
             class="action primary"
-            title="Choose what to generate from this speech plan using the current voice and settings"
+            title={settingsSourceRunId
+              ? 'Generate using the selected run’s saved voice and settings'
+              : 'Generate using the current voice and settings'}
             ><Play size={14} /> Generate audio…</button
           >
         {/if}
@@ -2559,6 +2618,22 @@
         <div
           class="flex flex-wrap items-center justify-end gap-2 border-b border-[var(--line)] p-3"
         >
+          <label class="mr-auto flex items-center gap-2 text-xs font-semibold">
+            Edit text
+            <select
+              aria-label="Text to edit"
+              bind:value={textMode}
+              class="mini"
+            >
+              <option value="display">Display / subtitles</option>
+              <option value="speech">TTS speech</option>
+            </select>
+          </label>
+          {#if settingsSourceRunId}
+            <span class="muted text-xs" data-generation-settings-source>
+              Settings from {settingsSourceRun?.label ?? 'selected run'}
+            </span>
+          {/if}
           {#if runs.length}
             <label
               class="run-picker flex items-center gap-2 text-xs font-semibold"
@@ -2854,6 +2929,16 @@
         {#if error}<p class="p-3 text-sm text-red-500" role="alert">
             {error}
           </p>{/if}
+        {#if run?.status === 'queued' && run.waiting_for_job}
+          <p class="px-4 py-2 text-sm" role="status">
+            Generation queued — waiting for {run.waiting_for_job.kind.startsWith(
+              'export'
+            )
+              ? 'export'
+              : 'other session work'}.
+            {run.waiting_for_job.progress_detail ?? ''}
+          </p>
+        {/if}
         {#if regenerationNotice}<p
             class="p-3 text-sm text-[var(--muted)]"
             role="status"
@@ -2905,6 +2990,7 @@
               {showPassageBoundaries}
               onpassage={inspectPassage}
               items={payload.items}
+              {pendingGeneration}
               {selectedRows}
               {loading}
               {speechOptionsLoading}
@@ -3534,6 +3620,7 @@
     {sessionId}
     planRevisionId={payload.plan_revision_id}
     initialMode={generationStartDialog.mode}
+    {settingsSourceRunId}
     pausedRunLabel={run?.status === 'paused'
       ? (run.label ?? 'paused run')
       : null}

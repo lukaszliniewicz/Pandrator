@@ -1021,7 +1021,8 @@ export const generationApi = {
     runOverride: Record<string, unknown>,
     selectedSegmentOverride: Record<string, unknown> = {},
     speechPlanRevisionId: string | null = null,
-    staleOnly = false
+    staleOnly = false,
+    settingsSourceRunId: string | null = null
   ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-runs',
@@ -1036,7 +1037,8 @@ export const generationApi = {
         run_override: runOverride,
         selected_segment_override: selectedSegmentOverride,
         speech_plan_revision_id: speechPlanRevisionId,
-        stale_only: staleOnly
+        stale_only: staleOnly,
+        settings_source_run_id: settingsSourceRunId
       }
     }),
   rvcModels: () =>

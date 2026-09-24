@@ -35,6 +35,7 @@
 
   let {
     items,
+    pendingGeneration = {},
     selectedRows,
     loading,
     speechOptionsLoading,
@@ -79,6 +80,7 @@
     showAll = $bindable(false)
   }: {
     items: GenerationSegment[];
+    pendingGeneration?: Record<string, string>;
     selectedRows: string[];
     loading: boolean;
     speechOptionsLoading: boolean;
@@ -804,6 +806,7 @@
                 use:autoExpand
                 value={item.text}
                 aria-label={`Script text for segment ${item.ordinal + 1}`}
+                title="Display and subtitle text. Editing this keeps the spoken wording unchanged."
                 data-generation-search-index={itemIndex}
                 onselect={(event) =>
                   rememberCursor(item, 'display', event.currentTarget)}
@@ -835,6 +838,14 @@
                   <span class="font-medium text-[var(--accent)]">Spoken:</span>
                   {item.optimized_text}
                 </p>
+                <button
+                  type="button"
+                  class="muted text-xs underline"
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    onpatch(item, { optimized_text: null });
+                  }}>Use display text for speech</button
+                >
               {/if}
             {/if}
             {#if (showSpeechAnnotations || (showPassageBoundaries && hasPassages)) && editingPassageId === item.id}
@@ -1044,7 +1055,13 @@
           {/if}
         </td>
         <td>
-          <span class="status">{item.status}</span>
+          <span class="status"
+            >{pendingGeneration[item.id] ? 'Queued' : item.status}</span
+          >
+          {#if pendingGeneration[item.id]}<span
+              class="mt-1 block text-xs"
+              role="status">{pendingGeneration[item.id]}</span
+            >{/if}
           {#if ['generation_settings_changed', 'voice_reference_changed'].includes(item.audio_reuse_reason ?? '')}
             <span class="mt-1 block text-xs text-[var(--warning)]"
               >Audio settings changed</span

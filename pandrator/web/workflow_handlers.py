@@ -1498,6 +1498,10 @@ class WorkflowHandlers:
                 handler_payload["resolved_settings_snapshot"] = payload.get(
                     "resolved_settings_snapshot"
                 )
+                if "display_subtitle_snapshot" in payload:
+                    handler_payload["display_subtitle_snapshot"] = payload[
+                        "display_subtitle_snapshot"
+                    ]
             if definition.key == "generate_audio":
                 handler_payload["speech_plan_revision_id"] = expected_speech_revision or None
                 result = self._run_reviewable_generation(

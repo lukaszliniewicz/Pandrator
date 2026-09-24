@@ -6,12 +6,17 @@ import os
 import shutil
 import subprocess
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
 from .export_inputs import resolve_export_inputs, select_media_export
 from .export_subtitles import subtitle_track_details
 from .export_video import render_video_export
+from .generation_subtitles import (
+    capture_display_subtitle_snapshot,
+    derive_display_subtitle_artifact,
+)
 from .models import Artifact, new_id
 from .workflow_output_context import OutputWorkflowContext
 
@@ -35,6 +40,18 @@ def export(
     )
     from pandrator.logic.dubbing.subtitle_finalization import finalize_srt_file
 
+    if "display_subtitle_snapshot" not in payload:
+        # Compatibility for direct/legacy worker calls. Queued exports always
+        # carry the snapshot, including an explicit None.
+        with context.database.session() as session:
+            payload = {
+                **payload,
+                "display_subtitle_snapshot": capture_display_subtitle_snapshot(
+                    session,
+                    str(payload.get("session_id") or ""),
+                    dict(payload.get("settings") or {}),
+                ),
+            }
     inputs = resolve_export_inputs(context, payload)
     session_id = inputs.session_id
     settings = inputs.settings
@@ -121,6 +138,15 @@ def export(
                 )
         if export_mode == "audio":
             selected_subtitles = []
+        selected_subtitles = derive_display_subtitle_artifact(
+            context,
+            selected_subtitles,
+            payload["display_subtitle_snapshot"],
+            session_id=session_id,
+        )
+        media_selection = replace(
+            media_selection, selected_subtitles=selected_subtitles
+        )
         # Subtitle finalization runs inside each branch below so every
         # scratch file lives in a bounded try/finally: conversions and
         # mux inputs can never strand hidden duplicates when they fail.

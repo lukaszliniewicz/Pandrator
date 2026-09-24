@@ -789,6 +789,7 @@ class GenerationStartRequest(StrictModel):
     selected_segment_override: dict[str, Any] = Field(default_factory=dict)
     segment_ids: list[str] = Field(default_factory=list)
     generation_run_id: str | None = None
+    settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
     operation: Literal["generate", "regenerate", "rvc"] = "generate"
 
 

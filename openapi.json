@@ -2761,6 +2761,20 @@
             "title": "Selected Segment Override",
             "type": "object"
           },
+          "settings_source_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Settings Source Run Id"
+          },
           "speech_plan_revision_id": {
             "anyOf": [
               {

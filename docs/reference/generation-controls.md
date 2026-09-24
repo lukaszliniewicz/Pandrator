@@ -198,3 +198,30 @@ previewing, and adopting do not invoke an LLM or synthesize audio. Generation
 is a separate action. The configured-model analysis endpoints remain available
 for users who explicitly choose them. Existing pSSML drafts remain readable
 and editable alongside XML drafts.
+
+## Editing generation text and reusing a run
+
+The generation drawer's **Edit text** selector separates **Display / subtitles**
+from **TTS speech**. Display edits keep the existing spoken wording, including
+when speech previously followed the display text. Use **Use display text for
+speech** (or **Reset to script** in the speech editor) to make both match again.
+Speech-only edits never replace the display wording.
+
+Selecting an older audio run also selects its saved generation settings. That
+settings source survives text edits that create a new plan revision, and applies
+to both segment regeneration and the Generate audio dialog. Provider, model,
+voice, language and explicit TTS speed are retained; assembly slowdown remains a
+separate setting. The API expresses this independently of audio ownership with
+`settings_source_run_id` on generation preview/start requests.
+
+Subtitle exports capture display text from the selected run's plan, or the active
+plan when no run is selected, when the export is queued. Only its matching source
+or translation track is updated. Verified cue mappings retain individual timing;
+an edited merged block with an obsolete internal mapping uses its known overall
+time window. Split pieces sharing a source cue appear once, and removed blocks
+are omitted. Spoken overrides are never used as subtitle copy. Original subtitle
+artifacts and historical plans stay unchanged.
+
+A queued replacement is shown separately from the older recording's stale state.
+If an export holds the session, the drawer explains that generation is waiting
+for it; queuing a replacement does not interrupt the export.
