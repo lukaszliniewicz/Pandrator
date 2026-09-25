@@ -19,7 +19,7 @@ from .artifact_selection import (
 from .database import Database
 from .export_contract import (
     build_export_contract,
-    normalize_audio_mode,
+    export_requires_generation_assembly,
     normalize_export_mode,
 )
 from .generation_subtitles import capture_display_subtitle_snapshot
@@ -1944,7 +1944,52 @@ class WorkflowService:
                 (artifact for artifact in attached_sources),
                 None,
             )
-        if prerequisite_roles and source is None:
+        deferred_export_assembly = False
+        if stage_key == "export":
+            deferred_export_assembly = export_requires_generation_assembly(
+                workflow_kind=record.workflow_kind,
+                settings=flattened,
+            )
+            if deferred_export_assembly:
+                export_generation_run_id = str(
+                    flattened.get("generation_run_id") or ""
+                ).strip()
+                generation_run = session.get(
+                    GenerationRun,
+                    export_generation_run_id,
+                )
+                if (
+                    generation_run is None
+                    or generation_run.session_id != session_id
+                ):
+                    raise ValueError(
+                        "The selected generation run does not belong to this session."
+                    )
+                if generation_run.status != "completed":
+                    raise ValueError(
+                        "Only a completed generation run can be exported."
+                    )
+                from .workspace import find_matching_output_assembly
+
+                matching_assembly, _assembly_snapshot, _assembly_hash = (
+                    find_matching_output_assembly(
+                        session,
+                        session_id=session_id,
+                        run=generation_run,
+                        resolved_settings_snapshot=resolved,
+                    )
+                )
+                source = (
+                    session.get(Artifact, matching_assembly.artifact_id)
+                    if matching_assembly is not None
+                    and matching_assembly.artifact_id
+                    else None
+                )
+        if (
+            prerequisite_roles
+            and source is None
+            and not deferred_export_assembly
+        ):
             if record.workflow_kind == "media_edit" and stage_key == "export":
                 raise ValueError(
                     "Render and review the active media edit before exporting it."
@@ -2060,21 +2105,11 @@ class WorkflowService:
         # generation run needs it. The frontend submits a single runStage call;
         # routing to export.variant keeps assembly and export pinned to the
         # same resolved intent instead of requiring a second click.
-        job_kind = definition.job_kind
-        if stage_key == "export":
-            export_generation_run_id = str(
-                flattened.get("generation_run_id") or ""
-            ).strip()
-            export_mode_name = str(flattened.get("export_mode") or "media").lower()
-            export_audio_mode = normalize_audio_mode(flattened.get("audio_mode"))
-            if bool(export_generation_run_id) and (
-                record.workflow_kind == "audiobook"
-                or (
-                    export_mode_name in {"media", "audio"}
-                    and export_audio_mode in {"mixed", "dubbing_only"}
-                )
-            ):
-                job_kind = "export.variant"
+        job_kind = (
+            "export.variant"
+            if stage_key == "export" and deferred_export_assembly
+            else definition.job_kind
+        )
         return ResolvedWorkflowStage(
             job_kind=job_kind,
             payload=payload,

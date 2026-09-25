@@ -178,6 +178,45 @@ class ExportAssemblyPlanSelectionTests(unittest.TestCase):
                 self.revision_p1,
             )
 
+    def test_variant_pins_the_ensured_assembly_into_export(self):
+        snapshot = {
+            "audio": {"format": "wav"},
+            "output": {"export_mode": "audio"},
+        }
+        with self.database.session() as session:
+            self._assembly(
+                session,
+                self.run_old_id,
+                self.revision_p1,
+                snapshot,
+                self.artifact_old_id,
+            )
+
+        with mock.patch.object(
+            self.handlers,
+            "export",
+            return_value={"artifact_ids": []},
+        ) as export:
+            self.handlers.handler_registry["export.variant"](
+                {
+                    "session_id": self.record.id,
+                    "settings": {
+                        "generation_run_id": self.run_old_id,
+                        "export_mode": "audio",
+                        "audio_mode": "dubbing_only",
+                    },
+                    "resolved_settings_snapshot": snapshot,
+                },
+                lambda *_args: None,
+                threading.Event(),
+            )
+
+        export_payload = export.call_args.args[0]
+        self.assertEqual(
+            self.artifact_old_id,
+            export_payload["pinned_assembly_artifact_id"],
+        )
+
     def test_variant_canceled_during_inline_assembly_never_starts_export(self):
         canceled = threading.Event()
         assembly_ids = []

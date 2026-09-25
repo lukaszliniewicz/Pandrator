@@ -36,10 +36,12 @@ def freeze_boundaries(session, revision_id: str, snapshot: dict) -> None:
     annotations = frozen.get("annotations") or {}
     result = {}
     for row in session.scalars(
-        select(m.GenerationSegment).where(
+        select(m.GenerationSegment)
+        .where(
             m.GenerationSegment.plan_revision_id == revision_id,
             m.GenerationSegment.removed.is_(False),
         )
+        .order_by(m.GenerationSegment.ordinal)
     ):
         text = row.optimized_text or row.text
         entry = annotations.get(row.id) or {}

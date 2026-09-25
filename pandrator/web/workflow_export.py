@@ -10,7 +10,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from .export_inputs import resolve_export_inputs, select_media_export
+from .export_inputs import (
+    resolve_export_inputs,
+    select_generated_audio,
+    select_media_export,
+)
 from .export_subtitles import subtitle_track_details
 from .export_video import render_video_export
 from .generation_subtitles import (
@@ -57,8 +61,6 @@ def export(
     settings = inputs.settings
     record = inputs.record
     output_settings_snapshot = inputs.output_settings_snapshot
-    by_role = inputs.by_role
-    selected_audio = inputs.selected_audio
     output_dir = context._session_dir(session_id) / "exports"
     output_dir.mkdir(parents=True, exist_ok=True)
     # New exports are grouped by kind so the Output tab stays readable.
@@ -71,10 +73,9 @@ def export(
     produced: list[Artifact] = []
 
     if record.workflow_kind == "audiobook":
-        audio = (
-            selected_audio
-            if selected_audio is not None
-            else by_role.get("assembled_audio") or by_role.get("audiobook_audio")
+        audio = select_generated_audio(
+            inputs,
+            legacy_role="audiobook_audio",
         )
         if audio is None:
             raise ValueError("Audiobook export requires generated audio.")

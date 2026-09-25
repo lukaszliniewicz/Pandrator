@@ -43,7 +43,7 @@ from .credentials import (
     resolve_secret_reference,
 )
 from .database import Database
-from .export_contract import normalize_audio_mode
+from .export_contract import export_requires_generation_assembly
 from .jobs import JobQueue
 from .logical_passages import (
     attach_passages,
@@ -1407,9 +1407,10 @@ class WorkflowHandlers:
         for index, definition in enumerate(runnable):
             if cancel_event.is_set():
                 return {"artifacts": produced}
-            settings = (
-                stage_settings.get(definition.key)
-                if isinstance(stage_settings.get(definition.key), dict)
+            raw_stage_settings = stage_settings.get(definition.key)
+            settings: dict[str, Any] = (
+                dict(raw_stage_settings)
+                if isinstance(raw_stage_settings, dict)
                 else {}
             )
             if definition.key == target_key:
@@ -1418,6 +1419,13 @@ class WorkflowHandlers:
                 settings["llm_tts_optimization"] = bool(
                     transformations.get("llm_tts_optimization")
                 )
+            deferred_export_assembly = (
+                definition.key == "export"
+                and export_requires_generation_assembly(
+                    workflow_kind=record.workflow_kind,
+                    settings=settings,
+                )
+            )
             with self.database.session() as session:
                 existing = (
                     selected_artifacts(session, session_id).get(
@@ -1446,7 +1454,11 @@ class WorkflowHandlers:
                         )
             if source is None:
                 source = self._latest_stage_input(session_id, input_roles)
-            if definition.prerequisite_roles and source is None:
+            if (
+                definition.prerequisite_roles
+                and source is None
+                and not deferred_export_assembly
+            ):
                 raise ValueError(
                     f"Stage '{definition.key}' is missing a required input artifact."
                 )
@@ -1502,7 +1514,13 @@ class WorkflowHandlers:
                     handler_payload["display_subtitle_snapshot"] = payload[
                         "display_subtitle_snapshot"
                     ]
-            if definition.key == "generate_audio":
+            if definition.key == "export" and deferred_export_assembly:
+                result = self.export_variant(
+                    handler_payload,
+                    stage_progress,
+                    cancel_event,
+                )
+            elif definition.key == "generate_audio":
                 handler_payload["speech_plan_revision_id"] = expected_speech_revision or None
                 result = self._run_reviewable_generation(
                     handler_payload,
@@ -10314,15 +10332,8 @@ class WorkflowHandlers:
     ) -> str | None:
         """Reuse or synchronously build the exact assembly required by an export plan."""
 
-        from .workspace import (
-            output_assembly_settings_hash,
-            output_assembly_settings_snapshot,
-        )
+        from .workspace import find_matching_output_assembly
 
-        assembly_snapshot = output_assembly_settings_snapshot(
-            resolved_settings_snapshot
-        )
-        settings_hash = output_assembly_settings_hash(resolved_settings_snapshot)
         with self.database.session() as session:
             run = session.get(GenerationRun, generation_run_id)
             if run is None or run.session_id != session_id:
@@ -10331,44 +10342,13 @@ class WorkflowHandlers:
                 )
             if run.status != "completed":
                 raise ValueError("Only a completed generation run can be exported.")
-            from .speech_boundaries import freeze_boundaries
-
-            boundary_snapshot = deepcopy(run.settings_snapshot_json or {})
-            if "speech_boundaries" not in boundary_snapshot:
-                freeze_boundaries(session, run.plan_revision_id, boundary_snapshot)
-            assembly_snapshot["speech_boundaries"] = boundary_snapshot.get(
-                "speech_boundaries", {}
-            )
-            existing_candidates = list(
-                session.scalars(
-                    select(OutputAssembly)
-                    .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
-                    .where(
-                        OutputAssembly.session_id == session_id,
-                        OutputAssembly.generation_run_id == generation_run_id,
-                        OutputAssembly.status == "completed",
-                        Artifact.state == "current",
-                    )
-                    .order_by(OutputAssembly.created_at.desc())
-                ).all()
-            )
-            existing = next(
-                (
-                    candidate
-                    for candidate in existing_candidates
-                    if ((candidate.settings_json or {}).get("resolved") or {}).get(
-                        "speech_boundaries", {}
-                    )
-                    == assembly_snapshot["speech_boundaries"]
-                    and (
-                        candidate.settings_hash == settings_hash
-                        or output_assembly_settings_hash(
-                            dict((candidate.settings_json or {}).get("resolved") or {})
-                        )
-                        == settings_hash
-                    )
-                ),
-                None,
+            existing, assembly_snapshot, settings_hash = (
+                find_matching_output_assembly(
+                    session,
+                    session_id=session_id,
+                    run=run,
+                    resolved_settings_snapshot=resolved_settings_snapshot,
+                )
             )
             if existing is not None and existing.artifact_id:
                 progress(0.68, "Using the selected generation run assembly")
@@ -10411,14 +10391,13 @@ class WorkflowHandlers:
             resolved_snapshot if isinstance(resolved_snapshot, dict) else {}
         )
         record = self._session_record(str(payload.get("session_id") or ""))
-        export_mode = str(settings.get("export_mode") or "media").lower()
-        audio_mode = normalize_audio_mode(settings.get("audio_mode"))
-        needs_assembly = bool(generation_run_id) and (
-            record.workflow_kind == "audiobook"
-            or (export_mode in {"media", "audio"} and audio_mode in {"mixed", "dubbing_only"})
+        needs_assembly = export_requires_generation_assembly(
+            workflow_kind=record.workflow_kind,
+            settings=settings,
         )
+        pinned_assembly_artifact_id = None
         if needs_assembly:
-            self._ensure_export_generation_assembly(
+            pinned_assembly_artifact_id = self._ensure_export_generation_assembly(
                 session_id=record.id,
                 generation_run_id=generation_run_id,
                 resolved_settings_snapshot=resolved_snapshot,
@@ -10430,7 +10409,16 @@ class WorkflowHandlers:
             export_progress = _scaled_progress_callback(progress, 0.7, 1.0)
         else:
             export_progress = progress
-        return self.export(payload, export_progress, cancel_event)
+        export_payload = (
+            {
+                **payload,
+                "resolved_settings_snapshot": resolved_snapshot,
+                "pinned_assembly_artifact_id": pinned_assembly_artifact_id,
+            }
+            if pinned_assembly_artifact_id
+            else payload
+        )
+        return self.export(export_payload, export_progress, cancel_event)
 
     def export(self, payload, progress, cancel_event):
         """Create immutable, managed exports from the explicitly selected inputs."""

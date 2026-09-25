@@ -318,6 +318,66 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         )
         return run_id, legacy_snapshot, legacy_hash, assembly_id
 
+    def test_legacy_run_without_snapshot_reuses_only_unambiguous_assembly(self):
+        run_id, legacy_snapshot, _legacy_hash, assembly_id = (
+            self._legacy_completed_run_assembly()
+        )
+        result = WorkflowHandlers(self.database, self.paths).export(
+            {
+                "session_id": self.record.id,
+                "settings": {
+                    **dict(legacy_snapshot["output"]),
+                    "generation_run_id": run_id,
+                },
+            },
+            lambda *_args: None,
+            threading.Event(),
+        )
+
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_id)
+            exported = session.get(Artifact, result["artifact_ids"][0])
+            edge = session.scalar(
+                select(ArtifactEdge).where(
+                    ArtifactEdge.child_artifact_id == exported.id,
+                    ArtifactEdge.parent_artifact_id == assembly.artifact_id,
+                )
+            )
+        self.assertIsNotNone(edge)
+
+    def test_legacy_run_without_snapshot_rejects_ambiguous_assemblies(self):
+        run_id, legacy_snapshot, _legacy_hash, assembly_id = (
+            self._legacy_completed_run_assembly()
+        )
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_id)
+            session.add(
+                OutputAssembly(
+                    session_id=self.record.id,
+                    generation_run_id=run_id,
+                    status="completed",
+                    artifact_id=assembly.artifact_id,
+                    settings_json=deepcopy(assembly.settings_json or {}),
+                    settings_hash=assembly.settings_hash,
+                )
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Multiple assemblies are available for the selected audio version",
+        ):
+            WorkflowHandlers(self.database, self.paths).export(
+                {
+                    "session_id": self.record.id,
+                    "settings": {
+                        **dict(legacy_snapshot["output"]),
+                        "generation_run_id": run_id,
+                    },
+                },
+                lambda *_args: None,
+                threading.Event(),
+            )
+
     def test_direct_export_reuses_legacy_full_snapshot_assembly(self):
         run_id, legacy_snapshot, legacy_hash, assembly_id = (
             self._legacy_completed_run_assembly()
@@ -383,6 +443,45 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                         "generation_run_id": run_id,
                     },
                     "resolved_settings_snapshot": changed_snapshot,
+                },
+                lambda *_args: None,
+                threading.Event(),
+            )
+
+    def test_direct_export_rejects_assembly_after_boundary_change(self):
+        run_id, legacy_snapshot, _legacy_hash, assembly_id = (
+            self._legacy_completed_run_assembly()
+        )
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, assembly_id)
+            manifest = list((assembly.settings_json or {}).get("takes") or [])
+            self.assertGreaterEqual(len(manifest), 2)
+            boundaries = {}
+            for index, item in enumerate(manifest):
+                pause = int(item.get("silence_after_ms") or 0)
+                if index == 0:
+                    pause += 250
+                boundaries[str(item["segment_id"])] = {
+                    "silence_after_ms": pause,
+                }
+            run = session.get(GenerationRun, run_id)
+            run.settings_snapshot_json = {
+                **dict(run.settings_snapshot_json or {}),
+                "speech_boundaries": boundaries,
+            }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "synchronization/output settings changed.*Reassemble",
+        ):
+            WorkflowHandlers(self.database, self.paths).export(
+                {
+                    "session_id": self.record.id,
+                    "settings": {
+                        **dict(legacy_snapshot["output"]),
+                        "generation_run_id": run_id,
+                    },
+                    "resolved_settings_snapshot": legacy_snapshot,
                 },
                 lambda *_args: None,
                 threading.Event(),

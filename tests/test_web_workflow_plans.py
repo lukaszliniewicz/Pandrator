@@ -18,6 +18,7 @@ from pandrator.web.models import (
     GenerationRun,
     Job,
     OutcomePlan,
+    OutputAssembly,
     Provider,
     SessionRecord,
     SessionSetting,
@@ -32,7 +33,10 @@ from pandrator.web.workflow_plans import (
     canonical_digest,
 )
 from pandrator.web.workflows import ResolvedWorkflowStage
-from pandrator.web.workspace import WorkspaceSettingsService
+from pandrator.web.workspace import (
+    WorkspaceSettingsService,
+    output_assembly_settings_hash,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -209,6 +213,46 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         self.assertEqual(202, following.status_code, following.get_json())
         self.assertEqual(replacement_source, following.get_json()["payload_json"]["source_artifact_id"])
         self.assertEqual(999, following.get_json()["payload_json"]["settings"]["max_sentence_length"])
+
+    def test_export_endpoint_queues_variant_before_first_assembly(self):
+        session_id, _artifact_id, _asset_id = self._ready_session()
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="http-export-first-assembly",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            db_session.add(run)
+            db_session.flush()
+            run_id = run.id
+
+        response = self.client.post(
+            f"/api/v1/sessions/{session_id}/stages/export/run",
+            json={"output": {"generation_run_id": run_id}},
+            headers=self.headers,
+        )
+
+        self.assertEqual(202, response.status_code, response.get_json())
+        queued = response.get_json()
+        self.assertEqual("export.variant", queued["kind"])
+        self.assertEqual(
+            run_id,
+            queued["payload_json"]["settings"]["generation_run_id"],
+        )
+        self.assertIsNone(queued["payload_json"]["source_artifact_id"])
 
     def test_direct_run_captures_settings_and_source_from_one_snapshot(self):
         self._assert_direct_run_snapshot("clean_source", "text")
@@ -429,6 +473,159 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         with self.extension["database"].session() as db_session:
             stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
             self.assertEqual("export.variant", stored.plan_json["_execution"]["job_kind"])
+
+    def test_direct_export_plan_does_not_reuse_deleted_assembly_artifact(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        output_override = {
+            "generation_run_id": "",
+            "export_mode": "media",
+            "audio_mode": "mixed",
+            "subtitle_mode": "none",
+        }
+        with self.extension["database"].session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="deleted-assembly-plan",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            db_session.add(run)
+            db_session.flush()
+            run_id = run.id
+
+        output_override["generation_run_id"] = run_id
+        resolved, _settings_hash = WorkspaceSettingsService(
+            self.extension["database"]
+        ).resolve(
+            session_id,
+            sections=["audio", "output"],
+            run_override={"output": output_override},
+        )
+        with self.extension["database"].session() as db_session:
+            deleted = Artifact(
+                session_id=session_id,
+                kind="audio",
+                role="assembled_audio",
+                relative_path="deleted-assembly.wav",
+                state="deleted",
+            )
+            db_session.add(deleted)
+            db_session.flush()
+            db_session.add(
+                OutputAssembly(
+                    session_id=session_id,
+                    generation_run_id=run_id,
+                    status="completed",
+                    artifact_id=deleted.id,
+                    settings_json={
+                        "resolved": resolved,
+                        "plan_revision_id": revision.id,
+                    },
+                    settings_hash=output_assembly_settings_hash(resolved),
+                )
+            )
+
+        plan = self._plan(
+            session_id,
+            target_stage="export",
+            overrides={"output": output_override},
+            continuation=False,
+        )
+
+        assemble = next(
+            item for item in plan["ordered_steps"] if item["stage"] == "assemble_audio"
+        )
+        self.assertEqual("run", assemble["decision"])
+        self.assertEqual("ready", assemble["current_status"])
+        self.assertIsNone(assemble["artifact_id"])
+
+    def test_plan_fingerprint_tracks_generation_and_assembly_snapshots(self):
+        session_id, _artifact_id, _asset_id = self._ready_session(
+            workflow_kind="voiceover",
+            suffix="mp4",
+        )
+        database = self.extension["database"]
+        with database.session() as db_session:
+            generation_plan = GenerationPlan(session_id=session_id)
+            db_session.add(generation_plan)
+            db_session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=generation_plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="fingerprint-plan",
+            )
+            db_session.add(revision)
+            db_session.flush()
+            generation_plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+                settings_snapshot_json={"speech_boundaries": {"one": {"silence_after_ms": 10}}},
+            )
+            db_session.add(run)
+            db_session.flush()
+            artifact = Artifact(
+                session_id=session_id,
+                kind="audio",
+                role="assembled_audio",
+                relative_path="fingerprint.wav",
+                state="current",
+            )
+            db_session.add(artifact)
+            db_session.flush()
+            assembly = OutputAssembly(
+                session_id=session_id,
+                generation_run_id=run.id,
+                status="completed",
+                artifact_id=artifact.id,
+                settings_json={"resolved": {"speech_boundaries": {"one": {"silence_after_ms": 10}}}},
+                settings_hash="same-material-hash",
+            )
+            db_session.add(assembly)
+            db_session.flush()
+            run_id = run.id
+            assembly_id = assembly.id
+
+        with database.session() as db_session:
+            before = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id
+            )
+            run = db_session.get(GenerationRun, run_id)
+            run.settings_snapshot_json = {
+                "speech_boundaries": {"one": {"silence_after_ms": 20}}
+            }
+        with database.session() as db_session:
+            after_run_change = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id
+            )
+            self.assertNotEqual(before, after_run_change)
+            assembly = db_session.get(OutputAssembly, assembly_id)
+            assembly.settings_json = {
+                "resolved": {"speech_boundaries": {"one": {"silence_after_ms": 30}}}
+            }
+        with database.session() as db_session:
+            after_assembly_change = WorkflowExecutionPlanService._state_fingerprint(
+                db_session, session_id
+            )
+        self.assertNotEqual(after_run_change, after_assembly_change)
 
     def test_deterministic_cleaning_does_not_claim_an_external_llm(self):
         session_id, _artifact_id, _asset_id = self._ready_session()

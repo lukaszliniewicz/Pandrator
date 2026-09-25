@@ -225,10 +225,38 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
         return metadata, relative
 
     def test_resolve_stage_routes_export_with_run_to_variant(self):
+        from pandrator.web.models import (
+            GenerationPlan,
+            GenerationPlanRevision,
+            GenerationRun,
+        )
+
         sid = self._voiceover_session()
         video = self.services.paths.uploads / "routing.mp4"
         self._make_video(video, 2)
         self._attach_upload(sid, video)
+        with self.services.database.session() as session:
+            plan = GenerationPlan(session_id=sid)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="routing-plan",
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=sid,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
         # Canonical modes and normalized aliases share one routing point:
         # "dubbed" normalizes to "dubbing_only", "source" to "preserve".
         cases = [
@@ -246,12 +274,12 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
                     {
                         "export_mode": "media",
                         "audio_mode": audio_mode,
-                        "generation_run_id": "run-first-click",
+                        "generation_run_id": run_id,
                     },
                 )
                 self.assertEqual(routed.job_kind, expected_kind)
                 self.assertEqual(
-                    routed.payload["settings"]["generation_run_id"], "run-first-click"
+                    routed.payload["settings"]["generation_run_id"], run_id
                 )
         direct = self.workflows.resolve_stage(
             sid, "export", {"export_mode": "media", "audio_mode": "mixed"}

@@ -39,6 +39,37 @@ def normalize_audio_mode(value: Any) -> str:
     return result
 
 
+def export_uses_generated_audio(
+    *, workflow_kind: str, settings: dict[str, Any]
+) -> bool:
+    """Return whether this export intent consumes generated speech audio."""
+
+    if workflow_kind == "audiobook":
+        return True
+    if workflow_kind != "voiceover":
+        return False
+    export_mode = normalize_export_mode(
+        settings.get("export_mode"),
+        workflow_kind=workflow_kind,
+    )
+    if export_mode not in {"media", "audio"}:
+        return False
+    audio_mode = normalize_audio_mode(settings.get("audio_mode"))
+    return audio_mode in {"mixed", "dubbing_only"}
+
+
+def export_requires_generation_assembly(
+    *, workflow_kind: str, settings: dict[str, Any]
+) -> bool:
+    """Return whether a selected generation run must be assembled for export."""
+
+    generation_run_id = str(settings.get("generation_run_id") or "").strip()
+    return bool(generation_run_id) and export_uses_generated_audio(
+        workflow_kind=workflow_kind,
+        settings=settings,
+    )
+
+
 def build_export_contract(
     *,
     workflow_kind: str,

@@ -100,6 +100,166 @@ def output_assembly_settings_hash(snapshot: dict[str, Any]) -> str:
     return stable_hash(output_assembly_settings_snapshot(snapshot))
 
 
+def expected_output_assembly_snapshot(
+    session: Session,
+    run: GenerationRun,
+    resolved_settings_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the material assembly settings plus the selected run's pauses."""
+
+    snapshot = output_assembly_settings_snapshot(resolved_settings_snapshot)
+    boundary_snapshot = deepcopy(run.settings_snapshot_json or {})
+    if "speech_boundaries" not in boundary_snapshot:
+        from .speech_boundaries import freeze_boundaries
+
+        freeze_boundaries(session, run.plan_revision_id, boundary_snapshot)
+    snapshot["speech_boundaries"] = deepcopy(
+        boundary_snapshot.get("speech_boundaries") or {}
+    )
+    return snapshot
+
+
+def _legacy_assembly_boundaries_match(
+    settings_container: dict[str, Any],
+    expected_boundaries: dict[str, Any],
+) -> bool:
+    """Validate pre-boundary-snapshot assemblies against their stored manifest."""
+
+    if not expected_boundaries:
+        return True
+    takes = settings_container.get("takes")
+    if not isinstance(takes, list) or not takes:
+        return False
+    manifest_ids = [
+        str(item.get("segment_id") or "")
+        for item in takes
+        if isinstance(item, dict) and item.get("segment_id")
+    ]
+    if set(manifest_ids) != set(expected_boundaries):
+        return False
+    if any(
+        isinstance(value, dict)
+        and (
+            value.get("text_hash") is not None
+            or value.get("boundary_after") is not None
+        )
+        for value in expected_boundaries.values()
+    ):
+        # Pre-boundary manifests did not record enough information to prove
+        # equivalence once speech markup or text-hash guards are involved.
+        return False
+    for index, item in enumerate(takes):
+        if not isinstance(item, dict):
+            return False
+        segment_id = str(item.get("segment_id") or "")
+        expected = expected_boundaries.get(segment_id)
+        if not isinstance(expected, dict):
+            return False
+        # Assembly deliberately omits trailing padding after the final segment.
+        if index == len(takes) - 1:
+            continue
+        try:
+            stored_pause = int(item.get("silence_after_ms") or 0)
+            expected_pause = int(expected.get("silence_after_ms") or 0)
+        except (TypeError, ValueError):
+            return False
+        if stored_pause != expected_pause:
+            return False
+    return True
+
+
+def output_assembly_matches(
+    assembly: OutputAssembly,
+    *,
+    expected_snapshot: dict[str, Any],
+    expected_settings_hash: str,
+    expected_plan_revision_id: str,
+) -> bool:
+    """Use one compatibility-aware freshness rule for every export path."""
+
+    if assembly.status != "completed" or not assembly.artifact_id:
+        return False
+    settings_container = dict(assembly.settings_json or {})
+    if (
+        str(settings_container.get("plan_revision_id") or "")
+        != str(expected_plan_revision_id or "")
+    ):
+        return False
+    stored_resolved = settings_container.get("resolved")
+    stored_resolved = stored_resolved if isinstance(stored_resolved, dict) else {}
+    expected_boundaries = expected_snapshot.get("speech_boundaries")
+    expected_boundaries = (
+        expected_boundaries if isinstance(expected_boundaries, dict) else {}
+    )
+    stored_boundaries = stored_resolved.get("speech_boundaries")
+    if isinstance(stored_boundaries, dict):
+        if stored_boundaries != expected_boundaries:
+            return False
+    elif not _legacy_assembly_boundaries_match(
+        settings_container,
+        expected_boundaries,
+    ):
+        return False
+    return (
+        assembly.settings_hash == expected_settings_hash
+        or output_assembly_settings_hash(stored_resolved)
+        == expected_settings_hash
+    )
+
+
+def find_matching_output_assembly(
+    session: Session,
+    *,
+    session_id: str,
+    run: GenerationRun,
+    resolved_settings_snapshot: dict[str, Any],
+    artifact_id: str | None = None,
+) -> tuple[OutputAssembly | None, dict[str, Any], str]:
+    """Find the current assembly that exactly matches one selected generation run."""
+
+    expected_snapshot = expected_output_assembly_snapshot(
+        session,
+        run,
+        resolved_settings_snapshot,
+    )
+    expected_settings_hash = output_assembly_settings_hash(
+        resolved_settings_snapshot
+    )
+    filters = [
+        OutputAssembly.session_id == session_id,
+        OutputAssembly.generation_run_id == run.id,
+        OutputAssembly.status == "completed",
+        Artifact.state == "current",
+    ]
+    if artifact_id:
+        filters.append(OutputAssembly.artifact_id == artifact_id)
+    candidates = list(
+        session.scalars(
+            select(OutputAssembly)
+            .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
+            .where(*filters)
+            .order_by(
+                OutputAssembly.created_at.desc(),
+                OutputAssembly.id.desc(),
+            )
+        ).all()
+    )
+    match = next(
+        (
+            candidate
+            for candidate in candidates
+            if output_assembly_matches(
+                candidate,
+                expected_snapshot=expected_snapshot,
+                expected_settings_hash=expected_settings_hash,
+                expected_plan_revision_id=run.plan_revision_id,
+            )
+        ),
+        None,
+    )
+    return match, expected_snapshot, expected_settings_hash
+
+
 def mark_output_assemblies_stale(
     session,
     session_id: str,

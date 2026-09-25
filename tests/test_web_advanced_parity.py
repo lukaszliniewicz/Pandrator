@@ -778,18 +778,71 @@ class SourceAwareWorkflowTests(unittest.TestCase):
                     session.add(revision)
                     session.flush()
                     plan.active_revision_id = revision.id
-                    session.add(
-                        GenerationRun(
-                            session_id=record.id,
-                            plan_revision_id=revision.id,
-                            sequence_number=1,
-                            status="completed",
-                        )
+                    run = GenerationRun(
+                        session_id=record.id,
+                        plan_revision_id=revision.id,
+                        sequence_number=1,
+                        status="completed",
                     )
-                stages = WorkflowService(database, JobQueue(database)).snapshot(record.id)["stages"]
+                    session.add(run)
+                    session.flush()
+                    run_id = run.id
+                workflows = WorkflowService(database, JobQueue(database))
+                stages = workflows.snapshot(record.id)["stages"]
                 export = next(item for item in stages if item["key"] == "export")
                 self.assertEqual("ready", export["status"])
                 self.assertTrue(export["executable"])
+                resolved = workflows.resolve_stage(
+                    record.id,
+                    "export",
+                    {"generation_run_id": run_id},
+                )
+                self.assertEqual("export.variant", resolved.job_kind)
+                self.assertIsNone(resolved.source_artifact_id)
+            finally:
+                database.dispose()
+
+    def test_export_resolution_rejects_unready_generation_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            database = Database(paths.database)
+            try:
+                record = SessionService(database).create(
+                    "Not ready to export",
+                    workflow_kind="audiobook",
+                )
+                with database.session() as session:
+                    plan = GenerationPlan(session_id=record.id)
+                    session.add(plan)
+                    session.flush()
+                    revision = GenerationPlanRevision(
+                        plan_id=plan.id,
+                        revision_number=1,
+                        settings_json={},
+                        content_hash="queued-run",
+                    )
+                    session.add(revision)
+                    session.flush()
+                    plan.active_revision_id = revision.id
+                    run = GenerationRun(
+                        session_id=record.id,
+                        plan_revision_id=revision.id,
+                        sequence_number=1,
+                        status="queued",
+                    )
+                    session.add(run)
+                    session.flush()
+                    run_id = run.id
+                workflows = WorkflowService(database, JobQueue(database))
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "Only a completed generation run can be exported",
+                ):
+                    workflows.resolve_stage(
+                        record.id,
+                        "export",
+                        {"generation_run_id": run_id},
+                    )
             finally:
                 database.dispose()
 

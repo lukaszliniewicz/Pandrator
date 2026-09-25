@@ -922,6 +922,35 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual("pl", artifact.metadata_json["language"])
         self.assertEqual("", artifact.metadata_json["model"])
 
+    def test_continuation_export_delegates_missing_assembly_to_variant(self):
+        with (
+            mock.patch.object(
+                self.handlers,
+                "_continuation_required_stages",
+                return_value={"export"},
+            ),
+            mock.patch.object(
+                self.handlers,
+                "export_variant",
+                return_value={"artifact_ids": ["fixture-export"]},
+            ) as export_variant,
+        ):
+            result = self.handlers.continue_workflow(
+                {
+                    "session_id": self.session.id,
+                    "target_stage": "export",
+                    "settings": {"generation_run_id": "completed-run"},
+                    "resolved_settings_snapshot": {},
+                },
+                self.progress,
+                threading.Event(),
+            )
+
+        export_variant.assert_called_once()
+        payload = export_variant.call_args.args[0]
+        self.assertEqual("completed-run", payload["settings"]["generation_run_id"])
+        self.assertEqual("export", result["target_stage"])
+
     def test_workflow_reuses_translation_when_settings_and_source_are_unchanged(self):
         with self.database.session() as session:
             session.get(SessionRecord, self.session.id).workflow_kind = "voiceover"

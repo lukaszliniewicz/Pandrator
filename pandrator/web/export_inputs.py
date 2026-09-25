@@ -9,9 +9,14 @@ from typing import Any
 from sqlalchemy import select
 
 from .artifact_selection import selected_artifacts
-from .export_contract import ExportContract, normalize_audio_mode
+from .export_contract import (
+    ExportContract,
+    export_uses_generated_audio,
+    normalize_audio_mode,
+)
 from .models import (
     Artifact,
+    GenerationRun,
     MediaEditPlan,
     MediaEditPlanRevision,
     OutputAssembly,
@@ -34,6 +39,7 @@ class ExportInputs:
     attached_sources: list[Artifact]
     by_role: dict[str, Artifact]
     selected_audio: Artifact | None
+    assembled_audio_candidates: tuple[Artifact, ...]
     media_edit_plan: MediaEditPlan | None
     active_media_edit_revision: MediaEditPlanRevision | None
 
@@ -77,14 +83,11 @@ def resolve_export_inputs(
             else None
         ),
     )
-    expected_assembly_settings_hash = None
-    if isinstance(resolved_settings_snapshot, dict):
-        from .workspace import output_assembly_settings_hash
-
-        expected_assembly_settings_hash = output_assembly_settings_hash(
-            resolved_settings_snapshot
-        )
     record = context._session_record(session_id)
+    uses_generated_audio = export_uses_generated_audio(
+        workflow_kind=record.workflow_kind,
+        settings=settings,
+    )
     media_edit_plan: MediaEditPlan | None = None
     active_media_edit_revision: MediaEditPlanRevision | None = None
     with context.database.session() as session:
@@ -99,8 +102,14 @@ def resolve_export_inputs(
             )
         current = list(
             session.scalars(
-                select(Artifact).where(
-                    Artifact.session_id == session_id, Artifact.state == "current"
+                select(Artifact)
+                .where(
+                    Artifact.session_id == session_id,
+                    Artifact.state == "current",
+                )
+                .order_by(
+                    Artifact.created_at.desc(),
+                    Artifact.id.desc(),
                 )
             ).all()
         )
@@ -146,62 +155,113 @@ def resolve_export_inputs(
         selected_assembly = None
         selected_audio = None
         selected_run_id = str(settings.get("generation_run_id") or "").strip()
-        if selected_run_id:
-            assembly_candidates = list(
-                session.scalars(
-                    select(OutputAssembly)
-                    .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
-                    .where(
-                        OutputAssembly.session_id == session_id,
-                        OutputAssembly.generation_run_id == selected_run_id,
-                        OutputAssembly.status == "completed",
-                        Artifact.state == "current",
-                    )
-                    .order_by(OutputAssembly.created_at.desc())
-                ).all()
+        pinned_assembly_artifact_id = str(
+            payload.get("pinned_assembly_artifact_id") or ""
+        ).strip()
+        if pinned_assembly_artifact_id and not selected_run_id:
+            raise ValueError(
+                "A pinned assembly requires a selected generation run."
             )
-            if expected_assembly_settings_hash:
-                from .workspace import output_assembly_settings_hash
+        if pinned_assembly_artifact_id and not uses_generated_audio:
+            raise ValueError(
+                "A pinned assembly is not valid for an export that does not use "
+                "generated audio."
+            )
+        if selected_run_id and uses_generated_audio:
+            generation_run = session.get(GenerationRun, selected_run_id)
+            if generation_run is None or generation_run.session_id != session_id:
+                raise ValueError(
+                    "The selected generation run does not belong to this session."
+                )
+            if generation_run.status != "completed":
+                raise ValueError(
+                    "Only a completed generation run can be exported."
+                )
+            if (
+                isinstance(resolved_settings_snapshot, dict)
+                or pinned_assembly_artifact_id
+            ):
+                from .workspace import find_matching_output_assembly
 
-                selected_assembly = next(
-                    (
-                        candidate
-                        for candidate in assembly_candidates
-                        if candidate.settings_hash
-                        == expected_assembly_settings_hash
-                        or output_assembly_settings_hash(
-                            dict(
-                                (candidate.settings_json or {}).get("resolved")
-                                or {}
-                            )
-                        )
-                        == expected_assembly_settings_hash
-                    ),
-                    None,
+                selected_assembly, _expected_snapshot, _expected_hash = (
+                    find_matching_output_assembly(
+                        session,
+                        session_id=session_id,
+                        run=generation_run,
+                        resolved_settings_snapshot=(
+                            resolved_settings_snapshot
+                            if isinstance(resolved_settings_snapshot, dict)
+                            else {}
+                        ),
+                        artifact_id=pinned_assembly_artifact_id or None,
+                    )
                 )
             else:
-                selected_assembly = (
-                    assembly_candidates[0] if assembly_candidates else None
-                )
-            if selected_assembly is None:
-                if expected_assembly_settings_hash:
-                    stale_assembly = session.scalar(
-                        select(OutputAssembly.id).where(
+                # Compatibility for older direct API/MCP callers that pinned a
+                # generation run before resolved export snapshots were queued.
+                # Without the immutable snapshot we cannot prove output-setting
+                # equivalence, so reuse is safe only when exactly one current
+                # assembly exists for this run and its plan revision still
+                # matches the run.
+                legacy_candidates = list(
+                    session.scalars(
+                        select(OutputAssembly)
+                        .join(Artifact, Artifact.id == OutputAssembly.artifact_id)
+                        .where(
                             OutputAssembly.session_id == session_id,
                             OutputAssembly.generation_run_id == selected_run_id,
                             OutputAssembly.status == "completed",
-                            OutputAssembly.artifact_id.is_not(None),
+                            Artifact.state == "current",
                         )
+                        .order_by(
+                            OutputAssembly.created_at.desc(),
+                            OutputAssembly.id.desc(),
+                        )
+                    ).all()
+                )
+                legacy_candidates = [
+                    candidate
+                    for candidate in legacy_candidates
+                    if (
+                        not str(
+                            (candidate.settings_json or {}).get("plan_revision_id")
+                            or ""
+                        )
+                        or str(
+                            (candidate.settings_json or {}).get("plan_revision_id")
+                            or ""
+                        )
+                        == generation_run.plan_revision_id
                     )
-                    if stale_assembly is not None:
-                        raise ValueError(
-                            "Synchronization or output settings changed after this audio version was assembled. Reassemble it before exporting."
-                        )
+                ]
+                if len(legacy_candidates) > 1:
+                    raise ValueError(
+                        "Multiple assemblies are available for the selected audio "
+                        "version. Submit the export again from the Output page."
+                    )
+                selected_assembly = (
+                    legacy_candidates[0] if legacy_candidates else None
+                )
+            if selected_assembly is None:
+                previous_assembly = session.scalar(
+                    select(OutputAssembly.id).where(
+                        OutputAssembly.session_id == session_id,
+                        OutputAssembly.generation_run_id == selected_run_id,
+                        OutputAssembly.status.in_(("completed", "stale")),
+                        OutputAssembly.artifact_id.is_not(None),
+                    )
+                )
+                if previous_assembly is not None:
+                    raise ValueError(
+                        "The selected audio assembly is no longer current or its "
+                        "synchronization/output settings changed. Reassemble it "
+                        "before exporting."
+                    )
                 raise ValueError(
                     "Assemble the selected generation run before exporting it."
                 )
             selected_audio = session.get(Artifact, selected_assembly.artifact_id)
-            if selected_audio is None:
+            if selected_audio is None or selected_audio.state != "current":
                 raise ValueError(
                     "The selected generation run assembly is unavailable."
                 )
@@ -210,6 +270,18 @@ def resolve_export_inputs(
         by_role.setdefault(item.role, item)
     for item in selected_text.values():
         by_role[item.role] = item
+    assembled_audio_candidates = tuple(
+        item for item in current if item.role == "assembled_audio"
+    )
+    if (
+        not selected_run_id
+        and len(assembled_audio_candidates) > 1
+        and uses_generated_audio
+    ):
+        raise ValueError(
+            "Multiple assembled audio versions are available. Select a completed "
+            "audio version and export again."
+        )
     # Every workflow, including audiobook, must honor queued export intent.
     # Legacy direct calls without a contract retain their existing behavior.
     contract = (
@@ -230,9 +302,30 @@ def resolve_export_inputs(
         attached_sources=attached_sources,
         by_role=by_role,
         selected_audio=selected_audio,
+        assembled_audio_candidates=assembled_audio_candidates,
         media_edit_plan=media_edit_plan,
         active_media_edit_revision=active_media_edit_revision,
     )
+
+
+def select_generated_audio(
+    inputs: ExportInputs,
+    *,
+    legacy_role: str,
+) -> Artifact | None:
+    """Resolve generated audio without guessing between historical assemblies."""
+
+    if inputs.selected_audio is not None:
+        return inputs.selected_audio
+    candidates = inputs.assembled_audio_candidates
+    if len(candidates) > 1:
+        raise ValueError(
+            "Multiple assembled audio versions are available. Select a completed "
+            "audio version and export again."
+        )
+    if candidates:
+        return candidates[0]
+    return inputs.by_role.get(legacy_role)
 
 
 def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
@@ -376,11 +469,6 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
         or upload_media is None
         else []
     )
-    dubbing_audio = (
-        selected_audio
-        if selected_audio is not None
-        else by_role.get("assembled_audio") or by_role.get("dubbing_audio")
-    )
     if record.workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
         canonical_audio_mode = (
             contract.audio_mode
@@ -402,6 +490,12 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
         audio_mode = audio_mode_by_setting[canonical_audio_mode]
     else:
         audio_mode = "source"
+    dubbing_audio = (
+        select_generated_audio(inputs, legacy_role="dubbing_audio")
+        if export_mode in {"media", "audio"}
+        and audio_mode in {"dubbed", "mixed"}
+        else selected_audio
+    )
     if (
         export_mode in {"media", "audio"}
         and audio_mode in {"dubbed", "mixed"}

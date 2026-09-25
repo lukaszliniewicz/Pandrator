@@ -16,7 +16,7 @@ from sqlalchemy import or_, select
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
 from .database import Database
-from .export_contract import normalize_audio_mode
+from .export_contract import export_requires_generation_assembly
 from .idempotency import IdempotencyService
 from .jobs import JobQueue
 from .models import (
@@ -423,6 +423,9 @@ class WorkflowExecutionPlanService:
                     "plan_revision_id": item.plan_revision_id,
                     "sequence_number": item.sequence_number,
                     "status": item.status,
+                    "settings_digest": canonical_digest(
+                        item.settings_snapshot_json or {}
+                    ),
                     "updated_at": _iso(item.updated_at),
                 }
                 for item in generation_runs
@@ -434,6 +437,7 @@ class WorkflowExecutionPlanService:
                     "status": item.status,
                     "artifact_id": item.artifact_id,
                     "settings_hash": item.settings_hash,
+                    "settings_digest": canonical_digest(item.settings_json or {}),
                     "updated_at": _iso(item.updated_at),
                 }
                 for item in output_assemblies
@@ -616,18 +620,15 @@ class WorkflowExecutionPlanService:
         settings = resolved.payload.get("settings")
         settings = settings if isinstance(settings, dict) else {}
         generation_run_id = str(settings.get("generation_run_id") or "").strip()
-        export_mode = str(settings.get("export_mode") or "media").lower()
-        audio_mode = normalize_audio_mode(settings.get("audio_mode"))
-        needs_assembly = bool(generation_run_id) and (
-            resolved.workflow_kind == "audiobook"
-            or (export_mode in {"media", "audio"} and audio_mode in {"mixed", "dubbing_only"})
+        needs_assembly = export_requires_generation_assembly(
+            workflow_kind=resolved.workflow_kind,
+            settings=settings,
         )
         if target_stage == "export" and needs_assembly:
             snapshot = resolved.payload.get("resolved_settings_snapshot")
             snapshot = snapshot if isinstance(snapshot, dict) else {}
-            from .workspace import output_assembly_settings_hash
+            from .workspace import find_matching_output_assembly
 
-            assembly_settings_hash = output_assembly_settings_hash(snapshot)
             with self.database.session() as db_session:
                 generation_run = db_session.get(GenerationRun, generation_run_id)
                 if generation_run is None or generation_run.session_id != session_id:
@@ -642,29 +643,13 @@ class WorkflowExecutionPlanService:
                         "Only a completed generation run can be exported.",
                         409,
                     )
-                assembly_candidates = list(
-                    db_session.scalars(
-                        select(OutputAssembly)
-                        .where(
-                            OutputAssembly.session_id == session_id,
-                            OutputAssembly.generation_run_id == generation_run_id,
-                            OutputAssembly.status == "completed",
-                            OutputAssembly.artifact_id.is_not(None),
-                        )
-                        .order_by(OutputAssembly.created_at.desc())
-                    ).all()
-                )
-                assembly = next(
-                    (
-                        candidate
-                        for candidate in assembly_candidates
-                        if candidate.settings_hash == assembly_settings_hash
-                        or output_assembly_settings_hash(
-                            dict((candidate.settings_json or {}).get("resolved") or {})
-                        )
-                        == assembly_settings_hash
-                    ),
-                    None,
+                assembly, _assembly_snapshot, _assembly_hash = (
+                    find_matching_output_assembly(
+                        db_session,
+                        session_id=session_id,
+                        run=generation_run,
+                        resolved_settings_snapshot=snapshot,
+                    )
                 )
             steps.append(
                 {

@@ -11,7 +11,14 @@ from sqlalchemy import func, select
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
 from pandrator.web.export_contract import build_export_contract
-from pandrator.web.models import Artifact, ArtifactEdge
+from pandrator.web.models import (
+    Artifact,
+    ArtifactEdge,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
+    OutputAssembly,
+)
 from pandrator.web.sessions import SessionService
 from pandrator.web.source_resolution import resolve_media_source
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -82,6 +89,48 @@ class ExportInputResolutionTests(unittest.TestCase):
             )))
         self.assertEqual({original.id}, parents)
 
+    def test_preserve_export_ignores_irrelevant_generation_run_id(self):
+        original, original_path = self.attach_audio("preserve-source.wav", 123)
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=self.session.id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                settings_json={},
+                content_hash="preserve-run",
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=self.session.id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status="completed",
+            )
+            session.add(run)
+            session.flush()
+            run_id = run.id
+        payload = self.queued_payload()
+        payload["settings"]["generation_run_id"] = run_id
+
+        result = self.handlers.export(payload, mock.Mock(), threading.Event())
+
+        self.assertEqual(1, len(result["artifact_ids"]))
+        exported, output_path = self.artifacts.resolve(result["artifact_ids"][0])
+        self.assertEqual(original_path.read_bytes(), output_path.read_bytes())
+        with self.database.session() as session:
+            parents = set(
+                session.scalars(
+                    select(ArtifactEdge.parent_artifact_id).where(
+                        ArtifactEdge.child_artifact_id == exported.id
+                    )
+                )
+            )
+        self.assertEqual({original.id}, parents)
+
     def assert_rejected_before_output(self, payload, message):
         with (
             mock.patch.object(self.handlers, "_resolve_input") as resolve,
@@ -150,6 +199,53 @@ class ExportInputResolutionTests(unittest.TestCase):
                 payload = self.queued_payload()
                 payload["export_contract"][field] = value
                 self.assert_rejected_before_output(payload, message)
+
+    def test_unpinned_single_durable_audiobook_assembly_remains_compatible(self):
+        original = self.prepare_audiobook()
+        with self.database.session() as session:
+            artifact = session.scalar(
+                select(Artifact)
+                .where(
+                    Artifact.session_id == self.session.id,
+                    Artifact.role == "assembled_audio",
+                    Artifact.state == "current",
+                )
+                .order_by(Artifact.created_at.desc())
+            )
+            self.assertIsNotNone(artifact)
+            session.add(
+                OutputAssembly(
+                    session_id=self.session.id,
+                    status="completed",
+                    artifact_id=artifact.id,
+                    settings_json={},
+                )
+            )
+        payload = self.queued_payload()
+        payload.pop("export_contract")
+        result = self.handlers.export(payload, mock.Mock(), threading.Event())
+        self.assertEqual(1, len(result["artifact_ids"]))
+        _exported, output = self.artifacts.resolve(result["artifact_ids"][0])
+        self.assertEqual(original.read_bytes(), output.read_bytes())
+
+    def test_unpinned_audiobook_export_rejects_ambiguous_assemblies(self):
+        self.prepare_audiobook()
+        second = self.session_dir / "assembled-second.wav"
+        with wave.open(str(second), "wb") as audio:
+            audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            audio.writeframes(b"\x01\x00" * 320)
+        self.artifacts.register(
+            second,
+            kind="audio",
+            role="assembled_audio",
+            session_id=self.session.id,
+        )
+        payload = self.queued_payload()
+        payload.pop("export_contract")
+        self.assert_rejected_before_output(
+            payload,
+            "Multiple assembled audio versions are available",
+        )
 
     def test_audiobook_exports_with_valid_contract_or_legacy_payload(self):
         original = self.prepare_audiobook()
