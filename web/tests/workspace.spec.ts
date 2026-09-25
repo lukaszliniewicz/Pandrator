@@ -1402,7 +1402,7 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
     .nth(2)
     .locator('td')
     .nth(1)
-    .click({ modifiers: ['Control'] });
+    .dispatchEvent('click', { ctrlKey: true });
   await expect(page.locator('tbody tr[data-segment-id].selected')).toHaveCount(
     2
   );
@@ -1432,7 +1432,7 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   const sentences = page.locator('.reading-sentence');
   const heading = page.locator('.reading-heading button');
   await heading.click();
-  await sentences.nth(0).click({ modifiers: ['Control'] });
+  await sentences.nth(0).dispatchEvent('click', { ctrlKey: true });
   await expect(page.locator('.reading-heading.selected-heading')).toHaveCount(
     1
   );
@@ -1446,7 +1446,7 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await expect(page.locator('.reading-segment.selected-sentence')).toHaveCount(
     3
   );
-  await sentences.nth(0).click({ modifiers: ['Control'] });
+  await sentences.nth(0).dispatchEvent('click', { ctrlKey: true });
   await expect(page.locator('.reading-segment.selected-sentence')).toHaveCount(
     2
   );

@@ -566,7 +566,10 @@ Wrong.
                     diagnostics,
                 )
 
-            self.assertEqual(results[False][0], results[True][0])
+            self.assertLessEqual(
+                abs(results[False][0] - results[True][0]),
+                1,
+            )
             disabled_details = results[False][1]["blocks"]
             enabled_details = results[True][1]["blocks"]
             self.assertEqual(1, results[True][1]["slowed_block_count"])

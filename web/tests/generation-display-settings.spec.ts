@@ -138,13 +138,13 @@ test('full generation preview retains historical settings and queued rows explai
       previewBody = route.request().postDataJSON();
       await route.fulfill({
         json: {
-          mode: 'missing',
+          mode: 'all',
           speech_plan_revision_id: 'r1',
           selection_hash: 'hash',
           total_count: 1,
           generate_count: 1,
           preserve_count: 0,
-          replace_count: 0,
+          replace_count: 1,
           missing_count: 1,
           reasons: { missing_audio: 1 },
           settings_summary: { service: 'openai', model: 'tts-1', voice: 'nova' }
@@ -153,7 +153,10 @@ test('full generation preview retains historical settings and queued rows explai
     }
   );
   await page
-    .getByRole('button', { name: 'Generate audio…', exact: true })
+    .getByRole('button', {
+      name: 'Generate audio…',
+      description: 'Generate using the selected run’s saved voice and settings'
+    })
     .click();
   await expect
     .poll(() => previewBody)
@@ -163,6 +166,11 @@ test('full generation preview retains historical settings and queued rows explai
       missing_only: false,
       stale_only: false
     });
+  await page
+    .getByRole('checkbox', {
+      name: 'I understand 1 existing recording will be replaced. Previous takes stay in history.'
+    })
+    .check();
   await page
     .getByRole('button', { name: 'Generate 1 block', exact: true })
     .click();

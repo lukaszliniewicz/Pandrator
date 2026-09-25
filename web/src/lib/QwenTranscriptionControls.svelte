@@ -17,7 +17,7 @@
   const timing = $derived(qwenTimingExplanation(capabilities, language));
   const info = $derived(capabilities?.stt?.models?.qwen3);
   const availableBackends = $derived(
-    Array.isArray(info?.compute_backends)
+    Array.isArray(info?.compute_backends) && info.compute_backends.length
       ? (info.compute_backends as string[])
       : ['cpu']
   );
