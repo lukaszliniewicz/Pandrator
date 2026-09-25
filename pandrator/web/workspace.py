@@ -2487,6 +2487,7 @@ class GenerationService:
             bound_revision_id = plan.active_revision_id if plan else None
             if bound_revision_id is None:
                 raise ValueError("Create generation segments before starting audio generation.")
+            assert plan is not None
             settings_source_run = None
             if settings_source_run_id:
                 settings_source_run = session.get(GenerationRun, settings_source_run_id)
