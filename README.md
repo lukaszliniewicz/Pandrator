@@ -14,36 +14,28 @@ Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.0/PandratorManager-0.9.25-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.1/PandratorManager-0.9.26-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.1/PandratorManager-0.9.26-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.10.0 / Manager 0.9.25
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.10.1 / Manager 0.9.26
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.10.0
+## New in 0.10.1
 
-- **Direct a whole block or a phrase.** Review speaker assignments, emotions,
-  delivery directions, and explicit vocal sounds without changing the spoken
-  words. Inspect the compiled request before generating audio.
-- **Find the right model and voice.** Browse local and cloud capabilities,
-  languages, licences, model variants, saved references, and voice collections.
-- **Automate the setup through MCP.** Configure Gemini directions with preceding
-  and following context, use model-specific ElevenLabs controls, and preview
-  and apply guarded phrase edits.
-- **Transcribe and align more languages.** Use Qwen ASR and forced alignment,
-  optional vocal isolation, and improved CJK speech/subtitle handling.
-- **Work with larger sessions.** Generation rows and history load on demand;
-  continuation keeps completed recordings and shows exactly what will change.
-- **Stronger development checks.** Pinned Ruff and basedpyright checks, targeted
-  debt cleanup, and CI gates help keep fixes from regressing. See the
-  [code quality policy](docs/development/code-quality.md).
+- **Qwen3 ASR now runs through CrispASR 0.8.36.** Recognition, VAD-aware
+  chunking, and word alignment use the local CrispASR pipeline, with verified
+  Qwen model downloads on demand.
+- **Export works reliably after generation.** One-click export now assembles the
+  selected completed audio run when needed and rejects stale or ambiguous audio
+  instead of silently choosing the wrong artifact.
+- **Transcription is more robust.** Source-language settings are preserved more
+  consistently, vocal-isolation jobs get realistic time budgets, and Qwen
+  timing output is validated before it is accepted.
 
-See [speech directions](docs/reference/generation-controls.md),
-[provider controls](docs/speech-performance.md), and the
-[release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.10.0).
+See the [0.10.1 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.10.1).
 
 ## Try your first workflow
 

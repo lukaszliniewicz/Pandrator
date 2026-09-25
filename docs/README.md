@@ -6,8 +6,8 @@ read it in order.
 
 ## Start here
 
-Read the [Pandrator 0.10.0 release notes](release-notes-0.10.0.md) for the latest
-speech controls, catalogue, automation, and workflow changes.
+Read the [Pandrator 0.10.1 release notes](release-notes-0.10.1.md) for the latest
+transcription and export fixes. Previous notes: [0.10.0](release-notes-0.10.0.md).
 
 | Goal | Guide |
 | --- | --- |
