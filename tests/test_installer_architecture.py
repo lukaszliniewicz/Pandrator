@@ -29,7 +29,14 @@ from pandrator_installer.constants import (
     PANDRATOR_REPO_BRANCH,
     PANDRATOR_URL_DOWNLOADER_CONDA_SPEC,
 )
-from pandrator_installer.crispasr import detect_compute_backends, resolve_asset
+from pandrator_installer.crispasr import (
+    ASSETS as INSTALLER_CRISPASR_ASSETS,
+)
+from pandrator_installer.crispasr import (
+    CRISPASR_VERSION,
+    detect_compute_backends,
+    resolve_asset,
+)
 from pandrator_installer.models import (
     InstallSelection,
     LaunchSelection,
@@ -39,6 +46,12 @@ from pandrator_installer.models import (
 )
 from pandrator_installer.reporting import HeadlessReporter
 from pandrator_installer.service import HeadlessInstaller
+from pandrator_manager.components.crispasr import (
+    ASSETS as MANAGER_CRISPASR_ASSETS,
+)
+from pandrator_manager.components.crispasr import (
+    CRISPASR_VERSION as MANAGER_CRISPASR_VERSION,
+)
 
 
 class InstallerArchitectureTests(unittest.TestCase):
@@ -171,6 +184,22 @@ class InstallerArchitectureTests(unittest.TestCase):
         self.assertIn("cuda", cuda_asset.compiled_backends)
         self.assertEqual(vulkan_backend, "vulkan")
         self.assertIn("vulkan", vulkan_asset.compiled_backends)
+
+    def test_crispasr_catalogues_match_release_assets(self):
+        self.assertEqual(CRISPASR_VERSION, MANAGER_CRISPASR_VERSION)
+        manager_assets = {
+            (system, architecture, backend.value): asset
+            for (system, architecture, backend), asset in MANAGER_CRISPASR_ASSETS.items()
+        }
+        self.assertEqual(
+            set(INSTALLER_CRISPASR_ASSETS),
+            set(manager_assets),
+        )
+        for key, installer_asset in INSTALLER_CRISPASR_ASSETS.items():
+            with self.subTest(platform=key):
+                manager_asset = manager_assets[key]
+                self.assertEqual(installer_asset.name, manager_asset.name)
+                self.assertEqual(installer_asset.sha256, manager_asset.sha256)
 
     def test_crispasr_backend_detection_supports_rx480_via_vulkan_loader(self):
         statuses = detect_compute_backends(
@@ -340,7 +369,7 @@ class InstallerArchitectureTests(unittest.TestCase):
         probe = subprocess.CompletedProcess(
             args=["crispasr", "--version"],
             returncode=0,
-            stdout="version       : 0.8.32\n",
+            stdout=f"version       : {CRISPASR_VERSION}\n",
             stderr="",
         )
 

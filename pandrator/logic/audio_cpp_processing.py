@@ -99,7 +99,7 @@ def _backend(settings: dict) -> str:
     return backend
 
 
-def _timeout_seconds(settings: dict) -> float:
+def _timeout_seconds(settings: dict, *, duration_seconds: float = 0.0) -> float:
     try:
         timeout = float(settings.get("audio_cpp_timeout_seconds") or 0)
     except (TypeError, ValueError) as error:
@@ -111,7 +111,10 @@ def _timeout_seconds(settings: dict) -> float:
             "audio_cpp_timeout_seconds must be a finite number of seconds."
         )
     if timeout <= 0:
-        return _DEFAULT_TIMEOUT_SECONDS
+        # RoFormer already windows internally but can run slower than real time
+        # on older GPUs. Budget six times the recording plus startup, retaining
+        # the one-hour floor and finite 24-hour ceiling. Explicit limits win.
+        return min(max(_DEFAULT_TIMEOUT_SECONDS, duration_seconds * 6 + 120), 24 * 3600.0)
     return min(timeout, 24 * 3600.0)
 
 
@@ -438,7 +441,13 @@ def isolate_vocals(
             "--out-dir",
             str(out_dir),
         ]
-        _run_child(command, values, cancel_event, run_func, purpose="vocal isolation")
+        isolation_settings = {
+            **values,
+            "audio_cpp_timeout_seconds": _timeout_seconds(
+                values, duration_seconds=model_input["duration_s"]
+            ),
+        }
+        _run_child(command, isolation_settings, cancel_event, run_func, purpose="vocal isolation")
         check_cancelled(cancel_event)
         vocals = out_dir / "vocals.wav"
         if not vocals.is_file():

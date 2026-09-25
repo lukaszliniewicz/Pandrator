@@ -39,16 +39,14 @@ from .stt_provider_profiles import (
 STT_BACKEND_WHISPERX = STT_ENGINE_WHISPER
 STT_BACKEND_PARAKEET_ONNX = STT_ENGINE_PARAKEET
 
-# Qwen3 ASR is an audio.cpp recognizer, not a CrispASR engine. It is owned
-# by qwen_asr.py and must never fall through to crispasr.normalize_engine
-# (which defaults unknown names to whisper).
+# Qwen3 uses CrispASR with language and timing policy owned by qwen_asr.py.
 STT_ENGINE_QWEN3 = "qwen3"
 STT_ENGINE_QWEN3_ALIASES = frozenset(
     {"qwen3", "qwen", "qwen3_asr", "qwen3-asr", "qwen_3", "qwen_3_asr"}
 )
 
 STT_BACKEND_LABELS = {engine: model.label for engine, model in MODELS.items()}
-STT_BACKEND_LABELS[STT_ENGINE_QWEN3] = "Qwen3 ASR (audio.cpp recognizer)"
+STT_BACKEND_LABELS[STT_ENGINE_QWEN3] = "Qwen3 ASR (CrispASR)"
 STT_BACKEND_LABELS.update(
     {
         profile["id"]: str(profile.get("label") or profile.get("name") or profile["id"])
@@ -156,6 +154,16 @@ def probe_crispasr_runtime(
     )
 
 
+def qwen_runtime_problem(runtime: CrispASRRuntimeStatus) -> str:
+    """Require the strict auxiliary-stage contract used by Qwen transcription."""
+    if not runtime.installed:
+        return runtime.reason
+    match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", runtime.version)
+    if match is None or tuple(map(int, match.groups())) < (0, 8, 36):
+        return "Qwen3 requires CrispASR 0.8.36 or newer; update the local runtime."
+    return ""
+
+
 def detect_stt_backend_statuses(**kwargs) -> dict[str, STTBackendStatus]:
     runtime = probe_crispasr_runtime(**kwargs)
     statuses = {
@@ -168,13 +176,12 @@ def detect_stt_backend_statuses(**kwargs) -> dict[str, STTBackendStatus]:
         from . import qwen_asr
 
         qwen_caps = qwen_asr.capabilities()
+        runtime_problem = qwen_runtime_problem(runtime)
         statuses[STT_ENGINE_QWEN3] = STTBackendStatus(
             STT_ENGINE_QWEN3,
             STT_BACKEND_LABELS[STT_ENGINE_QWEN3],
-            bool(qwen_caps.get("available")),
-            str(qwen_caps.get("reason") or "audio.cpp audiocpp_cli ready")
-            if qwen_caps.get("available")
-            else str(qwen_caps.get("reason") or "Qwen3 ASR unavailable"),
+            runtime.installed and not runtime_problem,
+            runtime_problem or str(qwen_caps.get("reason") or "CrispASR ready"),
             word_timing=str(qwen_caps.get("word_timing") or ""),
         )
     except Exception as error:

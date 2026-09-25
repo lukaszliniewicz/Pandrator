@@ -194,7 +194,7 @@ def migrate_dubbing_payload(
     migrated.setdefault("stt_transcribe_style", "readability")
     migrated.setdefault("stt_lid_backend", "whisper")
     migrated.setdefault("stt_beam_size", 1)
-    # Qwen3 ASR recognizer (audio.cpp, owned by qwen_asr.py). Transcript-only
+    # Qwen3 ASR recognizer (CrispASR, owned by qwen_asr.py). Transcript-only
     # covers 30 languages; precise word timing additionally needs a validated
     # source language in the timed pipeline set. Vocal isolation defaults off.
     migrated.setdefault("qwen_asr_model", "qwen3_asr_0_6b")

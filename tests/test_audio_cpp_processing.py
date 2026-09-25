@@ -464,3 +464,14 @@ def test_atomic_install_stages_inside_destination_parent(tmp_path, monkeypatch):
     assert Path(seen["dst"]) == destination
     assert Path(seen["src"]).parent == destination.parent
     assert not list(destination.parent.glob(".pandrator-install-*"))
+
+
+def test_long_separation_budget_preserves_explicit_limits():
+    # A 23-minute recording took >40 minutes on an older GPU; it must not
+    # inherit the same one-hour limit as a short clip by default.
+    assert proc._timeout_seconds({}, duration_seconds=1380) > 2 * 3600
+    assert proc._timeout_seconds({}, duration_seconds=12) == 3600
+    assert proc._timeout_seconds({"audio_cpp_timeout_seconds": 120}, duration_seconds=1380) == 120
+    assert proc._timeout_seconds({}, duration_seconds=86400) == 86400
+    with pytest.raises(proc.AudioProcessingError):
+        proc._timeout_seconds({"audio_cpp_timeout_seconds": float("nan")}, duration_seconds=1380)

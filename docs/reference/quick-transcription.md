@@ -4,6 +4,12 @@ Quick Transcribe accepts audio or video and returns TXT, SRT, or JSON without cr
 
 Recognition uses the configured STT defaults, worker queue, and shared ASR resource lock. Selecting another output format retrieves the same recognition result. It does not rerun ASR. Microphone capture needs HTTPS or localhost; file uploads also work where microphone capture is unavailable.
 
+## Qwen3 recognition
+
+Qwen3 ASR runs through CrispASR 0.8.36 or newer. Selecting it downloads the chosen 0.6B or 1.7B Q8 model when needed. Timed output automatically adds Qwen3 Forced Aligner for its 11 supported languages, or Canary CTC for supported fallback languages. Choose an explicit source language for timed output; recognition coverage alone does not guarantee word alignment. Silero VAD follows the transcription defaults and is enabled by default; speech is processed in bounded chunks. Caption-only alignment and alignment of MOSS turns continue to use their existing separate aligner paths.
+
+Optional RoFormer vocal isolation uses audio.cpp's overlapping windows. It can take longer than the recording on slower GPUs; it preserves the original recording. The default separation timeout scales with recording length (at least one hour, at most 24 hours); an explicit operator timeout remains authoritative.
+
 ## Lifetime and limits
 
 - Sources: up to **256 MiB**, with at most **two hours** of audio. Browser recording stops at two hours.

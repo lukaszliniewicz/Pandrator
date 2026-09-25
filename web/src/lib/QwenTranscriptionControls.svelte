@@ -30,7 +30,7 @@
   <div>
     <h3 class="text-sm font-semibold">Qwen3 speech recognition</h3>
     <p class="muted mt-1 text-xs">
-      Runs locally through audio.cpp. The selected model downloads on first use;
+      Runs locally through CrispASR. The selected model downloads on first use;
       your recording is not uploaded.
     </p>
   </div>
@@ -42,10 +42,10 @@
         class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
       >
         <option value="qwen3_asr_0_6b"
-          >Qwen3 ASR 0.6B · smaller · Q8 · 1.15 GB</option
+          >Qwen3 ASR 0.6B · smaller · Q8 · 1.01 GB</option
         >
         <option value="qwen3_asr_1_7b"
-          >Qwen3 ASR 1.7B · larger · Q8 · 2.47 GB</option
+          >Qwen3 ASR 1.7B · larger · Q8 · 2.51 GB</option
         >
         {#if !['qwen3_asr_0_6b', 'qwen3_asr_1_7b'].includes(model)}<option
             value={model}>{model} · saved selection</option
@@ -93,7 +93,7 @@
     </label>
     <p class="muted mt-2 text-xs">
       Word alignment may download an additional model. Qwen's aligner is
-      approximately 1.13 GB. Processing can be cancelled from Activity.
+      approximately 986 MB. Processing can be cancelled from Activity.
     </p>
   </details>
 </section>

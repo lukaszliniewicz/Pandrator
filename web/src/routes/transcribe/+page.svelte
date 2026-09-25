@@ -414,7 +414,7 @@
               ? ` (${configuredEngine || capabilities.stt?.default_engine})`
               : ''}</option
           >
-          {#each [['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B'], ['qwen3', 'Qwen3 ASR · audio.cpp']] as [id, label]}
+          {#each [['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B'], ['qwen3', 'Qwen3 ASR · CrispASR']] as [id, label]}
             <option
               value={id}
               disabled={Boolean(sttLanguageProblem(capabilities, id, language))}

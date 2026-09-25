@@ -170,3 +170,13 @@ class QuickTranscriptionLanguageRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_qwen_runtime_requires_strict_pipeline_version():
+    def runtime(version):
+        return stt_backends.CrispASRRuntimeStatus(True, "crispasr", version, ("cpu", "vulkan"), "ready")
+
+    assert stt_backends.qwen_runtime_problem(runtime("0.8.32"))
+    assert stt_backends.qwen_runtime_problem(runtime("unknown"))
+    assert not stt_backends.qwen_runtime_problem(runtime("0.8.36"))
+    assert not stt_backends.qwen_runtime_problem(runtime("0.9.0"))

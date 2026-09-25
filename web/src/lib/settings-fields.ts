@@ -79,8 +79,8 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('azure_mai_transcribe_1_5', 'Azure Speech · MAI-Transcribe-1.5')
   ],
   qwen_asr_model: [
-    option('qwen3_asr_0_6b', 'Qwen3 ASR 0.6B · Q8 · 1.15 GB'),
-    option('qwen3_asr_1_7b', 'Qwen3 ASR 1.7B · Q8 · 2.47 GB')
+    option('qwen3_asr_0_6b', 'Qwen3 ASR 0.6B · Q8 · 1.01 GB'),
+    option('qwen3_asr_1_7b', 'Qwen3 ASR 1.7B · Q8 · 2.51 GB')
   ],
   transcription_vocal_isolation: [
     option('off', 'Off · original audio'),
@@ -91,7 +91,7 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('auto', 'Automatic'),
     option('vad', 'Speech-aware chunks'),
     option('fixed', 'Fixed chunks'),
-    option('none', 'No native chunking')
+    option('none', 'Fixed chunks · legacy selection')
   ],
   caption_alignment_method: [
     option('ctc', 'Local forced alignment · recommended'),
@@ -355,7 +355,6 @@ const SETTING_ORDER: Record<string, string[]> = {
     'qwen_asr_chunk_seconds',
     'qwen_asr_max_tokens',
     'qwen_asr_chunk_mode',
-    'qwen_asr_clamp_timestamps',
     'caption_alignment_method',
     'caption_alignment_ctc_model',
     'caption_alignment_padding_ms',
@@ -760,21 +759,20 @@ export function settingApplies(
   const captionCtc = captionAlignmentMethod !== 'asr';
   const local = STT_LOCAL_ENGINES.has(engine);
   const moss = engine === 'moss';
-  const nonMossLocal = engine === 'whisper' || engine === 'parakeet';
+  const nonMossLocal =
+    engine === 'whisper' || engine === 'parakeet' || engine === 'qwen3';
 
   if (key === 'transcription_vocal_isolation') return true;
+  if (key === 'qwen_asr_clamp_timestamps') return false;
   if (key.startsWith('qwen_asr_')) return engine === 'qwen3';
   if (
     engine === 'qwen3' &&
-    ([
+    [
       'stt_model_quantization',
       'stt_chunk_seconds',
-      'stt_chunk_overlap_seconds',
       'stt_lid_backend',
-      'stt_hotwords',
-      'crispasr_vad_enabled'
-    ].includes(key) ||
-      STT_VAD_DETAIL_KEYS.has(key))
+      'stt_hotwords'
+    ].includes(key)
   )
     return false;
   if (key === 'caption_alignment_method') return true;

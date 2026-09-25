@@ -332,6 +332,7 @@
   let backend = $state('llm');
   let sttEngine = $state('whisper');
   let qwenAsrModel = $state('qwen3_asr_0_6b');
+  let qwenChunkMode = $state('auto');
   let transcriptionVocalIsolation = $state('off');
   let captionAlignmentMethod = $state<'ctc' | 'ctc_asr_fallback' | 'asr'>(
     'ctc'
@@ -1076,7 +1077,11 @@
         'en'
     );
     originalLanguage = String(
-      saved.original_language ?? session.source_language ?? 'auto'
+      (stage.key === 'transcribe'
+        ? saved.stt_language
+        : saved.original_language) ??
+        session.source_language ??
+        'auto'
     );
     model =
       String(
@@ -1125,6 +1130,7 @@
         : preferredSttEngine
     );
     qwenAsrModel = String(saved.qwen_asr_model ?? 'qwen3_asr_0_6b');
+    qwenChunkMode = String(saved.qwen_asr_chunk_mode ?? 'auto');
     transcriptionVocalIsolation = String(
       saved.transcription_vocal_isolation ?? 'off'
     );
@@ -2609,6 +2615,7 @@
         stt_engine: sttEngine,
         stt_backend: sttEngine,
         qwen_asr_model: qwenAsrModel,
+        qwen_asr_chunk_mode: qwenChunkMode,
         transcription_vocal_isolation: transcriptionVocalIsolation,
         caption_alignment_method: captionAlignmentMethod,
         caption_alignment_ctc_model: captionAlignmentCtcModel,
@@ -4083,7 +4090,7 @@
                   >{isCloudStt(sttEngine)
                     ? 'The selected connection runs remotely; audio is sent to its configured provider.'
                     : sttEngine === 'qwen3'
-                      ? 'Qwen3 runs through audio.cpp; recognition and alignment models download only when needed.'
+                      ? 'Qwen3 runs through CrispASR; recognition, alignment and voice detection models download when needed.'
                       : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
                 ></label
               >
@@ -4166,6 +4173,39 @@
                   bind:backend={sttComputeBackend}
                   {capabilities}
                 />
+                <label class="text-sm font-semibold"
+                  >Speech chunking
+                  <select
+                    bind:value={qwenChunkMode}
+                    class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  >
+                    <option value="auto"
+                      >Automatic · follow voice detection setting</option
+                    >
+                    <option value="vad">Always detect speech with Silero</option
+                    >
+                    <option value="fixed"
+                      >Fixed windows without voice detection</option
+                    >
+                    {#if qwenChunkMode === 'none'}<option value="none"
+                        >Fixed windows · legacy selection</option
+                      >{/if}
+                  </select>
+                </label>
+                {#if qwenChunkMode === 'auto'}
+                  <label class="flex items-center gap-3 text-sm font-semibold">
+                    <input
+                      type="checkbox"
+                      bind:checked={vadEnabled}
+                      class="size-4 accent-[var(--accent)]"
+                    />
+                    Voice activity detection
+                  </label>
+                {/if}
+                <p class="muted text-xs">
+                  Audio is processed in bounded chunks. Word alignment runs
+                  automatically for the selected source language.
+                </p>
               {:else}
                 <label class="text-sm font-semibold"
                   ><ParameterLabel

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import platform
 import shutil
 import subprocess
 import tempfile
 import threading
+import unicodedata
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +26,7 @@ from .languages import normalize_language_code
 from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
 from .text_units import infer_cjk_language, join_fragments
 
-CRISPASR_VERSION = "0.8.32"
+CRISPASR_VERSION = "0.8.36"
 CRISPASR_EXECUTABLE_ENV = "CRISPASR_EXECUTABLE"
 CRISPASR_CACHE_DIR_ENV = "CRISPASR_CACHE_DIR"
 
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 STT_ENGINE_WHISPER = "whisper"
 STT_ENGINE_PARAKEET = "parakeet"
 STT_ENGINE_MOSS = "moss"
+STT_ENGINE_QWEN3 = "qwen3"
 
 COMPUTE_BACKENDS = ("auto", "cpu", "cuda", "vulkan", "metal")
 
@@ -98,6 +101,14 @@ MODELS = {
             "q4_k": "moss-transcribe-diarize-0.9b-q4_k.gguf",
         },
         word_timing="ctc",
+        default_quantization="q8_0",
+    ),
+    STT_ENGINE_QWEN3: CrispASRModel(
+        engine=STT_ENGINE_QWEN3,
+        label="Qwen3 ASR (Q8_0)",
+        repository="cstr/qwen3-asr-0.6b-GGUF",
+        filenames={"q8_0": "qwen3-asr-0.6b-q8_0.gguf"},
+        word_timing="forced_aligner",
         default_quantization="q8_0",
     ),
 }
@@ -201,10 +212,7 @@ def normalize_engine(value: str | None) -> str:
         "qwen_3",
         "qwen_3_asr",
     }:
-        # Owned by qwen_asr.py (audio.cpp recognizer). Pass through so
-        # callers can route before CrispASR command construction, which
-        # rejects it explicitly below.
-        return "qwen3"
+        return STT_ENGINE_QWEN3
     if normalized in {
         "moss",
         "moss_diarize",
@@ -498,17 +506,22 @@ def build_command(
     executable: str = "",
     model_path: str | os.PathLike[str] | None = None,
     vad_model_path: str | os.PathLike[str] | None = None,
+    aligner_model_path: str | os.PathLike[str] | None = None,
+    require_word_timestamps: bool = True,
 ) -> list[str]:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
-    if engine == "qwen3":
-        raise CrispASRError(
-            "stt_engine='qwen3' is an audio.cpp recognizer owned by "
-            "qwen_asr.py; CrispASR cannot build this command."
+    if engine == STT_ENGINE_QWEN3:
+        language = validate_stt_language(
+            engine,
+            settings.get("stt_language") or settings.get("whisper_language")
         )
-    language = validate_stt_language(
-        engine,
-        settings.get("stt_language") or settings.get("whisper_language"),
-    )
+        if model_path is None:
+            raise CrispASRError("Qwen3 requires a verified local GGUF model path.")
+    else:
+        language = validate_stt_language(
+            engine,
+            settings.get("stt_language") or settings.get("whisper_language"),
+        )
     model = MODELS[engine]
     quantization = normalize_model_quantization(
         settings.get("stt_model_quantization")
@@ -619,6 +632,18 @@ def build_command(
         prompt = str(settings.get("whisper_prompt") or "").strip()
         if prompt:
             command.extend(("--prompt", prompt))
+    elif engine == STT_ENGINE_QWEN3:
+        if language != "auto":
+            command.extend(("-l", language))
+        command.extend(("--max-new-tokens", str(int(_setting(settings, "qwen_asr_max_tokens", 512)))))
+        command.append("--strict-pipeline")
+        if require_word_timestamps:
+            if aligner_model_path is None:
+                raise CrispASRError("Timed Qwen3 transcription requires an aligner selection.")
+            command.extend(("-am", str(aligner_model_path)))
+            if str(aligner_model_path) == "canary-ctc-aligner":
+                command.append("--auto-download")
+            command.append("--require-word-timestamps")
     return command
 
 
@@ -660,6 +685,74 @@ def _validate_word_timestamps(
             )
     if require_words and has_transcribed_text and not has_timed_words:
         raise CrispASRError("CrispASR transcribed text but did not return word timestamps.")
+
+
+def _validate_qwen_json(
+    path: Path, audio_path: str | os.PathLike[str], require_words: bool
+) -> None:
+    """Accept only native, finite, monotonic Qwen word times within the WAV."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        segments = payload["transcription"]
+        with wave.open(str(audio_path), "rb") as source:
+            duration_ms = source.getnframes() * 1000.0 / source.getframerate()
+    except (OSError, ValueError, KeyError, TypeError, wave.Error, json.JSONDecodeError) as error:
+        raise CrispASRError("CrispASR Qwen output or source WAV is invalid.") from error
+    if not isinstance(segments, list):
+        raise CrispASRError("CrispASR Qwen JSON has no transcription array.")
+
+    def lexical(value: str) -> str:
+        return "".join(
+            character for character in unicodedata.normalize("NFKC", value).casefold()
+            if character.isalnum()
+        )
+
+    last_end = 0.0
+    any_text = False
+    for segment_index, segment in enumerate(segments, 1):
+        if not isinstance(segment, dict):
+            raise CrispASRError(f"CrispASR Qwen segment {segment_index} is malformed.")
+        text = str(segment.get("text") or "").strip()
+        any_text = any_text or bool(text)
+        words = segment.get("words")
+        if words is not None and not isinstance(words, list):
+            raise CrispASRError(f"CrispASR Qwen segment {segment_index} has malformed words.")
+        if require_words and text and not words:
+            raise CrispASRError(
+                f"CrispASR Qwen segment {segment_index} contained text but no word timestamps."
+            )
+        if text and words and lexical(text) != lexical(
+            "".join(str(word.get("text") or word.get("word") or "") for word in words if isinstance(word, dict))
+        ):
+            raise CrispASRError(
+                f"CrispASR Qwen segment {segment_index} word text does not cover the transcript."
+            )
+        for word_index, word in enumerate(words or [], 1):
+            if not isinstance(word, dict) or not str(word.get("text") or word.get("word") or "").strip():
+                raise CrispASRError(f"CrispASR Qwen word {word_index} in segment {segment_index} is malformed.")
+            offsets = word.get("offsets")
+            if not isinstance(offsets, dict):
+                raise CrispASRError(f"CrispASR Qwen word {word_index} has no native offsets.")
+            try:
+                start = float(offsets["from"])
+                end = float(offsets["to"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise CrispASRError(f"CrispASR Qwen word {word_index} has no native offsets.") from error
+            if (
+                not math.isfinite(start)
+                or not math.isfinite(end)
+                or start < -1.0
+                or end > duration_ms + 50.0
+                or end < start
+                or start < last_end - 50.0
+            ):
+                raise CrispASRError(
+                    f"CrispASR Qwen word {word_index} has invalid or nonmonotonic native timing."
+                )
+            last_end = end
+    if not any_text:
+        raise CrispASRError("CrispASR Qwen returned an empty transcript.")
 
 
 def build_moss_alignment_command(
@@ -1082,32 +1175,40 @@ def transcribe(
     executable: str = "",
     run_func: Callable[..., Any] = subprocess.run,
     cancel_event: threading.Event | None = None,
+    model_path: str | os.PathLike[str] | None = None,
+    aligner_model_path: str | os.PathLike[str] | None = None,
+    require_word_timestamps: bool = True,
 ) -> CrispASRTranscriptionResult:
     engine = normalize_engine(settings.get("stt_engine") or settings.get("stt_backend"))
-    validate_stt_language(
-        engine,
-        settings.get("stt_language") or settings.get("whisper_language"),
-    )
+    if engine != STT_ENGINE_QWEN3:
+        validate_stt_language(
+            engine,
+            settings.get("stt_language") or settings.get("whisper_language"),
+        )
     session_path = Path(session_dir)
     session_path.mkdir(parents=True, exist_ok=True)
     temporary_base = session_path / f"{output_name}_crispasr"
     prefetched_model: Path | None = None
     prefetched_vad_model: Path | None = None
     prefetched_aligner: Path | None = None
-    try:
-        prefetched_model = _prefetch_windows_model(settings)
-    except (OSError, URLError, ValueError) as error:
-        # Keep the native downloader as a fallback for proxies and managed
-        # networks where Python and WinHTTP may have different access.
-        logger.warning("Could not prefetch the CrispASR model: %s", error)
+    if engine == STT_ENGINE_QWEN3:
+        prefetched_model = Path(model_path) if model_path is not None else None
+    else:
+        try:
+            prefetched_model = _prefetch_windows_model(settings)
+        except (OSError, URLError, ValueError) as error:
+            # Keep the native downloader as a fallback for proxies and managed
+            # networks where Python and WinHTTP may have different access.
+            logger.warning("Could not prefetch the CrispASR model: %s", error)
     try:
         prefetched_vad_model = _prefetch_windows_vad_model(settings)
     except (OSError, URLError, ValueError) as error:
         logger.warning("Could not prefetch the CrispASR VAD model: %s", error)
-    try:
-        prefetched_aligner = _prefetch_windows_moss_aligner(settings)
-    except (OSError, URLError, ValueError) as error:
-        logger.warning("Could not prefetch the CrispASR CTC aligner: %s", error)
+    if engine != STT_ENGINE_QWEN3:
+        try:
+            prefetched_aligner = _prefetch_windows_moss_aligner(settings)
+        except (OSError, URLError, ValueError) as error:
+            logger.warning("Could not prefetch the CrispASR CTC aligner: %s", error)
     command = build_command(
         audio_path,
         temporary_base,
@@ -1115,6 +1216,8 @@ def transcribe(
         executable=executable,
         model_path=prefetched_model,
         vad_model_path=prefetched_vad_model,
+        aligner_model_path=aligner_model_path,
+        require_word_timestamps=require_word_timestamps,
     )
     try:
         completed = _run_tool(
@@ -1138,6 +1241,11 @@ def transcribe(
         stderr = getattr(completed, "stderr", b"")
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
+        stdout = getattr(completed, "stdout", b"")
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if engine == STT_ENGINE_QWEN3 and "no speech detected" in f"{stderr}\n{stdout}".lower():
+            raise CrispASRError("Qwen3 ASR detected no speech in this audio.")
         raise CrispASRError(
             "CrispASR did not produce both SRT and full JSON output. "
             + str(stderr or "").strip()
@@ -1164,11 +1272,14 @@ def transcribe(
             cancel_event=cancel_event,
             aligner_model_path=prefetched_aligner,
         )
-    _validate_word_timestamps(
-        json_generated,
-        require_words=engine != STT_ENGINE_MOSS or (align_moss_words and not qwen_moss),
-        require_words_per_segment=align_moss_words and not qwen_moss,
-    )
+    if engine == STT_ENGINE_QWEN3:
+        _validate_qwen_json(json_generated, audio_path, require_word_timestamps)
+    else:
+        _validate_word_timestamps(
+            json_generated,
+            require_words=engine != STT_ENGINE_MOSS or (align_moss_words and not qwen_moss),
+            require_words_per_segment=align_moss_words and not qwen_moss,
+        )
 
     srt_path = session_path / f"{output_name}.srt"
     words_path = session_path / f"{output_name}_words.json"

@@ -21,7 +21,7 @@ from pandrator.logic.dubbing.crispasr import (
     normalize_engine,
     normalize_model_quantization,
 )
-from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime
+from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime, qwen_runtime_problem
 from pandrator.logic.dubbing.stt_languages import supported_stt_languages
 from pandrator.runtime import DataPaths
 
@@ -562,21 +562,19 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
             "models": {},
         }
     qwen_caps = qwen_recognizer.capabilities()
+    qwen_problem = qwen_runtime_problem(crispasr)
     # Recognizer entry: the frontend distinguishes recognizer coverage from
     # pipeline constraints with these keys (see qwen_asr.capabilities()).
     model_capabilities["qwen3"] = {
         "kind": "recognizer",
-        "available": bool(qwen_caps.get("available")),
+        "available": crispasr.installed and not qwen_problem,
         "installed": any(
-            isinstance(info, dict) and bool(info.get("cached"))
-            for model_id, info in (
-                audio_cpp_tools.get("models", {}).items()
-                if isinstance(audio_cpp_tools, dict)
-                else []
-            )
-            if model_id in set(qwen_recognizer.QWEN3_ASR_MODELS)
+            qwen_caps.get("cached_assets", {}).get(model_id, False)
+            for model_id in qwen_recognizer.QWEN3_ASR_MODELS
         ),
-        "download_on_demand": bool(qwen_caps.get("available")),
+        "download_on_demand": crispasr.installed and not qwen_problem,
+        "compute_backends": list(crispasr.compute_backends),
+        "runtime": "crispasr",
         "default": False,
         "models": list(qwen_recognizer.QWEN3_ASR_MODELS),
         "default_model": qwen_recognizer.DEFAULT_QWEN3_ASR_MODEL,
@@ -594,7 +592,7 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         "requires_explicit_language_for_timestamps": True,
         "timing_fallback": qwen_recognizer.TIMING_FALLBACK,
         "language_detection": True,
-        "reason": str(qwen_caps.get("reason") or ""),
+        "reason": qwen_problem or str(qwen_caps.get("reason") or ""),
     }
     stt = {
         "crispasr": crispasr.installed,

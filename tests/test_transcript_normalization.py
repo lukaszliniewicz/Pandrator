@@ -1,5 +1,6 @@
 import json
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -15,6 +16,56 @@ from pandrator.logic.dubbing.transcript_normalization import (
 
 
 class TranscriptNormalizationTests(unittest.TestCase):
+    def test_qwen_zero_duration_words_survive_native_and_canonical_metadata(self):
+        examples = (
+            ("en", "Hello for world.", [("Hello", 100, 400), ("for", 410, 410), ("world.", 450, 950)]),
+            ("zh", "你好，世界！", [("你好", 100, 400), ("世", 410, 410), ("界！", 450, 950)]),
+        )
+
+        def lexical(text):
+            return "".join(
+                char for char in unicodedata.normalize("NFKC", text).casefold()
+                if char.isalnum()
+            )
+
+        for language, text, entries in examples:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as temp_dir:
+                payload = {
+                    "crispasr": {"backend": "qwen3", "language": language},
+                    "transcription": [{
+                        "text": text,
+                        "offsets": {"from": 100, "to": 1000},
+                        "words": [
+                            {"text": surface, "offsets": {"from": start, "to": end}}
+                            for surface, start, end in entries
+                        ],
+                    }],
+                }
+                native = normalize_transcript(payload)
+                self.assertEqual(len(native.words), 3)
+                self.assertEqual(native.words[1].start_ms, native.words[1].end_ms)
+                canonical = normalize_transcript(native.to_dict())
+                self.assertEqual(len(canonical.words), 3)
+                self.assertEqual(canonical.words[1].start_ms, canonical.words[1].end_ms)
+                self.assertEqual(lexical("".join(word.text for word in canonical.words)), lexical(text))
+                path = Path(temp_dir) / "native.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                cues = parse_srt(compose_from_transcript_json(path))
+                self.assertEqual(lexical("".join(cue.text for cue in cues)), lexical(text))
+
+    def test_non_qwen_zero_duration_word_remains_invalid(self):
+        payload = {
+            "crispasr": {"backend": "whisper", "language": "en"},
+            "transcription": [{
+                "text": "Hello world", "offsets": {"from": 100, "to": 1000},
+                "words": [
+                    {"text": "Hello", "offsets": {"from": 100, "to": 100}},
+                    {"text": "world", "offsets": {"from": 200, "to": 600}},
+                ],
+            }],
+        }
+        self.assertEqual([word.text for word in normalize_transcript(payload).words], ["world"])
+
     def test_crispasr_whisper_dtw_and_parakeet_share_one_adapter(self):
         for backend in ("whisper", "parakeet"):
             with self.subTest(backend=backend):

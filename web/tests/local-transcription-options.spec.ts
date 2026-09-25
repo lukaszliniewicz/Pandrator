@@ -30,7 +30,11 @@ test('recognition coverage and alignment coverage remain distinct', () => {
   );
 });
 
-async function fixture(page: Page) {
+async function fixture(
+  page: Page,
+  sourceLanguage = 'en',
+  sttOverride: Record<string, unknown> = {}
+) {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/');
@@ -47,11 +51,24 @@ async function fixture(page: Page) {
     data: {
       name: `Local transcription ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover',
-      source_language: 'en'
+      source_language: sourceLanguage
     }
   });
   expect(created.ok()).toBeTruthy();
   const id = (await created.json()).id as string;
+  if (Object.keys(sttOverride).length) {
+    const stored = await (
+      await page.request.get(`/api/v1/sessions/${id}/settings/stt`)
+    ).json();
+    const saved = await page.request.put(
+      `/api/v1/sessions/${id}/settings/stt`,
+      {
+        headers: { ...headers, 'If-Match': `"${stored.revision}"` },
+        data: { value: sttOverride }
+      }
+    );
+    expect(saved.ok(), await saved.text()).toBeTruthy();
+  }
   const wav = Buffer.alloc(44 + 32000);
   wav.write('RIFF');
   wav.writeUInt32LE(wav.length - 8, 4);
@@ -89,6 +106,42 @@ async function fixture(page: Page) {
   return { id, dialog, errors };
 }
 
+for (const scenario of [
+  { name: 'session source language', override: {}, expected: 'zh' },
+  {
+    name: 'canonical language over a stale automatic alias',
+    override: { stt_language: 'zh', original_language: 'auto' },
+    expected: 'zh'
+  },
+  {
+    name: 'explicit transcription language over session language',
+    override: { stt_language: 'ja' },
+    expected: 'ja'
+  }
+]) {
+  test(`Qwen inherits ${scenario.name} and preserves it on save`, async ({
+    page
+  }) => {
+    const { id, dialog, errors } = await fixture(page, 'zh', scenario.override);
+    await dialog
+      .getByRole('combobox', { name: 'Recognition model', exact: true })
+      .selectOption('qwen3');
+    await expect(
+      dialog.getByRole('combobox', { name: 'Source language', exact: true })
+    ).toHaveValue(scenario.expected);
+    await dialog
+      .getByRole('button', { name: 'Save settings', exact: true })
+      .click();
+    await expect(dialog).toBeHidden();
+    const saved = await (
+      await page.request.get(`/api/v1/sessions/${id}/settings/stt`)
+    ).json();
+    expect(saved.effective.stt_language).toBe(scenario.expected);
+    expect(saved.effective.original_language).toBe(scenario.expected);
+    expect(errors).toEqual([]);
+  });
+}
+
 test('Qwen model and optional vocal isolation save without starting transcription', async ({
   page
 }) => {
@@ -108,6 +161,15 @@ test('Qwen model and optional vocal isolation save without starting transcriptio
     name: 'Qwen3 transcription options'
   });
   await expect(qwen).toBeVisible();
+  await expect(
+    dialog.getByRole('checkbox', {
+      name: 'Voice activity detection',
+      exact: true
+    })
+  ).toBeChecked();
+  await dialog
+    .getByRole('checkbox', { name: 'Voice activity detection', exact: true })
+    .uncheck();
   await qwen
     .getByRole('combobox', { name: 'Source language', exact: true })
     .selectOption('en');
@@ -139,6 +201,8 @@ test('Qwen model and optional vocal isolation save without starting transcriptio
   expect(saved.effective).toMatchObject({
     stt_engine: 'qwen3',
     qwen_asr_model: 'qwen3_asr_1_7b',
+    qwen_asr_chunk_mode: 'auto',
+    crispasr_vad_enabled: false,
     transcription_vocal_isolation: 'mel_band_roformer'
   });
   expect(started).toEqual([]);

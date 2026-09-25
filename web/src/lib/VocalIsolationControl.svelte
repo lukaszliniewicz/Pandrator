@@ -40,8 +40,9 @@
     processed copy keeps its timeline.
   </p>
   {#if value !== 'off'}<p class="mt-2 text-xs" role="status">
-      Vocal isolation adds processing time and can remove useful speech details.
-      Start with Off for clean recordings. A preprocessing failure stops the
-      task rather than silently using untreated audio.
+      Vocal isolation processes overlapping windows and can take longer than the
+      recording, especially on older GPUs. It can also remove useful speech
+      details. Start with Off for clean recordings. A preprocessing failure
+      stops the task rather than silently using untreated audio.
     </p>{/if}
 </details>

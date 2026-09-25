@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -187,25 +188,27 @@ def _metadata(item: dict[str, Any], excluded: Iterable[str]) -> dict[str, Any]:
     return {key: value for key, value in item.items() if key not in excluded_keys}
 
 
-def _valid_span(start: Any, end: Any, *, scale: float = 1.0) -> tuple[int, int] | None:
+def _valid_span(
+    start: Any, end: Any, *, scale: float = 1.0, allow_zero: bool = False
+) -> tuple[int, int] | None:
     try:
         start_ms = round(float(start) * scale)
         end_ms = round(float(end) * scale)
     except (TypeError, ValueError):
         return None
-    if start_ms < 0 or end_ms <= start_ms:
+    if start_ms < 0 or end_ms < start_ms or (end_ms == start_ms and not allow_zero):
         return None
     return start_ms, end_ms
 
 
-def _offset_span(item: dict[str, Any]) -> tuple[int, int] | None:
+def _offset_span(item: dict[str, Any], *, allow_zero: bool = False) -> tuple[int, int] | None:
     offsets = item.get("offsets")
     if isinstance(offsets, dict):
-        span = _valid_span(offsets.get("from"), offsets.get("to"))
+        span = _valid_span(offsets.get("from"), offsets.get("to"), allow_zero=allow_zero)
         if span:
             return span
     if item.get("start_ms") is not None or item.get("end_ms") is not None:
-        return _valid_span(item.get("start_ms"), item.get("end_ms"))
+        return _valid_span(item.get("start_ms"), item.get("end_ms"), allow_zero=allow_zero)
     return None
 
 
@@ -216,13 +219,13 @@ def _seconds_span(item: dict[str, Any]) -> tuple[int, int] | None:
     return _valid_span(item.get("start"), item.get("end"), scale=1000.0)
 
 
-def _crisp_span(item: dict[str, Any]) -> tuple[int, int] | None:
-    span = _offset_span(item)
+def _crisp_span(item: dict[str, Any], *, allow_zero: bool = False) -> tuple[int, int] | None:
+    span = _offset_span(item, allow_zero=allow_zero)
     if span:
         return span
     if item.get("t0") is not None or item.get("t1") is not None:
-        return _valid_span(item.get("t0"), item.get("t1"), scale=10.0)
-    return _valid_span(item.get("start"), item.get("end"), scale=1000.0)
+        return _valid_span(item.get("t0"), item.get("t1"), scale=10.0, allow_zero=allow_zero)
+    return _valid_span(item.get("start"), item.get("end"), scale=1000.0, allow_zero=allow_zero)
 
 
 def _word(
@@ -306,11 +309,17 @@ def _accepts_canonical(payload: Any) -> bool:
 
 
 def _parse_canonical(payload: dict[str, Any]) -> NormalizedTranscript:
+    metadata = payload.get("metadata") or {}
+    qwen_words = isinstance(metadata, dict) and metadata.get("engine") in {"qwen3", "qwen3-1.7b"}
     segments = (
         parsed
         for item in payload.get("segments") or []
         if isinstance(item, dict)
-        and (parsed := _segment(item, span_parser=_offset_span, word_span_parser=_offset_span))
+        and (parsed := _segment(
+            item,
+            span_parser=_offset_span,
+            word_span_parser=partial(_offset_span, allow_zero=qwen_words),
+        ))
     )
     return NormalizedTranscript(
         segments=_sorted_segments(segments),
@@ -326,14 +335,19 @@ def _accepts_crispasr(payload: Any) -> bool:
 
 def _parse_crispasr(payload: dict[str, Any]) -> NormalizedTranscript:
     groups = payload.get("transcription") or []
+    header = payload.get("crispasr") if isinstance(payload.get("crispasr"), dict) else {}
+    backend = str(header.get("backend") or "")
+    qwen_words = backend in {"qwen3", "qwen3-1.7b"}
     segments = (
         parsed
         for item in groups
         if isinstance(item, dict)
-        and (parsed := _segment(item, span_parser=_crisp_span, word_span_parser=_crisp_span))
+        and (parsed := _segment(
+            item,
+            span_parser=_crisp_span,
+            word_span_parser=partial(_crisp_span, allow_zero=qwen_words),
+        ))
     )
-    header = payload.get("crispasr") if isinstance(payload.get("crispasr"), dict) else {}
-    backend = str(header.get("backend") or "")
     diarization = "native" if backend == "moss-diarize" else "external-or-channel"
     return NormalizedTranscript(
         segments=_sorted_segments(segments),
