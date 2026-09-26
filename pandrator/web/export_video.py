@@ -24,6 +24,7 @@ from .export_video_commands import (
     run_video_command,
 )
 from .models import Artifact, new_id
+from .video_tail_fast import try_fast_video_tail
 from .workflow_output_context import OutputWorkflowContext
 
 
@@ -32,6 +33,64 @@ class PreparedVideoAudio:
     path: Path
     parent_ids: list[str]
     tail_extension_ms: int
+    tail_extension_method: str | None = None
+
+
+def _tail_defers_to_final_render(
+    settings: dict, selection: MediaExportSelection
+) -> bool:
+    """Return True when the final render already pays for a full video encode.
+
+    Burned subtitles, an explicit video_transcode request, or a real resize
+    (burn_video_resolution != source) all force a transcode. In those cases
+    the frozen tail is cheaper as a single tpad in the final filtergraph
+    (BEFORE subtitles) instead of a preparatory full encode plus a second
+    final encode.
+    """
+
+    from pandrator.logic.dubbing.video_muxing import normalize_video_resolution
+
+    if selection.subtitle_mode == "burned" and bool(selection.selected_subtitles):
+        return True
+    if bool(settings.get("video_transcode")):
+        return True
+    try:
+        return (
+            normalize_video_resolution(
+                settings.get("burn_video_resolution", "source")
+            )
+            != "source"
+        )
+    except ValueError:
+        return False
+
+
+def _attempt_fast_video_tail(
+    *,
+    source: Path,
+    destination: Path,
+    scratch_dir: Path,
+    extra_seconds: float,
+    ffmpeg_executable: str,
+    cancel_event: threading.Event,
+) -> bool:
+    """Try the stream-copy tail helper; False means fall back to full tpad.
+
+    True means a verified video-only extended MP4; False means
+    unsupported/failure. InterruptedError propagates and must not fall back.
+    """
+
+    return bool(
+        try_fast_video_tail(
+            source,
+            destination,
+            scratch_dir=scratch_dir,
+            extra_seconds=float(extra_seconds),
+            ffmpeg_executable=ffmpeg_executable,
+            cancel_event=cancel_event,
+            run_command=run_video_command,
+        )
+    )
 
 
 def _prepare_video_audio(
@@ -105,39 +164,64 @@ def _prepare_video_audio(
                 settings=settings,
             )
         preserve_audio_tail = tail_extension_ms > 0 or overrun > 0
+        tail_extension_method: str | None = None
         if tail_extension_ms:
-            if video_encoder not in ffmpeg_video_encoder_ids(
-                ffmpeg_executable
-            ):
-                raise RuntimeError(
-                    f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
+            # Single shared tail duration (frame-ceiled) feeds both the video
+            # freeze and the soundtrack master below. When the final render
+            # already pays for a full encode, defer tpad there (single pass,
+            # BEFORE subtitles) and keep -shortest off so the full mixed
+            # master survives. Otherwise try the fast stream-copy tail first
+            # (body copied, source resolution preserved) and only fall back to
+            # the old full tpad encode when the helper reports False.
+            if _tail_defers_to_final_render(settings, selection):
+                tail_extension_method = "render_filter"
+            else:
+                tail_video = (
+                    scratch_dir / f".{record.storage_key}-tail-{new_id()}.mp4"
                 )
-            tail_video = (
-                scratch_dir / f".{record.storage_key}-tail-{new_id()}.mp4"
-            )
-            tail_command = build_video_tail_extension_command(
-                str(media_path),
-                str(tail_video),
-                tail_extension_ms / 1000,
-                ffmpeg_executable=ffmpeg_executable,
-                video_encoder=video_encoder,
-                video_quality=settings.get("burn_video_quality", 18),
-                video_speed=str(
-                    settings.get("burn_video_speed") or "balanced"
-                ),
-                audio_codec="copy",
-                audio_bitrate=video_audio_bitrate,
-                video_resolution=settings.get(
-                    "burn_video_resolution", "source"
-                ),
-            )
-            progress(
-                0.38,
-                f"Extending the final video frame by {tail_extension_ms} ms "
-                "to cover the voiceover tail",
-            )
-            run_video_command(tail_command, cancel_event)
-            working_video = tail_video
+                progress(
+                    0.38,
+                    f"Extending the final video frame by {tail_extension_ms} ms "
+                    "to cover the voiceover tail",
+                )
+                # InterruptedError propagates; False falls back to full encode.
+                fast_ok = _attempt_fast_video_tail(
+                    source=media_path,
+                    destination=tail_video,
+                    scratch_dir=scratch_dir,
+                    extra_seconds=tail_extension_ms / 1000,
+                    ffmpeg_executable=ffmpeg_executable,
+                    cancel_event=cancel_event,
+                )
+                if fast_ok:
+                    working_video = tail_video
+                    tail_extension_method = "stream_copy_tail"
+                else:
+                    if video_encoder not in ffmpeg_video_encoder_ids(
+                        ffmpeg_executable
+                    ):
+                        raise RuntimeError(
+                            f"The selected FFmpeg build does not provide the {video_encoder} video encoder."
+                        )
+                    tail_command = build_video_tail_extension_command(
+                        str(media_path),
+                        str(tail_video),
+                        tail_extension_ms / 1000,
+                        ffmpeg_executable=ffmpeg_executable,
+                        video_encoder=video_encoder,
+                        video_quality=settings.get("burn_video_quality", 18),
+                        video_speed=str(
+                            settings.get("burn_video_speed") or "balanced"
+                        ),
+                        audio_codec="copy",
+                        audio_bitrate=video_audio_bitrate,
+                        video_resolution=settings.get(
+                            "burn_video_resolution", "source"
+                        ),
+                    )
+                    run_video_command(tail_command, cancel_event)
+                    working_video = tail_video
+                    tail_extension_method = "full_transcode"
         _audio_record, audio_path = context._resolve_input(dubbing_audio.id)
         audio_video = (
             scratch_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
@@ -172,7 +256,11 @@ def _prepare_video_audio(
         progress(0.58, "Media audio track ready")
         working_video = audio_video
         audio_parent_ids.append(dubbing_audio.id)
-    return PreparedVideoAudio(working_video, audio_parent_ids, tail_extension_ms)
+    else:
+        tail_extension_method = None
+    return PreparedVideoAudio(
+        working_video, audio_parent_ids, tail_extension_ms, tail_extension_method
+    )
 
 
 def render_video_export(
@@ -248,6 +336,7 @@ def render_video_export(
         working_video = prepared.path
         audio_parent_ids = prepared.parent_ids
         tail_extension_ms = prepared.tail_extension_ms
+        tail_extension_method = prepared.tail_extension_method
 
         def _finalize_track_scratch(track_name: str) -> Path:
             return scratch_dir / f".{record.storage_key}-{track_name}-final-{new_id()}.srt"
@@ -255,16 +344,28 @@ def render_video_export(
         user_video_transcode = bool(settings.get("video_transcode")) or (
             subtitle_mode == "burned" and bool(selected_subtitles)
         )
-        # A frozen tail already reencoded the video with the selected
-        # encoder. Force the transcoded flag/metadata without paying
-        # for a second full transcode when the user did not request one.
-        video_transcode = user_video_transcode or tail_extension_ms > 0
+        # video_transcoded describes the ORIGINAL video being reencoded, not a
+        # synthesized fast tail (body copied). Fast stream-copy tails keep
+        # source resolution and leave the selected (unused) encoder out of the
+        # metadata. A full preparation transcode reencodes in preparation; a
+        # deferred render-filter tail reencodes once in the final pass.
+        video_transcode = user_video_transcode or tail_extension_method in {
+            "full_transcode",
+            "render_filter",
+        }
         output_video_resolution = (
             normalize_video_resolution(
                 settings.get("burn_video_resolution", "source")
             )
             if video_transcode
             else "source"
+        )
+        # Deferred tails ride the final filtergraph once; already-extended
+        # sources (fast or full preparation) must not extend a second time.
+        final_tail_seconds = (
+            tail_extension_ms / 1000
+            if tail_extension_method == "render_filter"
+            else 0.0
         )
         # Replacement and mixed soundtracks were encoded to AAC in the
         # preparation step above. Copy them during the video render so
@@ -357,7 +458,11 @@ def render_video_export(
                 )
             video_transcode = render_soft_subtitle_video(
                 working_video, tracks, render_destination, encoding,
-                transcode_video=user_video_transcode, progress=progress,
+                transcode_video=(
+                    user_video_transcode or tail_extension_method == "render_filter"
+                ),
+                tail_extension_seconds=final_tail_seconds,
+                progress=progress,
                 cancel_event=cancel_event,
             ) or video_transcode
         elif subtitle_mode == "burned" and selected_subtitles:
@@ -393,11 +498,13 @@ def render_video_export(
             render_burned_subtitle_video(
                 working_video, burn_path, render_destination, encoding,
                 language=str(settings.get("target_language") or "und"),
+                tail_extension_seconds=final_tail_seconds,
                 progress=progress, cancel_event=cancel_event,
             )
-        elif user_video_transcode:
+        elif user_video_transcode or tail_extension_method == "render_filter":
             render_transcoded_video(
                 working_video, render_destination, encoding,
+                tail_extension_seconds=final_tail_seconds,
                 progress=progress, cancel_event=cancel_event,
             )
         else:
@@ -443,6 +550,7 @@ def render_video_export(
                 "video_transcoded": video_transcode,
                 "video_encoder": video_encoder if video_transcode else None,
                 "tail_extension_ms": tail_extension_ms,
+                "tail_extension_method": tail_extension_method or "none",
                 "audio_bitrate": (
                     video_audio_bitrate
                     if audio_mode in {"dubbed", "mixed"}

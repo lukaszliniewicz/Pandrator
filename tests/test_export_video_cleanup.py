@@ -79,6 +79,12 @@ class VideoExportCleanupTests(unittest.TestCase):
         self.enterContext(mock.patch(
             "pandrator.web.export_video_commands.run_cancellable", side_effect=self.run_media_command
         ))
+        # Old fallback path: these tests use fake byte paths, so force the
+        # fast stream-copy helper to report unsupported and exercise the
+        # full tpad preparation encode (3 commands: tail, audio, render).
+        self.enterContext(mock.patch(
+            "pandrator.web.export_video._attempt_fast_video_tail", return_value=False
+        ))
 
     def probe(self, path):
         is_video = Path(path) == self.source_path

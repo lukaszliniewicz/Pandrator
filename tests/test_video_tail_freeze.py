@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 import wave
+from unittest import mock
 
 from pandrator.logic.dubbing.video_muxing import (
     build_replace_video_audio_command,
@@ -313,7 +314,49 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
             },
         )
         self.assertEqual(metadata["tail_extension_ms"], expected_tail)
+        # H264 yuv420p fixture is fast-path eligible: body stream-copied,
+        # so the original video is not reported as transcoded.
+        self.assertEqual(metadata["tail_extension_method"], "stream_copy_tail")
+        self.assertFalse(metadata["video_transcoded"])
+        self.assertIsNone(metadata["video_encoder"])
+        self.assertEqual(metadata["video_resolution"], "source")
+        info = probe_soundtrack_media(self.services.paths.managed_path(relative))
+        self.assertTrue(info["has_video"])
+        self.assertGreaterEqual(info["duration"], generated["duration"] - 0.05)
+
+    def test_dubbed_tail_fallback_full_transcode_when_fast_rejected(self):
+        from pandrator.web.soundtrack_export import probe_soundtrack_media
+
+        sid = self._voiceover_session(name="Tail fallback")
+        video = self.services.paths.uploads / "tail-fallback-source.mp4"
+        self._make_video(video, 2)
+        self._attach_upload(sid, video)
+        speech = self._register_speech(sid, 2.6)
+        _record, speech_path = self.handlers._resolve_input(speech.id)
+        reference = probe_soundtrack_media(video)
+        generated = probe_soundtrack_media(speech_path)
+        expected_tail = resolve_video_tail_extension_ms(
+            reference_duration=reference["duration"],
+            generated_duration=generated["duration"],
+            fps=reference["fps"],
+            settings={"video_tail_extension_policy": "extend"},
+        )
+        self.assertGreater(expected_tail, 0)
+        with mock.patch(
+            "pandrator.web.export_video.try_fast_video_tail", return_value=False
+        ):
+            metadata, relative = self._export_result(
+                sid,
+                {
+                    "export_mode": "media",
+                    "audio_mode": "dubbing_only",
+                    "subtitle_mode": "none",
+                },
+            )
+        self.assertEqual(metadata["tail_extension_ms"], expected_tail)
+        self.assertEqual(metadata["tail_extension_method"], "full_transcode")
         self.assertTrue(metadata["video_transcoded"])
+        self.assertEqual(metadata["video_encoder"], "libx264")
         info = probe_soundtrack_media(self.services.paths.managed_path(relative))
         self.assertTrue(info["has_video"])
         self.assertGreaterEqual(info["duration"], generated["duration"] - 0.05)
@@ -335,7 +378,10 @@ class ExportChainingAndTailIntegrationTests(unittest.TestCase):
             },
         )
         self.assertGreater(metadata["tail_extension_ms"], 0)
-        self.assertTrue(metadata["video_transcoded"])
+        self.assertEqual(metadata["tail_extension_method"], "stream_copy_tail")
+        self.assertFalse(metadata["video_transcoded"])
+        self.assertIsNone(metadata["video_encoder"])
+        self.assertEqual(metadata["video_resolution"], "source")
         info = probe_soundtrack_media(self.services.paths.managed_path(relative))
         self.assertGreaterEqual(info["duration"], 2.51)
 

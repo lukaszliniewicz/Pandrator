@@ -189,6 +189,24 @@ def _video_transcode_arguments(
     return before_input, arguments
 
 
+def _tail_clip_filter(tail_extension_seconds: float = 0.0) -> tuple[str, ...]:
+    """Return the frozen-tail tpad filter, or nothing when no extension applies.
+
+    Stream-copy branches must never include this filter: cloning the last
+    frame requires a video reencode. Callers doing a single-pass full render
+    pass the shared tail duration here; preparation-extended sources pass 0
+    so the fallback never double-extends.
+    """
+
+    try:
+        extra = float(tail_extension_seconds or 0.0)
+    except (TypeError, ValueError):
+        extra = 0.0
+    if not extra > 0:
+        return ()
+    return (f"tpad=stop_mode=clone:stop_duration={extra:.3f}",)
+
+
 def build_video_transcode_command(
     video_path: str,
     output_path: str,
@@ -201,6 +219,7 @@ def build_video_transcode_command(
     audio_bitrate: str = "192k",
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
+    tail_extension_seconds: float = 0.0,
 ) -> list[str]:
     """Build a video transcode without requiring a subtitle overlay."""
 
@@ -212,6 +231,7 @@ def build_video_transcode_command(
         audio_bitrate=audio_bitrate,
         hardware_device=hardware_device,
         video_resolution=video_resolution,
+        extra_filters=_tail_clip_filter(tail_extension_seconds),
     )
     return [
         ffmpeg_executable,
@@ -405,6 +425,7 @@ def build_add_subtitles_command(
     audio_bitrate: str = "192k",
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
+    tail_extension_seconds: float = 0.0,
 ) -> list[str]:
     """Build the FFmpeg command for soft or burned subtitle output."""
     normalized_mode = str(subtitle_mode or "soft").strip().lower()
@@ -413,6 +434,9 @@ def build_add_subtitles_command(
 
     if normalized_mode == "burned":
         escaped_subtitle_path = escape_ffmpeg_subtitles_filter_path(equalized_srt_path)
+        # tpad runs BEFORE libass so captions during the extended tail render
+        # from the subtitle timeline instead of cloning an already-burned frame.
+        tail_filters = _tail_clip_filter(tail_extension_seconds)
         before_input, arguments = _video_transcode_arguments(
             video_encoder=video_encoder,
             video_quality=video_quality,
@@ -423,7 +447,10 @@ def build_add_subtitles_command(
             video_resolution=video_resolution,
             # Scale is inserted first by the shared builder so libass renders
             # text at the requested output size.
-            extra_filters=(f"subtitles=filename='{escaped_subtitle_path}'",),
+            extra_filters=(
+                *tail_filters,
+                f"subtitles=filename='{escaped_subtitle_path}'",
+            ),
         )
         return [
             ffmpeg_executable,
@@ -588,6 +615,7 @@ def build_multi_soft_subtitle_command(
     audio_bitrate: str = "192k",
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
+    tail_extension_seconds: float = 0.0,
 ) -> list[str]:
     """Build an MP4 remux command with one or more language-labelled subtitle tracks."""
     before_input: list[str] = []
@@ -601,6 +629,10 @@ def build_multi_soft_subtitle_command(
             audio_bitrate=audio_bitrate,
             hardware_device=hardware_device,
             video_resolution=video_resolution,
+            # Stream-copy remux branches below never see tpad: freezing the
+            # last frame requires a reencode, so preparation-extended sources
+            # and plain remuxes always pass 0 here.
+            extra_filters=_tail_clip_filter(tail_extension_seconds),
         )
     command = [ffmpeg_executable, "-y", *before_input, "-i", video_path]
     for track in subtitle_tracks:

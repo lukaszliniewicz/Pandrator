@@ -124,6 +124,7 @@ def render_soft_subtitle_video(
     options: VideoEncodingOptions,
     *,
     transcode_video: bool,
+    tail_extension_seconds: float = 0.0,
     progress: Progress,
     cancel_event: threading.Event,
 ) -> bool:
@@ -133,6 +134,7 @@ def render_soft_subtitle_video(
         _require_encoder(options)
     command = build_multi_soft_subtitle_command(
         str(source), tracks, str(destination), transcode_video=transcode_video,
+        tail_extension_seconds=tail_extension_seconds if transcode_video else 0.0,
         **_encoding_kwargs(options),
     )
     progress(
@@ -147,6 +149,10 @@ def render_soft_subtitle_video(
         command,
         lambda: build_multi_soft_subtitle_command(
             str(source), tracks, str(destination), transcode_video=True,
+            # The source is already extended when preparation ran (fast or
+            # full transcode); the fallback compatibility transcode must not
+            # extend a second time.
+            tail_extension_seconds=0.0,
             **_encoding_kwargs(options, fallback=True),
         ),
         options,
@@ -165,6 +171,7 @@ def render_burned_subtitle_video(
     options: VideoEncodingOptions,
     *,
     language: str,
+    tail_extension_seconds: float = 0.0,
     progress: Progress,
     cancel_event: threading.Event,
 ) -> None:
@@ -180,7 +187,8 @@ def render_burned_subtitle_video(
     _require_encoder(burn_options)
     command = build_add_subtitles_command(
         str(source), str(subtitle), str(destination), subtitle_mode="burned",
-        subtitle_language=language, **_encoding_kwargs(burn_options),
+        subtitle_language=language, tail_extension_seconds=tail_extension_seconds,
+        **_encoding_kwargs(burn_options),
     )
     progress(0.65, "Rendering burned subtitles into video")
     _run_labeled_command(
@@ -190,12 +198,17 @@ def render_burned_subtitle_video(
 
 def render_transcoded_video(
     source: Path, destination: Path, options: VideoEncodingOptions,
-    *, progress: Progress, cancel_event: threading.Event,
+    *, tail_extension_seconds: float = 0.0,
+    progress: Progress, cancel_event: threading.Event,
 ) -> None:
     from pandrator.logic.dubbing.video_muxing import build_video_transcode_command
 
     _require_encoder(options)
-    command = build_video_transcode_command(str(source), str(destination), **_encoding_kwargs(options))
+    command = build_video_transcode_command(
+        str(source), str(destination),
+        tail_extension_seconds=tail_extension_seconds,
+        **_encoding_kwargs(options),
+    )
     progress(0.65, "Transcoding video output")
     _run_labeled_command(command, f"Video transcoding with {options.encoder}", cancel_event)
 

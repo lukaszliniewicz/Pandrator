@@ -14,6 +14,7 @@ import tempfile
 import threading
 import unittest
 import wave
+from unittest import mock
 
 from pandrator.logic.dubbing.video_muxing import (
     build_replace_video_audio_command,
@@ -322,7 +323,12 @@ class TailExportTests(unittest.TestCase):
         self.register_speech("speech-long.wav", 3.4, 3.2)
         output, metadata = self.run_export(self.base_settings())
         self.assertEqual(metadata["tail_extension_ms"], 440)
-        self.assertTrue(metadata["video_transcoded"])
+        # H264 yuv420p fixture is fast-path eligible: body stream-copied,
+        # so the original video is not reported as transcoded.
+        self.assertEqual(metadata["tail_extension_method"], "stream_copy_tail")
+        self.assertFalse(metadata["video_transcoded"])
+        self.assertIsNone(metadata["video_encoder"])
+        self.assertEqual(metadata["video_resolution"], "source")
         info = probe_soundtrack_media(output)
         self.assertTrue(info["has_video"])
         self.assertGreaterEqual(info["duration"], 3.39)
@@ -333,6 +339,22 @@ class TailExportTests(unittest.TestCase):
         output_early, _, _ = decode_frame_rgb(output, 0.5)
         self.assertLess(mean_abs_diff(source_last, output_last), 12.0)
         self.assertGreater(mean_abs_diff(output_early, output_last), 40.0)
+
+    def test_small_overrun_fallback_full_transcode_when_fast_rejected(self):
+        self.register_speech("speech-fallback.wav", 3.4, 3.2)
+        with mock.patch(
+            "pandrator.web.export_video.try_fast_video_tail", return_value=False
+        ):
+            output, metadata = self.run_export(self.base_settings())
+        self.assertEqual(metadata["tail_extension_ms"], 440)
+        self.assertEqual(metadata["tail_extension_method"], "full_transcode")
+        self.assertTrue(metadata["video_transcoded"])
+        self.assertEqual(metadata["video_encoder"], "libx264")
+        info = probe_soundtrack_media(output)
+        self.assertTrue(info["has_video"])
+        self.assertGreaterEqual(info["duration"], 3.39)
+        tail = decode_audio_tail(output)
+        self.assertGreater(max(abs(value) for value in tail), 0.001)
 
     def test_dubbed_overrun_within_policy_is_not_truncated(self):
         self.register_speech("speech-dubbed.wav", 3.4, 3.2)
@@ -408,6 +430,10 @@ class TailExportTests(unittest.TestCase):
         )
         info = probe_soundtrack_media(output)
         self.assertGreater(metadata["tail_extension_ms"], 30000)
+        # A 31 s tail exceeds the fast-path maximum, so export falls back to
+        # the full tpad transcode.
+        self.assertEqual(metadata["tail_extension_method"], "full_transcode")
+        self.assertTrue(metadata["video_transcoded"])
         self.assertGreaterEqual(info["duration"], generated_duration - 0.05)
         self.assertGreaterEqual(info["audio_duration"], generated_duration - 0.05)
         source_last, _, _ = decode_frame_rgb(self.source_path, 2.9)
