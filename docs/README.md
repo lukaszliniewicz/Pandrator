@@ -72,6 +72,7 @@ site and should not be moved or copied into this directory.
 - [Contribute code or documentation](development/contributing.md)
 - [Lint, types, and code quality policy](development/code-quality.md)
 - [CJK speech and subtitle pipeline contracts](development/cjk-pipeline-review.md)
+- [Frozen-tail video export paths](development/video-tail-export.md)
 
 ## Documentation boundaries
 

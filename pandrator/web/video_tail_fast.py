@@ -295,7 +295,7 @@ def _eligible_info(stream: dict) -> dict:
     avg_rate = _parse_ratio(stream.get("avg_frame_rate"))
     r_fps = _ratio_value(r_rate)
     avg_fps = _ratio_value(avg_rate)
-    if r_fps is None or avg_fps is None:
+    if r_rate is None or avg_rate is None or r_fps is None or avg_fps is None:
         raise _Ineligible("variable or unknown frame rate is not supported.")
     if r_fps > 120 or avg_fps > 120:
         raise _Ineligible("implausible frame rate.")
