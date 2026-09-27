@@ -86,6 +86,8 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
             "use_existing_speech_plans",
             "performance_enabled",
             "casting_enabled",
+            "voice_mode_version",
+            "speech_analysis_preferences",
             "performance_allow_vocalizations",
             "performance_context_before",
             "performance_context_after",
@@ -181,6 +183,7 @@ class AudioIdentityContext:
     """Resolve one settings snapshot and managed voice inventory per inspection."""
 
     def __init__(self, session: Session, snapshot: dict[str, Any]):
+        from .generation_cast_runtime import filter_segment_tts_override
         from .settings_policy import adapt_runtime_settings
         from .tts_providers import TtsProviderRegistry
         from .voice_library import sample_file_status
@@ -205,7 +208,9 @@ class AudioIdentityContext:
             **adapt_runtime_settings("audio", snapshot.get("audio") or {}),
         }
         selected = snapshot.get("selected_segment_override") or {}
-        self.selected_tts = dict(selected.get("tts") or {})
+        self.selected_tts = filter_segment_tts_override(
+            snapshot.get("tts") or {}, selected.get("tts") or {}
+        )
         self.selected_rvc = dict(selected.get("rvc") or {})
         self.voices: dict[str, list[dict[str, Any]]] = {}
         samples: dict[str, list[dict[str, Any]]] = {}
@@ -359,6 +364,9 @@ class AudioIdentityContext:
         return {**identity, "performance_request_hash": compiled.fingerprint}
 
     def for_segment(self, segment: GenerationSegment) -> dict[str, Any]:
+        from .generation_rendering import is_strict_single_voice
+
+        strict_single_voice = is_strict_single_voice(self.settings)
         language = str(segment.language or "").strip()
         if language.casefold() in {"auto", "und", "unknown"}:
             language = ""
@@ -369,7 +377,7 @@ class AudioIdentityContext:
         settings = deepcopy(self.settings)
         if language:
             settings.update(language=language, target_language=language)
-        if voice:
+        if voice and not strict_single_voice:
             settings.update(voice=voice, speaker=voice)
         if self.selected_tts:
             # These overrides have precedence over persistent segment choices.
@@ -395,7 +403,7 @@ class AudioIdentityContext:
             segment_voice_binding,
         )
 
-        binding = segment_voice_binding(segment, self.snapshot)
+        binding = None if strict_single_voice else segment_voice_binding(segment, self.snapshot)
         binding_error = None
         if binding:
             try:
@@ -414,7 +422,7 @@ class AudioIdentityContext:
             settings.get("voice") or settings.get("speaker") or ""
         ).strip()
         references = self.voices.get(_voice_key(selected_voice), [])
-        if segment.voice_id:
+        if segment.voice_id and not strict_single_voice:
             references = [
                 *references,
                 *self.voices.get(_voice_key(segment.voice_id), []),

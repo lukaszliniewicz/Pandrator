@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
 
@@ -129,6 +131,7 @@ def test_block_voice_wins_when_casting_is_disabled_and_include_request_is_bounde
         service="gemini",
         model="gemini-2.5-flash-tts",
         casting_enabled=False,
+        voice_mode_version=0,
         performance_enabled=False,
     )
 
@@ -154,6 +157,104 @@ def test_block_voice_wins_when_casting_is_disabled_and_include_request_is_bounde
         "start", "end", "voice", "voice_source", "fallback", "report",
         "instructions", "text", "input", "request_options",
     }
+
+
+def test_strict_single_preview_ignores_inactive_block_binding_and_keeps_language(
+    case, monkeypatch
+):
+    from pandrator.web import speech_plan_preview
+
+    sid = case["segment_ids"][0]
+    text = "A block voice is inactive in strict single mode."
+    with case["services"]["database"].session() as session:
+        voice = m.Voice(name="Unpublished voice", metadata_json={})
+        session.add(voice)
+        session.flush()
+        segment = session.get(m.GenerationSegment, sid)
+        segment.text = text
+        segment.voice = "BlockVoice"
+        segment.voice_id = voice.id
+        segment.language = "pl"
+        segment.speech_plan_json = {
+            "speech_xml": f'<segment id="{sid}">{text}</segment>'
+        }
+    _set_tts(
+        case,
+        service="gemini",
+        model="gemini-2.5-flash-tts",
+        voice="BaseVoice",
+        language="en",
+        casting_enabled=False,
+        voice_mode_version=1,
+        performance_enabled=False,
+    )
+    captured = []
+    original_compile = speech_plan_preview._compile_parts
+
+    def capture_settings(parts, *, include_request):
+        captured.extend(part["settings"] for part in parts)
+        return original_compile(parts, include_request=include_request)
+
+    monkeypatch.setattr(speech_plan_preview, "_compile_parts", capture_settings)
+    result = preview_speech_segment(
+        case["services"],
+        case["session_id"],
+        revision_id=case["revision_id"],
+        segment_id=sid,
+    )
+
+    assert result["parts"][0]["voice"] == "BaseVoice"
+    assert result["parts"][0]["voice_source"] == "base"
+    assert captured[0]["language"] == "pl"
+    assert captured[0]["voice"] == "BaseVoice"
+
+
+def test_preview_alternate_voice_overrides_follow_voice_mode():
+    from pandrator.web.speech_plan_preview import _runtime_settings, _segment_overrides
+
+    base = {
+        "tts": {
+            "voice_mode_version": 1,
+            "casting_enabled": False,
+            "voice": "BaseVoice",
+            "speaker": "BaseVoice",
+            "language": "en",
+        },
+        "selected_segment_override": {
+            "tts": {
+                "voice": "AlternateVoice",
+                "speaker": "AlternateVoice",
+                "language": "pl",
+                "generation_prompt": "Preserve this instruction.",
+            }
+        },
+    }
+    strict = _runtime_settings(base)
+    _segment_overrides(
+        strict,
+        SimpleNamespace(language="de", voice="BlockVoice"),
+    )
+    assert strict["voice"] == strict["speaker"] == "BaseVoice"
+    assert strict["language"] == "de"
+    assert strict["generation_prompt"] == "Preserve this instruction."
+
+    legacy = _runtime_settings(
+        {
+            "tts": {"voice_mode_version": 0, "casting_enabled": False, "voice": "BaseVoice"},
+            "selected_segment_override": {"tts": {"voice": "AlternateVoice"}},
+        }
+    )
+    _segment_overrides(legacy, SimpleNamespace(language="", voice="BlockVoice"))
+    assert legacy["voice"] == legacy["speaker"] == "BlockVoice"
+
+    multi = _runtime_settings(
+        {
+            "tts": {"voice_mode_version": 1, "casting_enabled": True, "voice": "BaseVoice"},
+            "selected_segment_override": {"tts": {"voice": "AlternateVoice"}},
+        }
+    )
+    _segment_overrides(multi, SimpleNamespace(language="", voice="BlockVoice"))
+    assert multi["voice"] == multi["speaker"] == "BlockVoice"
 
 
 @pytest.mark.parametrize("casting_enabled", [True, False])

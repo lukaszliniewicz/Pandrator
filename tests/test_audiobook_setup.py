@@ -244,6 +244,10 @@ class AudiobookSetupTests(unittest.TestCase):
     def test_stale_configuration_revision_writes_nothing(self):
         stale = self.read()["configuration_revision"]
         self.settings.update(self.record.id, "text", 0, {"selection_marker": "changed"})
+        with self.database.session() as session:
+            before_tts = session.get(SessionSetting, (self.record.id, "tts"))
+            before_tts_revision = before_tts.revision if before_tts else None
+            before_tts_value = before_tts.value_json if before_tts else None
 
         with self.assertRaises(RevisionConflict):
             with self.database.immediate_session() as session:
@@ -255,7 +259,15 @@ class AudiobookSetupTests(unittest.TestCase):
                     mode="multi_voice",
                 )
         with self.database.session() as session:
-            self.assertIsNone(session.get(SessionSetting, (self.record.id, "tts")))
+            after_tts = session.get(SessionSetting, (self.record.id, "tts"))
+            self.assertEqual(
+                before_tts_revision,
+                after_tts.revision if after_tts else None,
+            )
+            self.assertEqual(
+                before_tts_value,
+                after_tts.value_json if after_tts else None,
+            )
             self.assertIsNone(session.get(OutcomePlan, self.record.id))
 
     def test_other_workflow_is_rejected(self):

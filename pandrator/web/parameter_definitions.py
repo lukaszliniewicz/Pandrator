@@ -323,6 +323,8 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "elevenlabs_voice_settings": "Optional native ElevenLabs REST settings: stability, similarity_boost and style (0 to 1), speed (0.25 to 4), and use_speaker_boost (boolean). An empty object uses provider defaults. Provider documentation differs on non-stability settings for Eleven v3; those options may be ignored by the model.",
         "performance_enabled": "Applies an adopted, reviewed performance sidecar to the selected speech plan without rewriting its words or changing its segment boundaries. Analysis is a separate optional action.",
         "casting_enabled": "Uses reviewed character and dialogue voice assignments within each integral speech segment. Independent of emotional directions.",
+        "voice_mode_version": "Voice mode compatibility version. Version 1 enforces the selected single voice even when saved block overrides exist. Historical runs retain their saved behavior.",
+        "speech_analysis_preferences": "Independent saved model, guidance, context and batching preferences for speaker identification, delivery analysis and an explicitly combined pass.",
         "performance_allow_vocalizations": "Allows explicitly requested vocal events such as a laugh or sigh in performance annotations. Off by default; unsupported events are reported, not added to transcript text.",
         "tts_context_mode": "Supplies read-only preceding or preceding-and-following target-language text to context-capable TTS prompts. Only the current utterance is synthesized; this does not enable acoustic continuation.",
         "performance_context_before": "Maximum preceding accepted segments used as semantic context, bounded by speaker and section boundaries. Zero disables preceding context.",

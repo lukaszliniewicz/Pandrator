@@ -173,6 +173,22 @@ class SessionRecord(Base):
         DateTime(timezone=True), default=utcnow, nullable=False, index=True
     )
     trashed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SessionPurge(Base):
+    """Durable cleanup journal; deliberately has no session foreign key."""
+
+    __tablename__ = "session_purges"
+
+    session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="purging")
+    manifest_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    expected_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    impact_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class SessionSetting(Base):

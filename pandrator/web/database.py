@@ -12,7 +12,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0049_segment_count_index"
+SCHEMA_HEAD = "0050_session_purges"
 
 
 def sqlite_url(path: Path) -> str:

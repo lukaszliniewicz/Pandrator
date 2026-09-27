@@ -106,6 +106,16 @@ def _control_values(
     return {"characters": [], "cast": {}}
 
 
+def is_strict_single_voice(settings: Mapping[str, Any]) -> bool:
+    """Whether this settings snapshot opts into strict single-voice rendering."""
+
+    try:
+        version = int(settings.get("voice_mode_version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    return version >= 1 and not bool(settings.get("casting_enabled", False))
+
+
 def _voice_key(
     settings: Mapping[str, Any], binding: Mapping[str, Any] | None
 ) -> tuple[tuple[str, str], ...]:
@@ -439,10 +449,11 @@ def build_render_parts(
         )
     performance_enabled = bool(settings.get("performance_enabled", True))
     casting_enabled = bool(settings.get("casting_enabled", False))
+    strict_single_voice = is_strict_single_voice(settings)
     planned: list[_PlannedSpan] = []
     for span in parsed.spans:
         prepared = deepcopy(settings)
-        if voice_binding:
+        if voice_binding and not strict_single_voice:
             # An explicit block assignment applies to the whole block, while
             # its markup still supplies delivery and boundary information.
             binding = voice_binding
@@ -560,4 +571,8 @@ def execute_render_parts(
     return combined, manifest
 
 
-__all__ = ["build_render_parts", "execute_render_parts"]
+__all__ = [
+    "build_render_parts",
+    "execute_render_parts",
+    "is_strict_single_voice",
+]

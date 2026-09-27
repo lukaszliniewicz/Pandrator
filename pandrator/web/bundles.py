@@ -206,6 +206,7 @@ class SessionBundleService:
                 source_language=str(session_data.get("source_language") or "auto"),
                 target_language=str(session_data.get("target_language") or "") or None,
                 workflow_preset=str(session_data.get("workflow_preset") or "custom"),
+                seed_voice_mode=False,
                 included_stages=list(session_data.get("included_stages") or []),
             )
             target_dir = self.paths.sessions / imported.storage_key

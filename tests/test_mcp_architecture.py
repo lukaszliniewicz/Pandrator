@@ -339,6 +339,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_claim_speech_optimization_dispatch_batch",
                 "pandrator_configure_tts",
                 "pandrator_configure_audiobook",
+                "pandrator_configure_voice_setup",
                 "pandrator_control_runtime",
                 "pandrator_create_dispatch_run",
                 "pandrator_create_media_edit_dispatch_run",
@@ -348,6 +349,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_create_session",
                 "pandrator_create_text_source",
                 "pandrator_delete_output",
+                "pandrator_delete_session_permanently",
                 "pandrator_execute_component_plan",
                 "pandrator_execute_workflow_plan",
                 "pandrator_download_artifact",
@@ -393,6 +395,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_update_media_edit",
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
+                "pandrator_update_session_trash_policy",
                 "pandrator_update_voice_metadata",
                 "pandrator_create_voice",
                 "pandrator_promote_voice_design",
@@ -427,6 +430,11 @@ class McpArchitectureTests(unittest.TestCase):
                     "pandrator_trash_session",
                     "pandrator_restore_session",
                     "pandrator_delete_output",
+                    # Revision plus a preview-bound impact token fences purge;
+                    # the endpoint does not accept an Idempotency-Key.
+                    "pandrator_delete_session_permanently",
+                    # The current policy revision fences this write.
+                    "pandrator_update_session_trash_policy",
                 }
                 for action in mutating
             )

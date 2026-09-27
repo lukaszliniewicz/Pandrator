@@ -13,19 +13,49 @@ model already running in an MCP host, see
 For dialogue recognition, stable character identities, compact XML, and voice
 casting, see [generation controls](generation-controls.md).
 
-## Three execution paths
+## Execution paths
 
 | Path | Unit and timing | Result | Model caller |
 | --- | --- | --- | --- |
 | Standalone, before generation | SRT cue, prepared narration row, or TXT document | Separate, reviewable `tts_optimized` artifact | Pandrator's configured LLM provider |
-| During generation | Final generation segment or speech unit | Speech text stored with the generation plan/take | Pandrator's configured LLM provider |
+| During speech-plan preparation | Final generation segment or speech unit | A new reviewable plan; no synthesis starts | Pandrator's configured LLM provider |
 | Passive MCP dispatch | One or more pinned SRT cues, JSON narration rows, or a TXT unit | Normal `tts_optimized` artifact after all batches pass validation | The model already running in the MCP host |
 
 Standalone optimization is the quality-first choice when you want to compare
 the complete source and optimized text before spending speech-generation time.
-Generation-time optimization is useful when the final synthesis segmentation
-or per-segment voice context matters. Enabling both normally repeats the same
-kind of transformation, so do so only deliberately.
+Final-unit optimization is useful when synthesis segmentation matters. Prepare
+the speech plan to run it, review the resulting wording, then add speaker and
+delivery annotations. Preparation rejects simultaneous document and final-unit
+optimization, or an already document-optimized input, to prevent duplicate rewriting.
+Cancellation, failure, or changed inputs leave the previous plan selected.
+
+Legacy automatic/direct generation can still optimize unannotated text inline.
+Frozen reviewed plans use their accepted wording. Inline optimization refuses
+anchored XML and duplicate document optimization; prepare a new speech plan
+instead of rewriting beneath existing annotations.
+
+## Voices, speaker recognition, and delivery
+
+Audiobooks and voiceovers share an explicit **One voice / Multiple voices**
+choice. New sessions in single-voice mode use the session voice throughout,
+including blocks with stored cast assignments. Switching modes keeps the cast
+and annotations so they can be reused. Existing sessions and historical runs
+retain their earlier behavior until their mode is explicitly saved.
+
+In the prepared plan, **Speakers and delivery** offers independent optional
+passes: identify speakers, add delivery directions, or explicitly combine both.
+Each pass keeps its own model, guidance, context window, and batch size. Native
+analysis and passive MCP analysis create drafts for review; they never rewrite
+spoken words. Speaker recognition does not enable delivery directions, and
+multiple voices does not automatically start any LLM pass. Imported speakers
+and manual casting need no recognition pass.
+
+Use `purpose: speakers | delivery | combined` on performance-plan requests;
+speaker and combined results require XML. Passive submissions may propose
+character identities separately from voice assignments. Runs record their
+input revision and configuration; native runs freeze the resolved model for
+resume. Adopting a competing draft invalidates older drafts based on the
+previous annotations, preventing one pass from overwriting another.
 
 Passive dispatch is a standalone whole-document stage. It does not pause an
 active audio-generation job and ask an external worker to service its internal
@@ -76,8 +106,8 @@ context-sensitive prose, then raise units per request before concurrency.
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `llm_tts_document_optimization` | `false` | Enables the separate, reviewable stage before generation. |
-| `llm_tts_optimization` | `false` | Enables optimization of final speech units during generation. |
-| `llm_tts_annotation_mode` | `off` | `dialogue` recognizes exchanges; `speakers` also identifies characters. Requires the reviewable document stage. |
+| `llm_tts_optimization` | `false` | Enables final-unit optimization when preparing a speech plan; retained for legacy inline execution. |
+| `llm_tts_annotation_mode` | `off` | Legacy document-pass annotation. New speaker analysis uses the independent prepared-plan pass. |
 | `llm_tts_annotation_only` | `false` | Annotates structure without rewriting spoken words. |
 | `speech_optimization_mode` | `guarded` | Selects `guarded` or `flexible`. |
 | `llm_tts_document_batch_size` | `8` | Units per standalone provider request. Use `1` for a model that handles one case more reliably. |

@@ -29,6 +29,7 @@ from pandrator.logic.speech_performance import (
 
 from . import models as m
 from .generation_controls import get_generation_controls
+from .generation_rendering import is_strict_single_voice
 from .performance_plans import (
     _annotations,
     _assert_current,
@@ -111,7 +112,11 @@ def _runtime_settings(values: Mapping[str, Any]) -> dict[str, Any]:
     tts_values = dict(values.get("tts") or {})
     selected = values.get("selected_segment_override") or {}
     if isinstance(selected, Mapping) and isinstance(selected.get("tts"), Mapping):
-        tts_values.update(deepcopy(dict(selected["tts"])))
+        from .generation_cast_runtime import filter_segment_tts_override
+
+        tts_values.update(
+            filter_segment_tts_override(tts_values, selected["tts"])
+        )
     tts = adapt_runtime_settings("tts", tts_values)
     return {**audio, **tts}
 
@@ -122,7 +127,7 @@ def _segment_overrides(settings: dict[str, Any], segment: m.GenerationSegment) -
             language=segment.language,
             target_language=segment.language,
         )
-    if segment.voice:
+    if segment.voice and not is_strict_single_voice(settings):
         settings.update(voice=segment.voice, speaker=segment.voice)
 
 

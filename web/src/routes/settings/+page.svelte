@@ -5,6 +5,7 @@
   import type { GpuDevice } from '$lib/api-models';
   import { appState } from '$lib/app-state.svelte';
   import GlobalSettingsPanel from '$lib/GlobalSettingsPanel.svelte';
+  import SessionTrashPolicy from '$lib/SessionTrashPolicy.svelte';
   import McpLocalPathsPanel from '$lib/McpLocalPathsPanel.svelte';
 
   let wizardVisible = $state(false);
@@ -95,6 +96,7 @@
   {#if message}<p class="mt-4 rounded-xl bg-[var(--accent-soft)] p-3 text-sm">
       {message}
     </p>{/if}
+  <div id="session-trash" class="mt-6 scroll-mt-6"><SessionTrashPolicy /></div>
   <div class="mt-8 grid gap-5 md:grid-cols-2">
     <section class="surface rounded-2xl p-6">
       <h2 class="mt-2 text-xl font-semibold">Setup and tours</h2>

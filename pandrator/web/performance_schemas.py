@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -11,6 +11,7 @@ from pandrator.logic.speech_performance import PerformanceAnnotation, StrictMode
 
 class PerformancePlanCreateRequest(StrictModel):
     expected_plan_revision_id: str = Field(min_length=1, max_length=80)
+    purpose: Literal["delivery", "speakers", "combined"] = "delivery"
     mode: Literal["manual", "passive", "llm"] = "manual"
     annotation_format: Literal["pssml", "xml"] = "pssml"
     model_name: str = Field(default="", max_length=255)
@@ -21,6 +22,12 @@ class PerformancePlanCreateRequest(StrictModel):
     batch_size: int = Field(default=12, ge=1, le=32)
     allow_vocalizations: bool = False
     copy_from_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def speaker_pass_requires_xml(self):
+        if self.purpose != "delivery" and self.annotation_format != "xml":
+            raise ValueError("Speaker analysis requires XML annotation format.")
+        return self
 
 
 class PerformanceItem(StrictModel):
@@ -39,6 +46,7 @@ class PerformanceItem(StrictModel):
 
 class PerformanceResult(StrictModel):
     items: list[PerformanceItem] = Field(min_length=1, max_length=32)
+    character_proposals: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
 
 
 class PerformanceEditRequest(StrictModel):

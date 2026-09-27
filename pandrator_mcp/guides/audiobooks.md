@@ -1,8 +1,9 @@
 # Audiobook workflow
 
 For narrator-plus-character casting, use the `multivoice-audiobooks` guide.
-Start with `pandrator_get_audiobook_setup` and the atomic
-`pandrator_configure_audiobook` mode switch. Compiler inspection is available
+Start with `pandrator_get_voice_setup` and the revision-guarded
+`pandrator_configure_voice_setup` mode switch. The earlier audiobook setup
+tools remain available for compatibility. Compiler inspection is available
 through `pandrator_preview_speech_segment`; no performance draft is needed.
 
 An audiobook session starts from an uploaded, downloaded, deliberately reused,

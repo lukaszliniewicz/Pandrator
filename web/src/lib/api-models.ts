@@ -22,6 +22,8 @@ export type SessionRecord = {
   revision: number;
   created_at: string;
   updated_at: string;
+  trashed_at?: string | null;
+  purge_after?: string | null;
 };
 
 type MediaEditWord = {

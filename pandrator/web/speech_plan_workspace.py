@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from . import models as m
 from .settings_policy import RevisionConflict, adapt_runtime_settings, stable_hash
-from .source_management import assert_session_idle
+from .source_management import ACTIVE_JOB, DISPATCH_MODELS, TERMINAL, assert_session_idle
 
 SIGNATURE_FIELDS = (
     "ordinal",
@@ -140,7 +140,13 @@ def performance_runtime_settings(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Use run-local alternate settings with the same precedence as synthesis."""
     settings = {**dict(snapshot.get("audio") or {}), **dict(snapshot.get("tts") or {})}
     override = snapshot.get("selected_segment_override") or {}
-    settings.update(dict(override.get("tts") or {}))
+    from .generation_cast_runtime import filter_segment_tts_override
+
+    settings.update(
+        filter_segment_tts_override(
+            snapshot.get("tts"), override.get("tts") if isinstance(override, dict) else None
+        )
+    )
     return settings
 
 
@@ -389,7 +395,7 @@ def selected_text(services, session_id: str) -> dict[str, Any] | None:
     )
 
 
-def planning_settings(services, session_id: str) -> dict[str, Any]:
+def planning_settings(services, session_id: str, *, final_optimization: bool = False) -> dict[str, Any]:
     resolved, _ = services.workspace_settings.resolve(session_id)
     settings = {}
     for section in ("text", "subtitles", "tts", "audio", "rvc", "output"):
@@ -398,7 +404,9 @@ def planning_settings(services, session_id: str) -> dict[str, Any]:
         )
     # Preparation is deterministic. Optional LLM speech rewriting must have
     # produced the selected text revision BEFORE this review boundary.
-    settings["llm_tts_optimization"] = False
+    settings["llm_tts_optimization"] = bool(
+        final_optimization and settings.get("llm_tts_optimization")
+    )
     settings["_prepared_for_review"] = True
     return settings
 
@@ -592,12 +600,18 @@ def preparation_guard(session, session_id: str) -> str:
 
 
 def prepare_speech_plan_data(
-    services, session_id: str, source_artifact_id: str
+    services, session_id: str, source_artifact_id: str, *,
+    frozen_settings: dict[str, Any] | None = None,
+    expected_guard: str | None = None,
 ) -> dict[str, Any]:
     """Resolve settings and compute blocks before taking the database write lock."""
-    settings = planning_settings(services, session_id)
+    from .artifacts import sha256_file
+
+    settings = dict(frozen_settings) if frozen_settings is not None else planning_settings(services, session_id)
     with services.database.session() as session:
         guard = preparation_guard(session, session_id)
+    if expected_guard is not None and guard != expected_guard:
+        raise RevisionConflict("The selected text or settings changed before preparation. Refresh and try again.")
     current = selected_text(services, session_id)
     if not current or current["artifact_id"] != source_artifact_id:
         raise RevisionConflict(
@@ -608,6 +622,9 @@ def prepare_speech_plan_data(
         raise ValueError("The planning input must belong to this session.")
     if path.stat().st_size > 64 * 1024 * 1024:
         raise ValueError("This planning input exceeds the 64 MiB safety limit.")
+    if expected_guard is not None:
+        if sha256_file(path) != source.content_hash:
+            raise RevisionConflict("The selected text file changed after it was registered. Import it again.")
     settings["_source_content_hash"] = source.content_hash
     language = services.workflow_handlers._generation_language(
         session_id, source, settings
@@ -636,6 +653,12 @@ def prepare_speech_plan_data(
         raise ValueError(
             "A speech plan must contain between 1 and 100,000 speech units."
         )
+    if expected_guard is not None:
+        if sha256_file(path) != source.content_hash:
+            raise RevisionConflict("The selected text file changed during preparation. Import it again.")
+        with services.database.session() as session:
+            if preparation_guard(session, session_id) != expected_guard:
+                raise RevisionConflict("The selected text or settings changed during preparation. Refresh and try again.")
     return {
         "guard": guard,
         "records": records,
@@ -653,6 +676,7 @@ def prepare_speech_plan(
     expected_revision: int,
     expected_plan_revision_id: str | None,
     prepared: dict[str, Any],
+    owning_job_id: str | None = None,
 ) -> dict[str, Any]:
     record = session.get(m.SessionRecord, session_id)
     if record is None:
@@ -664,7 +688,10 @@ def prepare_speech_plan(
         raise RevisionConflict(
             "The selected text or settings changed during preparation. Refresh and try again."
         )
-    assert_session_idle(session, session_id)
+    if owning_job_id is None:
+        assert_session_idle(session, session_id)
+    else:
+        _assert_only_preparation_job_active(session, session_id, owning_job_id)
     plan = session.scalar(
         select(m.GenerationPlan).where(m.GenerationPlan.session_id == session_id)
     )
@@ -688,6 +715,28 @@ def prepare_speech_plan(
         "content_signature": plan_signature(session, new_id),
         "synthesis_started": False,
     }
+
+
+def _assert_only_preparation_job_active(session, session_id: str, owning_job_id: str) -> None:
+    """Allow the committing worker itself while preserving all other idle fences."""
+    owner = session.get(m.Job, owning_job_id)
+    if owner is None or owner.session_id != session_id or owner.kind != "speech.prepare" or owner.status != "running":
+        raise RevisionConflict("The owning speech preparation job is no longer running.")
+    if session.scalar(select(m.Job.id).where(
+        m.Job.session_id == session_id, m.Job.id != owning_job_id,
+        m.Job.status.in_(ACTIVE_JOB),
+    ).limit(1)):
+        raise RevisionConflict("Stop or cancel active session work before changing its sources.")
+    if session.scalar(select(m.GenerationRun.id).where(
+        m.GenerationRun.session_id == session_id,
+        m.GenerationRun.status.in_({"queued", "running", "pausing", "cancel_requested"}),
+    ).limit(1)):
+        raise RevisionConflict("Stop or cancel audio generation before changing its sources.")
+    for model in DISPATCH_MODELS:
+        if session.scalar(select(model.id).where(
+            model.session_id == session_id, model.status.not_in(TERMINAL),
+        ).limit(1)):
+            raise RevisionConflict("Finish or cancel the session's open editing dispatch before changing its sources.")
 
 
 def select_speech_plan(

@@ -19,6 +19,8 @@ from .source_management import (
     start_new_source_session_in_session,
 )
 from .speech_plan_workspace import (
+    planning_settings,
+    preparation_guard,
     prepare_speech_plan,
     prepare_speech_plan_data,
     review_speech_plan,
@@ -317,6 +319,37 @@ def register_session_flow_routes(
             request.get_json(silent=True) or {}
         ).model_dump()
         try:
+            with services.database.session() as session:
+                guard_before = preparation_guard(session, session_id)
+            settings = planning_settings(services, session_id, final_optimization=True)
+            if settings["llm_tts_optimization"]:
+                from .speech_plan_preparation import (
+                    enqueue_speech_preparation,
+                    resolve_speech_model,
+                )
+                from .speech_plan_workspace import selected_text
+
+                selected = selected_text(services, session_id)
+                with services.database.session() as session:
+                    guard = preparation_guard(session, session_id)
+                if guard != guard_before:
+                    raise RevisionConflict("The selected text or settings changed while preparing the request. Refresh and try again.")
+                model = resolve_speech_model(services, settings)
+                return mutate(
+                    session_id,
+                    "prepareSpeechPlan",
+                    payload,
+                    lambda session: enqueue_speech_preparation(
+                        services, session, session_id,
+                        expected_revision=payload["expected_revision"],
+                        expected_plan_revision_id=payload["expected_plan_revision_id"],
+                        source_artifact_id=payload["source_artifact_id"],
+                        settings=settings,
+                        model=model,
+                        guard=guard,
+                        selected_artifact_id=(selected or {}).get("artifact_id", ""),
+                    ),
+                )
             prepared = prepare_speech_plan_data(
                 services, session_id, payload["source_artifact_id"]
             )

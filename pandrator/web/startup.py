@@ -12,6 +12,7 @@ from pandrator.runtime import DataPaths
 from .database import Database
 from .maintenance import apply_retention
 from .models import AppSetting
+from .session_purge import SessionPurgeService
 from .uploads import ChunkUploadService
 
 
@@ -26,6 +27,8 @@ class StartupMaintenance:
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _completed: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _run_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _periodic_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -36,6 +39,26 @@ class StartupMaintenance:
             daemon=True,
         )
         self._thread.start()
+        self._periodic_thread = threading.Thread(
+            target=self._periodic_purge,
+            name="pandrator-session-purge-maintenance",
+            daemon=True,
+        )
+        self._periodic_thread.start()
+
+    def _periodic_purge(self) -> None:
+        # Wait for the startup pass, then sweep hourly until shutdown.
+        self._completed.wait()
+        while not self._stop.wait(3600):
+            try:
+                SessionPurgeService(self.database, self.paths).sweep()
+            except Exception:
+                self.logger.exception("Periodic session purge maintenance failed")
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._periodic_thread is not None:
+            self._periodic_thread.join(timeout=2)
 
     def run(self) -> dict[str, Any]:
         with self._run_lock:
@@ -77,6 +100,11 @@ class StartupMaintenance:
                 except Exception as error:
                     errors.append(f"uploads:{type(error).__name__}")
                     self.logger.exception("Background upload maintenance failed")
+                try:
+                    SessionPurgeService(self.database, self.paths).sweep()
+                except Exception as error:
+                    errors.append(f"session_purges:{type(error).__name__}")
+                    self.logger.exception("Background session purge maintenance failed")
                 self.result = result
                 self.error = ",".join(errors) or None
                 return dict(result)

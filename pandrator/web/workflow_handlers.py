@@ -3004,6 +3004,11 @@ class WorkflowHandlers:
             return str(record.get("kind") or "commercial").lower() != "local"
         return bool(provider and provider not in {"ollama", "local"})
 
+    def run_speech_preparation(self, payload, progress, cancel_event):
+        from .speech_plan_preparation import run_speech_preparation
+
+        return run_speech_preparation(self, payload, progress, cancel_event)
+
     def run_performance_analysis(self, payload, progress, cancel_event):
         """Analyse immutable speech blocks into a reviewable pSSML sidecar."""
         from .performance_plans import run_analysis
@@ -7694,6 +7699,7 @@ class WorkflowHandlers:
         *,
         job_id: str | None = None,
         generation_run_id: str | None = None,
+        source_artifact_id: str | None = None,
         pronunciation_settings: dict[str, Any] | None = None,
         pronunciation_language: str | None = None,
         pronunciation_voice_language: str | None = None,
@@ -7704,6 +7710,72 @@ class WorkflowHandlers:
             apply_reviewed_pronunciations,
             normalize_backend,
         )
+
+        if bool(settings.get("llm_tts_optimization")):
+            from .models import PerformancePlan
+
+            if bool(settings.get("llm_tts_document_optimization")):
+                raise ValueError(
+                    "Document-level speech optimization is already selected. Prepare and review a speech plan before generation instead of rewriting it again."
+                )
+            with self.database.session() as session:
+                active = session.scalar(
+                    select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+                )
+                revision_ids = {active.active_revision_id} if active and active.active_revision_id else set()
+                if segment_ids:
+                    first = session.get(GenerationSegment, segment_ids[0])
+                    if first is not None:
+                        revision_ids.add(first.plan_revision_id)
+                artifact_ids = {source_artifact_id} if source_artifact_id else set()
+                for revision_id in revision_ids:
+                    revision = session.get(GenerationPlanRevision, revision_id)
+                    if revision is None:
+                        continue
+                    revision_settings = dict(revision.settings_json or {})
+                    if revision_settings.get("llm_tts_document_optimization"):
+                        raise ValueError(
+                            "This speech plan used document-level optimization. Prepare and review a new speech plan before generation."
+                        )
+                    if revision_settings.get("_source_artifact_id"):
+                        artifact_ids.add(str(revision_settings["_source_artifact_id"]))
+                    if session.scalar(
+                        select(PerformancePlan.id).where(
+                            PerformancePlan.plan_revision_id == revision_id,
+                            PerformancePlan.status == "adopted",
+                        ).limit(1)
+                    ):
+                        raise ValueError(
+                            "An adopted speech direction belongs to this plan. Prepare and review a speech plan before generation instead of rewriting its wording."
+                        )
+                    if any(
+                        isinstance(value, dict) and bool(value.get("speech_xml"))
+                        for value in session.scalars(
+                            select(GenerationSegment.speech_plan_json).where(
+                                GenerationSegment.plan_revision_id == revision_id
+                            )
+                        )
+                    ):
+                        raise ValueError(
+                            "Speech XML belongs to this plan. Prepare and review a speech plan before generation instead of rewriting its wording."
+                        )
+                if artifact_ids:
+                    artifact_ids.update(
+                        session.scalars(
+                            select(ArtifactEdge.parent_artifact_id).where(
+                                ArtifactEdge.child_artifact_id.in_(artifact_ids)
+                            )
+                        )
+                    )
+                for artifact_id in artifact_ids:
+                    source = session.get(Artifact, artifact_id)
+                    if source is not None and (
+                        source.role == "tts_optimized"
+                        or bool((source.metadata_json or {}).get("speech_markup"))
+                    ):
+                        raise ValueError(
+                            "The source already has document-level optimization or speech XML. Prepare and review a speech plan before generation instead of rewriting it again."
+                        )
 
         if settings.get("llm_tts_annotation_mode", "off") != "off":
             raise ValueError("Dialogue and character analysis creates a reviewable document revision. Run speech optimization before generation.")
@@ -8211,6 +8283,7 @@ class WorkflowHandlers:
                 session_id, generation_segment_ids, source_texts, settings, cancel_event,
                 lambda value, detail=None: progress(float(value) * optimization_share, detail),
                 job_id=job_id,
+                source_artifact_id=source_artifact.id,
             )
         verified_qwen_voices: set[str] = set()
         tts_urls = self._tts_urls(settings)
@@ -9216,6 +9289,7 @@ class WorkflowHandlers:
                         ),
                         job_id=job_id,
                         generation_run_id=output_run_id,
+                        source_artifact_id=str(settings_snapshot.get("source_artifact_id") or "") or None,
                         pronunciation_settings=alternate_pronunciation_settings,
                         pronunciation_language=alternate_pronunciation_language,
                         pronunciation_voice_language=alternate_pronunciation_voice_language,

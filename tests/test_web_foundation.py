@@ -800,14 +800,16 @@ class SchemaUpgradeTests(unittest.TestCase):
 
             database = Database(database_path)
             with database.session() as session:
-                workspace = SessionRecord(
-                    name="Legacy source",
-                    storage_key="legacy-source",
+                # Populate the old schema without asking the current ORM to
+                # insert nullable columns introduced by later migrations.
+                session_id = "legacy-source-session"
+                session.execute(
+                    SessionRecord.__table__.insert().values(
+                        id=session_id, name="Legacy source", storage_key="legacy-source"
+                    )
                 )
-                session.add(workspace)
-                session.flush()
                 artifact = Artifact(
-                    session_id=workspace.id,
+                    session_id=session_id,
                     kind="text",
                     role="upload",
                     relative_path="uploads/legacy-source.txt",
@@ -818,14 +820,13 @@ class SchemaUpgradeTests(unittest.TestCase):
                 session.add(artifact)
                 session.flush()
                 source = SourceRecord(
-                    session_id=workspace.id,
+                    session_id=session_id,
                     kind="text",
                     display_name="Legacy source.txt",
                     artifact_id=artifact.id,
                 )
                 session.add(source)
                 session.flush()
-                session_id = workspace.id
                 artifact_id = artifact.id
                 source_id = source.id
             database.dispose()

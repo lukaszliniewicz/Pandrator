@@ -1175,6 +1175,27 @@ class ApplicationClient:
             f"/api/v1/sessions/{quote(session_id, safe='')}/audiobook-setup"
         )
 
+    def get_voice_setup(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/voice-setup"
+        )
+
+    def configure_voice_setup(
+        self,
+        session_id: str,
+        *,
+        expected_revision: str,
+        mode: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/voice-setup",
+            method="PATCH",
+            body={"expected_revision": expected_revision, "mode": mode},
+            idempotency_key=idempotency_key,
+            maximum_body_bytes=4096,
+        )
+
     def configure_audiobook(
         self, session_id: str, *, expected_revision: str, mode: str,
         idempotency_key: str,
@@ -1743,6 +1764,42 @@ class ApplicationClient:
 
     def get_session(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}")
+
+    def preview_session_deletion(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/purge-preview"
+        )
+
+    def delete_session_permanently(
+        self,
+        session_id: str,
+        *,
+        expected_revision: int,
+        impact_token: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/purge",
+            method="POST",
+            body={
+                "expected_revision": expected_revision,
+                "impact_token": impact_token,
+            },
+        )
+
+    def get_session_trash_policy(self) -> dict[str, Any]:
+        return self._request_json("/api/v1/session-trash-policy")
+
+    def update_session_trash_policy(
+        self,
+        *,
+        expected_revision: int,
+        days: int | None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/api/v1/session-trash-policy",
+            method="PATCH",
+            body={"expected_revision": expected_revision, "days": days},
+        )
 
     def get_media_edit(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/media-edit")

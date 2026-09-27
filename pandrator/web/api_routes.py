@@ -585,6 +585,8 @@ def _session_payload(record) -> dict[str, Any]:
             "revision",
             "created_at",
             "updated_at",
+            "trashed_at",
+            "purge_after",
         ),
     )
 
@@ -754,6 +756,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .speech_selection_routes import register_speech_selection_routes
 
     register_audiobook_routes(app, context)
+    from .session_purge_routes import register_session_purge_routes
+
+    register_session_purge_routes(app, context)
     register_speech_selection_routes(app, context)
     from .voice_catalog_routes import register_voice_catalog_routes
 
@@ -2337,6 +2342,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "Session not found.", 404)
         except RevisionConflict as error:
             return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("session_busy", str(error), 409)
         response = jsonify(_session_payload(record))
         response.headers["ETag"] = f'"{record.revision}"'
         return response
@@ -2353,25 +2360,25 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "If-Match must contain the current session revision.",
                 428,
             )
-        with database.session() as db_session:
-            active = db_session.scalar(
-                select(Job).where(
-                    Job.session_id == session_id,
-                    Job.status.in_(("queued", "running", "cancel_requested")),
-                )
-            )
-            if active is not None:
-                return error_response(
-                    "session_busy",
-                    "Stop or cancel active work before moving this session to trash.",
-                    409,
-                )
         try:
-            record = sessions.trash(session_id, revision)
+            with database.immediate_session() as db_session:
+                active = db_session.scalar(
+                    select(Job).where(
+                        Job.session_id == session_id,
+                        Job.status.in_(("queued", "running", "cancel_requested")),
+                    )
+                )
+                if active is not None:
+                    return error_response(
+                        "session_busy", "Stop or cancel active work before moving this session to trash.", 409,
+                    )
+                record = sessions.trash(session_id, revision, db_session=db_session)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
         except RevisionConflict as error:
             return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("session_busy", str(error), 409)
         response = jsonify(_session_payload(record))
         response.headers["ETag"] = f'"{record.revision}"'
         return response
@@ -2394,6 +2401,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("not_found", "Session not found.", 404)
         except RevisionConflict as error:
             return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("session_busy", str(error), 409)
         response = jsonify(_session_payload(record))
         response.headers["ETag"] = f'"{record.revision}"'
         return response

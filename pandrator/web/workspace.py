@@ -2854,7 +2854,6 @@ class GenerationService:
         selected_segment_override = deepcopy(prepared["selected_segment_override"])
         if prepared.get("settings_source_run_id"):
             snapshot = deepcopy(prepared.get("settings_source_snapshot") or {})
-            snapshot = _merge(snapshot, run_override, selected_segment_override)
             for key in (
                 "selected_segment_override",
                 "speech_plan_revision_id",
@@ -2875,21 +2874,30 @@ class GenerationService:
                 "missing_only",
             ):
                 snapshot.pop(key, None)
+            snapshot = _merge(snapshot, run_override)
         elif source_run is not None:
             source_snapshot = dict(source_run.settings_snapshot_json or {})
             # A previous alternate take is a useful source for ordinary
             # settings, but its *selected-only* precedence must not leak
             # into a later regeneration unless it is requested again.
             source_snapshot.pop("selected_segment_override", None)
-            snapshot = _merge(source_snapshot, run_override, selected_segment_override)
+            snapshot = _merge(source_snapshot, run_override)
         else:
             resolved_for_new = prepared["resolved_for_new"]
             snapshot, _ = resolved_for_new
             snapshot = deepcopy(snapshot)
-            if selected_segment_override:
-                snapshot = _merge(snapshot, selected_segment_override)
         if selected_segment_override:
-            snapshot["selected_segment_override"] = deepcopy(selected_segment_override)
+            from .generation_cast_runtime import filter_segment_tts_override
+
+            selected_tts = selected_segment_override.get("tts")
+            if isinstance(selected_tts, dict):
+                selected_segment_override["tts"] = filter_segment_tts_override(
+                    snapshot.get("tts"), selected_tts
+                )
+            snapshot = _merge(snapshot, selected_segment_override)
+            snapshot["selected_segment_override"] = deepcopy(
+                selected_segment_override
+            )
         return snapshot
 
     def start_in_session(

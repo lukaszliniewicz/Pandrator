@@ -29,6 +29,17 @@ class AudiobookSetupConfigureRequest(StrictModel):
     mode: Literal["single_voice", "multi_voice"]
 
 
+class VoiceSetupConfigureRequest(StrictModel):
+    """Revision-checked shared voice-mode configuration."""
+
+    expected_revision: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+    mode: Literal["single_voice", "multi_voice"]
+
+
 class SpeechPlanPreviewRequest(StrictModel):
     """Read-only compilation request for one speech-plan segment."""
 
@@ -54,10 +65,16 @@ AUDIOBOOK_SCHEMAS = {
     SpeechPlanPreviewRequest.__name__: SpeechPlanPreviewRequest,
 }
 
+VOICE_SETUP_SCHEMAS = {
+    VoiceSetupConfigureRequest.__name__: VoiceSetupConfigureRequest,
+}
+
 
 __all__ = [
     "AUDIOBOOK_SCHEMAS",
+    "VOICE_SETUP_SCHEMAS",
     "AudiobookSetupRequest",
     "AudiobookSetupConfigureRequest",
+    "VoiceSetupConfigureRequest",
     "SpeechPlanPreviewRequest",
 ]

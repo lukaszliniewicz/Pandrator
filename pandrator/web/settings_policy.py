@@ -267,6 +267,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "generation_prompt": "",
         "performance_enabled": False,
         "casting_enabled": False,
+        "voice_mode_version": 0,
+        "speech_analysis_preferences": {},
         "performance_allow_vocalizations": False,
         "tts_context_mode": "off",
         "performance_context_before": 2,
@@ -616,6 +618,26 @@ def validate_stt_settings(value: dict[str, Any]) -> None:
 
 
 def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
+    if "voice_mode_version" in value and (
+        type(value["voice_mode_version"]) is not int
+        or value["voice_mode_version"] not in (0, 1)
+    ):
+        raise ValueError("voice_mode_version must be 0 or 1.")
+    if "speech_analysis_preferences" in value:
+        preferences = value["speech_analysis_preferences"]
+        if not isinstance(preferences, dict) or set(preferences) - {"speakers", "delivery", "combined"}:
+            raise ValueError("Invalid speech analysis preferences.")
+        from .performance_schemas import PerformancePlanCreateRequest
+
+        for purpose, config in preferences.items():
+            if not isinstance(config, dict):
+                raise ValueError("Each analysis preference must be an object.")
+            PerformancePlanCreateRequest.model_validate({
+                **config,
+                "expected_plan_revision_id": "preferences",
+                "annotation_format": "xml",
+                "purpose": purpose,
+            })
     for suffix, minimum, maximum in (
         ("min_shortfall_ms", 100, 60000),
         ("min_shortfall_percent", 1, 95),

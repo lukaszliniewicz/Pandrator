@@ -26,6 +26,15 @@ recoverable trash: files remain, active work blocks the change, and ordinary
 session listings hide it. Use `pandrator_list_sessions(include_trashed=true)` and
 `pandrator_restore_session` with the current revision to restore it.
 
+For permanent cleanup, inspect a trashed session with
+`pandrator_preview_session_deletion`. Proceed only when `can_purge` is true,
+using the returned revision and impact token with
+`pandrator_delete_session_permanently(confirm=true)`. The tool also requires
+explicit confirmation; its `state` reports whether cleanup completed or failed.
+`pandrator_get_session_trash_policy` and
+`pandrator_update_session_trash_policy` manage automatic retention for future
+trash events only. Setting `days=null` disables automatic cleanup.
+
 `pandrator_delete_output` permanently removes one generated output file. Inspect
 its session and artifact ID first. Active takes, reference samples, source uses,
 active assemblies, and dependent work are protected by the native API. There is

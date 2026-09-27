@@ -286,9 +286,9 @@ class GenerationAudioIdentityTests(unittest.TestCase):
                 {"text": "Missing"},
             ]
         )
-        self._seed_takes(session_id, segment_ids[:1], self._override(voice="voice-a"))
+        self._seed_takes(session_id, segment_ids[:1], self._override(voice="voice-a", voice_mode_version=0))
 
-        result = self._start_stale(session_id, self._override(voice="voice-b"))
+        result = self._start_stale(session_id, self._override(voice="voice-b", voice_mode_version=0))
 
         self.assertEqual([segment_ids[1]], self._job_segment_ids(result["job_id"]))
         with self.database.session() as session:
@@ -299,6 +299,27 @@ class GenerationAudioIdentityTests(unittest.TestCase):
                 )
             )
             self.assertIsNotNone(copied)
+
+    def test_strict_single_identity_ignores_stored_and_alternate_voice_assignments(self):
+        session_id, revision_id, _ids = self._create_case()
+        snapshot = self._resolved(session_id, self._override(voice_mode_version=1, casting_enabled=False))
+        snapshot["selected_segment_override"] = {"tts": {"voice": "ignored-alternate", "casting_enabled": True}}
+        with self.database.session() as session:
+            context = AudioIdentityContext(session, snapshot)
+            plain = GenerationSegment(id="plain", plan_revision_id=revision_id, ordinal=0, text="Hello")
+            assigned = GenerationSegment(id="assigned", plan_revision_id=revision_id, ordinal=1, text="Hello", voice="ignored-block", voice_id="ignored-managed")
+            with patch("pandrator.web.generation_cast_runtime.resolve_binding", side_effect=AssertionError("Inactive binding was resolved")):
+                expected = context.for_segment(plain)
+                actual = context.for_segment(assigned)
+            self.assertEqual(expected, actual)
+            self.assertNotIn("performance_error", actual)
+
+    def test_analysis_preferences_do_not_invalidate_recorded_audio(self):
+        from pandrator.web.generation_audio_identity import _material_settings
+
+        first = self._override(voice_mode_version=1, speech_analysis_preferences={"speakers": {"instructions": "First draft"}})
+        second = self._override(voice_mode_version=1, speech_analysis_preferences={"speakers": {"instructions": "Different guidance"}})
+        self.assertEqual(_material_settings(first), _material_settings(second))
 
     def test_topology_split_regenerates_children_and_reuses_untouched_block(self):
         session_id, revision_id, segment_ids = self._create_case(

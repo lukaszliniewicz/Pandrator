@@ -15,6 +15,8 @@
   import { appState } from '$lib/app-state.svelte';
   import ArtifactPreview from '$lib/ArtifactPreview.svelte';
   import NewSessionWizard from '$lib/NewSessionWizard.svelte';
+  import SessionDeleteDialog from '$lib/SessionDeleteDialog.svelte';
+  import { apiJson } from '$lib/api';
   import { artifactRoleLabel } from '$lib/artifact-display';
   let items = $state<SessionRecord[]>([]);
   let search = $state('');
@@ -24,6 +26,8 @@
   let error = $state('');
   let preview = $state<ArtifactRecord | null>(null);
   let wizard = $state(false);
+  let deleteTarget = $state<SessionRecord | null>(null);
+  let retentionEnabled = $state(false);
   const visible = $derived(
     items.filter((item) =>
       item.name.toLowerCase().includes(search.toLowerCase())
@@ -31,7 +35,12 @@
   );
   async function load() {
     try {
-      items = (await sessionApi.list(showTrash)).items;
+      const [sessions, policy] = await Promise.all([
+        sessionApi.list(showTrash),
+        apiJson<{ days: number | null }>('/session-trash-policy')
+      ]);
+      items = sessions.items;
+      retentionEnabled = policy.days !== null;
     } catch (caught) {
       error = errorMessage(caught);
     }
@@ -95,6 +104,12 @@
       >
     </div>
   </header>
+  {#if showTrash}<p class="muted mt-4 text-sm">
+      {retentionEnabled
+        ? 'Automatic deletion follows each saved date while Pandrator is running. Unfinished work and shared dependencies can block cleanup.'
+        : 'Automatic deletion is off. Sessions remain recoverable until permanently deleted.'}
+      <a class="underline" href="/settings#session-trash">Trash policy</a>
+    </p>{/if}
   {#if error}<div
       class="mt-5 rounded-xl border border-[var(--line)] bg-[var(--accent-soft)] p-3 text-sm"
     >
@@ -119,14 +134,28 @@
               {item.workflow_kind} · {item.status} · updated {new Date(
                 item.updated_at
               ).toLocaleString()}
-            </div></a
-          ><button
+            </div>
+            {#if item.trashed_at}<p class="muted mt-1 text-xs">
+                {item.status === 'purging'
+                  ? 'Permanent deletion in progress or awaiting retry'
+                  : retentionEnabled && item.purge_after
+                    ? `Scheduled for deletion ${new Date(item.purge_after).toLocaleString()}`
+                    : 'Kept in Trash'}
+              </p>{/if}</a
+          >
+          <button
             onclick={() => reindex(item)}
             title="Reindex artifacts"
             class="tool"><RefreshCw size={16} /></button
-          >{#if item.status === 'trashed'}<button
-              onclick={() => restore(item)}
-              class="tool"><ArchiveRestore size={16} /> Restore</button
+          >{#if item.status === 'trashed' || item.status === 'purging'}{#if item.status !== 'purging'}<button
+                onclick={() => restore(item)}
+                class="tool"><ArchiveRestore size={16} /> Restore</button
+              >{/if}<button
+              class="tool text-red-600"
+              onclick={() => (deleteTarget = item)}
+              ><Trash2 size={16} />{item.status === 'purging'
+                ? 'Retry deletion'
+                : 'Delete permanently'}</button
             >{:else}<button
               onclick={() => trash(item)}
               class="tool text-red-500"><Trash2 size={16} /> Trash</button
@@ -180,6 +209,15 @@
     onclose={() => (preview = null)}
   />{/if}
 {#if wizard}<NewSessionWizard onclose={() => (wizard = false)} />{/if}
+
+{#if deleteTarget}<SessionDeleteDialog
+    session={deleteTarget}
+    onclose={() => (deleteTarget = null)}
+    ondeleted={async () => {
+      await load();
+      await appState.refresh();
+    }}
+  />{/if}
 
 <style>
   .tool {

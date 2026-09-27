@@ -2544,14 +2544,6 @@
             {
                 "code": "reportOptionalOperand",
                 "range": {
-                    "startColumn": 11,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalOperand",
-                "range": {
                     "startColumn": 33,
                     "endColumn": 59,
                     "lineCount": 1

@@ -472,7 +472,10 @@
           'speaker',
           'xtts_model',
           'tts_service',
-          'audio_cpp_model_settings'
+          'audio_cpp_model_settings',
+          'voice_mode_version',
+          'speech_analysis_preferences',
+          'casting_enabled'
         ].includes(key) ||
         key.startsWith('speech_block_')
       )

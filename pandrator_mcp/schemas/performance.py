@@ -40,6 +40,7 @@ class PerformanceWriteInput(PerformancePlanInput):
 class CreatePerformancePlanInput(PerformanceSessionInput):
     expected_plan_revision_id: str = Field(min_length=1, max_length=80)
     mode: Literal["manual", "passive", "llm"] = "passive"
+    purpose: Literal["delivery", "speakers", "combined"] = "delivery"
     annotation_format: Literal["pssml", "xml"] = "pssml"
     model_name: str = Field(default="", max_length=255)
     instructions: str = Field(default="", max_length=6000)
@@ -52,6 +53,12 @@ class CreatePerformancePlanInput(PerformanceSessionInput):
     idempotency_key: str = Field(
         min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
     )
+
+    @model_validator(mode="after")
+    def structured_purpose_requires_xml(self):
+        if self.purpose != "delivery" and self.annotation_format != "xml":
+            raise ValueError("Speaker analysis purposes require XML annotations.")
+        return self
 
 
 class PerformanceItemInput(ToolInput):
@@ -120,6 +127,10 @@ class PerformanceBatchInput(PerformanceWriteInput):
 
 class SubmitPerformanceBatchInput(PerformanceBatchInput):
     items: list[PerformanceItemInput] = Field(min_length=1, max_length=32)
+    character_proposals: list[dict[str, Any]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
 
 class RenewPerformanceBatchInput(PerformanceBatchInput):

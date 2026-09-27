@@ -233,7 +233,7 @@ def register_performance_routes(app, context) -> None:
         def operation(session, plan, body):
             enable = body.pop("enable")
             result = plans.adopt_plan(session, plan, **body)
-            if enable:
+            if enable and plan.settings_json.get("purpose", "delivery") != "speakers":
                 current = services.workspace_settings.get_in_session(
                     session, session_id, "tts"
                 )
@@ -244,7 +244,7 @@ def register_performance_routes(app, context) -> None:
                     current["revision"],
                     {**current["override"], "performance_enabled": True},
                 )
-            result["enabled"] = enable
+            result["enabled"] = bool(enable and plan.settings_json.get("purpose", "delivery") != "speakers")
             return result, 200
 
         return write(
@@ -373,7 +373,8 @@ def register_performance_routes(app, context) -> None:
             PerformanceSubmitRequest,
             lambda session, plan, body: (
                 plans.submit_batch(
-                    session, plan, batch_id, body["lease_token"], body["items"]
+                    session, plan, batch_id, body["lease_token"], body["items"],
+                    character_proposals=body["character_proposals"],
                 ),
                 200,
             ),

@@ -66,6 +66,186 @@ def test_cast_voice_replaces_legacy_provider_id_and_narrator_reference():
     assert "audio_cpp_reference_text" not in applied
 
 
+def test_strict_single_voice_skips_inactive_binding_and_alternate_voice():
+    from pandrator.web.generation_cast_runtime import apply_segment_voice
+
+    base_tts = {
+        "voice_mode_version": 1,
+        "casting_enabled": False,
+        "voice": "BaseVoice",
+        "speaker": "BaseVoice",
+        "language": "en",
+    }
+    snapshot = {
+        "tts": base_tts,
+        "selected_segment_override": {
+            "tts": {
+                "voice": "AlternateVoice",
+                "speaker": "AlternateVoice",
+                "voice_id": "inactive-alternate",
+                "language": "pl",
+            }
+        },
+        "generation_control_snapshot": {
+            "segments": {
+                "segment-1": {"voice_binding": {"voice_id": "deleted-block-voice"}}
+            },
+            "resolved_bindings": {},
+        },
+    }
+    settings = {
+        **base_tts,
+        "voice": "AlternateVoice",
+        "speaker": "AlternateVoice",
+        "voice_id": "inactive-alternate",
+        "language": "pl",
+        "generation_prompt": "Keep this delivery setting.",
+    }
+
+    result = apply_segment_voice(settings, snapshot, "segment-1")
+
+    assert result["voice"] == result["speaker"] == "BaseVoice"
+    assert result["language"] == "pl"
+    assert result["generation_prompt"] == "Keep this delivery setting."
+    assert "voice_id" not in result
+    assert result["voice_mode_version"] == 1
+    assert result["casting_enabled"] is False
+
+
+def test_legacy_and_multivoice_segment_bindings_keep_existing_precedence():
+    from pandrator.web.generation_cast_runtime import (
+        _binding_key,
+        apply_segment_voice,
+    )
+
+    legacy_snapshot = {
+        "tts": {"voice_mode_version": 0, "casting_enabled": False},
+        "selected_segment_override": {"tts": {"voice": "AlternateVoice"}},
+        "generation_control_snapshot": {},
+    }
+    legacy = apply_segment_voice(
+        {"voice": "AlternateVoice", "casting_enabled": False},
+        legacy_snapshot,
+        "segment-1",
+    )
+    assert legacy["voice"] == "AlternateVoice"
+
+    binding = {"voice": "BlockVoice"}
+    multivoice_snapshot = {
+        "tts": {"voice_mode_version": 1, "casting_enabled": True},
+        "selected_segment_override": {"tts": {"voice": "AlternateVoice"}},
+        "generation_control_snapshot": {
+            "segments": {"segment-1": {"voice_binding": binding}},
+            "resolved_bindings": {_binding_key(binding): binding},
+        },
+    }
+    multi = apply_segment_voice(
+        {"voice": "AlternateVoice", "casting_enabled": True},
+        multivoice_snapshot,
+        "segment-1",
+    )
+    assert multi["voice"] == "BlockVoice"
+
+
+def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(case):
+    """Starting an alternate take does not resolve a stored strict-mode cast."""
+    from pandrator.web.generation_rendering import is_strict_single_voice
+
+    sid = case["segment_ids"][0]
+    with case["services"]["database"].session() as session:
+        inactive = m.Voice(name="Inactive managed voice", metadata_json={})
+        session.add(inactive)
+        session.flush()
+        segment = session.get(m.GenerationSegment, sid)
+        segment.voice_id = inactive.id
+        segment.voice = "Stored block voice"
+
+    workspace_settings = case["services"]["workspace_settings"]
+    current = workspace_settings.get(case["session_id"], "tts")
+    workspace_settings.update(
+        case["session_id"],
+        "tts",
+        current["revision"],
+        {
+            **current["effective"],
+            "voice_mode_version": 1,
+            "casting_enabled": False,
+            "voice": "BaseVoice",
+            "speaker": "BaseVoice",
+            "performance_enabled": False,
+        },
+    )
+
+    started = case["services"]["generation"].start(
+        case["session_id"],
+        segment_ids=[sid],
+        selected_segment_override={
+            "tts": {
+                "voice": "AlternateVoice",
+                "casting_enabled": True,
+                "language": "pl",
+            }
+        },
+    )
+
+    with case["services"]["database"].session() as session:
+        run = session.get(m.GenerationRun, started["id"])
+        snapshot = run.settings_snapshot_json
+        frozen = snapshot["generation_control_snapshot"]
+        stored_segment = session.get(m.GenerationSegment, sid)
+
+    assert stored_segment.voice_id == inactive.id
+    assert snapshot["tts"]["voice_mode_version"] == 1
+    assert snapshot["tts"]["casting_enabled"] is False
+    assert snapshot["tts"]["voice"] == "BaseVoice"
+    assert snapshot["tts"]["language"] == "pl"
+    assert "voice" not in snapshot["selected_segment_override"]["tts"]
+    assert "casting_enabled" not in snapshot["selected_segment_override"]["tts"]
+    assert snapshot["selected_segment_override"]["tts"]["language"] == "pl"
+    assert frozen["segments"][sid]["voice_binding"] == {"voice_id": inactive.id}
+    assert frozen["resolved_bindings"] == {}
+    assert is_strict_single_voice(snapshot["tts"])
+
+
+@pytest.mark.parametrize(
+    ("voice_mode_version", "casting_enabled"), [(0, False), (1, True)]
+)
+def test_legacy_and_multivoice_alternate_start_keeps_alternate_voice(
+    case, voice_mode_version, casting_enabled
+):
+    sid = case["segment_ids"][0]
+    workspace_settings = case["services"]["workspace_settings"]
+    current = workspace_settings.get(case["session_id"], "tts")
+    workspace_settings.update(
+        case["session_id"],
+        "tts",
+        current["revision"],
+        {
+            **current["effective"],
+            "voice_mode_version": voice_mode_version,
+            "casting_enabled": casting_enabled,
+            "voice": "BaseVoice",
+            "speaker": "BaseVoice",
+            "performance_enabled": False,
+        },
+    )
+
+    started = case["services"]["generation"].start(
+        case["session_id"],
+        segment_ids=[sid],
+        selected_segment_override={"tts": {"voice": "AlternateVoice"}},
+    )
+
+    with case["services"]["database"].session() as session:
+        run = session.get(m.GenerationRun, started["id"])
+        snapshot = run.settings_snapshot_json
+
+    assert snapshot["tts"]["voice_mode_version"] == voice_mode_version
+    assert snapshot["tts"]["casting_enabled"] is casting_enabled
+    assert snapshot["tts"]["voice"] == "AlternateVoice"
+    assert snapshot["selected_segment_override"]["tts"]["voice"] == "AlternateVoice"
+
+
 @pytest.mark.parametrize("model", ["qwen3_tts_1_7b_customvoice_q8_0", "qwen3_tts_1_7b_voicedesign_q8_0"])
 def test_prebuilt_and_design_models_reject_cloned_cast(model):
     from pandrator.web.generation_cast_runtime import resolve_binding
@@ -188,12 +368,22 @@ def overrides(**extra):
     }
 
 
-@pytest.mark.parametrize("casting_enabled", [False, True])
-def test_managed_block_voices_reach_provider_and_invalidate_narrator_takes(case, casting_enabled):
+@pytest.mark.parametrize(
+    ("casting_enabled", "voice_mode_version"),
+    [(False, 0), (False, 1), (True, 1)],
+)
+def test_managed_block_voices_reach_provider_and_invalidate_narrator_takes(
+    case, casting_enabled, voice_mode_version
+):
     services = case["services"]
     database = services["database"]
     handlers = services["workflow_handlers"]
-    run_override = overrides(casting_enabled=casting_enabled, performance_enabled=False, tts_batch_size=1)
+    run_override = overrides(
+        casting_enabled=casting_enabled,
+        voice_mode_version=voice_mode_version,
+        performance_enabled=False,
+        tts_batch_size=1,
+    )
     with database.session() as session:
         save_generation_controls(session, case["session_id"], expected_revision=0,
                                  cast={"narrator": {"voice": "Kore"}})
@@ -215,7 +405,12 @@ def test_managed_block_voices_reach_provider_and_invalidate_narrator_takes(case,
 
     with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
         handlers.run_generation({"generation_run_id": started["id"]}, lambda *_: None, threading.Event())
-    assert requests == ["Kore", "Puck", "Charon"]
+    expected = (
+        ["Kore", "Kore", "Kore"]
+        if voice_mode_version == 1 and not casting_enabled
+        else ["Kore", "Puck", "Charon"]
+    )
+    assert requests == expected
     with database.session() as session:
         run = session.get(m.GenerationRun, started["id"])
         assert run.status == "completed"

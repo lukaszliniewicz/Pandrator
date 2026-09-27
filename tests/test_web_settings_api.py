@@ -208,7 +208,7 @@ class SettingsApiTests(unittest.TestCase):
         )
         self.assertEqual(200, patched.status_code, patched.get_json())
         self.assertEqual(2, patched.get_json()["revision"])
-        expected = {**original, "performance_enabled": False}
+        expected = {**original, "performance_enabled": False, "voice_mode_version": 1}
         expected["speaker"] = "Kobo"
         self.assertEqual(expected, patched.get_json()["override"])
 
@@ -249,13 +249,13 @@ class SettingsApiTests(unittest.TestCase):
         )
         self.assertEqual(200, reset.status_code, reset.get_json())
         self.assertEqual(
-            {"voice": "reset", "speaker": "reset"},
+            {"voice": "reset", "speaker": "reset", "voice_mode_version": 1},
             reset.get_json()["override"],
         )
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             self.assertEqual(
-                2,
+                3,
                 session.scalar(select(func.count()).select_from(SessionSettingHistory)),
             )
 
@@ -286,6 +286,7 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual({
             "voice": "Puck", "speaker": "Puck", "audio_cpp_seed": None,
             "audio_cpp_model_settings": {"temperature": 0.2},
+            "voice_mode_version": 1,
         }, response.get_json()["override"])
         self.assertNotIn("service", response.get_json()["override"])
         self.assertIn("service", response.get_json()["effective"])

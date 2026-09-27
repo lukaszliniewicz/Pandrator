@@ -4925,6 +4925,16 @@
             "maxLength": 255,
             "title": "Model Name",
             "type": "string"
+          },
+          "purpose": {
+            "default": "delivery",
+            "enum": [
+              "delivery",
+              "speakers",
+              "combined"
+            ],
+            "title": "Purpose",
+            "type": "string"
           }
         },
         "required": [
@@ -5150,6 +5160,15 @@
       "PerformanceSubmitRequest": {
         "additionalProperties": false,
         "properties": {
+          "character_proposals": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 100,
+            "title": "Character Proposals",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/PerformanceItem"
@@ -5876,6 +5895,95 @@
         "title": "SessionForkRequest",
         "type": "object"
       },
+      "SessionPurgePreview": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "can_purge": {
+            "type": "boolean"
+          },
+          "impact_token": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "owned_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "owned_file_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retained_shared_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "scheduled_delete_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "impact_token",
+          "can_purge",
+          "blockers",
+          "owned_file_count",
+          "owned_bytes",
+          "retained_shared_count",
+          "scheduled_delete_at"
+        ],
+        "type": "object"
+      },
+      "SessionPurgeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "impact_token": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "impact_token"
+        ],
+        "type": "object"
+      },
+      "SessionPurgeResult": {
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "purging",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
       "SessionSettingsUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -5886,6 +5994,49 @@
           }
         },
         "title": "SessionSettingsUpdate",
+        "type": "object"
+      },
+      "SessionTrashPolicy": {
+        "properties": {
+          "days": {
+            "maximum": 3650,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "days"
+        ],
+        "type": "object"
+      },
+      "SessionTrashPolicyUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "maximum": 3650,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "days"
+        ],
         "type": "object"
       },
       "SessionUpdate": {
@@ -9776,6 +9927,33 @@
         "title": "VoiceReferenceImportRequest",
         "type": "object"
       },
+      "VoiceSetupConfigureRequest": {
+        "additionalProperties": false,
+        "description": "Revision-checked shared voice-mode configuration.",
+        "properties": {
+          "expected_revision": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "single_voice",
+              "multi_voice"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "mode"
+        ],
+        "title": "VoiceSetupConfigureRequest",
+        "type": "object"
+      },
       "VoiceTranscriptReview": {
         "additionalProperties": false,
         "properties": {
@@ -13443,6 +13621,106 @@
         }
       }
     },
+    "/api/v1/session-trash-policy": {
+      "get": {
+        "operationId": "getSessionTrashPolicy",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionTrashPolicy"
+                }
+              }
+            },
+            "description": "Policy and revision."
+          },
+          "400": {
+            "description": "Invalid request."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Session not found."
+          },
+          "409": {
+            "description": "Revision, impact, active work or storage conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Read automatic trash retention policy"
+      },
+      "patch": {
+        "operationId": "updateSessionTrashPolicy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionTrashPolicyUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionTrashPolicy"
+                }
+              }
+            },
+            "description": "Updated policy."
+          },
+          "400": {
+            "description": "Invalid request."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Session not found."
+          },
+          "409": {
+            "description": "Revision, impact, active work or storage conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Set retention for future trash events"
+      }
+    },
     "/api/v1/sessions": {
       "get": {
         "operationId": "listSessions",
@@ -16911,6 +17189,130 @@
         "summary": "previewPerformancePlan"
       }
     },
+    "/api/v1/sessions/{sessionId}/purge": {
+      "post": {
+        "operationId": "purgeSession",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionPurgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPurgeResult"
+                }
+              }
+            },
+            "description": "Durable cleanup state."
+          },
+          "400": {
+            "description": "Invalid request."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Session not found."
+          },
+          "409": {
+            "description": "Revision, impact, active work or storage conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Permanently remove a trashed session"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/purge-preview": {
+      "get": {
+        "operationId": "getSessionPurgePreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPurgePreview"
+                }
+              }
+            },
+            "description": "Impact and blockers."
+          },
+          "400": {
+            "description": "Invalid request."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Session not found."
+          },
+          "409": {
+            "description": "Revision, impact, active work or storage conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Preview removal of a trashed session"
+      }
+    },
     "/api/v1/sessions/{sessionId}/reindex": {
       "post": {
         "operationId": "reindexSession",
@@ -18896,6 +19298,142 @@
             "description": "Revision conflict"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/voice-setup": {
+      "get": {
+        "description": "Read audiobook or voiceover voice mode and the selected TTS voice. Legacy sessions are identified so strict single-voice rendering can be adopted explicitly.",
+        "operationId": "getVoiceSetup",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current voice mode and configuration revision."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The voice setup session was not found."
+          },
+          "422": {
+            "description": "Voice setup is available for audiobook and voiceover sessions."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Inspect session voice mode"
+      },
+      "patch": {
+        "description": "Atomically select single-voice or multi-voice rendering for an audiobook or voiceover session. This changes only casting mode and the strict-rendering adoption marker; it does not change text preparation, speaker labels, or speech-performance settings. The operation never starts synthesis.",
+        "operationId": "configureVoiceSetup",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSetupConfigureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Current voice mode and configuration revision."
+          },
+          "400": {
+            "description": "A valid idempotency key is required."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The voice setup session was not found."
+          },
+          "409": {
+            "description": "The current configuration is stale or the idempotency key conflicts."
+          },
+          "422": {
+            "description": "The request fields are invalid or the workflow is unsupported."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Configure session voice mode"
       }
     },
     "/api/v1/sessions/{sessionId}/workflow": {

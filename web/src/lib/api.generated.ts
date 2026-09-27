@@ -1481,6 +1481,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/session-trash-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read automatic trash retention policy */
+        get: operations["getSessionTrashPolicy"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set retention for future trash events */
+        patch: operations["updateSessionTrashPolicy"];
+        trace?: never;
+    };
     "/api/v1/sessions": {
         parameters: {
             query?: never;
@@ -2296,6 +2314,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Permanently remove a trashed session */
+        post: operations["purgeSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/purge-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview removal of a trashed session */
+        get: operations["getSessionPurgePreview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/reindex": {
         parameters: {
             query?: never;
@@ -2898,6 +2950,30 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/voice-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect session voice mode
+         * @description Read audiobook or voiceover voice mode and the selected TTS voice. Legacy sessions are identified so strict single-voice rendering can be adopted explicitly.
+         */
+        get: operations["getVoiceSetup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Configure session voice mode
+         * @description Atomically select single-voice or multi-voice rendering for an audiobook or voiceover session. This changes only casting mode and the strict-rendering adoption marker; it does not change text preparation, speaker labels, or speech-performance settings. The operation never starts synthesis.
+         */
+        patch: operations["configureVoiceSetup"];
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/workflow": {
@@ -5784,6 +5860,12 @@ export interface components {
              * @default
              */
             model_name?: string;
+            /**
+             * Purpose
+             * @default delivery
+             * @enum {string}
+             */
+            purpose?: "delivery" | "speakers" | "combined";
         };
         /** PerformancePreviewRequest */
         PerformancePreviewRequest: {
@@ -5864,6 +5946,10 @@ export interface components {
         };
         /** PerformanceSubmitRequest */
         PerformanceSubmitRequest: {
+            /** Character Proposals */
+            character_proposals?: {
+                [key: string]: unknown;
+            }[];
             /** Items */
             items: components["schemas"]["PerformanceItem"][];
             /** Lease Token */
@@ -6170,12 +6256,40 @@ export interface components {
              */
             name?: string | null;
         };
+        SessionPurgePreview: {
+            blockers: string[];
+            can_purge: boolean;
+            impact_token: string;
+            owned_bytes: number;
+            owned_file_count: number;
+            retained_shared_count: number;
+            revision: number;
+            /** Format: date-time */
+            scheduled_delete_at: string | null;
+        };
+        SessionPurgeRequest: {
+            expected_revision: number;
+            impact_token: string;
+        };
+        SessionPurgeResult: {
+            error?: string;
+            /** @enum {string} */
+            state: "complete" | "purging" | "failed";
+        };
         /** SessionSettingsUpdate */
         SessionSettingsUpdate: {
             /** Value */
             value?: {
                 [key: string]: unknown;
             };
+        };
+        SessionTrashPolicy: {
+            days: number | null;
+            revision: number;
+        };
+        SessionTrashPolicyUpdate: {
+            days: number | null;
+            expected_revision: number;
         };
         /** SessionUpdate */
         SessionUpdate: {
@@ -7753,6 +7867,19 @@ export interface components {
              * @default false
              */
             transcript_reviewed?: boolean;
+        };
+        /**
+         * VoiceSetupConfigureRequest
+         * @description Revision-checked shared voice-mode configuration.
+         */
+        VoiceSetupConfigureRequest: {
+            /** Expected Revision */
+            expected_revision: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "single_voice" | "multi_voice";
         };
         /** VoiceTranscriptReview */
         VoiceTranscriptReview: {
@@ -10369,6 +10496,120 @@ export interface operations {
             };
         };
     };
+    getSessionTrashPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Policy and revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionTrashPolicy"];
+                };
+            };
+            /** @description Invalid request. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, impact, active work or storage conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateSessionTrashPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionTrashPolicyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Updated policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionTrashPolicy"];
+                };
+            };
+            /** @description Invalid request. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, impact, active work or storage conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listSessions: {
         parameters: {
             query?: {
@@ -12787,6 +13028,124 @@ export interface operations {
             };
         };
     };
+    purgeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable cleanup state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionPurgeResult"];
+                };
+            };
+            /** @description Invalid request. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, impact, active work or storage conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSessionPurgePreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Impact and blockers. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionPurgePreview"];
+                };
+            };
+            /** @description Invalid request. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, impact, active work or storage conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reindexSession: {
         parameters: {
             query?: never;
@@ -14104,6 +14463,130 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getVoiceSetup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current voice mode and configuration revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The voice setup session was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Voice setup is available for audiobook and voiceover sessions. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    configureVoiceSetup: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceSetupConfigureRequest"];
+            };
+        };
+        responses: {
+            /** @description Current voice mode and configuration revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description A valid idempotency key is required. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The voice setup session was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current configuration is stale or the idempotency key conflicts. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields are invalid or the workflow is unsupported. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

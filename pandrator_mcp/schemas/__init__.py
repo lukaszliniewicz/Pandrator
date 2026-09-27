@@ -112,6 +112,13 @@ from .performance import (
     SubmitPerformanceBatchInput,
 )
 from .recommendations import RecommendNextStepsInput
+from .session_purge import (
+    SESSION_PURGE_INPUT_MODELS,
+    DeleteSessionPermanentlyInput,
+    GetSessionTrashPolicyInput,
+    PreviewSessionDeletionInput,
+    UpdateSessionTrashPolicyInput,
+)
 from .sessions import (
     AttachExistingSourceInput,
     CreateSessionInput,
@@ -195,6 +202,11 @@ from .voice_metadata import (
     UpdateVoiceMetadataInput,
     VoiceMetadataChanges,
 )
+from .voice_setup import (
+    VOICE_SETUP_INPUT_MODELS,
+    ConfigureVoiceSetupInput,
+    GetVoiceSetupInput,
+)
 from .work import (
     CancelWorkInput,
     GetWorkInput,
@@ -211,6 +223,8 @@ from .workflow import (
 
 TOOL_INPUT_MODELS = (
     *AUDIOBOOK_INPUT_MODELS,
+    *VOICE_SETUP_INPUT_MODELS,
+    *SESSION_PURGE_INPUT_MODELS,
     *PERFORMANCE_INPUT_MODELS,
     *GENERATION_CONTROLS_INPUT_MODELS,
     *VOICE_METADATA_INPUT_MODELS,
@@ -335,6 +349,14 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "ConfigureVoiceSetupInput",
+    "GetVoiceSetupInput",
+    "VOICE_SETUP_INPUT_MODELS",
+    "DeleteSessionPermanentlyInput",
+    "GetSessionTrashPolicyInput",
+    "PreviewSessionDeletionInput",
+    "SESSION_PURGE_INPUT_MODELS",
+    "UpdateSessionTrashPolicyInput",
     "ConfigureAudiobookInput",
     "GetAudiobookSetupInput",
     "PreviewSpeechSegmentInput",

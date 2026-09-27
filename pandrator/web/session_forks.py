@@ -290,6 +290,7 @@ class SessionForkService:
                 record_id=record_id,
                 storage_key=storage_key,
                 db_session=session,
+                seed_voice_mode=False,
             )
 
             copied_translation_setting: SessionSetting | None = None

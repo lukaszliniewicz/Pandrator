@@ -1,6 +1,6 @@
-"""OpenAPI fragments for audiobook setup and speech-plan preview."""
+"""OpenAPI fragments for shared voice setup and audiobook speech preview."""
 
-from .audiobook_schemas import AUDIOBOOK_SCHEMAS
+from .audiobook_schemas import AUDIOBOOK_SCHEMAS, VOICE_SETUP_SCHEMAS
 
 
 def _security(scope: str) -> list[dict[str, list[str]]]:
@@ -89,6 +89,64 @@ def audiobook_paths() -> dict:
             **common_errors,
         },
     }
+    voice_setup_get = {
+        "operationId": "getVoiceSetup",
+        "summary": "Inspect session voice mode",
+        "description": (
+            "Read audiobook or voiceover voice mode and the selected TTS voice. "
+            "Legacy sessions are identified so strict single-voice rendering can "
+            "be adopted explicitly."
+        ),
+        "security": _security("app.read"),
+        "parameters": [_session_parameter()],
+        "responses": {
+            "200": _response("Current voice mode and configuration revision."),
+            "401": {"description": "Authentication required."},
+            "403": {"description": "The authenticated actor lacks the required scope."},
+            "404": {"description": "The voice setup session was not found."},
+            "422": {"description": "Voice setup is available for audiobook and voiceover sessions."},
+        },
+    }
+    voice_setup_patch = {
+        "operationId": "configureVoiceSetup",
+        "summary": "Configure session voice mode",
+        "description": (
+            "Atomically select single-voice or multi-voice rendering for an "
+            "audiobook or voiceover session. This changes only casting mode and "
+            "the strict-rendering adoption marker; it does not change text "
+            "preparation, speaker labels, or speech-performance settings. "
+            "The operation never starts synthesis."
+        ),
+        "security": _security("app.write"),
+        "parameters": [
+            _session_parameter(),
+            {
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "minLength": 8, "maxLength": 200},
+            },
+        ],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "$ref": "#/components/schemas/VoiceSetupConfigureRequest"
+                    }
+                }
+            },
+        },
+        "responses": {
+            "200": _response("Current voice mode and configuration revision."),
+            "400": {"description": "A valid idempotency key is required."},
+            "401": {"description": "Authentication required."},
+            "403": {"description": "The authenticated actor lacks the required scope."},
+            "404": {"description": "The voice setup session was not found."},
+            "409": {"description": "The current configuration is stale or the idempotency key conflicts."},
+            "422": {"description": "The request fields are invalid or the workflow is unsupported."},
+        },
+    }
     preview = {
         "operationId": "previewSpeechSegment",
         "summary": "Preview a speech-plan segment",
@@ -119,10 +177,14 @@ def audiobook_paths() -> dict:
             "get": setup_get,
             "patch": setup_patch,
         },
+        "/api/v1/sessions/{sessionId}/voice-setup": {
+            "get": voice_setup_get,
+            "patch": voice_setup_patch,
+        },
         "/api/v1/sessions/{sessionId}/speech-plan/preview": {
             "post": preview,
         },
     }
 
 
-__all__ = ["AUDIOBOOK_SCHEMAS", "audiobook_paths"]
+__all__ = ["AUDIOBOOK_SCHEMAS", "VOICE_SETUP_SCHEMAS", "audiobook_paths"]

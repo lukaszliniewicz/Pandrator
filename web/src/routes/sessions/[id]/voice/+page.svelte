@@ -6,7 +6,9 @@
   import { sessionApi } from '$lib/domain-api';
   import type { SettingsPayload } from '$lib/api-models';
   import { errorMessage } from '$lib/errors';
-  import GenerationCastPanel from '$lib/GenerationCastPanel.svelte';
+  import VoiceSetupCard from '$lib/VoiceSetupCard.svelte';
+  import { useSessionContext } from '$lib/session-context';
+  const context = useSessionContext();
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import VoiceLibraryModal from '$lib/VoiceLibraryModal.svelte';
   const sessionId = String(page.params.id);
@@ -15,7 +17,6 @@
   let error = $state('');
   const service = $derived(String(settings?.effective.service ?? ''));
   const model = $derived(String(settings?.effective.model ?? ''));
-  const sessionVoice = $derived(String(settings?.effective.voice ?? ''));
   async function loadSettings() {
     try {
       settings = await sessionApi.settings(sessionId, 'tts');
@@ -50,30 +51,10 @@
       >
     </div>
   </div>
-  <section
-    id="characters-cast"
-    class="surface scroll-mt-20 rounded-2xl p-4 sm:p-6"
-  >
-    {#if error}<p role="alert" class="mb-3 text-sm text-red-600">{error}</p>
-      <button class="btn" onclick={loadSettings}
-        >Retry loading voice settings</button
-      >{/if}
-    {#if settings}<p class="muted mb-4 break-words text-xs">
-        Saved generation settings: {service || 'No service selected'}{model
-          ? ` · ${model}`
-          : ''}. Change these below, then save to update casting compatibility.
-      </p>
-      <GenerationCastPanel
-        {sessionId}
-        {service}
-        {model}
-        {sessionVoice}
-        initialOpen
-        standalone
-      />{:else if !error}<p class="muted text-sm">
-        Loading casting settings…
-      </p>{/if}
-  </section>
+  {#if error}<p role="alert" class="text-sm text-red-600">{error}</p>{/if}
+  {#if context.session && ['audiobook', 'voiceover'].includes(context.session.workflow_kind)}
+    <VoiceSetupCard {sessionId} onchanged={loadSettings} />
+  {/if}
   <SettingsPanel
     {sessionId}
     section="tts"

@@ -68,7 +68,7 @@
   import SessionSourceCard from './SessionSourceCard.svelte';
   import StageInputPicker from './StageInputPicker.svelte';
   import SpeechPlanCard from './SpeechPlanCard.svelte';
-  import AudiobookCastCard from './AudiobookCastCard.svelte';
+  import VoiceSetupCard from './VoiceSetupCard.svelte';
   import type { CastDraftController } from './generation-controls';
   let audiobookCastPanel = $state<CastDraftController>();
   import SpeechPlanSettings from './SpeechPlanSettings.svelte';
@@ -131,6 +131,8 @@
     null
   );
   let generationNotice = $state('');
+  let planNotice = $state('');
+  let planPreparationJobId = $state('');
   const selectedSpeechPlan = $derived(
     speechPlan?.items.find(
       (item) => item.id === speechPlan?.selected_revision_id
@@ -148,6 +150,22 @@
     try {
       const value = await speechPlanState(session.id, { summary: true });
       if (request === planRequest) speechPlan = value;
+      if (planPreparationJobId) {
+        const jobId = planPreparationJobId;
+        const job = await jobApi.get(jobId);
+        if (request === planRequest && jobId === planPreparationJobId) {
+          if (job.status === 'succeeded') {
+            planNotice = 'The optimized speech plan is ready for review.';
+            planPreparationJobId = '';
+          } else if (
+            ['failed', 'canceled', 'interrupted'].includes(job.status)
+          ) {
+            planNotice = `Speech preparation ${job.status}. The previous plan remains selected.`;
+            if (job.error_message) error = job.error_message;
+            planPreparationJobId = '';
+          }
+        }
+      }
     } catch (caught) {
       if (request === planRequest) error = errorMessage(caught);
     }
@@ -176,7 +194,16 @@
                 revision_id: speechPlan.selected_revision_id,
                 content_signature: speechPlan.content_signature
               };
-      await sessionFlowAction(session.id, `generation-plan/${action}`, body);
+      const result = await sessionFlowAction(
+        session.id,
+        `generation-plan/${action}`,
+        body
+      );
+      planNotice = result.job_id
+        ? 'Speech preparation queued. The finished plan will appear here for review; audio generation starts separately.'
+        : '';
+      planPreparationJobId =
+        typeof result.job_id === 'string' ? result.job_id : '';
       await loadSpeechPlan();
     } catch (caught) {
       error = errorMessage(caught);
@@ -3282,8 +3309,8 @@
   {:else if snapshot}
     <div class="space-y-4">
       {#if !sourceCardStage}{@render sessionSource()}{/if}
-      {#if session.workflow_kind === 'audiobook'}
-        <AudiobookCastCard
+      {#if ['audiobook', 'voiceover'].includes(session.workflow_kind)}
+        <VoiceSetupCard
           bind:castPanel={audiobookCastPanel}
           navigationManaged={workspaceMode === 'review' &&
             Boolean(speechPlan?.selected_revision_id)}
@@ -3309,9 +3336,12 @@
       {/if}
       {#each snapshot.stages as stage}
         {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
+          {#if planNotice}<p class="muted text-sm" role="status">
+              {planNotice}
+            </p>{/if}
           <SpeechPlanCard
             externalCastPanel={audiobookCastPanel}
-            showCasting={session.workflow_kind !== 'audiobook'}
+            showCasting={false}
             sessionId={session.id}
             plan={speechPlan}
             busy={planBusy}
@@ -5038,54 +5068,72 @@
                     class="mt-1 accent-[var(--accent)]"
                   /><span
                     ><strong class="block"
-                      >During generation · final speech units</strong
+                      >During plan preparation · final speech units</strong
                     ><span class="muted mt-1 block text-xs"
-                      >Optimize the final synthesis units as generation begins
-                      and compare each result in the generation drawer.</span
+                      >Optimize the final speech blocks before reviewing
+                      speakers and delivery. Generation uses the accepted
+                      wording.</span
                     ></span
                   ></label
                 >
               </div>
             </fieldset>
-            <fieldset
-              class="speech-controls rounded-xl border border-[var(--line)] p-4 space-y-3"
-            >
-              <legend class="px-1 text-sm font-semibold"
-                >Dialogue and character recognition</legend
+            <p class="muted text-xs">
+              Speaker identification and delivery directions have separate
+              analysis controls in the prepared speech plan. They keep spoken
+              words unchanged.
+            </p>
+            {#if speechAnnotationMode !== 'off'}<details
+                class="rounded-xl border border-[var(--line)] p-3"
               >
-              <label class="block text-sm"
-                >Annotation level
-                <select
-                  class="input mt-1 w-full"
-                  bind:value={speechAnnotationMode}
-                  onchange={() => {
-                    if (speechAnnotationMode !== 'off')
-                      optimizationTiming = 'document';
-                  }}
+                <summary class="cursor-pointer text-sm"
+                  >Existing combined text and speaker preparation</summary
                 >
-                  <option value="off">Preserve supplied markup</option>
-                  <option value="dialogue"
-                    >Recognize dialogue and turn boundaries</option
+                <p class="muted my-2 text-xs">
+                  This session already has recognition enabled in its text step.
+                  These settings are preserved for compatibility. Use the
+                  separate speech-plan analysis for new speaker passes.
+                </p>
+                <fieldset
+                  class="speech-controls rounded-xl border border-[var(--line)] p-4 space-y-3"
+                >
+                  <legend class="px-1 text-sm font-semibold"
+                    >Dialogue and character recognition</legend
                   >
-                  <option value="speakers"
-                    >Recognize dialogue and identify characters</option
+                  <label class="block text-sm"
+                    >Annotation level
+                    <select
+                      class="input mt-1 w-full"
+                      bind:value={speechAnnotationMode}
+                      onchange={() => {
+                        if (speechAnnotationMode !== 'off')
+                          optimizationTiming = 'document';
+                      }}
+                    >
+                      <option value="off">Preserve supplied markup</option>
+                      <option value="dialogue"
+                        >Recognize dialogue and turn boundaries</option
+                      >
+                      <option value="speakers"
+                        >Recognize dialogue and identify characters</option
+                      >
+                    </select>
+                  </label>
+                  <label class="flex items-start gap-2 text-sm"
+                    ><input
+                      type="checkbox"
+                      bind:checked={speechAnnotationOnly}
+                    />Annotate only — keep every spoken word unchanged</label
                   >
-                </select>
-              </label>
-              {#if speechAnnotationMode !== 'off'}<label
-                  class="flex items-start gap-2 text-sm"
-                  ><input
-                    type="checkbox"
-                    bind:checked={speechAnnotationOnly}
-                  />Annotate only — keep every spoken word unchanged</label
-                >{/if}
-              <p class="muted text-xs">
-                Dialogue annotations preserve integral segments and avoid
-                treating each dialogue line as a long paragraph pause. Character
-                proposals use the session dictionary. Review structure and
-                casting before generation; emotional directions remain optional.
-              </p>
-            </fieldset>
+                  <p class="muted text-xs">
+                    Dialogue annotations preserve integral segments and avoid
+                    treating each dialogue line as a long paragraph pause.
+                    Character proposals use the session dictionary. Review
+                    structure and casting before generation; emotional
+                    directions remain optional.
+                  </p>
+                </fieldset>
+              </details>{/if}
             <label class="text-sm font-semibold"
               >Speech-planning policy<select
                 bind:value={speechOptimizationMode}

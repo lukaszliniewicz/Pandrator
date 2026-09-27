@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .credentials import SecretRedactor
 from .database import Database
 from .model_maintenance import ensure_app_job_allowed
-from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, utcnow
+from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, SessionRecord, utcnow
 
 JobHandler = Callable[
     [dict[str, Any], Callable[[float, str | None], None], threading.Event],
@@ -120,6 +120,8 @@ class JobQueue:
             in {
                 "text.prepare",
                 "text.optimize_tts",
+                "speech.prepare",
+                "speech.performance",
                 "audiobook.generate_audio",
                 "dubbing.generate_audio",
                 "workflow.continue",
@@ -520,6 +522,12 @@ class JobQueue:
         )
         session.add(job)
         session.flush()
+        # Check after acquiring the SQLite writer lock, so an older read cannot
+        # submit work after a purge has claimed the session.
+        if session_id:
+            owner = session.get(SessionRecord, session_id, populate_existing=True)
+            if owner is None or owner.trashed_at is not None or owner.status == "purging":
+                raise ValueError("Restore the session before starting work; permanent deletion cannot be resumed as a session.")
         # The flush has acquired the app SQLite writer transaction.  The
         # manager guard must run before the queue event and return so a busy
         # check raises into the caller's transaction and removes this job.

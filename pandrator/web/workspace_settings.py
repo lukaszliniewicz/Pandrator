@@ -476,6 +476,8 @@ class WorkspaceSettingsService:
         if session_record is None:
             raise KeyError(session_id)
         value = dict(value)
+        if session_record.status == "purging":
+            raise RevisionConflict("Session deletion has started; its settings can no longer change.")
         if section == "text":
             from pandrator.logic.audiobook_chunking import (
                 validate_audiobook_chunking_settings,
@@ -487,6 +489,8 @@ class WorkspaceSettingsService:
         if section == "tts":
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]
+            if "voice_mode_version" not in value and previous.get("voice_mode_version", 0):
+                value["voice_mode_version"] = previous["voice_mode_version"]
             value = normalize_tts_voice_aliases(
                 prepare_tts_provider_switch(previous, value)
             )

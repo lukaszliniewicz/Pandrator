@@ -65,6 +65,13 @@ from .media_edit_dispatch import (
 )
 from .media_edit_workflow import plan_media_edit_workflow
 from .recommendations import recommend_next_steps
+from .session_purge import (
+    delete_session_permanently,
+    get_session_trash_policy,
+    preview_session_deletion,
+    register_session_purge_tools,
+    update_session_trash_policy,
+)
 from .sessions import (
     attach_existing_source,
     create_session,
@@ -132,6 +139,11 @@ from .voice_lifecycle import (
     update_voice_collection,
     voice_catalog_capabilities,
 )
+from .voice_setup import (
+    configure_voice_setup,
+    get_voice_setup,
+    register_voice_setup_tools,
+)
 from .work import cancel_work, get_work, get_work_log, list_work
 from .workflow import (
     execute_workflow_plan,
@@ -157,6 +169,7 @@ __all__ = [
     "create_text_source",
     "create_session",
     "delete_output",
+    "delete_session_permanently",
     "create_dispatch_run",
     "create_source_cleaning_dispatch_run",
     "create_speech_optimization_dispatch_run",
@@ -183,6 +196,8 @@ __all__ = [
     "import_local_source",
     "import_subtitles",
     "get_session_settings",
+    "get_session_trash_policy",
+    "get_voice_setup",
     "get_work",
     "get_work_log",
     "get_workflow",
@@ -209,6 +224,7 @@ __all__ = [
     "manager_status",
     "patch_subtitle_cues",
     "patch_session_settings",
+    "preview_session_deletion",
     "prepare_media_edit",
     "plan_workflow",
     "plan_orchestrated_workflow",
@@ -247,6 +263,8 @@ __all__ = [
     "update_media_edit",
     "update_session",
     "update_session_settings",
+    "update_session_trash_policy",
+    "configure_voice_setup",
     "voice_catalog",
     "audition_voice",
     "create_voice",
@@ -257,6 +275,8 @@ __all__ = [
     "promote_voice_design",
     "publish_voice",
     "register_voice_lifecycle_tools",
+    "register_session_purge_tools",
+    "register_voice_setup_tools",
     "review_voice_transcript",
     "transcribe_voice_sample",
     "update_catalog_voice_metadata",

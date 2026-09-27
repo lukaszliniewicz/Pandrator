@@ -15,22 +15,28 @@
         "pandrator_get_workflow",
         "pandrator_trash_session",
         "pandrator_restore_session",
+        "pandrator_preview_session_deletion",
+        "pandrator_delete_session_permanently",
+        "pandrator_get_session_trash_policy",
+        "pandrator_update_session_trash_policy",
         "pandrator_delete_output"
       ],
       "minimum_application_version": "0.8.16",
-      "revision": 2,
+      "revision": 3,
       "file": "artifacts-and-revisions.md"
     },
     {
       "topic": "audiobooks",
       "title": "Audiobook workflow",
-      "summary": "Prepare and review narration, generate takes, assemble, then export. For multiple voices, start with the multivoice-audiobooks guide and get_audiobook_setup. Use patch_session_settings for partial edits; prepared_text JSON is required for speaker annotation.",
+      "summary": "Prepare and review narration, generate takes, assemble, then export. For multiple voices, start with the multivoice-audiobooks guide and get_voice_setup. Use patch_session_settings for partial edits; prepared_text JSON is required for speaker annotation.",
       "audiences": [
         "new_user",
         "operator"
       ],
       "related_tools": [
         "pandrator_get_capabilities",
+        "pandrator_get_voice_setup",
+        "pandrator_configure_voice_setup",
         "pandrator_browse_local_sources",
         "pandrator_import_local_source",
         "pandrator_create_text_source",
@@ -48,7 +54,7 @@
         "pandrator_submit_speech_optimization_dispatch_batch"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 9,
+      "revision": 10,
       "file": "audiobooks.md"
     },
     {
@@ -331,12 +337,14 @@
     {
       "topic": "multivoice-audiobooks",
       "title": "Multiple-voice audiobooks",
-      "summary": "Inspect audiobook setup, then configure multi_voice atomically. Prepare narration before speaker annotation: use prepared_text JSON, annotation_mode=speakers and annotation_only=true. Cast stable character IDs, inspect representative segments with preview_speech_segment, review the plan, generate, wait with get_work, and assemble. Full guidance includes the exact cast shape and a compact procedure.",
+      "summary": "Inspect voice setup, then configure multi_voice with its current revision. Prepare narration before speaker annotation: use prepared_text JSON, annotation_mode=speakers and annotation_only=true. Cast stable character IDs, inspect representative segments with preview_speech_segment, review the plan, generate, wait with get_work, and assemble. Full guidance includes the exact cast shape and a compact procedure.",
       "audiences": [
         "new_user",
         "operator"
       ],
       "related_tools": [
+        "pandrator_get_voice_setup",
+        "pandrator_configure_voice_setup",
         "pandrator_get_audiobook_setup",
         "pandrator_configure_audiobook",
         "pandrator_update_generation_controls",
@@ -344,7 +352,7 @@
         "pandrator_get_work"
       ],
       "minimum_application_version": "0.10.0",
-      "revision": 1,
+      "revision": 2,
       "file": "multivoice-audiobooks.md"
     }
   ]

@@ -234,7 +234,7 @@ DUBBING_STAGES = (
     StageDefinition(
         "optimize_tts",
         "Optimize text for speech",
-        "Choose one place for LLM speech optimization: create a reviewable speech-text revision before generation, or optimize final speech units as generation runs.",
+        "Choose document-level speech optimization or optimize final speech units while preparing a reviewable speech plan.",
         executable=False,
         prerequisite_roles=("translation", "correction", "transcription", "upload"),
     ),
@@ -248,7 +248,7 @@ DUBBING_STAGES = (
     StageDefinition(
         "generate_audio",
         "Generate audio",
-        "Create reviewable per-segment takes, optionally optimizing each segment immediately before speech generation. Assembly remains manual.",
+        "Record the selected speech plan with the current voices and delivery settings. Review the takes before assembly.",
         prerequisite_roles=("translation", "correction", "transcription", "upload"),
         job_kind="dubbing.generate_audio",
     ),
@@ -433,7 +433,7 @@ AUDIOBOOK_STAGES = (
     StageDefinition(
         "optimize_tts",
         "Optimize text for speech",
-        "Choose one place for LLM speech optimization: create a reviewable speech-text revision before generation, or optimize final speech units as generation runs.",
+        "Choose document-level speech optimization or optimize final speech units while preparing a reviewable speech plan.",
         executable=False,
         prerequisite_roles=("prepared_text",),
     ),

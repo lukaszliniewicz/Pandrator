@@ -252,6 +252,94 @@ def test_casting_and_directions_are_independent():
     assert "_performance" not in parts[0]["settings"]
 
 
+def test_strict_single_voice_ignores_bindings_but_preserves_speaker_metadata():
+    markup = (
+        '<segment id="s"><dialogue><speaker ref="c-one">A</speaker> B'
+        "</dialogue></segment>"
+    )
+    settings = {
+        "voice": "base",
+        "casting_enabled": False,
+        "voice_mode_version": 1,
+        "performance_enabled": False,
+    }
+    original = dict(settings)
+    binding = {"voice": "block"}
+    calls = []
+
+    def apply(value, prepared):
+        calls.append(value)
+        prepared["voice"] = value["voice"]
+        return prepared
+
+    parts = build_render_parts(
+        "A B",
+        settings,
+        speech_xml=markup,
+        segment_id="s",
+        controls=CONTROLS,
+        source_speaker="S1",
+        voice_binding=binding,
+        apply_binding=apply,
+    )
+
+    assert len(parts) == 1
+    assert parts[0]["text"] == "A B"
+    assert parts[0]["settings"]["voice"] == "base"
+    assert parts[0]["voice_source"] == "base"
+    assert parts[0]["speaker_ids"] == ["c-one", "S1"]
+    assert calls == []
+    assert settings == original
+    assert binding == {"voice": "block"}
+
+
+def test_strict_single_voice_ignores_source_speaker_cast_without_markup():
+    parts = build_render_parts(
+        "Cue",
+        {"voice": "base", "casting_enabled": False, "voice_mode_version": 1},
+        controls=CONTROLS,
+        source_speaker="S1",
+    )
+
+    assert parts[0]["settings"]["voice"] == "base"
+    assert parts[0]["voice_source"] == "base"
+    assert parts[0]["speaker_ids"] == ["S1"]
+
+
+def test_legacy_single_voice_keeps_explicit_no_xml_binding_behavior():
+    calls = []
+
+    def apply(binding, prepared):
+        calls.append(binding)
+        prepared["voice"] = binding["voice"]
+        return prepared
+
+    parts = build_render_parts(
+        "Cue",
+        {"voice": "base", "casting_enabled": False, "voice_mode_version": 0},
+        controls=CONTROLS,
+        source_speaker="S1",
+        voice_binding={"voice": "block"},
+        apply_binding=apply,
+    )
+
+    assert parts[0]["settings"]["voice"] == "block"
+    assert parts[0]["voice_source"] == "segment"
+    assert parts[0]["speaker_ids"] == ["S1"]
+    assert calls == [{"voice": "block"}]
+
+
+def test_strict_multi_voice_still_uses_explicit_segment_binding():
+    parts = build_render_parts(
+        "Cue",
+        {"voice": "base", "casting_enabled": True, "voice_mode_version": 1},
+        voice_binding={"voice": "block"},
+    )
+
+    assert parts[0]["settings"]["voice"] == "block"
+    assert parts[0]["voice_source"] == "segment"
+
+
 def test_source_speaker_applies_only_to_unnamed_dialogue_or_no_xml():
     narrator_markup = '<segment id="s"><narrator>Aside</narrator></segment>'
     narrator = build_render_parts(

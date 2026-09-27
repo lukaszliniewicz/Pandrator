@@ -96,6 +96,7 @@ def test_tool_forwards_portable_data_and_supplies_next_action():
     outcome = performance_action(runtime, "create", args)
     assert outcome.next_actions[0].tool == "pandrator_claim_performance_batch"
     assert application.performance_plan_request.call_args.args[1]["mode"] == "passive"
+    assert application.performance_plan_request.call_args.args[1]["purpose"] == "delivery"
 
 
 def test_edit_and_worker_input_bounds():
@@ -122,6 +123,52 @@ def test_edit_and_worker_input_bounds():
             expected_plan_revision_id="r",
             idempotency_key="test-1234",
             context_before=99,
+        )
+    with pytest.raises(ValidationError):
+        CreatePerformancePlanInput(
+            session_id="s",
+            expected_plan_revision_id="r",
+            idempotency_key="performance-create",
+            purpose="speakers",
+        )
+    speaker_plan = CreatePerformancePlanInput(
+        session_id="s",
+        expected_plan_revision_id="r",
+        idempotency_key="performance-create",
+        purpose="combined",
+        annotation_format="xml",
+    )
+    assert speaker_plan.purpose == "combined"
+
+    submit = SubmitPerformanceBatchInput(
+        session_id="s",
+        plan_id="p",
+        batch_id="b",
+        lease_token="a" * 48,
+        idempotency_key="performance-submit",
+        items=[{"segment_id": "segment", "annotation": {"decision": "none"}}],
+    )
+    assert submit.character_proposals == []
+    assert len(
+        SubmitPerformanceBatchInput(
+            session_id="s",
+            plan_id="p",
+            batch_id="b",
+            lease_token="a" * 48,
+            idempotency_key="performance-submit",
+            items=[{"segment_id": "segment", "annotation": {"decision": "none"}}],
+            character_proposals=[{}] * 100,
+        ).character_proposals
+    ) == 100
+    with pytest.raises(ValidationError):
+        SubmitPerformanceBatchInput(
+            session_id="s",
+            plan_id="p",
+            batch_id="b",
+            lease_token="a" * 48,
+            idempotency_key="performance-submit",
+            items=[{"segment_id": "segment", "annotation": {"decision": "none"}}],
+            character_proposals=[{}] * 101,
         )
 
 
@@ -179,7 +226,18 @@ class PerformanceProtocolTests(unittest.IsolatedAsyncioTestCase):
                     assert (
                         "expected_plan_revision_id" in create.input_schema["properties"]
                     )
+                    purpose_schema = create.input_schema["properties"]["purpose"]
+                    assert purpose_schema["enum"] == [
+                        "delivery",
+                        "speakers",
+                        "combined",
+                    ]
+                    assert purpose_schema["default"] == "delivery"
                     assert "arguments" not in create.input_schema["properties"]
+                    proposals_schema = tools[
+                        "pandrator_submit_performance_batch"
+                    ].input_schema["properties"]["character_proposals"]
+                    assert proposals_schema["maxItems"] == 100
                     result = await client.call_tool(
                         "pandrator_create_performance_plan",
                         {
@@ -213,3 +271,6 @@ class PerformanceProtocolTests(unittest.IsolatedAsyncioTestCase):
                     assert application.performance_plan_request.call_args.args[1][
                         "items"
                     ][0]["annotation"] == {"decision": "none"}
+                    assert application.performance_plan_request.call_args.args[1][
+                        "character_proposals"
+                    ] == []

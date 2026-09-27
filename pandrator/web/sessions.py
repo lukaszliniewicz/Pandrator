@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from datetime import timedelta
+
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from .database import Database
-from .models import SessionRecord, utcnow
+from .models import AppSetting, SessionRecord, SessionSetting, utcnow
 
 
 class RevisionConflict(RuntimeError):
@@ -95,6 +97,7 @@ class SessionService:
         record_id: str | None = None,
         storage_key: str | None = None,
         db_session: Session | None = None,
+        seed_voice_mode: bool = True,
     ) -> SessionRecord:
         normalized_name = str(name or "").strip()
         if not normalized_name:
@@ -112,10 +115,14 @@ class SessionService:
         if db_session is not None:
             db_session.add(record)
             db_session.flush()
+            if seed_voice_mode and workflow_kind in {"audiobook", "voiceover"}:
+                db_session.add(SessionSetting(session_id=record.id, section="tts", value_json={"voice_mode_version": 1}, revision=0))
             return record
         with self.database.session() as session:
             session.add(record)
             session.flush()
+            if seed_voice_mode and workflow_kind in {"audiobook", "voiceover"}:
+                session.add(SessionSetting(session_id=record.id, section="tts", value_json={"voice_mode_version": 1}, revision=0))
             session.expunge(record)
         return record
 
@@ -134,7 +141,7 @@ class SessionService:
                 revision,
                 changes,
             )
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             record = self.update_in_session(
                 session,
                 session_id,
@@ -152,13 +159,15 @@ class SessionService:
         changes: dict,
     ) -> SessionRecord:
         allowed = {"name", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status"}
-        record = session.get(SessionRecord, session_id)
-        if record is None:
-            raise KeyError(session_id)
+        record = SessionService._locked_current(session, session_id)
         if record.revision != revision:
             raise RevisionConflict(
                 f"Expected revision {revision}, found {record.revision}."
             )
+        if record.status == "purging":
+            raise ValueError("Session purge has already started.")
+        if changes.get("status") == "purging":
+            raise ValueError("Purging is a reserved session lifecycle state.")
         for key, value in changes.items():
             if key in allowed:
                 setattr(record, key, value)
@@ -182,7 +191,7 @@ class SessionService:
                 session_id,
                 revision,
             )
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             record = self.trash_in_session(
                 session,
                 session_id,
@@ -197,32 +206,53 @@ class SessionService:
         session_id: str,
         revision: int,
     ) -> SessionRecord:
-        record = session.get(SessionRecord, session_id)
-        if record is None:
-            raise KeyError(session_id)
+        record = SessionService._locked_current(session, session_id)
         if record.revision != revision:
             raise RevisionConflict(
                 f"Expected revision {revision}, found {record.revision}."
             )
-        record.trashed_at = utcnow()
+        if record.status == "purging":
+            raise ValueError("Session purge has already started.")
+        trashed_at = utcnow()
+        record.trashed_at = trashed_at
+        policy = session.get(AppSetting, "session.trash_policy")
+        days = (policy.value_json or {}).get("days") if policy else None
+        record.purge_after = trashed_at + timedelta(days=days) if days is not None else None
         record.status = "trashed"
         record.revision += 1
         record.updated_at = utcnow()
         session.flush()
         return record
 
+    @staticmethod
+    def _locked_current(session: Session, session_id: str) -> SessionRecord:
+        """Reserve the SQLite writer and discard any cached pre-claim state."""
+        with session.no_autoflush:
+            session.execute(
+                update(SessionRecord)
+                .where(SessionRecord.id == session_id)
+                .values(id=SessionRecord.id)
+                .execution_options(synchronize_session=False)
+            )
+            record = session.get(SessionRecord, session_id, populate_existing=True)
+            if record is None:
+                raise KeyError(session_id)
+            return record
+
     def restore(self, session_id: str, revision: int) -> SessionRecord:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
             if record.revision != revision:
                 raise RevisionConflict(f"Expected revision {revision}, found {record.revision}.")
+            if record.status == "purging":
+                raise ValueError("Session purge has already started.")
             record.trashed_at = None
+            record.purge_after = None
             record.status = "idle"
             record.revision += 1
             record.updated_at = utcnow()
             session.flush()
             session.expunge(record)
             return record
-

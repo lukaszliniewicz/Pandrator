@@ -70,6 +70,9 @@ def _digest(value: Any) -> str:
 
 def assert_session_idle(session, session_id: str, *, include_editing_dispatches: bool = True) -> None:
     """Never race a worker or a leased external editing batch during a reset."""
+    record = session.get(m.SessionRecord, session_id)
+    if record is None or record.trashed_at is not None or record.status == "purging":
+        raise RevisionConflict("Restore the session before editing it. Permanent deletion cannot be undone.")
     if session.scalar(
         select(m.Job.id)
         .where(m.Job.session_id == session_id, m.Job.status.in_(ACTIVE_JOB))
@@ -574,6 +577,7 @@ def start_new_source_session_in_session(
         workflow_preset=original.workflow_preset,
         included_stages=list(original.included_stages_json or []),
         db_session=session,
+        seed_voice_mode=False,
     )
     for setting in session.scalars(
         select(m.SessionSetting).where(m.SessionSetting.session_id == session_id)

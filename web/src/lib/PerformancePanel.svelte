@@ -19,6 +19,29 @@
     readMarkup,
     type ControlField
   } from './speech-markup-editor';
+  type AnalysisPurpose = 'speakers' | 'delivery' | 'combined';
+  type AnalysisPreferences = {
+    model_name: string;
+    instructions: string;
+    context_before: number;
+    context_after: number;
+    context_max_chars: number;
+    batch_size: number;
+  };
+  const analysisDefaults = (): AnalysisPreferences => ({
+    model_name: '',
+    instructions: '',
+    context_before: 2,
+    context_after: 1,
+    context_max_chars: 4000,
+    batch_size: 12
+  });
+  const purposeLabel = (purpose: string | undefined) =>
+    purpose === 'speakers'
+      ? 'Speakers'
+      : purpose === 'combined'
+        ? 'Speakers and delivery'
+        : 'Delivery';
   type Annotation = {
     decision: 'none' | 'steer';
     delivery?: Partial<Record<ControlField, string>>;
@@ -51,6 +74,9 @@
     job_status?: string;
     items?: Unit[];
     settings: {
+      purpose?: AnalysisPurpose;
+      model_name?: string;
+      effective_model_name?: string;
       workflow_kind?: string;
       mode?: string;
       instructions?: string;
@@ -131,9 +157,15 @@
     casting = $state(false),
     vocalizations = $state(false),
     settingsBaseline = $state('');
-  let planningInstructions = $state(''),
-    modelName = $state(''),
-    offset = $state(untrack(() => Math.floor(initialOrdinal / 20) * 20)),
+  let analysisPurpose = $state<AnalysisPurpose>('delivery');
+  let analysisPreferences = $state<
+    Record<AnalysisPurpose, AnalysisPreferences>
+  >({
+    speakers: analysisDefaults(),
+    delivery: analysisDefaults(),
+    combined: analysisDefaults()
+  });
+  let offset = $state(untrack(() => Math.floor(initialOrdinal / 20) * 20)),
     filter = $state('all');
   let unitId = $state(untrack(() => initialSegmentId)),
     draft = $state<Annotation>({ decision: 'none' }),
@@ -186,7 +218,8 @@
       maxChars,
       enabled,
       casting,
-      vocalizations
+      vocalizations,
+      analysisPreferences
     })
   );
   const settingsDirty = $derived(
@@ -238,6 +271,25 @@
       after <= 20 &&
       maxChars >= 0 &&
       maxChars <= 16000
+  );
+  const validAnalysis = $derived(
+    Object.values(analysisPreferences).every(
+      (value) =>
+        [
+          value.context_before,
+          value.context_after,
+          value.context_max_chars,
+          value.batch_size
+        ].every(Number.isInteger) &&
+        value.context_before >= 0 &&
+        value.context_before <= 20 &&
+        value.context_after >= 0 &&
+        value.context_after <= 20 &&
+        value.context_max_chars >= 0 &&
+        value.context_max_chars <= 16000 &&
+        value.batch_size >= 1 &&
+        value.batch_size <= 32
+    )
   );
   const service = $derived(
     String(stored?.effective.service ?? stored?.effective.tts_service ?? '')
@@ -335,6 +387,13 @@
     enabled = Boolean(settings.effective.performance_enabled);
     casting = Boolean(settings.effective.casting_enabled);
     vocalizations = Boolean(settings.effective.performance_allow_vocalizations);
+    const saved = settings.effective.speech_analysis_preferences as
+      Partial<Record<AnalysisPurpose, AnalysisPreferences>> | undefined;
+    analysisPreferences = {
+      speakers: { ...analysisDefaults(), ...saved?.speakers },
+      delivery: { ...analysisDefaults(), ...saved?.delivery },
+      combined: { ...analysisDefaults(), ...saved?.combined }
+    };
     settingsBaseline = JSON.stringify({
       general,
       contextMode,
@@ -343,7 +402,8 @@
       maxChars,
       enabled,
       casting,
-      vocalizations
+      vocalizations,
+      analysisPreferences
     });
   }
   async function load(planId?: string, newOffset = offset, preserve = true) {
@@ -416,7 +476,7 @@
     });
   }
   async function saveSettings() {
-    if (!stored || !validWindows) return false;
+    if (!stored || !validWindows || !validAnalysis) return false;
     pending = true;
     error = '';
     try {
@@ -433,7 +493,8 @@
           performance_context_max_chars: maxChars,
           performance_enabled: enabled,
           casting_enabled: casting,
-          performance_allow_vocalizations: vocalizations
+          performance_allow_vocalizations: vocalizations,
+          speech_analysis_preferences: $state.snapshot(analysisPreferences)
         }
       );
       stored = result;
@@ -522,7 +583,7 @@
     }
   }
   async function create(mode: 'manual' | 'passive' | 'llm', copy = false) {
-    if (!validWindows) return;
+    if (!validWindows || !validAnalysis) return;
     if (settingsDirty && !(await saveSettings())) return;
     pending = true;
     error = '';
@@ -531,14 +592,17 @@
       const result = await action<Plan>('', {
         expected_plan_revision_id: revisionId,
         mode,
+        purpose: copy
+          ? (selected?.settings.purpose ?? 'delivery')
+          : analysisPurpose,
         annotation_format: copy
           ? (selected?.settings.annotation_format ?? 'pssml')
           : 'xml',
-        model_name: modelName,
-        instructions: planningInstructions,
-        context_before: before,
-        context_after: after,
-        context_max_chars: maxChars,
+        ...$state.snapshot(
+          analysisPreferences[
+            copy ? (selected?.settings.purpose ?? 'delivery') : analysisPurpose
+          ]
+        ),
         allow_vocalizations: vocalizations,
         ...(copy && selected ? { copy_from_id: selected.id } : {})
       });
@@ -546,7 +610,7 @@
       await load(result.id, 0, false);
       message =
         mode === 'llm'
-          ? 'Delivery analysis queued. Review the result before adopting it.'
+          ? `${purposeLabel(analysisPurpose)} analysis queued. Review the result before adopting it.`
           : mode === 'passive'
             ? 'Passive analysis is ready for an MCP worker to claim. No model or speech service was started.'
             : 'Editable speech-direction draft created.';
@@ -599,7 +663,7 @@
         enable: true
       });
       await load(selected.id, offset, false);
-      message = 'Speech directions adopted for future generation.';
+      message = `${purposeLabel(selected.settings.purpose)} adopted for future generation.`;
       onchanged?.();
     } catch (caught) {
       error = errorMessage(caught);
@@ -659,8 +723,8 @@
   }}
 >
   <summary class="cursor-pointer font-semibold"
-    >Speech direction <span class="muted ml-2 text-xs"
-      >Context · dialogue · cast</span
+    >Speakers and delivery <span class="muted ml-2 text-xs"
+      >Independent optional passes</span
     ></summary
   >
   <div class="mt-4 space-y-5">
@@ -741,10 +805,12 @@
         ><input type="checkbox" bind:checked={enabled} />Use adopted speech
         directions</label
       >
-      <label class="flex items-center gap-2 text-sm"
-        ><input type="checkbox" bind:checked={casting} />Use character and
-        dialogue voices</label
-      >
+      <p class="muted text-sm">
+        Voice mode: {casting ? 'Multiple voices' : 'One voice'}.
+        <a class="underline" href={`/sessions/${sessionId}/voice#voice-setup`}
+          >Change voice mode</a
+        >
+      </p>
       <label class="flex items-center gap-2 text-sm"
         ><input type="checkbox" bind:checked={vocalizations} />Allow explicitly
         requested vocalizations</label
@@ -752,7 +818,10 @@
       <div class="flex flex-wrap items-center gap-2">
         <button
           class="btn"
-          disabled={!stored || !validWindows || !settingsDirty}
+          disabled={!stored ||
+            !validWindows ||
+            !validAnalysis ||
+            !settingsDirty}
           onclick={() => void saveSettings()}>Save generation defaults</button
         >{#if settingsDirty}<span class="text-xs text-amber-700"
             >Unsaved settings</span
@@ -766,17 +835,39 @@
     </fieldset>
     <details class="rounded-xl border border-[var(--line)] p-3">
       <summary class="cursor-pointer font-semibold"
-        >Delivery analysis <span class="muted ml-2 text-xs">Optional</span
+        >Speaker and delivery analysis <span class="muted ml-2 text-xs"
+          >Optional</span
         ></summary
       >
       <fieldset disabled={blocked || !validWindows} class="mt-3 space-y-3">
+        <label class="block text-sm"
+          >Analysis pass<select
+            class="input mt-1 w-full"
+            bind:value={analysisPurpose}
+          >
+            <option value="speakers">Identify speakers</option>
+            <option value="delivery">Add delivery directions</option>
+            <option value="combined"
+              >Identify speakers and add directions together</option
+            >
+          </select></label
+        >
+        <p class="muted text-xs">
+          {analysisPurpose === 'speakers'
+            ? 'Keep every spoken word and existing delivery direction. Use existing source labels or assign speakers manually when no analysis is needed.'
+            : analysisPurpose === 'combined'
+              ? 'One call uses the model and settings below for both tasks. Separate pass settings stay saved. Spoken words remain unchanged.'
+              : 'Keep every spoken word and speaker assignment. Add delivery directions for the selected speech model.'}
+        </p>
         <label class="block text-sm"
           >Analysis guidance<textarea
             class="input mt-1 w-full"
             rows="2"
             maxlength="6000"
-            bind:value={planningInstructions}
-            placeholder="Direct only where context changes how a line should be spoken."
+            bind:value={analysisPreferences[analysisPurpose].instructions}
+            placeholder={analysisPurpose === 'speakers'
+              ? 'Identify speakers only where the text and context support them.'
+              : 'Direct only where context changes how a line should be spoken.'}
           ></textarea></label
         >
         <label class="block text-sm"
@@ -784,21 +875,69 @@
             >Blank uses the configured default</span
           ><input
             class="input mt-1 w-full"
-            bind:value={modelName}
+            bind:value={analysisPreferences[analysisPurpose].model_name}
             maxlength="255"
           /></label
         >
         <p class="muted text-xs">
-          Analyse delivery uses the configured LLM. Passive analysis lets an MCP
-          client claim and submit work without starting a model. Both produce a
-          draft for review and leave the words unchanged.
+          Analysis uses the model above, or the configured default. Passive
+          analysis lets an MCP client claim and submit work without starting a
+          model. Both produce a draft for review and leave the words unchanged.
         </p>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="text-sm"
+            >Preceding blocks<input
+              class="input mt-1 w-full"
+              type="number"
+              min="0"
+              max="20"
+              bind:value={analysisPreferences[analysisPurpose].context_before}
+            /></label
+          >
+          <label class="text-sm"
+            >Following blocks<input
+              class="input mt-1 w-full"
+              type="number"
+              min="0"
+              max="20"
+              bind:value={analysisPreferences[analysisPurpose].context_after}
+            /></label
+          >
+          <label class="text-sm"
+            >Context character limit<input
+              class="input mt-1 w-full"
+              type="number"
+              min="0"
+              max="16000"
+              bind:value={
+                analysisPreferences[analysisPurpose].context_max_chars
+              }
+            /></label
+          >
+          <label class="text-sm"
+            >Blocks per request<input
+              class="input mt-1 w-full"
+              type="number"
+              min="1"
+              max="32"
+              bind:value={analysisPreferences[analysisPurpose].batch_size}
+            /></label
+          >
+        </div>
         <div class="flex flex-wrap gap-2">
           <button
             class="btn btn-primary"
+            disabled={!validAnalysis}
             onclick={() => navigate(() => create('llm'))}
-            >Analyse delivery</button
-          ><button class="btn" onclick={() => navigate(() => create('passive'))}
+            >Analyse {analysisPurpose === 'speakers'
+              ? 'speakers'
+              : analysisPurpose === 'combined'
+                ? 'speakers and delivery'
+                : 'delivery'}</button
+          ><button
+            class="btn"
+            disabled={!validAnalysis}
+            onclick={() => navigate(() => create('passive'))}
             >Prepare passive analysis</button
           >
         </div>
@@ -807,7 +946,7 @@
     <div
       class="flex flex-wrap items-end gap-2 border-t border-[var(--line)] pt-4"
     >
-      <h4 class="mr-auto font-semibold">Speech direction review</h4>
+      <h4 class="mr-auto font-semibold">Speaker and delivery review</h4>
       <button
         class="btn"
         disabled={blocked}
@@ -828,7 +967,7 @@
         audio listening check.
       </p>{/if}
     {#if history.length}<label class="block text-sm"
-        >Direction version<select
+        >Analysis version<select
           class="input mt-1 w-full"
           disabled={blocked}
           value={selected?.id ?? ''}
@@ -837,7 +976,8 @@
             navigate(() => load(id, 0, false));
           }}
           >{#each history as plan}<option value={plan.id}
-              >{plan.status} · {plan.steered_count} directed / {plan.total} blocks{plan.stale
+              >{purposeLabel(plan.settings.purpose)} · {plan.status} · {plan.steered_count}
+              directed / {plan.total} blocks{plan.stale
                 ? ' · stale'
                 : ''}</option
             >{/each}</select
@@ -856,10 +996,12 @@
       <details class="text-xs muted">
         <summary class="cursor-pointer">Saved analysis configuration</summary>
         <p class="mt-2 whitespace-pre-wrap">
-          {selected.settings.mode ?? 'manual'} · {selected.settings
-            .context_before ?? 2} before / {selected.settings.context_after ??
-            1} after. {selected.settings.instructions ||
-            'No extra analysis guidance.'}
+          {purposeLabel(selected.settings.purpose)} · {selected.settings.mode ??
+            'manual'} · Model: {selected.settings.effective_model_name ||
+            selected.settings.model_name ||
+            'Configured default'} · {selected.settings.context_before ?? 2} before
+          / {selected.settings.context_after ?? 1} after. {selected.settings
+            .instructions || 'No extra analysis guidance.'}
         </p>
       </details>
       {#if selected.stale}<p role="status" class="text-sm text-amber-700">
@@ -1134,7 +1276,7 @@
           {#if selected.analysed_count < selected.total}<label
               class="flex items-center gap-2 text-sm"
               ><input type="checkbox" bind:checked={acceptMissing} />Accept {selected.total -
-                selected.analysed_count} unanalysed blocks without directions</label
+                selected.analysed_count} unanalysed blocks as they are</label
             >{/if}
           <div class="flex flex-wrap gap-2">
             <button
@@ -1145,18 +1287,21 @@
               onclick={() => void adopt()}
               >{editorDirty || settingsDirty
                 ? 'Save changes and adopt'
-                : 'Adopt speech directions'}</button
+                : selected.settings.purpose === 'speakers'
+                  ? 'Adopt speaker assignments'
+                  : selected.settings.purpose === 'combined'
+                    ? 'Adopt speakers and directions'
+                    : 'Adopt speech directions'}</button
             >{#if selected.settings.mode === 'llm'}<button
                 class="btn"
                 disabled={blocked}
-                onclick={() => void resumeAnalysis()}
-                >Resume delivery analysis</button
+                onclick={() => void resumeAnalysis()}>Resume analysis</button
               >{/if}
           </div>
         </div>{/if}
     {:else}<p class="muted text-sm">
-        Create a manual draft, run delivery analysis, or prepare work for a
-        passive MCP client.
+        Create a manual draft, analyse speakers or delivery, or prepare work for
+        a passive MCP client.
       </p>{/if}
   </div>
 </details>

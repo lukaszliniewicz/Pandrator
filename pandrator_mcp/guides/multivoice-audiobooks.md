@@ -4,11 +4,12 @@ Use this procedure for a narrator plus character voices. Speaker annotation
 preserves the spoken words; performance directions are a separate optional layer.
 
 1. Create or reuse an audiobook session and attach its source. Read
-   `pandrator_get_audiobook_setup` for the current engine, mode, narration budget,
-   and `configuration_revision`. Use that token as `expected_revision` in
-   `pandrator_configure_audiobook(mode="multi_voice")`. This atomically enables
-   speaker annotation before generation and casting, preserving the engine,
-   model, references, and delivery settings. It starts no work.
+   `pandrator_get_voice_setup` for the current mode and revision. Use that
+   revision as `expected_revision` in
+   `pandrator_configure_voice_setup(mode="multi_voice")`, with an idempotency
+   key. This changes only voice mode and starts no work. The older
+   `pandrator_get_audiobook_setup` and `pandrator_configure_audiobook` tools
+   remain available for compatibility.
 2. Clean the source and run `prepare_text`. For passive speaker annotation, pass
    the **prepared_text JSON** artifact to
    `pandrator_create_speech_optimization_dispatch_run` with

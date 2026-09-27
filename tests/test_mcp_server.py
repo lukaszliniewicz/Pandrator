@@ -92,6 +92,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_create_media_edit_dispatch_run",
                         "pandrator_create_session",
                         "pandrator_delete_output",
+                        "pandrator_delete_session_permanently",
                         "pandrator_create_source_cleaning_dispatch_run",
                         "pandrator_create_speech_optimization_dispatch_run",
                         "pandrator_create_text_source",
@@ -114,6 +115,8 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_provider_status",
                         "pandrator_get_session",
                         "pandrator_get_session_settings",
+                        "pandrator_get_session_trash_policy",
+                        "pandrator_get_voice_setup",
                         "pandrator_get_source_cleaning_dispatch_run",
                         "pandrator_get_speech_optimization_dispatch_run",
                         "pandrator_get_speech_plan_status",
@@ -159,6 +162,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_prepare_speech_plan",
                         "pandrator_promote_voice_design",
                         "pandrator_preview_subtitles",
+                        "pandrator_preview_session_deletion",
                         "pandrator_propose_media_edit",
                         "pandrator_recommend_next_steps",
                         "pandrator_refine_media_edit_boundary",
@@ -199,8 +203,10 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_update_media_edit",
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
+                        "pandrator_update_session_trash_policy",
                         "pandrator_update_voice_collection",
                         "pandrator_update_voice_metadata",
+                        "pandrator_configure_voice_setup",
                     ]),
                     names,
                 )
@@ -235,6 +241,35 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(
                     tools_by_name["pandrator_delete_output"].annotations.destructive_hint
+                )
+                self.assertTrue(
+                    tools_by_name[
+                        "pandrator_delete_session_permanently"
+                    ].annotations.destructive_hint
+                )
+                self.assertTrue(
+                    tools_by_name[
+                        "pandrator_delete_session_permanently"
+                    ].input_schema["properties"]["confirm"]["const"]
+                )
+                self.assertIn(
+                    "confirm",
+                    tools_by_name[
+                        "pandrator_delete_session_permanently"
+                    ].input_schema["required"],
+                )
+                voice_setup_schema = tools_by_name[
+                    "pandrator_configure_voice_setup"
+                ].input_schema
+                self.assertEqual(
+                    ["single_voice", "multi_voice"],
+                    voice_setup_schema["properties"]["mode"]["enum"],
+                )
+                self.assertEqual(
+                    64,
+                    voice_setup_schema["properties"]["expected_revision"][
+                        "maxLength"
+                    ],
                 )
                 self.assertFalse(
                     tools_by_name["pandrator_delete_output"].annotations.idempotent_hint

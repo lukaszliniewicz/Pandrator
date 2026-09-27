@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -15,6 +16,41 @@ from . import models as m
 from .generation_control_schemas import VoiceBinding
 from .generation_controls import get_generation_controls
 from .tts_providers import TtsProviderRegistry
+
+_VOICE_IDENTITY_KEYS = (
+    "voice_id",
+    "voice_description",
+    "voice_name",
+    "elevenlabs_voice_id",
+    "_cast_voice_id",
+    "audio_cpp_voice_ref",
+    "audio_cpp_voice_ref_hash",
+    "audio_cpp_reference_text",
+)
+
+
+def filter_segment_tts_override(
+    base: Mapping[str, Any] | None, override: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Drop selected-take voice controls when the base mode is strict single.
+
+    Alternate-take overrides remain useful for provider/model and language
+    changes. Voice identity and mode flags are session-level in strict single
+    mode, so a per-segment override cannot replace them.
+    """
+    result = deepcopy(dict(override or {}))
+    from .generation_rendering import is_strict_single_voice
+
+    if is_strict_single_voice(base if isinstance(base, Mapping) else {}):
+        for key in (
+            "voice",
+            "speaker",
+            *_VOICE_IDENTITY_KEYS,
+            "casting_enabled",
+            "voice_mode_version",
+        ):
+            result.pop(key, None)
+    return result
 
 
 def remap_markup(xml: str, segment_id: str, text: str, characters: list[dict]) -> str:
@@ -172,6 +208,37 @@ def segment_voice_binding(segment: m.GenerationSegment, snapshot: dict | None = 
 
 
 def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict:
+    from .generation_rendering import is_strict_single_voice
+
+    base_tts = snapshot.get("tts")
+    base_tts = base_tts if isinstance(base_tts, dict) else settings
+    if is_strict_single_voice(base_tts):
+        # Alternate takes and frozen block assignments remain stored, but a
+        # strict single-voice run uses the session's selected voice. Keep the
+        # alternate's unrelated settings, such as language and performance.
+        result = dict(settings)
+        selected = (snapshot.get("selected_segment_override") or {}).get("tts") or {}
+        if isinstance(selected, dict) and any(
+            key in selected for key in ("voice", "speaker")
+        ):
+            for key in ("voice", "speaker"):
+                if key in base_tts:
+                    result[key] = deepcopy(base_tts[key])
+                else:
+                    result.pop(key, None)
+        if isinstance(selected, dict):
+            for key in _VOICE_IDENTITY_KEYS:
+                if key not in selected:
+                    continue
+                if key in base_tts:
+                    result[key] = deepcopy(base_tts[key])
+                else:
+                    result.pop(key, None)
+        for key in ("casting_enabled", "voice_mode_version"):
+            if key in base_tts:
+                result[key] = deepcopy(base_tts[key])
+        return result
+
     frozen = snapshot.get("generation_control_snapshot") or {}
     entry = (frozen.get("segments") or {}).get(segment_id) or {}
     return apply_resolved_binding(

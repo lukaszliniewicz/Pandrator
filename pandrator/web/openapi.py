@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .audiobook_openapi import AUDIOBOOK_SCHEMAS, audiobook_paths
+from .audiobook_openapi import AUDIOBOOK_SCHEMAS, VOICE_SETUP_SCHEMAS, audiobook_paths
 from .generation_control_openapi import (
     GENERATION_CONTROL_SCHEMAS,
     generation_control_paths,
@@ -22,6 +22,7 @@ from .repair_batch_openapi import repair_batch_paths
 from .repair_batch_schemas import RepairBatchUndoRequest
 from .schemas import SCHEMA_MODELS
 from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
+from .session_purge_openapi import SESSION_PURGE_SCHEMAS, session_purge_paths
 from .speech_selection_openapi import SPEECH_SELECTION_SCHEMAS, speech_selection_paths
 from .voice_catalog_openapi import (
     VOICE_CATALOG_SCHEMAS,
@@ -32,13 +33,14 @@ from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
 
 
 def build_openapi_document() -> dict:
-    schemas: dict[str, dict] = {}
+    schemas: dict[str, dict] = dict(SESSION_PURGE_SCHEMAS)
     contract_models = {
         **SCHEMA_MODELS,
         **FLOW_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
         **AUDIOBOOK_SCHEMAS,
+        **VOICE_SETUP_SCHEMAS,
         **SPEECH_SELECTION_SCHEMAS,
         **VOICE_CATALOG_SCHEMAS,
         "ApplicationIdentityDocument": ApplicationIdentityDocument,
@@ -3540,6 +3542,7 @@ def build_openapi_document() -> dict:
     paths.update(repair_batch_paths())
     paths.update(session_flow_paths())
     paths.update(performance_paths())
+    paths.update(session_purge_paths())
     paths.update(generation_control_paths())
     paths.update(audiobook_paths())
     paths.update(speech_selection_paths())
