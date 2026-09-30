@@ -6,6 +6,8 @@ import unittest
 from threading import Event, Lock
 from unittest.mock import patch
 
+import pytest
+
 from pandrator.logic import dubbing_handler, llm_handler
 from pandrator.logic.dubbing import llm_correction, srt_utils
 
@@ -696,9 +698,9 @@ def test_logical_correction_prompt_allows_only_atomic_outputs():
             logical_passages=True,
             dispatch_result=dispatch,
         )
-        assert '"action":"edit|delete|merge"' in prompt
+        assert ('"action":"edit|delete|merge|split"' if dispatch else '"action":"edit|delete|merge"') in prompt
         assert "exactly one complete corrected replacement text" in prompt
-        assert '   - "split":' not in prompt
+        assert ('   - "split":' in prompt) == dispatch
         assert "not display cues" in prompt
 
 
@@ -707,3 +709,20 @@ def test_logical_correction_checkpoint_key_includes_speaker():
     before = llm_correction.correction_unit_key(block, logical_passages=True)
     block[0]["speaker"] = "B"
     assert before != llm_correction.correction_unit_key(block, logical_passages=True)
+
+
+def test_source_split_anchors_refuse_unmatched_or_overlapping_words():
+    from pandrator.logic.dubbing.correction_splits import anchored_split_windows, split_boundaries
+
+    passage = {"id": "p1", "text": "One two three", "start_ms": 0, "end_ms": 3000, "source_word_ids": ["a", "b", "c"]}
+    words = [{"id": key, "text": text, "start_ms": i * 1000, "end_ms": (i + 1) * 1000} for i, (key, text) in enumerate(zip(["a", "b", "c"], ["One", "two", "three"], strict=True))]
+    anchors = split_boundaries(passage, words, "r1")
+    assert len(anchors) == 2
+    pinned = {**passage, "split_boundaries": anchors}
+    assert anchored_split_windows(pinned, [a["id"] for a in anchors], 3) == [(0, 1000), (1000, 2000), (2000, 3000)]
+    assert not split_boundaries({**passage, "text": "Someone else entirely"}, words, "r1")
+    assert anchors != split_boundaries(passage, words, "r2")
+    assert len(split_boundaries(passage, [{**w, "start_ms": 900} if w["id"] == "b" else w for w in words], "r1")) == 1
+    for ids in ([anchors[1]["id"], anchors[0]["id"]], [anchors[0]["id"], anchors[0]["id"]], ["invented"]):
+        with pytest.raises(ValueError):
+            anchored_split_windows(pinned, ids, len(ids) + 1)

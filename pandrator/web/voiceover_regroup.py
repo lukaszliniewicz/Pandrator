@@ -184,6 +184,7 @@ def _load_first_pass(handler: Any, run_id: str) -> _FirstPassState | None:
                     voice=str(segment.voice or "").strip(),
                     voice_id=str(segment.voice_id or ""),
                     language=str(segment.language or "").strip(),
+                    turn_id=str(provenance.get("turn_id") or "").strip(),
                     start_ms=start_ms,
                     end_ms=end_ms,
                     take_duration_ms=int(take.duration_ms),
@@ -321,6 +322,15 @@ def _stage_group_revision(
     ordinals = [int(member.ordinal) for member in members]
     if ordinals != list(range(ordinals[0], ordinals[0] + len(members))):
         raise ValueError("Regroup candidates must stay adjacent.")
+    turn_ids = {
+        str((member.speech_block_provenance_json or {}).get("turn_id") or "").strip()
+        for member in members
+    }
+    if len(turn_ids) > 1:
+        raise ValueError(
+            "Regroup candidates cannot cross a preserved utterance turn boundary."
+        )
+    turn_id = next(iter(turn_ids), "")
 
     texts = [(member.text or "").strip() for member in members]
     speeches = [
@@ -370,6 +380,8 @@ def _stage_group_revision(
         )
         display_len += 1 + len(texts[position])
         speech_len += 1 + len(speeches[position])
+    if turn_id:
+        provenance["turn_id"] = turn_id
     provenance["manual_topology"] = {
         "operation": "merge",
         "parent_segment_ids": list(member_ids),

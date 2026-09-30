@@ -489,6 +489,32 @@ class GenerationService:
             session.add(revision)
             session.flush()
             for index, item in enumerate(clean_segments):
+                provenance = dict(
+                    item.get("speech_block_provenance")
+                    or item.get("provenance")
+                    or {}
+                )
+                turn_id = item.get("turn_id")
+                if turn_id is None:
+                    for key in ("_passage", "logical_passage"):
+                        passage = item.get(key)
+                        if isinstance(passage, dict) and passage.get("turn_id") is not None:
+                            turn_id = passage.get("turn_id")
+                            break
+                if turn_id is not None:
+                    if not isinstance(turn_id, str):
+                        raise ValueError("Speech-plan turn_id must be a string.")
+                    turn_id = turn_id.strip()
+                    if turn_id:
+                        existing_turn_id = provenance.get("turn_id")
+                        if (
+                            existing_turn_id
+                            and str(existing_turn_id).strip() != turn_id
+                        ):
+                            raise ValueError(
+                                "Speech-plan turn_id conflicts with its block provenance."
+                            )
+                        provenance["turn_id"] = turn_id
                 session.add(
                     GenerationSegment(
                         plan_revision_id=revision.id,
@@ -496,11 +522,7 @@ class GenerationService:
                         source_segment_ids_json=list(
                             item.get("source_segment_ids") or []
                         ),
-                        speech_block_provenance_json=dict(
-                            item.get("speech_block_provenance")
-                            or item.get("provenance")
-                            or {}
-                        ),
+                        speech_block_provenance_json=provenance,
                         alignment_group=str(item.get("alignment_group") or "").strip()
                         or None,
                         node_kind=str(

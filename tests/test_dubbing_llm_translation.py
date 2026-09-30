@@ -992,6 +992,39 @@ def test_restored_logical_groups_revalidate_speaker_and_timing_boundaries():
         )
 
 
+def test_logical_translation_rejects_turn_crossing_for_top_level_and_nested_ids():
+    import pytest
+
+    cases = [
+        (
+            {"turn_id": "turn-a"},
+            {"turn_id": "turn-b"},
+            "",
+            None,
+        ),
+        (
+            {"_passage": {"turn_id": "turn-a"}},
+            {"_passage": {"turn_id": "turn-b"}},
+            "SPEAKER_00",
+            "SPEAKER_01",
+        ),
+    ]
+    for left_metadata, right_metadata, source_speaker, response_speaker in cases:
+        block = [
+            {"index": 1, "text": "First fragment", "speaker": source_speaker, **left_metadata},
+            {"index": 2, "text": "second fragment.", "speaker": source_speaker, **right_metadata},
+        ]
+        response = {"cue_ids": [1, 2], "text": "A joined translation."}
+        if response_speaker:
+            response["speaker"] = response_speaker
+        with pytest.raises(ValueError, match="utterance turn boundary"):
+            llm_translation.parse_translation_passage_items_details(
+                [response],
+                block=block,
+                known_speakers={"SPEAKER_00", "SPEAKER_01"},
+            )
+
+
 def test_logical_translation_prompt_allows_atomic_merges_without_display_constraints():
     for dispatch in (False, True):
         prompt = llm_translation.build_translation_task_instructions(
@@ -1007,3 +1040,4 @@ def test_logical_translation_prompt_allows_atomic_merges_without_display_constra
         assert "EXACTLY 5" not in prompt
         assert "designed for on-screen reading" not in prompt
         assert "former internal timing boundary is discarded" in prompt
+        assert "same source `turn_id`" in prompt

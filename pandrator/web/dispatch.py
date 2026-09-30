@@ -14,6 +14,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.correction_splits import split_boundaries
 from pandrator.logic.dubbing.llm_correction import (
     apply_correction_operations,
     build_correction_task_instructions,
@@ -75,6 +76,7 @@ from .models import (
     utcnow,
 )
 from .settings_policy import adapt_runtime_settings
+from .subtitle_evidence import evidence_route_catalog, evidence_stt_routes
 from .workspace_settings import WorkspaceSettingsService
 
 
@@ -190,6 +192,45 @@ class DispatchRunService:
             return max(0, min(20, int(default if raw is None else raw)))
         except (TypeError, ValueError):
             return default
+
+    def _with_split_evidence(self, session: Session, run: DispatchRun, block: list[dict[str, Any]], ids: set[int]) -> list[dict[str, Any]]:
+        source = session.get(Artifact, run.source_artifact_id)
+        if source is None or source.content_hash != run.source_content_hash:
+            raise DispatchError("source_changed", "The pinned source no longer matches this run.", 409)
+        words, reference = load_timing_reference(session, source)
+        if not same_timing_language(run.source_language, (reference or {}).get("language")):
+            words = []
+        return [
+            {**item, "_passage": {**item["_passage"], "split_boundaries": split_boundaries(
+                item["_passage"], words, str((reference or {}).get("revision_id") or run.source_revision_id),
+            )}}
+            if int(item["index"]) in ids and item.get("_passage") else item
+            for item in block
+        ]
+
+    def inspect_split_boundaries_in_session(self, session: Session, *, batch_id: str, lease_token: str, cue_id: int, offset: int = 0, limit: int = 30) -> dict[str, Any]:
+        batch = session.get(DispatchBatch, batch_id)
+        if batch is None:
+            raise DispatchError("not_found", "Dispatch batch not found.", 404)
+        if batch.status != "leased" or batch.lease_token != lease_token:
+            raise DispatchError("lease_conflict", "The lease token is not current.", 409)
+        if not _lease_is_active(batch.lease_expires_at, utcnow()):
+            raise DispatchError("lease_expired", "The dispatch lease has expired.", 409)
+        run = session.get(DispatchRun, batch.dispatch_run_id)
+        if run is None or run.kind != "correction":
+            raise DispatchError("split_unavailable", "Split inspection requires a correction batch.", 422)
+        block = list(batch.input_json or [])
+        if cue_id not in {int(item["index"]) for item in block}:
+            raise DispatchError("invalid_cue_id", "Only actionable passages from this batch can be inspected.", 422)
+        block = self._with_split_evidence(session, run, block, {cue_id})
+        item = next(item for item in block if int(item["index"]) == cue_id)
+        boundaries = (item.get("_passage") or {}).get("split_boundaries", [])
+        return {"batch_id": batch_id, "cue_id": cue_id, "source_revision_id": run.source_revision_id,
+                "status": "available" if boundaries else "unavailable",
+                "reason": None if boundaries else "Complete matching source-word timing is unavailable; no split timings are guessed.",
+                "total": len(boundaries), "offset": offset,
+                "boundaries": boundaries[offset:offset + limit],
+                "next_offset": offset + limit if offset + limit < len(boundaries) else None}
 
     @staticmethod
     def _run_payload(run: DispatchRun) -> dict[str, Any]:
@@ -1008,9 +1049,12 @@ class DispatchRunService:
         logical_mode = settings.get("_logical_passages_version") == 1
         if logical_mode:
             if run.kind == "correction":
-                result_contract["operations"]["actions"] = ["edit", "merge"] + (
+                result_contract["operations"]["actions"] = ["edit", "merge", "split"] + (
                     [] if settings.get("no_remove_subtitles") else ["delete"]
                 )
+                result_contract["operations"]["split_evidence_tool"] = "pandrator_inspect_dispatch_split_boundaries"
+                result_contract["operations"]["split_boundary_field"] = "split_boundary_ids"
+                result_contract["operations"]["turn_boundary_field"] = "starts_new_turn"
             else:
                 result_contract["items"] = {
                     "identity_field": "cue_id or cue_ids",
@@ -1047,6 +1091,7 @@ class DispatchRunService:
                 **(
                     {
                         "evidence_cue_ids": list(item.get("evidence_cue_ids") or []),
+                        "turn_id": (item.get("_passage") or {}).get("turn_id"),
                         "timing_basis": (item.get("_passage") or {}).get(
                             "timing_basis"
                         ),
@@ -1131,12 +1176,9 @@ class DispatchRunService:
                         ),
                         "evidence_tool": "pandrator_request_subtitle_evidence",
                         "evidence_status_tool": "pandrator_get_subtitle_evidence",
-                        "available_routes": [
-                            "whisper",
-                            "moss",
-                            "azure_mai_transcribe_2",
-                        ]
+                        "available_routes": evidence_stt_routes()
                         + (["audio_llm"] if audio_witness_models else []),
+                        "route_catalog": evidence_route_catalog(session, run.source_language, database=self.database, paths=self.artifacts.paths),
                         "audio_witness_models": audio_witness_models,
                         "audio_witness_policy": (
                             "Each configured model supplies an untimed bounded-clip "
@@ -1395,6 +1437,9 @@ class DispatchRunService:
                     if result is not None
                     else parse_correction_operations(str(response_text or ""))
                 )
+                split_ids = {int(cue_id) for operation in operations if operation.get("action") == "split" for cue_id in operation.get("cue_ids", [])}
+                if logical_mode and split_ids:
+                    block = self._with_split_evidence(session, run, block, split_ids)
                 validate_correction_operations(
                     block,
                     operations,
@@ -1480,6 +1525,7 @@ class DispatchRunService:
                         "end_ms": end_ms,
                         "text": text,
                         "speaker": str(item.get("speaker") or "").strip() or None,
+                        **{key: item[key] for key in ("split_boundary_ids", "split_part_index", "split_part_count", "starts_new_turn") if key in item},
                         **(
                             {"source_cue_ids": list(item["source_cue_ids"])}
                             if logical_mode
@@ -2058,10 +2104,13 @@ class DispatchRunService:
             )
         logical_values = None
         if (run.settings_json or {}).get("_logical_passages_version") == 1:
+            split_ids = {int(cue_id) for item in values if item.get("split_boundary_ids") for cue_id in item["source_cue_ids"]}
+            all_inputs = [item for batch in batches for item in (batch.input_json or [])]
+            if split_ids:
+                all_inputs = self._with_split_evidence(session, run, all_inputs, split_ids)
             input_passages = [
                 item["_passage"]
-                for batch in batches
-                for item in (batch.input_json or [])
+                for item in all_inputs
             ]
             logical_values = map_output_passages(values, input_passages)
             values = logical_values

@@ -59,6 +59,7 @@ from .schemas import (
     GuideTopic,
     ImportLocalSourceInput,
     ImportSubtitlesInput,
+    InspectDispatchSplitBoundariesInput,
     InspectMediaEditBoundaryArguments,
     InspectSourceCleaningDispatchExtractionInput,
     ListArtifactsInput,
@@ -176,6 +177,7 @@ from .tools import (
     get_workflow,
     import_local_source,
     import_subtitles,
+    inspect_dispatch_split_boundaries,
     inspect_media_edit_boundary,
     inspect_source_cleaning_dispatch_extraction,
     list_artifacts,
@@ -1559,8 +1561,8 @@ def build_server(runtime: McpRuntime):
         cue_id: Annotated[int, Field(ge=1)],
         reason: Annotated[str, Field(min_length=1, max_length=4_000)],
         routes: Annotated[
-            list[Literal["whisper", "moss", "azure_mai_transcribe_2", "audio_llm"]],
-            Field(min_length=1, max_length=4),
+            list[Literal["whisper", "parakeet", "moss", "qwen3", "azure_mai_transcribe_2", "azure_mai_transcribe_1_5", "audio_llm"]],
+            Field(min_length=1, max_length=7),
         ],
         idempotency_key: Annotated[
             str,
@@ -1645,6 +1647,13 @@ def build_server(runtime: McpRuntime):
                 idempotency_key=idempotency_key,
             ),
         )
+
+    @server.tool(name="pandrator_inspect_dispatch_split_boundaries", title="Inspect verified subtitle split boundaries", annotations=read_only)
+    def dispatch_split_boundaries_tool(batch_id: str, lease_token: str, cue_id: Annotated[int, Field(ge=1)], offset: Annotated[int, Field(ge=0)] = 0, limit: Annotated[int, Field(ge=1, le=100)] = 30) -> dict[str, Any]:
+        """Inspect bounded source-word anchors for one actionable passage under its current lease."""
+        return _call(inspect_dispatch_split_boundaries, runtime, InspectDispatchSplitBoundariesInput(
+            batch_id=batch_id, lease_token=lease_token, cue_id=cue_id, offset=offset, limit=limit,
+        ))
 
     @server.tool(
         name="pandrator_claim_dispatch_batch",
@@ -3699,6 +3708,6 @@ def build_server(runtime: McpRuntime):
         registered_tool = server._tool_manager.get_tool(tool_name)
         if registered_tool is None:  # pragma: no cover - registration invariant
             raise RuntimeError(f"Missing registered MCP tool: {tool_name}")
-        registered_tool.parameters.update(execution_policy_json_schema())
+        execution_policy_json_schema(registered_tool.parameters)
 
     return server

@@ -12,6 +12,7 @@ from ..schemas import (
     ClaimDispatchBatchInput,
     CreateDispatchRunInput,
     GetDispatchRunInput,
+    InspectDispatchSplitBoundariesInput,
     ListDispatchRunsInput,
     ReleaseDispatchBatchInput,
     RenewDispatchBatchInput,
@@ -128,7 +129,7 @@ _CLAIMED_BATCH_KEYS = (
     "cue_count",
     "valid_cue_ids",
 )
-_CUE_KEYS = ("cue_id", "evidence_cue_ids", "text", "speaker")
+_CUE_KEYS = ("cue_id", "evidence_cue_ids", "text", "speaker", "turn_id")
 _BOUNDARY_CUE_KEYS = ("text", "speaker")
 _TIMING_KEYS = (
     "start_ms",
@@ -401,6 +402,10 @@ def get_dispatch_run(
     arguments: GetDispatchRunInput,
 ) -> dict[str, Any]:
     return _metadata(runtime.require_application().get_dispatch_run(arguments.run_id))
+
+
+def inspect_dispatch_split_boundaries(runtime: McpRuntime, arguments: InspectDispatchSplitBoundariesInput) -> dict[str, Any]:
+    return runtime.require_application().inspect_dispatch_split_boundaries(**arguments.model_dump())
 
 
 def claim_dispatch_batch(

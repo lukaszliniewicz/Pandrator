@@ -1852,6 +1852,13 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/dispatch-batches/{batchId}/split-boundaries": {
+                "post": {
+                    "operationId": "inspectDispatchSplitBoundaries",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DispatchSplitBoundariesRequest"}}}},
+                    "responses": {"200": {"description": "Bounded verified source-word split anchors; requires an active matching lease."}},
+                }
+            },
             "/api/v1/dispatch-batches/{batchId}/renew": {
                 "post": {
                     "operationId": "renewDispatchBatch",

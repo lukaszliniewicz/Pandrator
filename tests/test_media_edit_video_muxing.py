@@ -29,6 +29,22 @@ def test_removal_builder_with_audio_uses_exact_trim_concat_and_aac():
     assert "-movflags +faststart" in rendered
 
 
+def test_removal_builder_can_emit_ffmpeg_progress_without_changing_default():
+    default_command = build_removal_only_video_command(
+        "input.mp4", "output.mp4", [(0, 1000)], has_audio=False
+    )
+    progress_command = build_removal_only_video_command(
+        "input.mp4",
+        "output.mp4",
+        [(0, 1000)],
+        has_audio=False,
+        include_progress=True,
+    )
+
+    assert "-progress" not in default_command
+    assert progress_command[1:5] == ["-y", "-progress", "pipe:1", "-nostats"]
+
+
 def test_removal_builder_without_audio_omits_audio_mapping():
     command = build_removal_only_video_command(
         "input.mp4",
@@ -197,9 +213,19 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
                 {"start_ms": 2000, "end_ms": 3000},
             ],
         )["plan"]
+        progress_updates = []
         rendered = handlers.media_edit_render(
             {"session_id": record.id, "revision": plan["revision"], "settings": {}},
-            lambda *_args: None, threading.Event(),
+            lambda value, detail=None: progress_updates.append((value, detail)),
+            threading.Event(),
+        )
+        progress_values = [value for value, _detail in progress_updates]
+        assert progress_values == sorted(progress_values)
+        assert progress_values[-1] == 1.0
+        assert any(0.2 < value <= 0.95 for value in progress_values)
+        assert any(
+            detail and " / 2.0s" in detail
+            for _value, detail in progress_updates
         )
         with database.session() as session:
             edited = session.get(Artifact, rendered["media_artifact_id"])

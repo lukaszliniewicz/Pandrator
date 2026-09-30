@@ -11,6 +11,13 @@ from .subtitle_rebalancing import rebalance_display_cues
 from .text_units import join_fragments
 
 
+def _turn_id(item: dict[str, Any]) -> str:
+    passage = item.get("_passage") or item
+    if not isinstance(passage, dict):
+        passage = item
+    return str(passage.get("turn_id") or "").strip()
+
+
 def project_subtitle_display(
     values: list[dict[str, Any]],
     settings: dict[str, Any],
@@ -72,6 +79,7 @@ def project_subtitle_display(
 
     def signature(item: dict[str, Any]) -> tuple[Any, ...]:
         return (
+            _turn_id(item),
             item.get("speaker"),
             item.get("review_state") or "clear",
             item.get("review_note") or "",
@@ -141,9 +149,41 @@ def project_subtitle_display(
             index += 1
 
     output = [cue for item, _count in groups for cue in render(item)]
-    return rebalance_display_cues(
-        sorted(output, key=lambda item: int(item["start_ms"])),
-        config,
-        timing_words=timing_words,
-        match_source_words=match_source_words,
-    )
+    ordered_output = sorted(output, key=lambda item: int(item["start_ms"]))
+    if not any(_turn_id(item) for item in ordered_output):
+        return rebalance_display_cues(
+            ordered_output,
+            config,
+            timing_words=timing_words,
+            match_source_words=match_source_words,
+        )
+
+    # The local rebalancer groups only by speaker/review signature. Bound each
+    # invocation at turn changes so it cannot repartition text across turns.
+    rebalanced: list[dict[str, Any]] = []
+    window: list[dict[str, Any]] = []
+    current_turn: str | None = None
+    for item in ordered_output:
+        turn_id = _turn_id(item)
+        if window and turn_id != current_turn:
+            rebalanced.extend(
+                rebalance_display_cues(
+                    window,
+                    config,
+                    timing_words=timing_words,
+                    match_source_words=match_source_words,
+                )
+            )
+            window = []
+        current_turn = turn_id
+        window.append(item)
+    if window:
+        rebalanced.extend(
+            rebalance_display_cues(
+                window,
+                config,
+                timing_words=timing_words,
+                match_source_words=match_source_words,
+            )
+        )
+    return rebalanced

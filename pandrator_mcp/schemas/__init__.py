@@ -20,6 +20,7 @@ from .dispatch import (
     DispatchTranslationItemInput,
     DispatchTranslationResultInput,
     GetDispatchRunInput,
+    InspectDispatchSplitBoundariesInput,
     ListDispatchRunsInput,
     ReleaseDispatchBatchInput,
     RenewDispatchBatchInput,
@@ -222,6 +223,7 @@ from .workflow import (
 )
 
 TOOL_INPUT_MODELS = (
+    InspectDispatchSplitBoundariesInput,
     *AUDIOBOOK_INPUT_MODELS,
     *VOICE_SETUP_INPUT_MODELS,
     *SESSION_PURGE_INPUT_MODELS,
@@ -349,6 +351,7 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "InspectDispatchSplitBoundariesInput",
     "ConfigureVoiceSetupInput",
     "GetVoiceSetupInput",
     "VOICE_SETUP_INPUT_MODELS",

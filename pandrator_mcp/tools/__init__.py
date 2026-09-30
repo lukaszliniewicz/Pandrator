@@ -5,6 +5,7 @@ from .dispatch import (
     claim_dispatch_batch,
     create_dispatch_run,
     get_dispatch_run,
+    inspect_dispatch_split_boundaries,
     list_dispatch_runs,
     release_dispatch_batch,
     renew_dispatch_batch,
@@ -152,6 +153,7 @@ from .workflow import (
 )
 
 __all__ = [
+    "inspect_dispatch_split_boundaries",
     "apply_speech_selection",
     "assemble_generation_run",
     "attach_existing_source",

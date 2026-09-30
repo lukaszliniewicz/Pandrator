@@ -808,6 +808,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
             self.assertIsNone(word.segment_id)
 
     def _assert_media_edit_render(self, *, subtitles_only):
+        progress_updates = []
         source = self._artifact("render-source.mp4", "upload", "media", "video")
         existing_media = (
             self._artifact("already-rendered.mp4", "media_edit_media", "media", "video")
@@ -847,9 +848,15 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
             ],
         }
 
-        def fake_run(command, *, cancel_event):
+        def fake_run(command, *, cancel_event, progress_callback):
             self.assertFalse(subtitles_only, "Subtitle-only work must not encode video")
             del cancel_event
+            self.assertIsNotNone(progress_callback)
+            self.assertIn("-progress", command)
+            progress_callback({"out_time_us": "1000000"})
+            progress_callback({"out_time_ms": "2000000"})
+            progress_callback({"out_time_us": "1500000"})
+            progress_callback({"out_time_us": "malformed"})
             with self.database.session() as session:
                 subtitle_artifact = session.scalar(
                     select(Artifact).where(
@@ -893,10 +900,11 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                 )
             Path(command[-1]).write_bytes(b"rendered video")
 
-        def fake_build(source_path, output_path, *_args, **_kwargs):
+        def fake_build(source_path, output_path, *_args, **kwargs):
             self.assertFalse(subtitles_only, "Subtitle-only work must not build an encode")
             del source_path
-            return ["ffmpeg", output_path]
+            self.assertTrue(kwargs.get("include_progress"))
+            return ["ffmpeg", "-progress", "pipe:1", "-nostats", output_path]
 
         with (
             patch.object(self.handlers.media_edit, "revision", return_value=revision),
@@ -937,9 +945,17 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                     "settings": {"burn_video_encoder": "libx264"},
                     "settings_hash": "settings-hash",
                 },
-                self.progress,
+                lambda value, detail=None: progress_updates.append((value, detail)),
                 threading.Event(),
             )
+
+        if not subtitles_only:
+            progress_values = [value for value, _detail in progress_updates]
+            self.assertEqual(sorted(progress_values), progress_values)
+            self.assertEqual(1.0, progress_values[-1])
+            self.assertTrue(all(value <= 0.95 for value in progress_values[:-1]))
+            self.assertTrue(any("1.0s / 3.0s" in detail for _, detail in progress_updates))
+            self.assertTrue(any("2.0s / 3.0s" in detail for _, detail in progress_updates))
 
         with self.database.session() as session:
             word_artifact = session.get(
@@ -1037,15 +1053,19 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         }
         partial_output = []
 
-        def fake_run(command, *, cancel_event):
+        progress_updates = []
+
+        def fake_run(command, *, cancel_event, progress_callback):
             del cancel_event
+            progress_callback({"out_time_us": "1000000"})
             partial_output.append(Path(command[-1]))
             partial_output[0].write_bytes(b"partial video")
             raise MediaProcessError("ffmpeg failed")
 
-        def fake_build(source_path, output_path, *_args, **_kwargs):
+        def fake_build(source_path, output_path, *_args, **kwargs):
             del source_path
-            return ["ffmpeg", output_path]
+            self.assertTrue(kwargs.get("include_progress"))
+            return ["ffmpeg", "-progress", "pipe:1", "-nostats", output_path]
 
         with (
             patch.object(self.handlers.media_edit, "revision", return_value=revision),
@@ -1088,12 +1108,13 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
                     "revision": 1,
                     "settings": {"burn_video_encoder": "libx264"},
                 },
-                self.progress,
+                lambda value, detail=None: progress_updates.append((value, detail)),
                 threading.Event(),
             )
 
         self.assertEqual(1, len(partial_output))
         self.assertFalse(partial_output[0].exists())
+        self.assertTrue(all(value < 1.0 for value, _detail in progress_updates))
         with self.database.session() as session:
             subtitle = session.scalar(
                 select(Artifact).where(

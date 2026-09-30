@@ -31,6 +31,7 @@ def passage(
     voice="",
     voice_id="",
     language="en",
+    turn_id="",
     display_chars=20,
     speech_chars=20,
     risk_flags=(),
@@ -45,6 +46,7 @@ def passage(
         voice=voice,
         voice_id=voice_id,
         language=language,
+        turn_id=turn_id,
         start_ms=start_ms,
         end_ms=end_ms,
         take_duration_ms=duration_ms,
@@ -167,6 +169,23 @@ def test_zero_percent_means_exact_fit_and_eight_passages_cap_at_three():
     rows.append(passage("d", 3, 9600, 12600, 3000))
     selection = select_regroup_candidates(rows, max_chars=300, max_passages=8)
     assert selection.groups == [("a", "b", "c")]
+
+
+@pytest.mark.parametrize("speaker", ["", "SPEAKER_00"])
+def test_regroup_never_crosses_turns_for_unnamed_or_same_speaker(speaker):
+    rows = [
+        passage(
+            "a", 0, 0, 3000, 3000, speaker=speaker, turn_id="turn-a", source_refs=[1]
+        ),
+        passage(
+            "b", 1, 3200, 6200, 3000, speaker=speaker, turn_id="turn-b", source_refs=[2]
+        ),
+    ]
+
+    selection = select_regroup_candidates(rows, max_chars=300)
+
+    assert selection.groups == []
+    assert {"key": "b", "reason": "utterance_turn_boundary"} in selection.rejected
 
 
 def test_sparse_validation_ignores_unknown_keys():
@@ -388,6 +407,66 @@ def test_passage_default_does_not_pack_adjacent_thoughts():
         assert "nearby_complete_utterances_packed" not in [
             event["reason_code"] for event in block["provenance"]["formation_events"]
         ]
+
+
+def test_speech_block_assembly_keeps_turns_separate_without_changing_speakers():
+    content = """1
+00:00:00,000 --> 00:00:01,000
+We remember
+
+2
+00:00:01,100 --> 00:00:02,200
+what happened.
+"""
+    turns = {1: "turn-a", 2: "turn-b"}
+
+    unnamed = create_speech_blocks(
+        content,
+        continuation_threshold_ms=1000,
+        max_internal_gap_ms=1000,
+        turn_by_subtitle=turns,
+    )
+    same_speaker = create_speech_blocks(
+        content,
+        continuation_threshold_ms=1000,
+        max_internal_gap_ms=1000,
+        speaker_by_subtitle={1: "SPEAKER_00", 2: "SPEAKER_00"},
+        turn_by_subtitle=turns,
+    )
+    legacy = create_speech_blocks(
+        content,
+        continuation_threshold_ms=1000,
+        max_internal_gap_ms=1000,
+    )
+
+    assert len(unnamed) == 2
+    assert [block["provenance"]["turn_id"] for block in unnamed] == [
+        "turn-a",
+        "turn-b",
+    ]
+    assert len(same_speaker) == 2
+    assert [block["speaker"] for block in same_speaker] == [
+        "SPEAKER_00",
+        "SPEAKER_00",
+    ]
+    assert len(legacy) == 1
+
+
+def test_speech_block_capacity_chunks_retain_the_source_turn_id():
+    content = """1
+00:00:00,000 --> 00:00:08,000
+First natural clause, followed by more words, which need another chunk.
+"""
+
+    blocks = create_speech_blocks(
+        content,
+        min_chars=5,
+        max_chars=32,
+        turn_by_subtitle={1: "turn-a"},
+    )
+
+    assert len(blocks) > 1
+    assert all(block["provenance"]["turn_id"] == "turn-a" for block in blocks)
 
 
 def test_legacy_mode_keeps_packing_as_selectable_old_behavior():

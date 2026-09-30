@@ -147,6 +147,7 @@ class _SpeechPart:
     formation_events: list[dict[str, object]] = field(default_factory=list)
     boundary_before: dict[str, object] = field(default_factory=dict)
     risk_flags: list[str] = field(default_factory=list)
+    turn_id: str = ""
 
 
 def _check_split_validity(
@@ -247,6 +248,7 @@ def _subtitle_to_part(
     optimized_subtitle: SubtitleSegment | None,
     speaker_override: str = "",
     speaker_metadata_expected: bool = False,
+    turn_id: str = "",
 ) -> _SpeechPart | None:
     display_text, inline_speaker = _canonical_cue_text(subtitle.text)
     optimized_text, optimized_inline_speaker = _canonical_cue_text(
@@ -269,6 +271,7 @@ def _subtitle_to_part(
         start_ms=subtitle.start_ms,
         end_ms=subtitle.end_ms,
         speaker=speaker,
+        turn_id=turn_id,
         speaker_key=(
             speaker.casefold()
             if speaker
@@ -303,6 +306,8 @@ def _should_merge_parts(
     merge_threshold: int,
     max_internal_gap_ms: int,
 ) -> bool:
+    if previous.turn_id != current.turn_id:
+        return False
     if not (
         _sentence_is_complete(previous.text) and _sentence_is_complete(current.text)
     ):
@@ -370,6 +375,8 @@ def _repair_diarization_flicker(
                 or gap_ms > continuation_threshold_ms
             ):
                 break
+            if previous.turn_id != current.turn_id:
+                break
             if current.end_ms - repaired[start].start_ms > 30_000:
                 break
             end += 1
@@ -413,6 +420,7 @@ def _repair_diarization_flicker(
                     start_ms=part.start_ms,
                     end_ms=part.end_ms,
                     speaker=anchor.speaker,
+                    turn_id=part.turn_id,
                     speaker_key=anchor.speaker_key,
                     text_spans=list(part.text_spans),
                     optimized_spans=list(part.optimized_spans),
@@ -499,6 +507,8 @@ def _join_variant(
 
 
 def _combine_parts(previous: _SpeechPart, current: _SpeechPart) -> _SpeechPart:
+    if previous.turn_id != current.turn_id:
+        raise ValueError("Cannot combine speech parts across an utterance turn boundary.")
     text, text_spans = _join_variant(
         previous.text,
         previous.text_spans,
@@ -518,6 +528,7 @@ def _combine_parts(previous: _SpeechPart, current: _SpeechPart) -> _SpeechPart:
         start_ms=previous.start_ms,
         end_ms=max(previous.end_ms, current.end_ms),
         speaker=previous.speaker,
+        turn_id=previous.turn_id,
         speaker_key=previous.speaker_key,
         text_spans=text_spans,
         optimized_spans=optimized_spans,
@@ -1018,6 +1029,7 @@ def _split_utterance(
                 start_ms=start_ms,
                 end_ms=end_ms,
                 speaker=utterance.speaker,
+                turn_id=utterance.turn_id,
                 speaker_key=utterance.speaker_key,
                 text_spans=display_spans,
                 optimized_spans=speech_spans,
@@ -1080,6 +1092,7 @@ def _parts_to_blocks(
             "schema_version": 1,
             "origin": "automatic",
             "source_reference_namespace": "subtitle_ordinal",
+            **({"turn_id": part.turn_id} if part.turn_id else {}),
             "source_cues": source_cues,
             "formation_events": [dict(item) for item in part.formation_events],
             "boundary_before": boundary,
@@ -1124,6 +1137,7 @@ def create_speech_blocks(
     continuation_threshold_ms: int | None = None,
     max_internal_gap_ms: int | None = None,
     speaker_by_subtitle: Mapping[int, str] | None = None,
+    turn_by_subtitle: Mapping[int, str] | None = None,
     speech_srt_content: str | None = None,
     preserve_source_boundaries: bool = False,
     generation_mode: str = "passage",
@@ -1147,6 +1161,9 @@ def create_speech_blocks(
     With ``preserve_source_boundaries``, prefer grouping whole timed passages
     at natural speech seams. When the cap makes that impossible, use natural
     internal cuts whose chunks share the original passage timing envelope.
+    ``turn_by_subtitle`` adds a separate hard boundary between source
+    utterance turns. Turn IDs never participate in speaker identity and are
+    copied into each resulting block's provenance.
     No character-proportional cue timestamps are fabricated.
     Capacity cuts fall only on natural boundaries (sentence, clause, or
     conservative conjunction onsets); text that cannot fit the cap at any
@@ -1200,6 +1217,7 @@ def create_speech_blocks(
                 optimized_subtitles[index] if optimized_subtitles is not None else None,
                 str((speaker_by_subtitle or {}).get(subtitle.index) or ""),
                 speaker_metadata_expected,
+                str((turn_by_subtitle or {}).get(subtitle.index) or "").strip(),
             )
         )
         is not None
@@ -1251,6 +1269,7 @@ def create_speech_blocks(
         if (
             previous is not None
             and gap_ms is not None
+            and previous.turn_id == part.turn_id
             and previous.speaker_key == part.speaker_key
             and not _sentence_is_complete(previous.text)
             and not _sentence_is_complete(previous.optimized_text)
@@ -1313,7 +1332,10 @@ def create_speech_blocks(
             else:
                 previous_refs = sorted(set(previous.subtitles))
                 current_refs = sorted(set(part.subtitles))
-                if previous.speaker_key != part.speaker_key:
+                if previous.turn_id != part.turn_id:
+                    reason_code = "utterance_turn_boundary"
+                    summary = "Utterance turn boundary retained."
+                elif previous.speaker_key != part.speaker_key:
                     reason_code = "speaker_boundary"
                     summary = "Speaker boundary retained."
                 elif not _sentence_is_complete(previous.text) and gap_ms is not None:

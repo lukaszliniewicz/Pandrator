@@ -486,6 +486,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dispatch-batches/{batchId}/split-boundaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["inspectDispatchSplitBoundaries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/dispatch-batches/{batchId}/submit": {
         parameters: {
             query?: never;
@@ -4348,6 +4364,13 @@ export interface components {
             cue_ids: number[];
             /** Speakers */
             speakers?: string[];
+            /** Split Boundary Ids */
+            split_boundary_ids?: string[];
+            /**
+             * Starts New Turn
+             * @default false
+             */
+            starts_new_turn?: boolean;
             /** Texts */
             texts?: string[];
         };
@@ -4395,6 +4418,11 @@ export interface components {
              * @default null
              */
             timing_basis?: string | null;
+            /**
+             * Turn Id
+             * @default null
+             */
+            turn_id?: string | null;
         };
         /** DispatchCueTiming */
         DispatchCueTiming: {
@@ -4536,6 +4564,23 @@ export interface components {
             execution_mode: "parallel";
             max_parallel_batches: unknown;
         });
+        /** DispatchSplitBoundariesRequest */
+        DispatchSplitBoundariesRequest: {
+            /** Cue Id */
+            cue_id: number;
+            /** Lease Token */
+            lease_token: string;
+            /**
+             * Limit
+             * @default 30
+             */
+            limit?: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset?: number;
+        };
         /** DispatchTaskContract */
         DispatchTaskContract: {
             /**
@@ -7231,7 +7276,7 @@ export interface components {
             /** Reason */
             reason: string;
             /** Routes */
-            routes: ("whisper" | "moss" | "azure_mai_transcribe_2" | "audio_llm")[];
+            routes: ("whisper" | "moss" | "azure_mai_transcribe_1_5" | "azure_mai_transcribe_2" | "parakeet" | "qwen3" | "audio_llm")[];
             /** Source Artifact Id */
             source_artifact_id: string;
         };
@@ -8776,6 +8821,30 @@ export interface operations {
         };
         responses: {
             /** @description Lease renewed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    inspectDispatchSplitBoundaries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchSplitBoundariesRequest"];
+            };
+        };
+        responses: {
+            /** @description Bounded verified source-word split anchors; requires an active matching lease. */
             200: {
                 headers: {
                     [name: string]: unknown;

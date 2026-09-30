@@ -14,8 +14,8 @@ It never performs word alignment and never introduces a new model. Selection is
 pure and deterministic so it can be unit-tested without a database or TTS:
 
 - candidates are adjacent in source order, share speaker/voice/language, have
-  no overlap/cut/user-forced boundary and carry no uncertain shared-timing
-  artifacts;
+  no overlap/cut/user-forced boundary, share a source utterance ``turn_id``
+  when present, and carry no uncertain shared-timing artifacts;
 - no candidate group spans a true edit cut in the CURRENT output timeline:
   cut positions are derived from the persisted media-edit keep_ranges (the
   cumulative output offsets where consecutive kept ranges are NOT contiguous
@@ -194,6 +194,7 @@ class RegroupPassage:
     voice: str = ""
     voice_id: str = ""
     language: str = ""
+    turn_id: str = ""
     start_ms: int = 0
     end_ms: int = 0
     take_duration_ms: int = -1
@@ -349,6 +350,8 @@ def _pair_rejection(
         return "not_adjacent_in_plan_order"
     if left.boundary_after_cut:
         return "cut_boundary_between_passages"
+    if str(left.turn_id or "") != str(right.turn_id or ""):
+        return "utterance_turn_boundary"
     if right.start_ms < left.end_ms:
         return "source_windows_overlap"
     if right.start_ms - left.end_ms > max_gap_ms:

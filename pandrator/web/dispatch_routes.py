@@ -16,6 +16,7 @@ from .schemas import (
     DispatchBatchRenewRequest,
     DispatchBatchSubmitRequest,
     DispatchRunCreateRequest,
+    DispatchSplitBoundariesRequest,
 )
 
 
@@ -181,6 +182,19 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
                     run_id=run_id,
                     claim_key=key,
                     **payload.model_dump(),
+                )
+            return jsonify(result)
+        except DispatchError as error:
+            return dispatch_error(error)
+
+    @app.post("/api/v1/dispatch-batches/<batch_id>/split-boundaries")
+    @require_scope("app.run")
+    def inspect_dispatch_split_boundaries(batch_id: str):
+        payload = DispatchSplitBoundariesRequest.model_validate(request.get_json(silent=True) or {})
+        try:
+            with database.session() as db_session:
+                result = dispatch.inspect_split_boundaries_in_session(
+                    db_session, batch_id=batch_id, **payload.model_dump(),
                 )
             return jsonify(result)
         except DispatchError as error:

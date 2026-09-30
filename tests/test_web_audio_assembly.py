@@ -134,6 +134,36 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
+    def test_generation_plan_copies_turn_ids_into_block_provenance(self):
+        plan = self.generation.create_plan(
+            self.record.id,
+            source_revision_id=None,
+            segments=[
+                {"text": "Top-level turn.", "turn_id": "turn-a"},
+                {
+                    "text": "Passage metadata turn.",
+                    "logical_passage": {"turn_id": "turn-b"},
+                },
+            ],
+        )
+
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(
+                        GenerationSegment.plan_revision_id
+                        == plan["active_revision_id"]
+                    )
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+
+        self.assertEqual(
+            [row.speech_block_provenance_json.get("turn_id") for row in rows],
+            ["turn-a", "turn-b"],
+        )
+
     def test_continuation_markup_removes_stored_pause_in_real_wav(self):
         ids = self._plan_with_takes()
         with self.database.session() as session:

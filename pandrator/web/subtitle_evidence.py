@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
+import time
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
@@ -14,6 +16,19 @@ from sqlalchemy import select
 
 from pandrator.logic.audio_evidence import transcribe_audio_evidence
 from pandrator.logic.cancellable_process import ProcessCancelled
+from pandrator.logic.dubbing.crispasr import MODELS as CRISPASR_MODELS
+from pandrator.logic.dubbing.stt_backends import (
+    CLOUD_STT_ENGINE_IDS,
+    STT_BACKEND_LABELS,
+    detect_stt_backend_statuses,
+)
+from pandrator.logic.dubbing.stt_languages import (
+    normalize_stt_language,
+    supported_stt_languages,
+)
+from pandrator.logic.dubbing.stt_provider_profiles import (
+    get_stt_provider_profile,
+)
 from pandrator.logic.dubbing.transcript_normalization import (
     NormalizedTranscript,
     load_transcript,
@@ -39,16 +54,214 @@ from .models import (
     utcnow,
 )
 from .provider_settings import build_llm_settings
+from .stt_providers import stt_catalogue_snapshot
 from .subtitle_media import artifact_accessible_in_session, resolve_subtitle_media
 
 EVIDENCE_STATUSES = frozenset(
-    {"queued", "running", "completed", "failed", "resolved", "uncertain", "dismissed"}
+    {
+        "queued",
+        "running",
+        "completed",
+        "failed",
+        "resolved",
+        "uncertain",
+        "dismissed",
+    }
 )
-EVIDENCE_ROUTES = frozenset({"whisper", "moss", "azure_mai_transcribe_2", "audio_llm"})
+
+
+def evidence_stt_routes() -> list[str]:
+    """Return the stable engine IDs from the canonical STT backend registry."""
+
+    return list(STT_BACKEND_LABELS)
+
+
+EVIDENCE_ROUTES = frozenset((*evidence_stt_routes(), "audio_llm"))
 RESOLUTION_ACTIONS = frozenset(
     {"accepted", "edited", "deleted", "uncertain", "dismissed"}
 )
 MAX_EXCERPT_MS = 60_000
+_STT_STATUS_CACHE_SECONDS = 30.0
+_STT_STATUS_CACHE_LOCK = threading.Lock()
+_STT_STATUS_CACHE_AT = 0.0
+_STT_STATUS_CACHE: dict[str, Any] = {}
+
+
+def _cached_stt_backend_statuses() -> dict[str, Any]:
+    """Cache the lightweight canonical runtime probe across batch claims."""
+
+    global _STT_STATUS_CACHE_AT, _STT_STATUS_CACHE
+    with _STT_STATUS_CACHE_LOCK:
+        now = time.monotonic()
+        if _STT_STATUS_CACHE and now - _STT_STATUS_CACHE_AT < _STT_STATUS_CACHE_SECONDS:
+            return dict(_STT_STATUS_CACHE)
+        statuses = detect_stt_backend_statuses()
+        _STT_STATUS_CACHE = dict(statuses)
+        _STT_STATUS_CACHE_AT = now
+        return dict(_STT_STATUS_CACHE)
+
+
+def _route_timing_method(route: str) -> str:
+    if route in CLOUD_STT_ENGINE_IDS:
+        profile = get_stt_provider_profile(route)
+        return str((profile or {}).get("word_timing") or "native")
+    model = CRISPASR_MODELS.get(route)
+    return str(model.word_timing) if model is not None else "bounded_clip"
+
+
+def _route_language_support(route: str) -> list[str] | None:
+    if route == "audio_llm":
+        return None
+    if route == "qwen3":
+        from pandrator.logic.dubbing.qwen_asr import timed_supported_languages
+
+        return list(timed_supported_languages())
+    if route in CLOUD_STT_ENGINE_IDS:
+        profile = get_stt_provider_profile(route) or {}
+        languages = profile.get("supported_locales")
+        return list(languages) if isinstance(languages, list) else None
+    languages = supported_stt_languages(route)
+    return list(languages) if languages is not None else None
+
+
+def _language_supported(route: str, language: str | None) -> bool | None:
+    if language is None or not str(language).strip():
+        return None
+    if route == "audio_llm":
+        return None
+    normalized = normalize_stt_language(language)
+    if route == "qwen3":
+        from pandrator.logic.dubbing.qwen_asr import (
+            QwenASRError,
+            normalize_qwen_asr_language,
+        )
+
+        try:
+            normalized = normalize_qwen_asr_language(language)
+        except QwenASRError:
+            return False
+        if normalized == "auto":
+            return False
+        supported = _route_language_support(route)
+        return normalized in supported if supported is not None else None
+    supported = _route_language_support(route)
+    if normalized == "auto":
+        return True
+    if supported is None:
+        return True
+    return normalized in supported or normalized.split("-", 1)[0] in supported
+
+
+def evidence_route_catalog(
+    session,
+    language: str | None = None,
+    *,
+    database: Database | None = None,
+    paths=None,
+) -> list[dict[str, Any]]:
+    """Describe evidence routes without returning credential material.
+
+    ``ready`` is tri-state: ``True`` means discovery found the route usable,
+    ``False`` means discovery found a blocker, and ``None`` means discovery was
+    unavailable or route readiness depends on a caller-selected model. Local
+    routes are considered ready when the canonical STT runtime probe says
+    their executable is available; models may still be downloaded on demand.
+    Remote STT readiness reflects the existing provider credential catalogue.
+    The opaque
+    ``session`` parameter is retained for caller compatibility; callers may
+    also pass ``database`` and ``paths`` directly to enable discovery.
+    """
+
+    database = database or getattr(session, "database", None)
+    paths = paths or getattr(session, "paths", None)
+    discovered_local: dict[str, Any] = {}
+    discovered_remote: dict[str, Any] = {}
+    discovery_error = "Route readiness requires database and paths for discovery."
+    if database is not None and paths is not None:
+        try:
+            discovered_local = _cached_stt_backend_statuses()
+        except Exception:  # noqa: BLE001
+            discovery_error = "Local STT capability discovery is unavailable."
+        try:
+            payload, _revision = stt_catalogue_snapshot(database, paths)
+            profiles = payload.get("profiles") if isinstance(payload, dict) else None
+            discovered_remote = {
+                str(item.get("id") or "").strip().lower().replace("-", "_"): item
+                for item in profiles or []
+                if isinstance(item, dict)
+            }
+        except Exception:  # noqa: BLE001
+            if not discovered_local:
+                discovery_error = "STT provider discovery is unavailable."
+
+    entries: list[dict[str, Any]] = []
+    for route in (*evidence_stt_routes(), "audio_llm"):
+        remote = route in CLOUD_STT_ENGINE_IDS
+        local: bool | None = not remote if route != "audio_llm" else None
+        reason = ""
+        ready: bool | None
+        if route == "audio_llm":
+            ready = None
+            reason = "Readiness depends on the selected audio-capable LLM model."
+        elif database is None or paths is None:
+            ready = None
+            reason = discovery_error
+        elif remote:
+            profile = discovered_remote.get(route)
+            configured = (
+                profile.get("credential_configured")
+                if isinstance(profile, dict)
+                else None
+            )
+            if isinstance(configured, bool):
+                ready = configured
+                reason = (
+                    "Remote STT credential is configured."
+                    if configured
+                    else "Remote STT credential is not configured."
+                )
+            else:
+                ready = None
+                reason = "Remote STT credential readiness is unavailable."
+        else:
+            status = discovered_local.get(route)
+            available = getattr(status, "installed", None)
+            if isinstance(available, bool):
+                ready = available
+                if not ready:
+                    reason = str(
+                        getattr(status, "reason", "")
+                        or "The local STT runtime is unavailable."
+                    )
+            else:
+                ready = None
+                reason = "Local STT capability discovery is unavailable."
+
+        language_supported = _language_supported(route, language)
+        language_reason = (
+            f"Language {normalize_stt_language(language)!r} is unsupported by {route}."
+            if language_supported is False
+            else ""
+        )
+        entries.append(
+            {
+                "route": route,
+                "label": (
+                    "Audio-capable LLM"
+                    if route == "audio_llm"
+                    else STT_BACKEND_LABELS[route]
+                ),
+                "local": local,
+                "remote": remote if route != "audio_llm" else None,
+                "timing_method": _route_timing_method(route),
+                "supported_languages": _route_language_support(route),
+                "language_supported": language_supported,
+                "ready": ready,
+                "reason": reason or language_reason,
+                "language_reason": language_reason,
+            }
+        )
+    return entries
 
 
 class SubtitleEvidenceService:
@@ -127,9 +340,9 @@ class SubtitleEvidenceService:
         if not isinstance(routes, list) or not routes:
             raise ValueError("At least one evidence route is required.")
         normalized = [str(route).strip().lower().replace("-", "_") for route in routes]
-        if len(normalized) > 4 or len(set(normalized)) != len(normalized):
+        if len(normalized) > len(EVIDENCE_ROUTES) or len(set(normalized)) != len(normalized):
             raise ValueError(
-                "Evidence routes must be unique and contain at most four routes."
+                "Evidence routes must be unique and contain at most seven routes."
             )
         if any(route not in EVIDENCE_ROUTES for route in normalized):
             raise ValueError("Evidence route is not supported.")
@@ -560,15 +773,26 @@ class SubtitleEvidenceService:
         usage = metadata.get("usage")
         if not isinstance(usage, Mapping):
             return {"kind": "unknown"}
+        kind = str(usage.get("kind") or "").strip().lower()
         estimated_cost = usage.get("estimated_cost_usd")
+        estimated_amount = -1.0
+        if isinstance(estimated_cost, (int, float)) and not isinstance(
+            estimated_cost, bool
+        ):
+            try:
+                estimated_amount = float(estimated_cost)
+            except OverflowError:
+                pass
         if (
-            isinstance(estimated_cost, (int, float))
+            kind not in {"actual", "billed"}
+            and isinstance(estimated_cost, (int, float))
             and not isinstance(estimated_cost, bool)
-            and estimated_cost >= 0
+            and math.isfinite(estimated_amount)
+            and estimated_amount >= 0
         ):
             result: dict[str, Any] = {
                 "kind": "estimate",
-                "amount": float(estimated_cost),
+                "amount": estimated_amount,
                 "currency": str(usage.get("currency") or "USD"),
                 "unit": "request",
                 "usage_reported_by_provider": bool(
@@ -586,15 +810,76 @@ class SubtitleEvidenceService:
                 if isinstance(value, (str, int, float)) and not isinstance(value, bool):
                     result[key] = value
             return result
-        kind = str(usage.get("kind") or "").strip().lower()
-        if kind not in {"estimate", "not_applicable", "unknown"}:
+        if kind == "not_applicable":
+            # A remote request may be unpriced, but its cost is never
+            # inapplicable.  Preserve that distinction as unknown.
+            return {"kind": "unknown"}
+        if kind not in {"actual", "billed", "estimate", "unknown"}:
             return {"kind": "unknown"}
         result: dict[str, Any] = {"kind": kind}
         for key in ("amount", "currency", "unit"):
             value = usage.get(key)
-            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            if key == "amount" and isinstance(value, (int, float)):
+                if value < 0 or not math.isfinite(float(value)):
+                    continue
+            if (
+                isinstance(value, (str, int, float))
+                and not isinstance(value, bool)
+                and not (
+                    isinstance(value, float) and not math.isfinite(value)
+                )
+            ):
+                result[key] = value
+        for key in (
+            "cost_source",
+            "price_effective_until",
+            "usage_reported_by_provider",
+            "submitted_audio_seconds",
+            "billable_audio_seconds",
+            "billing_increment_seconds",
+        ):
+            value = usage.get(key)
+            if isinstance(value, (str, int, float, bool)) and not (
+                isinstance(value, float) and not math.isfinite(value)
+            ):
                 result[key] = value
         return result
+
+    @staticmethod
+    def _timing_method(
+        route: str,
+        transcript: NormalizedTranscript,
+        settings: Mapping[str, Any],
+    ) -> str:
+        """Return observed timing provenance or the route's canonical mode."""
+
+        allowed = {
+            "canary_ctc_fallback",
+            "ctc",
+            "dtw",
+            "forced_aligner",
+            "native",
+            "native_turn",
+            "qwen3_alignment",
+            "qwen3_forced_aligner",
+        }
+        for word in transcript.words:
+            method = str(word.metadata.get("timing_source") or "").strip().lower()
+            if method in allowed:
+                return method
+        if route == "qwen3":
+            from pandrator.logic.dubbing.qwen_asr import (
+                normalize_qwen_asr_language,
+                timing_plan_for_language,
+            )
+
+            language = transcript.language or str(settings.get("stt_language") or "")
+            method = timing_plan_for_language(normalize_qwen_asr_language(language))
+            if method in allowed:
+                return method
+        if route == "moss" and not transcript.words:
+            return "native_turn"
+        return _route_timing_method(route)
 
     @staticmethod
     def _safe_llm_cost(cost: Any, source: str | None) -> dict[str, Any]:
@@ -955,6 +1240,9 @@ class SubtitleEvidenceService:
                             "The route returned no speech overlapping this cue."
                         )
                     candidate_id = f"{route}-{index + 1}"
+                    timing_method = self._timing_method(
+                        route, transcript, runtime_settings
+                    )
                     candidate = {
                         "id": candidate_id,
                         "route": route,
@@ -963,7 +1251,10 @@ class SubtitleEvidenceService:
                         "context_text": context_text,
                         "selection_method": selection_method,
                         "language": transcript.language or None,
+                        # ``timing_kind`` is retained for existing consumers;
+                        # timing_method records each engine's real provenance.
                         "timing_kind": "native_word",
+                        "timing_method": timing_method,
                         "provider": str(transcript.metadata.get("provider") or route),
                         "model": str(
                             transcript.metadata.get("model")
@@ -978,7 +1269,7 @@ class SubtitleEvidenceService:
                         "words": rebased_words,
                         "cost": self._safe_cost(
                             transcript.metadata,
-                            commercial=route == "azure_mai_transcribe_2",
+                            commercial=route in CLOUD_STT_ENGINE_IDS,
                         ),
                     }
                     transcript_artifact = self.artifacts.register(
@@ -994,6 +1285,7 @@ class SubtitleEvidenceService:
                             "engine": candidate["engine"],
                             "model": candidate["model"],
                             "timing_kind": "native_word",
+                            "timing_method": timing_method,
                         },
                     )
                     candidate["transcript_artifact_id"] = transcript_artifact.id
@@ -1088,6 +1380,7 @@ class SubtitleEvidenceService:
                         "selection_method": "bounded_clip",
                         "language": None,
                         "timing_kind": "bounded_clip",
+                        "timing_method": "bounded_clip",
                         "provider": str(runtime["provider_label"]),
                         "model": str(runtime["model_id"]),
                         "engine": "audio_llm",
@@ -1134,6 +1427,7 @@ class SubtitleEvidenceService:
                             "provider": candidate["provider"],
                             "model": candidate["model"],
                             "timing_kind": "bounded_clip",
+                            "timing_method": "bounded_clip",
                             "transport": transport,
                         },
                     )

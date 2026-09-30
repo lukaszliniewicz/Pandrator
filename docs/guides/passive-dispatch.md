@@ -83,6 +83,37 @@ translation coverage, and glossary changes. Correction can explicitly pin an
 existing translation artifact; finalization then appends a revision to that
 translation lineage instead of publishing it as source-language correction.
 
+### Separate utterances without guessing speakers
+
+For a mixed-utterance logical passage, call
+`pandrator_inspect_dispatch_split_boundaries` with the claimed `batch_id`,
+`lease_token`, and actionable `cue_id`. The response pages verified boundaries
+with surrounding words and source timestamps. Submit a `split` with one more
+replacement text than boundary IDs. Source gaps and word ownership are retained;
+the server rejects foreign or stale anchors. If no safe boundary is available,
+leave the passage intact and flag the uncertainty. Do not estimate a split time.
+
+For an existing passage boundary, submit an `edit` with `starts_new_turn: true`;
+the text may be unchanged. This preserves a turn independently of speaker names.
+Claimed `turn_id` values are durable boundaries, and correction or translation
+must not merge across them. Word evidence is inspected on demand rather than
+included in every claim.
+
+### Check ambiguous audio with another recognizer
+
+Fragment evidence supports `whisper`, `parakeet`, `moss`, `qwen3`,
+`azure_mai_transcribe_2`, `azure_mai_transcribe_1_5`, and `audio_llm`.
+The claim's quality policy advertises the route catalogue, readiness, timing
+method, and language support. A registered route need not be installed or
+configured; choose a ready engine that supports the clip language. STT routes
+reuse the application's configured engines and credentials. Audio-LLM evidence
+is untimed. Evidence remains a comparison aid and never silently replaces the
+correction text. One request can compare up to seven distinct routes.
+
+STT settings accept `engine` as an alias for `stt_engine`; conflicting aliases
+and unknown submitted STT keys fail validation rather than being silently
+ignored.
+
 ## Passive PDF and EPUB cleanup
 
 The document must already be a managed PDF or EPUB source attached to the

@@ -157,8 +157,18 @@ values:
 - `delete`: one or more consecutive cues, no replacement; forbidden by
   `no_remove_subtitles`.
 - `merge`: consecutive cues; the replacement spans their combined time.
-- `split`: one cue and multiple replacements; its duration is divided in
-  proportion to replacement text length.
+- `split`: in a logical-passage passive run, one cue and multiple replacements
+  separated by verified source-word anchors. Inspect candidate boundaries with
+  `pandrator_inspect_dispatch_split_boundaries`, then submit their ordered IDs
+  as `split_boundary_ids`. Missing, stale, overlapping, or text-mismatched word
+  evidence cannot be replaced with estimated timing. Legacy display-cue
+  correction retains its proportional split behavior.
+
+An `edit` or `split` can set `starts_new_turn: true` without assigning a speaker.
+Logical splits start a new turn for each subsequent part. Durable `turn_id`
+values preserve utterance separation through translation, subtitle projection,
+speech preparation, and regrouping; matching or unknown speaker labels do not
+authorize merging across these boundaries.
 
 Cross-speaker merges require an explicit valid speaker decision. Line wrapping
 is never an LLM responsibility; deterministic subtitle finalization runs after

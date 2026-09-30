@@ -697,6 +697,147 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
 
         self.assertEqual("completed", result["status"])
 
+    def test_new_stt_routes_execute_and_persist_timing_provenance(self):
+        expected_methods = {
+            "whisper": "dtw",
+            "moss": "ctc",
+            "parakeet": "native",
+            "qwen3": "qwen3_forced_aligner",
+            "azure_mai_transcribe_1_5": "native",
+            "azure_mai_transcribe_2": "native",
+        }
+
+        def fake_extract(_source_path, output_dir, basename, *_args, **_kwargs):
+            output = Path(output_dir) / f"{basename}.wav"
+            output.write_bytes(b"RIFF-audio")
+            return str(output)
+
+        for route, expected_method in expected_methods.items():
+            with self.subTest(route=route):
+                created = self.services.subtitle_evidence.request(
+                    self.session.id,
+                    {
+                        "source_artifact_id": self.subtitle.id,
+                        "cue_id": 1,
+                        "reason": f"Check {route} evidence route.",
+                        "routes": [route],
+                    },
+                )
+                calls: list[str] = []
+
+                def fake_transcribe(
+                    output_dir,
+                    _source,
+                    settings,
+                    route_id=route,
+                    route_calls=calls,
+                    **_kwargs,
+                ):
+                    route_calls.append(str(settings["stt_engine"]))
+                    output = Path(output_dir) / "transcript.json"
+                    metadata = {"engine": route_id}
+                    if route_id == "azure_mai_transcribe_1_5":
+                        metadata["usage"] = {"kind": "not_applicable"}
+                    elif route_id == "azure_mai_transcribe_2":
+                        metadata["usage"] = {
+                            "estimated_cost_usd": 0.000055,
+                            "currency": "USD",
+                            "billable_audio_seconds": 2,
+                            "billing_increment_seconds": 1,
+                            "cost_source": "published_list_price_estimate",
+                            "price_effective_until": "2026-12-31",
+                            "usage_reported_by_provider": False,
+                        }
+                    output.write_text(
+                        json.dumps(
+                            {
+                                "schema": "pandrator.transcript.v1",
+                                "source_format": route_id,
+                                "language": "en",
+                                "metadata": metadata,
+                                "segments": [
+                                    {
+                                        "text": "hello",
+                                        "start_ms": 2_000,
+                                        "end_ms": 4_000,
+                                        "words": [
+                                            {
+                                                "text": "hello",
+                                                "start_ms": 2_000,
+                                                "end_ms": 4_000,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    return SimpleNamespace(
+                        word_timestamps_path=str(output),
+                        engine=route_id,
+                        compute_backend=(
+                            "remote"
+                            if route_id in {
+                                "azure_mai_transcribe_1_5",
+                                "azure_mai_transcribe_2",
+                            }
+                            else "cpu"
+                        ),
+                    )
+
+                with (
+                    patch(
+                        "pandrator.web.subtitle_evidence.extract_audio_excerpt",
+                        side_effect=fake_extract,
+                    ),
+                    patch(
+                        "pandrator.web.subtitle_evidence.transcribe_source_file_with_metadata",
+                        side_effect=fake_transcribe,
+                    ),
+                    patch.object(
+                        self.services.subtitle_evidence.workspace_settings,
+                        "resolve",
+                        return_value=(
+                            {"stt": {"stt_engine": route, "stt_language": "en"}},
+                            "settings-hash",
+                        ),
+                    ),
+                    patch(
+                        "pandrator.web.subtitle_evidence.hydrate_stt_settings",
+                        side_effect=lambda _database, _paths, values: dict(values),
+                    ),
+                ):
+                    result = self.services.subtitle_evidence.run_request(
+                        created["record"]["id"],
+                        lambda *_args: None,
+                        threading.Event(),
+                    )
+
+                self.assertEqual([route], calls)
+                self.assertEqual("completed", result["status"])
+                candidate = result["candidates"][0]
+                self.assertEqual(route, candidate["route"])
+                self.assertEqual("native_word", candidate["timing_kind"])
+                self.assertEqual(expected_method, candidate["timing_method"])
+                if route == "azure_mai_transcribe_1_5":
+                    self.assertEqual({"kind": "unknown"}, candidate["cost"])
+                if route == "azure_mai_transcribe_2":
+                    self.assertEqual("estimate", candidate["cost"]["kind"])
+                    self.assertEqual(0.000055, candidate["cost"]["amount"])
+                with self.services.database.session() as session:
+                    artifact = session.get(
+                        Artifact, candidate["transcript_artifact_id"]
+                    )
+                    self.assertEqual(
+                        candidate["timing_kind"],
+                        artifact.metadata_json["timing_kind"],
+                    )
+                    self.assertEqual(
+                        expected_method,
+                        artifact.metadata_json["timing_method"],
+                    )
+
     def test_failure_persists_candidates_completed_before_cancellation(self):
         created = self.services.subtitle_evidence.request(
             self.session.id,
@@ -808,8 +949,16 @@ class SubtitleEvidenceBackendTests(unittest.TestCase):
         self.assertEqual([self.media_path], extracted_from)
         candidate = result["candidates"][0]
         self.assertEqual("bounded_clip", candidate["timing_kind"])
+        self.assertEqual("bounded_clip", candidate["timing_method"])
         self.assertEqual([], candidate["segments"])
         self.assertEqual([], candidate["words"])
+        with self.services.database.session() as session:
+            transcript_artifact = session.get(
+                Artifact, candidate["transcript_artifact_id"]
+            )
+            self.assertEqual(
+                "bounded_clip", transcript_artifact.metadata_json["timing_method"]
+            )
 
     def test_create_and_resolve_replay_idempotently(self):
         create_payload = {
@@ -1048,6 +1197,116 @@ class SubtitleEvidenceSchemaAndExcerptTests(unittest.TestCase):
                 commercial=True,
             ),
         )
+        self.assertEqual(
+            {"kind": "unknown"},
+            service._safe_cost(
+                {"usage": {"kind": "not_applicable"}}, commercial=True
+            ),
+        )
+        self.assertEqual(
+            {"kind": "actual", "amount": 0.25, "currency": "USD"},
+            service._safe_cost(
+                {
+                    "usage": {
+                        "kind": "actual",
+                        "amount": 0.25,
+                        "estimated_cost_usd": 0.5,
+                        "currency": "USD",
+                    }
+                },
+                commercial=True,
+            ),
+        )
+        self.assertEqual(
+            {"kind": "billed", "amount": 0.25, "currency": "USD"},
+            service._safe_cost(
+                {
+                    "usage": {
+                        "kind": "billed",
+                        "amount": 0.25,
+                        "estimated_cost_usd": 0.5,
+                        "currency": "USD",
+                    }
+                },
+                commercial=True,
+            ),
+        )
+
+    def test_evidence_route_catalog_reports_language_and_safe_readiness(self):
+        from pandrator.web import subtitle_evidence
+
+        catalog = subtitle_evidence.evidence_route_catalog(None, language="xx")
+        self.assertEqual(7, len(catalog))
+        self.assertTrue(all(item["ready"] is None for item in catalog))
+        self.assertEqual(
+            False,
+            next(item for item in catalog if item["route"] == "whisper")[
+                "language_supported"
+            ],
+        )
+        self.assertEqual(
+            False,
+            next(item for item in catalog if item["route"] == "qwen3")[
+                "language_supported"
+            ],
+        )
+        self.assertNotIn("api_key", json.dumps(catalog).lower())
+
+        capability_payload = {
+            "stt": {
+                "models": {
+                    route: {
+                        "available": route == "whisper",
+                        "reason": "CrispASR unavailable",
+                    }
+                    for route in subtitle_evidence.evidence_stt_routes()
+                    if route not in subtitle_evidence.CLOUD_STT_ENGINE_IDS
+                }
+            }
+        }
+        provider_payload = {
+            "profiles": [
+                {
+                    "id": "azure_mai_transcribe_1_5",
+                    "credential_configured": False,
+                    "api_key": "sensitive-test-value",
+                },
+                {
+                    "id": "azure_mai_transcribe_2",
+                    "credential_configured": True,
+                    "api_key": "sensitive-test-value",
+                },
+            ]
+        }
+        with (
+            patch.object(
+                subtitle_evidence,
+                "_cached_stt_backend_statuses",
+                return_value={
+                    route: SimpleNamespace(
+                        installed=values["available"],
+                        reason=values["reason"],
+                    )
+                    for route, values in capability_payload["stt"]["models"].items()
+                },
+            ),
+            patch.object(
+                subtitle_evidence,
+                "stt_catalogue_snapshot",
+                return_value=(provider_payload, 1),
+            ),
+        ):
+            discovered = subtitle_evidence.evidence_route_catalog(
+                None,
+                database=object(),
+                paths=object(),
+            )
+        by_route = {item["route"]: item for item in discovered}
+        self.assertTrue(by_route["whisper"]["ready"])
+        self.assertFalse(by_route["parakeet"]["ready"])
+        self.assertFalse(by_route["azure_mai_transcribe_1_5"]["ready"])
+        self.assertTrue(by_route["azure_mai_transcribe_2"]["ready"])
+        self.assertNotIn("sensitive-test-value", json.dumps(discovered))
 
     def test_mai_evidence_clone_forces_literal_verbatim_style(self):
         service = self._service_class()
@@ -1102,6 +1361,26 @@ class SubtitleEvidenceSchemaAndExcerptTests(unittest.TestCase):
             routes=["whisper"],
         )
         self.assertEqual(2_000, request.padding_before_ms)
+
+    def test_all_seven_routes_are_accepted_and_come_from_canonical_registry(self):
+        from typing import get_args
+
+        from pandrator.web.subtitle_evidence import EVIDENCE_ROUTES, evidence_stt_routes
+
+        expected = set(evidence_stt_routes()) | {"audio_llm"}
+        web_routes = get_args(
+            get_args(SubtitleEvidenceCreateRequest.model_fields["routes"].annotation)[0]
+        )
+        self.assertEqual(expected, set(web_routes))
+        self.assertEqual(expected, set(EVIDENCE_ROUTES))
+        request = SubtitleEvidenceCreateRequest(
+            source_artifact_id="artifact",
+            cue_id=1,
+            reason="check every route",
+            routes=list(expected),
+            audio_model_ids=["audio-model"],
+        )
+        self.assertEqual(expected, set(request.routes))
 
     def test_excerpt_command_is_bounded_and_normalized(self):
         calls = []

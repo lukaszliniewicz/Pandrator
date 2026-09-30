@@ -15,6 +15,7 @@ from threading import Lock
 from typing import Any
 
 from .. import llm_handler
+from .correction_splits import validate_turn_merge
 from .languages import normalize_language_code
 from .llm_config import resolve_dubbing_llm_settings
 from .llm_correction import DEFAULT_LLM_CHAR_LIMIT, extract_json_payload
@@ -541,6 +542,7 @@ def _validate_passage_group(
         raise ValueError("Translation passage cue_ids must form a contiguous group.")
     selected = [block[position] for position in positions]
     validate_logical_merge_pauses(selected)
+    validate_turn_merge(selected)
     source_speakers = {
         str(subtitle.get("speaker") or "").strip().casefold() for subtitle in selected
     }
@@ -826,7 +828,7 @@ def build_translation_task_instructions(
         prompt += (
             "\n\nLogical passage policy:\n"
             "- A natural adjacent merge is welcome when target-language word order or idiom makes separate assignment awkward or unreliable. Do not force fragments to stay separate at the expense of fluency.\n"
-            "- Merge only adjacent passages of the same speaker, in source order, without overlap. Do not merge merely because several passages form one sentence.\n"
+            "- Merge only adjacent passages of the same speaker and the same source `turn_id`, in source order, without overlap. A turn boundary is hard even when a speaker override or an unnamed speaker would otherwise make the passages appear compatible. Do not merge merely because several passages form one sentence.\n"
             f"{logical_pause_instructions()}"
             "- A merge becomes one passage with the combined source start/end window. Its former internal timing boundary is discarded; original IDs are retained only for traceability."
         )

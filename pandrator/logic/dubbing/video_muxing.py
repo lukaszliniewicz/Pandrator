@@ -310,13 +310,15 @@ def build_removal_only_video_command(
     audio_bitrate: str = "192k",
     hardware_device: str | None = None,
     video_resolution: str | int | None = "source",
+    include_progress: bool = False,
 ) -> list[str]:
     """Build a removal-only trim/concat command for a source video.
 
     The source is split into exact millisecond keep ranges.  Every segment has
     its timestamps reset before concat so the resulting media timeline is
     contiguous.  Audio is intentionally encoded as AAC: stream-copy audio
-    cannot be used through a filter/concat graph.
+    cannot be used through a filter/concat graph. ``include_progress`` sends
+    FFmpeg's progress records to stdout for an opted-in streaming reader.
     """
 
     normalized_ranges = []
@@ -388,6 +390,7 @@ def build_removal_only_video_command(
     command = [
         ffmpeg_executable,
         "-y",
+        *(["-progress", "pipe:1", "-nostats"] if include_progress else []),
         *before_input,
         "-i",
         video_path,

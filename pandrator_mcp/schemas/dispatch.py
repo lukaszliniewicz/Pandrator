@@ -86,6 +86,14 @@ class ClaimDispatchBatchInput(ToolInput):
     )
 
 
+class InspectDispatchSplitBoundariesInput(ToolInput):
+    batch_id: str = _BATCH_ID
+    lease_token: str = Field(min_length=1, max_length=160)
+    cue_id: int = Field(ge=1, strict=True)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=30, ge=1, le=100)
+
+
 class RenewDispatchBatchInput(ToolInput):
     """Renew a lease only for its matching claimed batch."""
 
@@ -112,6 +120,8 @@ class ReleaseDispatchBatchInput(ToolInput):
 
 
 class DispatchCorrectionOperationInput(ToolInput):
+    split_boundary_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=499)
+    starts_new_turn: bool = Field(default=False, strict=True)
     action: Literal["edit", "delete", "merge", "split"]
     cue_ids: list[Annotated[int, Field(ge=1)]] = Field(
         min_length=1,
@@ -128,6 +138,10 @@ class DispatchCorrectionOperationInput(ToolInput):
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "DispatchCorrectionOperationInput":
+        if self.split_boundary_ids and (self.action != "split" or len(self.split_boundary_ids) != len(self.texts) - 1):
+            raise ValueError("split_boundary_ids must match the boundaries between split texts.")
+        if self.starts_new_turn and self.action not in {"edit", "split"}:
+            raise ValueError("starts_new_turn requires edit or split.")
         ids = self.cue_ids
         texts = self.texts
         valid = (

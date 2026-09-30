@@ -1231,6 +1231,21 @@
             "title": "Speakers",
             "type": "array"
           },
+          "split_boundary_ids": {
+            "items": {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 499,
+            "title": "Split Boundary Ids",
+            "type": "array"
+          },
+          "starts_new_turn": {
+            "default": false,
+            "title": "Starts New Turn",
+            "type": "boolean"
+          },
           "texts": {
             "items": {
               "maxLength": 16000,
@@ -1371,6 +1386,18 @@
             ],
             "default": null,
             "title": "Timing Basis"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
           }
         },
         "required": [
@@ -1670,6 +1697,41 @@
           "kind"
         ],
         "title": "DispatchRunCreateRequest",
+        "type": "object"
+      },
+      "DispatchSplitBoundariesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cue_id": {
+            "minimum": 1,
+            "title": "Cue Id",
+            "type": "integer"
+          },
+          "lease_token": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Lease Token",
+            "type": "string"
+          },
+          "limit": {
+            "default": 30,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lease_token",
+          "cue_id"
+        ],
+        "title": "DispatchSplitBoundariesRequest",
         "type": "object"
       },
       "DispatchTaskContract": {
@@ -8331,12 +8393,15 @@
               "enum": [
                 "whisper",
                 "moss",
+                "azure_mai_transcribe_1_5",
                 "azure_mai_transcribe_2",
+                "parakeet",
+                "qwen3",
                 "audio_llm"
               ],
               "type": "string"
             },
-            "maxItems": 4,
+            "maxItems": 7,
             "minItems": 1,
             "title": "Routes",
             "type": "array"
@@ -11216,6 +11281,36 @@
             ]
           }
         ]
+      }
+    },
+    "/api/v1/dispatch-batches/{batchId}/split-boundaries": {
+      "post": {
+        "operationId": "inspectDispatchSplitBoundaries",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batchId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchSplitBoundariesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded verified source-word split anchors; requires an active matching lease."
+          }
+        }
       }
     },
     "/api/v1/dispatch-batches/{batchId}/submit": {

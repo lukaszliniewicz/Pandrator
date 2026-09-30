@@ -31,6 +31,7 @@ from .settings_policy import (
     RevisionConflict,
     _merge,
     _secret_free,
+    normalize_stt_engine_aliases,
     normalize_subtitle_limit_override,
     stable_hash,
     validate_output_settings,
@@ -451,6 +452,15 @@ class WorkspaceSettingsService:
             # Normalize the submitted layer before merging: a speaker-only
             # patch must win over the previously stored voice alias.
             value = normalize_tts_voice_aliases(value)
+        elif section == "stt":
+            # Canonicalize the submitted alias before merging, so it replaces
+            # an older stt_engine value instead of being shadowed by it.
+            value = normalize_stt_engine_aliases(value)
+            validate_stt_settings(value)
+            existing = normalize_stt_engine_aliases(
+                existing if isinstance(existing, dict) else {},
+                reject_conflicts=False,
+            )
         merged = {
             **(existing if isinstance(existing, dict) else {}),
             **dict(value),
@@ -461,6 +471,7 @@ class WorkspaceSettingsService:
             section,
             expected_revision,
             merged,
+            _stt_fields_validated=section == "stt",
         )
 
     def update_in_session(
@@ -470,6 +481,8 @@ class WorkspaceSettingsService:
         section: str,
         expected_revision: int,
         value: dict[str, Any],
+        *,
+        _stt_fields_validated: bool = False,
     ) -> dict[str, Any]:
         section = self._validate_section(section)
         session_record = session.get(SessionRecord, session_id)
@@ -485,7 +498,12 @@ class WorkspaceSettingsService:
 
             validate_audiobook_chunking_settings(value)
         if section == "stt":
-            validate_stt_settings(value)
+            value = normalize_stt_engine_aliases(
+                value,
+                reject_conflicts=not _stt_fields_validated,
+            )
+            if not _stt_fields_validated:
+                validate_stt_settings(value)
         if section == "tts":
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]

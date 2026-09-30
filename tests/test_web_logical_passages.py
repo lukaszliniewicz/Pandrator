@@ -105,6 +105,61 @@ def source(case):
     return record.id, artifact, path
 
 
+def test_anchored_split_survives_translation_and_speech_without_speaker(app_case):
+    case = app_case
+    record = case.extension["sessions"].create("Unknown speakers", workflow_kind="voiceover", source_language="en", target_language="de")
+    artifact, _ = register_rows(case, record.id, [{"id": "a", "start_ms": 0, "end_ms": 4000, "text": "Luke yes thank you"}])
+    with case.extension["database"].session() as session:
+        for ordinal, (text, start, end) in enumerate([("Luke", 0, 800), ("yes", 1000, 1600), ("thank", 1800, 2500), ("you", 2700, 4000)]):
+            session.add(TimedWord(revision_id=artifact.metadata_json["revision_id"], ordinal=ordinal, text=text, start_ms=start, end_ms=end))
+    run = case._create(record.id, source_artifact_id=artifact.id)
+    claim = case._claim(run["id"], "anchored-split-claim")
+    assert len(claim["batch"]["cues"]) == 1
+    inspect_url = f"/api/v1/dispatch-batches/{claim['batch_id']}/split-boundaries"
+    request = {"lease_token": claim["lease_token"], "cue_id": 1, "limit": 1}
+    anchors = case.client.post(inspect_url, json=request, headers=case._headers("inspect-split")).get_json()
+    assert anchors.get("status") == "available", anchors
+    assert anchors["total"] == 3
+    assert anchors["next_offset"] == 1
+    assert anchors["boundaries"][0]["left_end_ms"] == 800
+    assert anchors["boundaries"][0]["right_start_ms"] == 1000
+    assert case.client.post(inspect_url, json={**request, "lease_token": "wrong"}, headers=case._headers("inspect-wrong")).status_code == 409
+    assert case.client.post(inspect_url, json={**request, "cue_id": 999}, headers=case._headers("inspect-outside")).status_code == 422
+    operation = {"action": "split", "cue_ids": [1], "texts": ["Luke?", "Yes, thank you."], "split_boundary_ids": [anchors["boundaries"][0]["id"]]}
+    submit_url = f"/api/v1/dispatch-batches/{claim['batch_id']}/submit"
+    invalid = case.client.post(submit_url, json={"lease_token": claim["lease_token"], "result": {"kind": "correction", "operations": [{**operation, "split_boundary_ids": ["stale"]}]}}, headers=case._headers("bad-split-submit"))
+    assert invalid.status_code == 422
+    corrected, _ = submit(case, claim, {"kind": "correction", "operations": [operation]})
+    rows = stored_passages(corrected)
+    assert [(r["start_ms"], r["end_ms"]) for r in rows] == [(0, 800), (1000, 4000)]
+    assert all(not row["speaker"] for row in rows)
+    assert rows[0]["turn_id"] != rows[1]["turn_id"]
+    assert all(row["source_word_ids"] for row in rows)
+    translation = case._create(record.id, kind="translation", source_artifact_id=corrected.id)
+    packet = case._claim(translation["id"], "split-translation-claim")
+    assert [cue["turn_id"] for cue in packet["batch"]["cues"]] == [r["turn_id"] for r in rows]
+    invalid = case.client.post(f"/api/v1/dispatch-batches/{packet['batch_id']}/submit", json={"lease_token": packet["lease_token"], "result": {"kind": "translation", "translations": [{"cue_ids": [1, 2], "text": "Luke? Ja, danke."}]}}, headers=case._headers("bad-turn-merge"))
+    assert invalid.status_code == 422
+    translated, path = submit(case, packet, {"kind": "translation", "translations": [{"cue_id": 1, "text": "Luke?"}, {"cue_id": 2, "text": "Ja, danke."}]})
+    assert [row["turn_id"] for row in stored_passages(translated)] == [row["turn_id"] for row in rows]
+    records, _, _ = case.extension["workflow_handlers"]._subtitle_generation_records(translated, path, {"min_speech_block_chars": 300, "max_speech_block_chars": 500}, "de")
+    assert len(records) == 2
+    assert [row["provenance"]["turn_id"] for row in records] == [row["turn_id"] for row in rows]
+
+
+def test_existing_passage_can_start_unnamed_turn_without_word_evidence(app_case):
+    case = app_case
+    session_id, artifact, _ = source(case)
+    run = case._create(session_id, source_artifact_id=artifact.id)
+    claim = case._claim(run["id"], "mark-turn-claim")
+    evidence = case.client.post(f"/api/v1/dispatch-batches/{claim['batch_id']}/split-boundaries", json={"lease_token": claim["lease_token"], "cue_id": 1}, headers=case._headers("inspect-no-words")).get_json()
+    assert evidence.get("status") == "unavailable", evidence
+    corrected, _ = submit(case, claim, {"kind": "correction", "operations": [{"action": "edit", "cue_ids": [2], "texts": [claim["batch"]["cues"][1]["text"]], "starts_new_turn": True}]})
+    rows = stored_passages(corrected)
+    assert rows[0]["turn_id"] != rows[1]["turn_id"] == rows[2]["turn_id"]
+    assert all(row["speaker"] == "SPEAKER_00" for row in rows)
+
+
 def submit(case, claim, result):
     response = case.client.post(
         f"/api/v1/dispatch-batches/{claim['batch_id']}/submit",

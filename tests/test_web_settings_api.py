@@ -21,6 +21,7 @@ from pandrator.web.credentials import (
 from pandrator.web.models import (
     AppSetting,
     AppSettingHistory,
+    SessionSetting,
     SessionSettingHistory,
     StoredCredential,
 )
@@ -290,6 +291,144 @@ class SettingsApiTests(unittest.TestCase):
         }, response.get_json()["override"])
         self.assertNotIn("service", response.get_json()["override"])
         self.assertIn("service", response.get_json()["effective"])
+
+    def test_stt_settings_engine_aliases_are_canonicalized_on_patch_and_replace(self):
+        for index, alias in enumerate(("engine", "stt_engine", "stt_backend")):
+            with self.subTest(alias=alias):
+                session_id = self.client.post(
+                    "/api/v1/sessions",
+                    json={"name": f"STT alias {alias}"},
+                    headers=self.headers,
+                ).get_json()["id"]
+                url = f"/api/v1/sessions/{session_id}/settings/stt"
+                initial = self.client.put(
+                    url,
+                    json={"value": {"stt_engine": "whisper"}},
+                    headers={**self.headers, "If-Match": '"0"'},
+                )
+                self.assertEqual(200, initial.status_code, initial.get_json())
+
+                patched = self.client.patch(
+                    url,
+                    json={"value": {alias: "parakeet"}},
+                    headers={
+                        **self.headers,
+                        "If-Match": '"1"',
+                        "Idempotency-Key": f"stt-alias-patch-{index}",
+                    },
+                )
+                self.assertEqual(200, patched.status_code, patched.get_json())
+                self.assertEqual("parakeet", patched.get_json()["override"]["stt_engine"])
+                self.assertEqual("parakeet", patched.get_json()["effective"]["stt_engine"])
+                self.assertNotIn("engine", patched.get_json()["override"])
+                self.assertNotIn("stt_backend", patched.get_json()["override"])
+
+                replaced = self.client.put(
+                    url,
+                    json={"value": {alias: "moss"}},
+                    headers={**self.headers, "If-Match": '"2"'},
+                )
+                self.assertEqual(200, replaced.status_code, replaced.get_json())
+                self.assertEqual({"stt_engine": "moss"}, replaced.get_json()["override"])
+                self.assertEqual("moss", replaced.get_json()["effective"]["stt_engine"])
+
+    def test_stt_settings_reject_conflicts_and_unknown_keys_with_hint(self):
+        session_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Invalid STT settings"},
+            headers=self.headers,
+        ).get_json()["id"]
+        url = f"/api/v1/sessions/{session_id}/settings/stt"
+
+        conflict = self.client.put(
+            url,
+            json={"value": {"engine": "parakeet", "stt_engine": "whisper"}},
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(422, conflict.status_code, conflict.get_json())
+        self.assertIn("Conflicting STT engine settings", str(conflict.get_json()))
+
+        typo = self.client.patch(
+            url,
+            json={"value": {"stt_engnie": "parakeet"}},
+            headers={
+                **self.headers,
+                "If-Match": '"0"',
+                "Idempotency-Key": "stt-settings-typo",
+            },
+        )
+        self.assertEqual(422, typo.status_code, typo.get_json())
+        self.assertIn("Unknown STT settings key", str(typo.get_json()))
+        self.assertIn("stt_engine", str(typo.get_json()))
+
+    def test_stt_settings_accept_catalogue_and_runtime_fields(self):
+        session_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Known STT fields"},
+            headers=self.headers,
+        ).get_json()["id"]
+        response = self.client.put(
+            f"/api/v1/sessions/{session_id}/settings/stt",
+            json={
+                "value": {
+                    "stt_engine": "azure_mai_transcribe_2",
+                    "stt_compute_backend": "cpu",
+                    "qwen_asr_backend": "cpu",
+                    "qwen_aligner_backend": "cpu",
+                    "crispasr_cache_dir": "/tmp/crispasr-cache",
+                    "stt_cloud_max_chunk_seconds": 5_400,
+                    "stt_cloud_chunk_search_seconds": 300,
+                    "stt_cloud_min_silence_ms": 1_500,
+                }
+            },
+            headers={**self.headers, "If-Match": '"0"'},
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual(
+            "azure_mai_transcribe_2",
+            response.get_json()["effective"]["stt_engine"],
+        )
+
+    def test_stt_settings_patch_preserves_legacy_fields_and_migrates_engine_alias(self):
+        database = self.app.extensions["pandrator"]["database"]
+        cases = (
+            (
+                {"engine": "parakeet", "stt_engine": "whisper", "legacy_stt_hint": "keep"},
+                "whisper",
+            ),
+            ({"engine": "parakeet", "legacy_stt_hint": "keep"}, "parakeet"),
+        )
+        for index, (legacy_value, expected_engine) in enumerate(cases):
+            with self.subTest(legacy_value=legacy_value):
+                session_id = self.client.post(
+                    "/api/v1/sessions",
+                    json={"name": f"Legacy STT settings {index}"},
+                    headers=self.headers,
+                ).get_json()["id"]
+                with database.immediate_session() as session:
+                    session.add(
+                        SessionSetting(
+                            session_id=session_id,
+                            section="stt",
+                            value_json=legacy_value,
+                            revision=1,
+                        )
+                    )
+
+                response = self.client.patch(
+                    f"/api/v1/sessions/{session_id}/settings/stt",
+                    json={"value": {"stt_language": "pl"}},
+                    headers={
+                        **self.headers,
+                        "If-Match": '"1"',
+                        "Idempotency-Key": f"stt-legacy-patch-{index}",
+                    },
+                )
+                self.assertEqual(200, response.status_code, response.get_json())
+                override = response.get_json()["override"]
+                self.assertEqual(expected_engine, override["stt_engine"])
+                self.assertEqual("keep", override["legacy_stt_hint"])
+                self.assertNotIn("engine", override)
 
     def test_tts_optimization_prompts_are_visible_in_builtin_settings(self):
         payload = self.client.get("/api/v1/defaults/text").get_json()["builtin"]

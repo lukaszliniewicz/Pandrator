@@ -360,9 +360,17 @@ class SubtitleEvidenceCreateRequest(StrictModel):
     source_artifact_id: str = Field(min_length=1, max_length=80)
     cue_id: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=4000)
-    routes: list[Literal["whisper", "moss", "azure_mai_transcribe_2", "audio_llm"]] = (
-        Field(min_length=1, max_length=4)
-    )
+    routes: list[
+        Literal[
+            "whisper",
+            "moss",
+            "azure_mai_transcribe_1_5",
+            "azure_mai_transcribe_2",
+            "parakeet",
+            "qwen3",
+            "audio_llm",
+        ]
+    ] = Field(min_length=1, max_length=7)
     audio_model_ids: list[str] = Field(default_factory=list, max_length=3)
     padding_before_ms: int = Field(default=2000, ge=0, le=15000)
     padding_after_ms: int = Field(default=2000, ge=0, le=15000)
@@ -1071,7 +1079,16 @@ class DispatchBatchReleaseRequest(StrictModel):
     lease_token: str = Field(min_length=1, max_length=160)
 
 
+class DispatchSplitBoundariesRequest(StrictModel):
+    lease_token: str = Field(min_length=1, max_length=160)
+    cue_id: int = Field(ge=1, strict=True)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=30, ge=1, le=100)
+
+
 class DispatchCorrectionOperation(StrictModel):
+    split_boundary_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=499)
+    starts_new_turn: bool = Field(default=False, strict=True)
     action: Literal["edit", "delete", "merge", "split"]
     cue_ids: list[Annotated[int, Field(ge=1)]] = Field(
         min_length=1,
@@ -1088,6 +1105,10 @@ class DispatchCorrectionOperation(StrictModel):
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> DispatchCorrectionOperation:
+        if self.split_boundary_ids and (self.action != "split" or len(self.split_boundary_ids) != len(self.texts) - 1):
+            raise ValueError("split_boundary_ids must match the boundaries between split texts.")
+        if self.starts_new_turn and self.action not in {"edit", "split"}:
+            raise ValueError("starts_new_turn requires edit or split.")
         ids = self.cue_ids
         texts = self.texts
         valid = (
@@ -1205,6 +1226,7 @@ class DispatchCueTiming(StrictModel):
 
 
 class DispatchCue(StrictModel):
+    turn_id: str | None = None
     cue_id: int = Field(ge=1)
     text: str
     speaker: str | None = None
@@ -1809,6 +1831,7 @@ SCHEMA_MODELS = {
         DispatchBatchClaimRequest,
         DispatchBatchRenewRequest,
         DispatchBatchReleaseRequest,
+        DispatchSplitBoundariesRequest,
         DispatchCorrectionOperation,
         DispatchCorrectionUncertainty,
         DispatchCorrectionResult,

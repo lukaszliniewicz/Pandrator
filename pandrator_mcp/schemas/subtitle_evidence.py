@@ -10,7 +10,13 @@ from .common import ToolInput
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 EvidenceRoute = Literal[
-    "whisper", "moss", "azure_mai_transcribe_2", "audio_llm"
+    "whisper",
+    "moss",
+    "azure_mai_transcribe_1_5",
+    "azure_mai_transcribe_2",
+    "parakeet",
+    "qwen3",
+    "audio_llm",
 ]
 
 
@@ -19,7 +25,7 @@ class RequestSubtitleEvidenceInput(ToolInput):
     source_artifact_id: str = Field(min_length=1, max_length=80)
     cue_id: int = Field(ge=1)
     reason: str = Field(min_length=1, max_length=4_000)
-    routes: list[EvidenceRoute] = Field(min_length=1, max_length=4)
+    routes: list[EvidenceRoute] = Field(min_length=1, max_length=7)
     audio_model_ids: list[str] = Field(default_factory=list, max_length=3)
     padding_before_ms: int = Field(default=2_000, ge=0, le=15_000)
     padding_after_ms: int = Field(default=2_000, ge=0, le=15_000)

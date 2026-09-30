@@ -49,7 +49,7 @@ class VoiceoverRegroupTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
-    def plan(self, *, enabled=True, mode="passage"):
+    def plan(self, *, enabled=True, mode="passage", turn_ids=None):
         cues = [
             (0, 3000, FIRST),
             (3200, 6200, SECOND),
@@ -74,21 +74,27 @@ class VoiceoverRegroupTests(unittest.TestCase):
                     Segment(
                         revision_id=source_id,
                         ordinal=ordinal,
+                        node_kind=("logical_passage" if turn_ids else "subtitle_cue"),
                         start_ms=start,
                         end_ms=end,
                         text=text,
+                        metadata_json=(
+                            {"logical_passage": {"turn_id": turn_ids[ordinal]}}
+                            if turn_ids
+                            else {}
+                        ),
                     )
                 )
             document.active_revision_id = source_id
         records = []
         for offset, (start, end, text) in enumerate(cues):
-            records.append(
-                {
+            record = {
                     "text": text,
                     "node_kind": "subtitle_cue",
                     "source_segment_ids": [offset + 1],
                     "alignment_group": f"a{offset:04d}",
                     "speech_block_provenance": {
+                        **({"turn_id": turn_ids[offset]} if turn_ids else {}),
                         "source_cues": [
                             {
                                 "reference": offset + 1,
@@ -103,7 +109,9 @@ class VoiceoverRegroupTests(unittest.TestCase):
                         "source_reference_namespace": "subtitle_ordinal",
                     },
                 }
-            )
+            if turn_ids:
+                record["turn_id"] = turn_ids[offset]
+            records.append(record)
         self.revision_id, self.segment_ids = self.handlers._store_generation_plan(
             self.record.id,
             records,
@@ -237,6 +245,31 @@ class VoiceoverRegroupTests(unittest.TestCase):
                 self.run_id,
                 (staged.settings_snapshot_json or {}).get("regroup_parent_run_id"),
             )
+
+    def test_distinct_turn_ids_keep_first_pass_segments_separate(self):
+        self.plan(turn_ids=["turn-a", "turn-b", "turn-c"])
+        with self.database.session() as session:
+            segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == self.revision_id)
+                    .order_by(GenerationSegment.ordinal)
+                )
+            )
+            self.assertEqual(
+                [
+                    (item.speech_block_provenance_json or {}).get("turn_id")
+                    for item in segments
+                ],
+                ["turn-a", "turn-b", "turn-c"],
+            )
+
+        result, calls = self.generate()
+
+        self.assertEqual(0, result.get("regrouped_groups"))
+        self.assertEqual(3, calls)
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual([FIRST, SECOND, THIRD], self.active_texts())
 
     def test_duration_misfit_retains_originals(self):
         self.plan()

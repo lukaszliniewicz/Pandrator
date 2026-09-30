@@ -2138,9 +2138,19 @@ class WorkflowHandlers:
             if logical_rows is not None
             else self._subtitle_speaker_map(display_artifact, display_path)
         )
+        turn_by_subtitle: dict[int, str] = {}
+        if logical_rows is not None:
+            turn_by_subtitle = {
+                index + 1: str(
+                    ((row.get("_passage") or row).get("turn_id") or "")
+                ).strip()
+                for index, row in enumerate(logical_rows)
+            }
+            if not any(turn_by_subtitle.values()):
+                turn_by_subtitle = {}
         if display_segments is None:
             display_segments = parse_srt(display_srt)
-        block_options = dict(
+        block_options: dict[str, Any] = dict(
             preserve_source_boundaries=logical_rows is not None,
             target_language=language,
             min_chars=min_chars,
@@ -2152,6 +2162,11 @@ class WorkflowHandlers:
             **(
                 {"speaker_by_subtitle": speaker_by_subtitle}
                 if speaker_by_subtitle
+                else {}
+            ),
+            **(
+                {"turn_by_subtitle": turn_by_subtitle}
+                if turn_by_subtitle
                 else {}
             ),
         )
@@ -2201,6 +2216,24 @@ class WorkflowHandlers:
                     "logical_passage_ordinal"
                 )
             subtitle_ids = [int(value) for value in block.get("subtitles") or []]
+            turn_id = ""
+            if turn_by_subtitle:
+                block_turn_ids = {
+                    turn_by_subtitle.get(subtitle_id, "")
+                    for subtitle_id in subtitle_ids
+                }
+                if len(block_turn_ids) != 1:
+                    raise ValueError(
+                        "A speech block cannot cross a preserved utterance turn boundary."
+                    )
+                turn_id = next(iter(block_turn_ids))
+                if turn_id:
+                    block_provenance = block.get("provenance")
+                    if not isinstance(block_provenance, dict):
+                        raise ValueError(
+                            "A speech block with a turn ID must have provenance metadata."
+                        )
+                    block_provenance["turn_id"] = turn_id
             record = {
                 **{
                     key: value
@@ -2211,6 +2244,8 @@ class WorkflowHandlers:
                 "node_kind": "subtitle_cue",
                 "language": language,
             }
+            if turn_by_subtitle and turn_id:
+                record["turn_id"] = turn_id
             if speech_segments is not None:
                 optimized_text = str(block.get("_optimized_text") or "").strip()
                 record["tts_optimized_sentence"] = optimized_text
@@ -5098,10 +5133,65 @@ class WorkflowHandlers:
                 or None
             ),
             video_resolution=resolution,
+            include_progress=True,
         )
         progress(0.2, "Subtitle revision and timed words ready; rendering edited media")
+        last_processed_ms = 0
+        last_reported_progress = 0.2
+        last_reported_percent = 0.0
+        last_reported_at = time.monotonic()
+
+        def report_render_progress(record: dict[str, str]) -> None:
+            nonlocal last_processed_ms
+            nonlocal last_reported_progress
+            nonlocal last_reported_percent
+            nonlocal last_reported_at
+
+            out_times_us = []
+            for field in ("out_time_us", "out_time_ms"):
+                try:
+                    parsed = int(record.get(field, ""))
+                except (TypeError, ValueError):
+                    continue
+                if parsed >= 0:
+                    out_times_us.append(parsed)
+            if not out_times_us:
+                return
+
+            processed_ms = min(duration_ms, max(out_times_us) // 1000)
+            processed_ms = max(last_processed_ms, processed_ms)
+            if processed_ms <= last_processed_ms:
+                return
+            last_processed_ms = processed_ms
+
+            fraction = min(1.0, processed_ms / duration_ms)
+            mapped_progress = min(0.95, 0.2 + 0.75 * fraction)
+            mapped_progress = max(last_reported_progress, mapped_progress)
+            percent = fraction * 100
+            now = time.monotonic()
+            if (
+                now - last_reported_at < 1.0
+                and percent - last_reported_percent < 1.0
+            ):
+                return
+            if mapped_progress <= last_reported_progress:
+                return
+
+            progress(
+                mapped_progress,
+                f"Rendering edited media: {processed_ms / 1000:.1f}s / "
+                f"{duration_ms / 1000:.1f}s ({percent:.0f}%)",
+            )
+            last_reported_progress = mapped_progress
+            last_reported_percent = percent
+            last_reported_at = now
+
         try:
-            run_media_process(command, cancel_event=cancel_event)
+            run_media_process(
+                command,
+                cancel_event=cancel_event,
+                progress_callback=report_render_progress,
+            )
         except MediaProcessCancelled:
             output_path.unlink(missing_ok=True)
             return {}
@@ -5110,6 +5200,9 @@ class WorkflowHandlers:
             raise ValueError(
                 "Media-edit rendering requires a video source and FFmpeg could not produce the MP4."
             ) from error
+        except Exception:
+            output_path.unlink(missing_ok=True)
+            raise
         if cancel_event.is_set():
             output_path.unlink(missing_ok=True)
             return {}

@@ -862,6 +862,12 @@ class ApplicationClient:
             idempotency_key=idempotency_key,
         )
 
+    def inspect_dispatch_split_boundaries(self, batch_id: str, *, lease_token: str, cue_id: int, offset: int = 0, limit: int = 30) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/dispatch-batches/{quote(batch_id, safe='')}/split-boundaries",
+            method="POST", body={"lease_token": lease_token, "cue_id": cue_id, "offset": offset, "limit": limit},
+        )
+
     def renew_dispatch_batch(
         self,
         batch_id: str,

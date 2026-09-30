@@ -1,9 +1,14 @@
+import asyncio
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 from unittest.mock import patch
 
 from pydantic import ValidationError
 
+from pandrator.web.schemas import SubtitleEvidenceCreateRequest
+from pandrator.web.subtitle_evidence import EVIDENCE_ROUTES, evidence_stt_routes
 from pandrator_mcp.schemas.subtitle_evidence import (
     GetSubtitleEvidenceInput,
     RequestSubtitleEvidenceInput,
@@ -73,6 +78,69 @@ class _Application:
 
 
 class SubtitleEvidenceMcpTests(unittest.TestCase):
+    def test_api_mcp_and_service_route_enums_match_all_seven_routes(self):
+        expected = set(evidence_stt_routes()) | {"audio_llm"}
+        mcp_route_type = get_args(
+            RequestSubtitleEvidenceInput.model_fields["routes"].annotation
+        )[0]
+        web_route_type = get_args(
+            SubtitleEvidenceCreateRequest.model_fields["routes"].annotation
+        )[0]
+        mcp_routes = set(get_args(mcp_route_type))
+        web_routes = set(get_args(web_route_type))
+        self.assertEqual(expected, mcp_routes)
+        self.assertEqual(expected, web_routes)
+        self.assertEqual(expected, set(EVIDENCE_ROUTES))
+
+        routes = evidence_stt_routes() + ["audio_llm"]
+        web_request = SubtitleEvidenceCreateRequest(
+            source_artifact_id="artifact-1",
+            cue_id=1,
+            reason="Check every supported route.",
+            routes=routes,
+            audio_model_ids=["audio-model"],
+        )
+        mcp_request = RequestSubtitleEvidenceInput(
+            session_id="session-1",
+            source_artifact_id="artifact-1",
+            cue_id=1,
+            reason="Check every supported route.",
+            routes=routes,
+            audio_model_ids=["audio-model"],
+            idempotency_key="evidence:all-routes",
+        )
+        self.assertEqual(expected, set(web_request.routes))
+        self.assertEqual(expected, set(mcp_request.routes))
+
+    def test_flat_server_tool_registration_matches_route_schemas(self):
+        try:
+            from pandrator_mcp.context import build_runtime
+            from pandrator_mcp.server import build_server
+            from pandrator_mcp.settings import McpSettings
+
+            runtime = build_runtime(
+                McpSettings(
+                    target_name="unconfigured",
+                    configuration_path=Path("/tmp/pandrator-missing-targets.json"),
+                )
+            )
+            server = build_server(runtime)
+        except (ImportError, RuntimeError) as error:
+            self.skipTest(f"MCP server dependency is unavailable: {error}")
+
+        registered = asyncio.run(server.list_tools())
+        tool = next(
+            item
+            for item in registered
+            if item.name == "pandrator_request_subtitle_evidence"
+        )
+        route_schema = tool.input_schema["properties"]["routes"]
+        self.assertEqual(
+            set(evidence_stt_routes()) | {"audio_llm"},
+            set(route_schema["items"]["enum"]),
+        )
+        self.assertEqual(7, route_schema["maxItems"])
+
     def test_failed_job_does_not_keep_polling_a_queued_record(self):
         with patch.object(self.application, "get_subtitle_evidence", return_value={
             "record": {"id": "evidence-1", "status": "queued", "error_message": None},

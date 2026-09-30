@@ -136,6 +136,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_import_subtitles",
                         "pandrator_inspect_media_edit_boundary",
                         "pandrator_inspect_source_cleaning_dispatch_extraction",
+                        "pandrator_inspect_dispatch_split_boundaries",
                         "pandrator_list_artifacts",
                         "pandrator_list_dispatch_runs",
                         "pandrator_list_generation_runs",
@@ -421,6 +422,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_source_cleaning_dispatch_run",
                         "pandrator_get_speech_optimization_dispatch_run",
                         "pandrator_inspect_source_cleaning_dispatch_extraction",
+                        "pandrator_inspect_dispatch_split_boundaries",
                         "pandrator_list_dispatch_runs",
                         "pandrator_list_media_edit_dispatch_runs",
                         "pandrator_list_source_cleaning_dispatch_runs",
@@ -441,6 +443,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     set(dispatch_tools),
                 )
                 for name in (
+                    "pandrator_inspect_dispatch_split_boundaries",
                     "pandrator_list_dispatch_runs",
                     "pandrator_get_dispatch_run",
                     "pandrator_get_media_edit_dispatch_run",
@@ -452,6 +455,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     self.assertTrue(dispatch_tools[name].annotations.read_only_hint)
                 for name in set(dispatch_tools) - {
+                    "pandrator_inspect_dispatch_split_boundaries",
                     "pandrator_list_dispatch_runs",
                     "pandrator_get_dispatch_run",
                     "pandrator_list_source_cleaning_dispatch_runs",

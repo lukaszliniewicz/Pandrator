@@ -7,6 +7,7 @@ from pandrator_mcp.schemas import (
     ClaimDispatchBatchInput,
     CreateDispatchRunInput,
     GetDispatchRunInput,
+    InspectDispatchSplitBoundariesInput,
     ListDispatchRunsInput,
     RenewDispatchBatchInput,
     SubmitDispatchBatchInput,
@@ -15,6 +16,7 @@ from pandrator_mcp.tools.dispatch import (
     claim_dispatch_batch,
     create_dispatch_run,
     get_dispatch_run,
+    inspect_dispatch_split_boundaries,
     list_dispatch_runs,
     submit_dispatch_batch,
 )
@@ -43,6 +45,10 @@ class _Application:
     def get_dispatch_run(self, run_id):
         self.calls.append(("get", {"run_id": run_id}))
         return {"run_id": run_id, "status": "completed", "source_batch": "private"}
+
+    def inspect_dispatch_split_boundaries(self, **kwargs):
+        self.calls.append(("split_boundaries", kwargs))
+        return {"status": "available", "boundaries": [{"id": "sb-source-1", "left_end_ms": 800, "right_start_ms": 1000}]}
 
     def claim_dispatch_batch(self, run_id, **kwargs):
         self.calls.append(("claim", {"run_id": run_id, **kwargs}))
@@ -125,6 +131,19 @@ class DispatchHandlerTests(unittest.TestCase):
     def setUp(self):
         self.application = _Application()
         self.runtime = SimpleNamespace(require_application=lambda: self.application)
+
+    def test_split_anchor_inspection_preserves_lease_and_pagination(self):
+        arguments = InspectDispatchSplitBoundariesInput(
+            batch_id="batch-1", lease_token="lease-capability", cue_id=7,
+            offset=20, limit=10,
+        )
+        result = inspect_dispatch_split_boundaries(self.runtime, arguments)
+        self.assertEqual("available", result["status"])
+        self.assertEqual(800, result["boundaries"][0]["left_end_ms"])
+        self.assertEqual(("split_boundaries", arguments.model_dump()), self.application.calls[-1])
+        for invalid in ({"cue_id": True}, {"limit": 101}, {"offset": -1}):
+            with self.assertRaises(ValidationError):
+                InspectDispatchSplitBoundariesInput.model_validate({**arguments.model_dump(), **invalid})
 
     def test_strict_inputs_bound_lease_and_response_limits(self):
         with self.assertRaises(ValidationError):

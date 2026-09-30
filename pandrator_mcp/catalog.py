@@ -904,6 +904,17 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_inspect_dispatch_split_boundaries",
+            "Inspect verified subtitle split boundaries",
+            "InspectDispatchSplitBoundariesInput",
+            RiskClass.READ,
+            "app.run",
+            "inspectDispatchSplitBoundaries",
+            "POST",
+            "/api/v1/dispatch-batches/{batchId}/split-boundaries",
+            True,
+        ),
+        ActionSpec(
             "pandrator_renew_dispatch_batch",
             "Renew a subtitle dispatch lease",
             "RenewDispatchBatchInput",

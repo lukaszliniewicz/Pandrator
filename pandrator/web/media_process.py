@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import BinaryIO, Callable, Sequence
 
 
 class MediaProcessCancelled(RuntimeError):
@@ -65,16 +66,44 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=2)
 
 
+def _read_progress_records(
+    stdout: BinaryIO,
+    records: queue.SimpleQueue[dict[str, str] | BaseException],
+    capture_file: BinaryIO | None = None,
+) -> None:
+    """Drain an opt-in FFmpeg progress pipe without blocking the worker loop."""
+
+    record: dict[str, str] = {}
+    try:
+        for raw_line in iter(stdout.readline, b""):
+            if capture_file is not None:
+                capture_file.write(raw_line)
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            key, separator, value = line.partition("=")
+            key = key.strip()
+            if not separator or not key:
+                continue
+            record[key] = value.strip()
+            if key == "progress":
+                records.put(record)
+                record = {}
+    except Exception as error:
+        records.put(error)
+
+
 def run_media_process(
     command: Sequence[str | os.PathLike[str]],
     *,
     cancel_event: threading.Event | None = None,
     capture_stdout: bool = False,
+    progress_callback: Callable[[dict[str, str]], None] | None = None,
 ) -> MediaProcessResult:
     """Run a hidden media process while polling for cooperative cancellation.
 
-    Output is redirected to temporary files instead of pipes so a verbose or
-    malformed media file cannot deadlock the worker by filling an unread pipe.
+    Stdout and stderr use temporary files by default so a verbose process
+    cannot deadlock the worker. With ``progress_callback``, a dedicated reader
+    drains stdout and passes complete FFmpeg progress records to the worker loop;
+    stderr remains file-backed in either mode.
     """
 
     if cancel_event is not None and cancel_event.is_set():
@@ -82,11 +111,17 @@ def run_media_process(
     normalized = [os.fspath(value) for value in command]
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        progress_records: queue.SimpleQueue[dict[str, str] | BaseException] | None = None
+        progress_reader: threading.Thread | None = None
         try:
             process = subprocess.Popen(
                 normalized,
                 stdin=subprocess.DEVNULL,
-                stdout=stdout_file if capture_stdout else subprocess.DEVNULL,
+                stdout=(
+                    subprocess.PIPE
+                    if progress_callback is not None
+                    else stdout_file if capture_stdout else subprocess.DEVNULL
+                ),
                 stderr=stderr_file,
                 creationflags=creationflags,
             )
@@ -94,8 +129,41 @@ def run_media_process(
             raise MediaProcessError(
                 f"Could not start {Path(normalized[0]).name or normalized[0]}: {error}"
             ) from error
+        def deliver_progress() -> None:
+            if progress_callback is None or progress_records is None:
+                return
+            while True:
+                try:
+                    item = progress_records.get_nowait()
+                except queue.Empty:
+                    return
+                if isinstance(item, BaseException):
+                    raise MediaProcessError(
+                        "Could not read media-process progress output."
+                    ) from item
+                progress_callback(item)
+
         try:
+            if progress_callback is not None:
+                if process.stdout is None:
+                    raise MediaProcessError(
+                        "Could not read media-process progress output."
+                    )
+                progress_records = queue.SimpleQueue()
+                reader = threading.Thread(
+                    target=_read_progress_records,
+                    args=(
+                        process.stdout,
+                        progress_records,
+                        stdout_file if capture_stdout else None,
+                    ),
+                    name="pandrator-media-progress-reader",
+                    daemon=True,
+                )
+                reader.start()
+                progress_reader = reader
             while process.poll() is None:
+                deliver_progress()
                 if cancel_event is not None and cancel_event.wait(0.1):
                     _stop_process(process)
                     raise MediaProcessCancelled("Media processing was canceled.")
@@ -103,12 +171,23 @@ def run_media_process(
                     process.wait(timeout=0.1)
                 except subprocess.TimeoutExpired:
                     continue
+            if progress_reader is not None:
+                progress_reader.join()
+                deliver_progress()
         except BaseException:
-            _stop_process(process)
+            try:
+                _stop_process(process)
+            finally:
+                if progress_reader is not None:
+                    progress_reader.join()
             raise
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
 
         stdout = ""
         if capture_stdout:
+            stdout_file.flush()
             stdout_file.seek(0)
             stdout = stdout_file.read().decode("utf-8", errors="replace")
         stderr_file.seek(0)

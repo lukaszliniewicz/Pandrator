@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from difflib import get_close_matches
 from typing import Any
 
 from pandrator.logic.dubbing.source_passage_settings import (
@@ -492,6 +493,112 @@ def adapt_runtime_settings(section: str, values: dict[str, Any], _service_config
     return result
 
 
+_STT_RUNTIME_SETTING_KEYS = frozenset(
+    {
+        # Compatibility names still read by the transcription runtime.
+        "engine",
+        "stt_backend",
+        "whisper_language",
+        "crispasr_model_quantization",
+        "parakeet_quantization",
+        "crispasr_cache_dir",
+        "crispasr_executable",
+        "qwen_asr_backend",
+        "qwen_aligner_backend",
+        "qwen_aligner_executable",
+        "qwen_aligner_cache_dir",
+        "qwen_aligner_model_path",
+        "audio_cpp_backend",
+        "stt_diarization_enabled",
+        "diarize",
+        "stt_model",
+        "stt_request_timeout_seconds",
+        "cloud_stt_timeout_seconds",
+        "stt_cloud_min_chunk_seconds",
+        "stt_cloud_boundary_search_window_seconds",
+        "stt_cloud_boundary_window_seconds",
+        "stt_cloud_quiet_run_seconds",
+        "stt_cloud_rms_window_ms",
+        "stt_api_base",
+        "stt_api_base_url",
+        "stt_base_url",
+        "cloud_stt_base_url",
+    }
+)
+
+
+def _stt_catalogue_setting_keys() -> frozenset[str]:
+    """Return the fields attached to built-in STT provider profiles."""
+
+    from pandrator.logic.dubbing.stt_provider_profiles import (
+        list_stt_provider_profiles,
+    )
+
+    return frozenset(
+        key
+        for profile in list_stt_provider_profiles()
+        for key in (
+            profile.get("settings", {})
+            if isinstance(profile.get("settings"), dict)
+            else {}
+        )
+    )
+
+
+# Session settings accept built-in defaults, provider-profile defaults, and
+# compatibility fields that the STT runtime still consumes. Inline credentials
+# and provider_configs belong to the separate services.stt catalogue.
+STT_SETTING_KEYS = (
+    frozenset(BUILTIN_DEFAULTS["stt"])
+    | _STT_RUNTIME_SETTING_KEYS
+    | _stt_catalogue_setting_keys()
+)
+
+
+def normalize_stt_engine_aliases(
+    value: dict[str, Any], *, reject_conflicts: bool = True
+) -> dict[str, Any]:
+    """Store legacy ``engine`` and ``stt_backend`` inputs as ``stt_engine``."""
+
+    if not isinstance(value, dict):
+        raise ValueError("stt settings must be an object.")
+
+    normalized = dict(value)
+    aliases = ("engine", "stt_engine", "stt_backend")
+    supplied = [(key, normalized[key]) for key in aliases if key in normalized]
+    comparable: set[str] = set()
+    for key, engine in supplied:
+        if engine is None or engine == "":
+            continue
+        if not isinstance(engine, str):
+            if reject_conflicts:
+                raise ValueError(f"{key} must be a string or null.")
+            continue
+        comparable.add(engine.strip().lower().replace("-", "_").replace(" ", "_"))
+    if reject_conflicts and len(comparable) > 1:
+        raise ValueError(
+            "Conflicting STT engine settings: engine, stt_engine, and stt_backend "
+            "must select the same engine."
+        )
+
+    selected_key = next(
+        (
+            key
+            for key in ("stt_engine", "stt_backend", "engine")
+            if key in normalized and normalized[key] not in (None, "")
+        ),
+        None,
+    )
+    if selected_key is None:
+        selected_key = next((key for key in ("stt_engine", "stt_backend", "engine") if key in normalized), None)
+    if selected_key is not None:
+        selected = normalized[selected_key]
+        normalized["stt_engine"] = selected.strip() if isinstance(selected, str) else selected
+    normalized.pop("engine", None)
+    normalized.pop("stt_backend", None)
+    return normalized
+
+
 SECRET_KEYS = {
     "secret",
     "password",
@@ -557,12 +664,35 @@ class RevisionConflict(ValueError):
 
 
 def validate_stt_settings(value: dict[str, Any]) -> None:
-    """Reject explicitly invalid Qwen3 ASR selections on the save path.
+    """Reject unknown fields and invalid explicit Qwen3 selections on save.
 
     Only keys present in the submitted override are checked; absent keys
     keep inheriting defaults. Present-but-invalid enum values fail here so
     migration can never silently swap the model or skip preprocessing.
     """
+    if not isinstance(value, dict):
+        raise ValueError("stt settings must be an object.")
+    unknown = sorted(set(value) - STT_SETTING_KEYS, key=str)
+    if unknown:
+        descriptions = []
+        for key in unknown:
+            rendered = str(key)
+            match = (
+                get_close_matches(rendered, sorted(STT_SETTING_KEYS), n=1, cutoff=0.72)
+                if isinstance(key, str)
+                else []
+            )
+            descriptions.append(
+                f"{rendered} (did you mean {match[0]}?)" if match else rendered
+            )
+        message = (
+            "Unknown STT settings key(s): "
+            + ", ".join(descriptions)
+            + ". Engine selection accepts engine, stt_engine, or stt_backend."
+        )
+        if any("api_key" in str(key).lower() for key in unknown):
+            message += " Configure credentials under services.stt, not session settings."
+        raise ValueError(message)
 
     from pandrator.logic.dubbing.qwen_asr import (
         QWEN3_ASR_MODELS,
@@ -570,8 +700,6 @@ def validate_stt_settings(value: dict[str, Any]) -> None:
         VOCAL_ISOLATION_CHOICES,
     )
 
-    if not isinstance(value, dict):
-        raise ValueError("stt settings must be an object.")
     model = value.get("qwen_asr_model")
     if model is not None and model not in QWEN3_ASR_MODELS:
         raise ValueError(

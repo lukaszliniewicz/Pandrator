@@ -16,6 +16,7 @@ from threading import Lock
 from typing import Any
 
 from .. import llm_handler
+from .correction_splits import anchored_split_windows, validate_turn_merge
 from .llm_config import DubbingLLMSettings
 from .llm_config import resolve_dubbing_llm_settings as _resolve_dubbing_llm_settings
 from .models import SubtitleSegment
@@ -218,6 +219,9 @@ def parse_correction_operations(response_text: str) -> list[dict[str, Any]]:
             ),
             "texts": list(texts),
         }
+        for field_name in ("split_boundary_ids", "starts_new_turn"):
+            if field_name in operation:
+                normalized_operation[field_name] = operation[field_name]
         if speakers:
             normalized_operation["speakers"] = [
                 str(speaker).strip() for speaker in speakers
@@ -310,15 +314,26 @@ def validate_correction_operations(
             )
             or (
                 action == "split"
-                and not logical_passages
                 and len(ids) == 1
                 and len(texts) >= 2
+                and len(texts) == len(raw_texts)
             )
         )
         if not valid_shape:
             raise ValueError(
                 f"Correction operation {operation_index} has an invalid "
                 f"{action} ids/texts shape."
+            )
+        if operation.get("split_boundary_ids") and action != "split":
+            raise ValueError("split_boundary_ids are only valid for a split.")
+        if "starts_new_turn" in operation and type(operation["starts_new_turn"]) is not bool:
+            raise ValueError("starts_new_turn must be a boolean.")
+        if operation.get("starts_new_turn") and action not in {"edit", "split"}:
+            raise ValueError("starts_new_turn requires an edit or split.")
+        if logical_passages and action == "split":
+            anchored_split_windows(
+                block[positions[0]].get("_passage") or {},
+                operation.get("split_boundary_ids", []), len(texts),
             )
         if speakers and (action == "delete" or len(speakers) != len(texts)):
             raise ValueError(
@@ -345,6 +360,7 @@ def validate_correction_operations(
                     f"Correction operation {operation_index} must merge adjacent cues."
                 )
             selected = [block[position] for position in positions]
+            validate_turn_merge(selected)
             validate_logical_merge_pauses(selected)
             source_speakers = {
                 str(subtitle.get("speaker") or "").strip().casefold()
@@ -507,9 +523,9 @@ def apply_correction_operations(
             )
             or (
                 action == "split"
-                and not logical_passages
                 and len(ids) == 1
                 and len(texts) >= 2
+                and len(texts) == len(raw_texts)
             )
         )
         if not valid_shape:
@@ -548,6 +564,7 @@ def apply_correction_operations(
                     "Correction logical-passage merge must use adjacent cues."
                 )
             selected_windows = [block[position] for position in positions]
+            validate_turn_merge(selected_windows)
             validate_logical_merge_pauses(selected_windows)
 
         processed_ids.update(ids)
@@ -585,6 +602,20 @@ def apply_correction_operations(
             if logical_passages
             else _split_timing(new_start, new_end, texts)
         )
+        if logical_passages and action == "split":
+            windows = anchored_split_windows(
+                valid_subtitles[0].get("_passage") or {},
+                operation.get("split_boundary_ids", []), len(texts),
+            )
+            split_parts = [
+                {"start": start / 1000, "end": end / 1000, "text": text,
+                 "split_boundary_ids": operation["split_boundary_ids"],
+                 "split_part_index": index, "split_part_count": len(texts),
+                 "starts_new_turn": index > 0 or bool(operation.get("starts_new_turn"))}
+                for index, ((start, end), text) in enumerate(zip(windows, texts, strict=True))
+            ]
+        elif logical_passages and operation.get("starts_new_turn"):
+            split_parts[0]["starts_new_turn"] = True
         for part, speaker in zip(split_parts, output_speakers, strict=True):
             if speaker:
                 part["speaker"] = speaker
@@ -648,7 +679,7 @@ def build_correction_task_instructions(
             "   - Treat source punctuation and cue boundaries as provisional. When adjacent same-speaker cues form one grammatical thought, use a merge operation.\n",
             "   - Treat punctuation as provisional. Short passages may intentionally contain clauses or parts of one sentence; keep those boundaries when the corrected wording still belongs to each passage.\n",
         )
-    actions = "edit|delete|merge" if logical_passages else "edit|delete|merge|split"
+    actions = "edit|delete|merge" if logical_passages and not dispatch_result else "edit|delete|merge|split"
     base_prompt = CORRECTION_PROMPT_TEMPLATE.format(
         correction_instructions=correction_instructions
         or "No additional instructions provided.",
@@ -688,7 +719,9 @@ def build_correction_task_instructions(
             else '   - "merge": two or more sequential `cue_id` values whose boundary breaks one thought, with one or more corrected replacement texts.'
         ),
         split_policy=(
-            '   - Do not use "split" or return multiple replacement texts for a passage or merge. Internal timings cannot be inferred after wording changes.'
+            '   - Do not use "split" without verified internal source timing. Internal timings cannot be inferred after wording changes.'
+            if logical_passages and not dispatch_result else
+            '   - "split": one cue_id, two or more corrected texts, and ordered split_boundary_ids from pandrator_inspect_dispatch_split_boundaries. Each boundary must be a verified source-word anchor; never invent timestamps or IDs. Splits preserve separate utterance turns, not inferred speaker identities. For an existing passage boundary, use an edit with starts_new_turn=true, even if its text is unchanged. Never merge across preserved turn_id boundaries.'
             if logical_passages
             else '   - "split": one `cue_id` and two or more replacement texts, only when semantic correction genuinely requires separate cues.'
         ),

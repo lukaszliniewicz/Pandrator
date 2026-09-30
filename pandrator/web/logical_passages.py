@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.dubbing.correction_splits import anchored_split_windows, validate_turn_merge
 from pandrator.logic.dubbing.logical_passages import build_source_passages
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.source_passage_settings import (
@@ -352,6 +353,11 @@ def map_output_passages(
     """Replace each model-owned group with one row, retaining ancestry only."""
     by_index = {index + 1: row for index, row in enumerate(inputs)}
     mapped: list[dict[str, Any]] = []
+    turn_tracking = any(row.get("turn_id") for row in inputs) or any(row.get("starts_new_turn") for row in output)
+    source_digest = _hash(inputs)
+    turn_id = "turn-" + source_digest[:24] if turn_tracking else ""
+    previous_source_turn = ""
+    split_groups: dict[int, list[int]] = {}
     for raw in output:
         text = " ".join(str(raw.get("text") or "").split())
         if not text or text.upper() == "[REMOVE]":
@@ -369,10 +375,33 @@ def map_output_passages(
         ):
             raise ValueError("Logical output has no valid source passage references.")
         sources = [by_index[value] for value in ids]
+        validate_turn_merge(sources)
         start = min(row["start_ms"] for row in sources)
         end = max(row["end_ms"] for row in sources)
+        word_ids = [word_id for row in sources for word_id in row.get("source_word_ids", [])]
+        if raw.get("split_boundary_ids"):
+            if len(ids) != 1:
+                raise ValueError("A split must retain exactly one source passage.")
+            windows = anchored_split_windows(sources[0], raw["split_boundary_ids"], raw["split_part_count"])
+            part_index = raw["split_part_index"]
+            if type(part_index) is not int or not 0 <= part_index < len(windows):
+                raise ValueError("Invalid split part index.")
+            seen = split_groups.setdefault(ids[0], [])
+            if part_index != len(seen):
+                raise ValueError("Split parts must appear exactly once in source order.")
+            seen.append(part_index)
+            start, end = windows[part_index]
+            anchors = {value["id"]: value for value in sources[0]["split_boundaries"]}
+            offsets = [0, *(anchors[value]["after_word"] for value in raw["split_boundary_ids"]), len(word_ids)]
+            word_ids = word_ids[offsets[part_index]:offsets[part_index + 1]]
         if raw.get("start_ms") != start or raw.get("end_ms") != end:
             raise ValueError("Logical output must retain its combined source window.")
+        source_turn = str(sources[0].get("turn_id") or "")
+        if source_turn and source_turn != previous_source_turn:
+            turn_id = source_turn
+        previous_source_turn = source_turn
+        if raw.get("starts_new_turn"):
+            turn_id = "turn-" + _hash([sources[0]["id"], start, end, raw.get("split_part_index"), source_digest])[:24]
         mapped.append(
             {
                 **passage_review_metadata([*sources, raw]),
@@ -381,6 +410,8 @@ def map_output_passages(
                 "start_ms": start,
                 "end_ms": end,
                 "speaker": str(raw.get("speaker") or ""),
+                **({"turn_id": turn_id} if turn_id else {}),
+                **({"source_word_ids": word_ids} if word_ids else {}),
                 "source_passage_ids": [row["id"] for row in sources],
                 "source_cue_ids": list(
                     dict.fromkeys(
@@ -389,9 +420,14 @@ def map_output_passages(
                         for value in row.get("source_cue_ids", [])
                     )
                 ),
-                "timing_basis": "source_passage_window",
+                "timing_basis": "source_word_split" if raw.get("split_boundary_ids") else "source_passage_window",
             }
         )
+    for source_id, indices in split_groups.items():
+        parts = [row for row in output if row.get("split_boundary_ids") and row.get("source_cue_ids") == [source_id]]
+        expected = parts[0]["split_part_count"]
+        if len(indices) != expected or any(row["split_boundary_ids"] != parts[0]["split_boundary_ids"] or row["split_part_count"] != expected for row in parts):
+            raise ValueError("Split output must preserve every anchored part exactly once.")
     if not _valid_rows(mapped):
         raise ValueError("A language stage must retain at least one valid passage.")
     return mapped
