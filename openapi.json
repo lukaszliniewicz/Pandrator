@@ -6030,11 +6030,29 @@
       "SessionForkRequest": {
         "additionalProperties": false,
         "properties": {
+          "carry_media_assets": {
+            "default": true,
+            "title": "Carry Media Assets",
+            "type": "boolean"
+          },
           "checkpoint_artifact_id": {
             "maxLength": 80,
             "minLength": 1,
             "title": "Checkpoint Artifact Id",
             "type": "string"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
           },
           "name": {
             "anyOf": [
@@ -6049,6 +6067,20 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Language"
           }
         },
         "required": [
@@ -9281,6 +9313,81 @@
           }
         },
         "title": "TranscriptionWait",
+        "type": "object"
+      },
+      "TranslationBranchTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Name",
+            "type": "string"
+          },
+          "target_language": {
+            "maxLength": 40,
+            "minLength": 2,
+            "title": "Target Language",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_language"
+        ],
+        "title": "TranslationBranchTarget",
+        "type": "object"
+      },
+      "TranslationBranchesCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TranslationBranchTarget"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "targets"
+        ],
+        "title": "TranslationBranchesCreateRequest",
+        "type": "object"
+      },
+      "TranslationProjectCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Checkpoint Artifact Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checkpoint_artifact_id",
+          "expected_revision"
+        ],
+        "title": "TranslationProjectCreateRequest",
         "type": "object"
       },
       "TtsEndpointDiscoveryRequest": {
@@ -19824,6 +19931,124 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/translation-project": {
+      "get": {
+        "operationId": "getSessionTranslationProject",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Translation project state"
+          },
+          "404": {
+            "description": "Session, checkpoint, or project not found"
+          },
+          "409": {
+            "description": "Changed revision, source, or duplicate language"
+          },
+          "422": {
+            "description": "Invalid project request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createSessionTranslationProject",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslationProjectCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Translation project state"
+          },
+          "404": {
+            "description": "Session, checkpoint, or project not found"
+          },
+          "409": {
+            "description": "Changed revision, source, or duplicate language"
+          },
+          "422": {
+            "description": "Invalid project request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/voice-setup": {
       "get": {
         "description": "Read audiobook or voiceover voice mode and the selected TTS voice. Legacy sessions are identified so strict single-voice rendering can be adopted explicitly.",
@@ -21622,6 +21847,126 @@
           {
             "nativeOAuth": [
               "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/translation-projects/{projectId}": {
+      "get": {
+        "operationId": "getTranslationProject",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Translation project state"
+          },
+          "404": {
+            "description": "Session, checkpoint, or project not found"
+          },
+          "409": {
+            "description": "Changed revision, source, or duplicate language"
+          },
+          "422": {
+            "description": "Invalid project request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/translation-projects/{projectId}/branches": {
+      "post": {
+        "operationId": "createTranslationProjectBranches",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslationBranchesCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Translation project state"
+          },
+          "404": {
+            "description": "Session, checkpoint, or project not found"
+          },
+          "409": {
+            "description": "Changed revision, source, or duplicate language"
+          },
+          "422": {
+            "description": "Invalid project request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
             ]
           }
         ]

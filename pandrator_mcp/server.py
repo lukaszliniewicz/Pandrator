@@ -434,6 +434,7 @@ def build_server(runtime: McpRuntime):
     from .tools.audiobook import register_audiobook_tools
     from .tools.generation_controls import register_generation_controls_tools
     from .tools.performance import register_performance_tools
+    from .tools.session_branches import register_session_branch_tools
     from .tools.session_purge import register_session_purge_tools
     from .tools.voice_lifecycle import register_voice_lifecycle_tools
     from .tools.voice_metadata import register_voice_metadata_tools
@@ -458,6 +459,10 @@ def build_server(runtime: McpRuntime):
         _call_with_validated_input,
         read_only=read_only,
         write_action=revisioned_write_action,
+    )
+    register_session_branch_tools(
+        server, runtime, _call_with_validated_input,
+        read_only=read_only, write_action=revisioned_write_action,
     )
     register_session_purge_tools(
         server,

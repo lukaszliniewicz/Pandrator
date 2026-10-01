@@ -1,0 +1,1 @@
+import{m as c}from"./D5Ku7N4h.js";const l=(e,s)=>{const a=c(e,s),o=t=>t.preventDefault();return e.addEventListener("cancel",o),e.showModal(),{update(t){a?.update?.(t)},destroy(){e.removeEventListener("cancel",o),e.close(),a?.destroy?.()}}};export{l as m};

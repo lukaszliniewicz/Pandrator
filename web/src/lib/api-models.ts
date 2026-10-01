@@ -130,7 +130,39 @@ export type ForkedSessionRecord = SessionRecord & {
   forked_from_session_id: string;
   checkpoint_artifact_id: string;
   copied_stages: string[];
+  copied_media_artifact_ids: string[];
 };
+
+export type TranslationProjectBranch = {
+  id: string;
+  session_id: string;
+  name: string;
+  target_language: string;
+  source_checkpoint_artifact_id: string;
+  source_content_hash: string;
+  status: string;
+  trashed_at: string | null;
+  translation_artifact_id: string | null;
+  translation_status: 'ready' | 'running' | 'completed' | 'stale';
+  active_translation_run_id: string | null;
+};
+
+export type TranslationProject = {
+  id: string;
+  name: string;
+  source_session_id: string;
+  source_session_name: string;
+  source_language: string;
+  checkpoint_artifact_id: string;
+  source_content_hash: string;
+  source_media_edit_revision_id: string | null;
+  source_media_edit_content_hash: string | null;
+  revision: number;
+  created_at: string;
+  branches: TranslationProjectBranch[];
+};
+
+export type TranslationProjectPayload = { project: TranslationProject | null };
 
 export type JobRecord = {
   id: string;

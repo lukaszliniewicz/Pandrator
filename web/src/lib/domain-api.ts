@@ -17,6 +17,7 @@ import type {
   DocumentRecord,
   EventSnapshot,
   ForkedSessionRecord,
+  TranslationProjectPayload,
   GenerationRun,
   GenerationSegment,
   GenerationSegmentPage,
@@ -182,6 +183,52 @@ export const appApi = {
     )
 };
 
+export const translationProjectApi = {
+  forSession: (sessionId: string) =>
+    apiJson<TranslationProjectPayload>(
+      `/sessions/${sessionId}/translation-project`
+    ),
+  create: (
+    sessionId: string,
+    body: {
+      checkpoint_artifact_id: string;
+      expected_revision: number;
+      name?: string;
+    },
+    idempotencyKey: string
+  ) =>
+    apiJson<TranslationProjectPayload>(
+      `/sessions/${sessionId}/translation-project`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: JSON.stringify(body)
+      }
+    ),
+  addBranches: (
+    projectId: string,
+    body: {
+      expected_revision: number;
+      targets: { target_language: string; name?: string }[];
+    },
+    idempotencyKey: string
+  ) =>
+    apiJson<TranslationProjectPayload>(
+      `/translation-projects/${projectId}/branches`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: JSON.stringify(body)
+      }
+    )
+};
+
 export const sessionApi = {
   list: (includeTrashed = false) => appApi.sessions(includeTrashed),
   create: (body: ApiSchema<'SessionCreate'>) =>
@@ -192,7 +239,8 @@ export const sessionApi = {
     ),
   forkAtCheckpoint: (
     sessionId: string,
-    body: ApiSchema<'SessionForkRequest'>
+    body: ApiSchema<'SessionForkRequest'>,
+    idempotencyKey?: string
   ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/forks',
@@ -200,7 +248,10 @@ export const sessionApi = {
       ForkedSessionRecord
     >('/api/v1/sessions/{sessionId}/forks', 'post', {
       path: { sessionId },
-      body
+      body,
+      ...(idempotencyKey
+        ? { headers: { 'Idempotency-Key': idempotencyKey } }
+        : {})
     }),
   get: (sessionId: string) =>
     typedApiJson<'/api/v1/sessions/{sessionId}', 'get', SessionRecord>(

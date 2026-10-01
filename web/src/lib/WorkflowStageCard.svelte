@@ -35,6 +35,7 @@
     outputsOnly = false,
     onpreviewversion,
     inputControls,
+    languageVersions,
     onsettings,
     ontoggle,
     onrun,
@@ -57,6 +58,7 @@
     outputsOnly?: boolean;
     onpreviewversion?: (artifact: StageArtifact) => void;
     inputControls?: Snippet;
+    languageVersions?: Snippet;
     onsettings: () => void;
     ontoggle: (enabled: boolean) => void;
     onrun: () => void;
@@ -335,6 +337,8 @@
         <p class="muted mt-1.5 max-w-3xl text-sm leading-relaxed">
           {stage.explanation}
         </p>
+
+        {#if languageVersions}{@render languageVersions()}{/if}
 
         {#if collapsibleNow}
           <div

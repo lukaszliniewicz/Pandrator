@@ -53,6 +53,7 @@
   import { appState } from './app-state.svelte';
   import GuidedTour from './GuidedTour.svelte';
   import WorkflowStageCard from './WorkflowStageCard.svelte';
+  import TranslationVersions from './TranslationVersions.svelte';
   import WorkflowRunDialogs from './WorkflowRunDialogs.svelte';
   import type { PreviewableArtifact } from './artifact-display';
   import { LANGUAGE_OPTIONS } from './settings-fields';
@@ -3395,6 +3396,11 @@
           ondelete={(artifact) => deleteStageArtifact(stage, artifact)}
           onloadmore={() => loadMoreStageArtifacts(stage)}
         >
+          {#snippet languageVersions()}
+            {#if stage.key === 'translate' && session.workflow_kind !== 'audiobook'}
+              <TranslationVersions sessionId={session.id} />
+            {/if}
+          {/snippet}
           {#snippet inputControls()}
             {#if stage.key === sourceCardStage}{@render sessionSource()}{/if}
             {#if timedInputs && (['correct', 'translate'].includes(stage.key) || (stage.key === 'optimize_tts' && documentSpeechOptimization))}

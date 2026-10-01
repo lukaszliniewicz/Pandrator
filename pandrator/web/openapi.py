@@ -24,6 +24,7 @@ from .schemas import SCHEMA_MODELS
 from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
 from .session_purge_openapi import SESSION_PURGE_SCHEMAS, session_purge_paths
 from .speech_selection_openapi import SPEECH_SELECTION_SCHEMAS, speech_selection_paths
+from .translation_project_routes import PROJECT_SCHEMAS, translation_project_paths
 from .voice_catalog_openapi import (
     VOICE_CATALOG_SCHEMAS,
     extend_voice_lifecycle_paths,
@@ -39,6 +40,7 @@ def build_openapi_document() -> dict:
         **SCHEMA_MODELS,
         **WORKFLOW_IMPROVEMENT_SCHEMAS,
         **FLOW_SCHEMAS,
+        **PROJECT_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
         **AUDIOBOOK_SCHEMAS,
@@ -3552,6 +3554,7 @@ def build_openapi_document() -> dict:
     paths.update(transcription_paths())
     paths.update(repair_batch_paths())
     paths.update(session_flow_paths())
+    paths.update(translation_project_paths())
     paths.update(performance_paths())
     paths.update(session_purge_paths())
     paths.update(generation_control_paths())

@@ -25,6 +25,9 @@
   let name = $state('');
   let initialized = false;
   let submitting = $state(false);
+  let carryMediaAssets = $state(true);
+  let requestKey = '';
+  let requestSignature = '';
   let error = $state('');
 
   $effect(() => {
@@ -40,10 +43,22 @@
     submitting = true;
     error = '';
     try {
-      const forked = await sessionApi.forkAtCheckpoint(session.id, {
+      const body = {
         checkpoint_artifact_id: artifactId,
-        name: name.trim()
-      });
+        name: name.trim(),
+        expected_revision: session.revision,
+        carry_media_assets: carryMediaAssets
+      };
+      const signature = JSON.stringify(body);
+      if (signature !== requestSignature) {
+        requestSignature = signature;
+        requestKey = crypto.randomUUID();
+      }
+      const forked = await sessionApi.forkAtCheckpoint(
+        session.id,
+        body,
+        requestKey
+      );
       onclose();
       await goto(`/sessions/${forked.id}`);
     } catch (caught) {
@@ -87,9 +102,9 @@
       </div>
 
       <p id="session-fork-description" class="muted mt-4 text-sm leading-6">
-        The new session keeps current sources, settings, and the selected text
-        path through this {stageLabel.toLowerCase()}. Generation runs, audio
-        takes, assemblies, and exports stay in the original session.
+        The new session keeps your sources, settings, and selected subtitles
+        through this {stageLabel.toLowerCase()}. Its translations, voices and
+        exports can then develop independently.
       </p>
 
       <label class="mt-5 block text-sm font-semibold" for="session-fork-name">
@@ -105,6 +120,17 @@
       <p class="muted mt-2 text-xs">
         If that name already exists, Pandrator adds a number.
       </p>
+
+      <label class="mt-5 flex items-start gap-3 text-sm">
+        <input type="checkbox" bind:checked={carryMediaAssets} class="mt-1" />
+        <span>
+          <span class="block font-semibold">Keep edited video and timeline</span
+          >
+          <span class="muted mt-1 block"
+            >Use the same cuts and base video in the new session.</span
+          >
+        </span>
+      </label>
 
       {#if error}<p
           role="alert"

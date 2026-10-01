@@ -89,6 +89,9 @@ class SessionUpdate(StrictModel):
 class SessionForkRequest(StrictModel):
     checkpoint_artifact_id: str = Field(min_length=1, max_length=80)
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    expected_revision: int | None = Field(default=None, ge=1)
+    carry_media_assets: bool = True
+    target_language: str | None = Field(default=None, min_length=2, max_length=40)
 
 
 class JobCreate(StrictModel):

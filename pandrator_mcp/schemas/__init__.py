@@ -115,6 +115,13 @@ from .performance import (
     SubmitPerformanceBatchInput,
 )
 from .recommendations import RecommendNextStepsInput
+from .session_branches import (
+    SESSION_BRANCH_INPUT_MODELS,
+    CreateTranslationBranchesInput,
+    CreateTranslationProjectInput,
+    ForkSessionInput,
+    GetTranslationProjectInput,
+)
 from .session_purge import (
     SESSION_PURGE_INPUT_MODELS,
     DeleteSessionPermanentlyInput,
@@ -228,6 +235,7 @@ from .workflow_controls import GetDispatchPreviewInput, TerminateDispatchRunInpu
 from .workflow_inputs import GetWorkflowInputsInput, SelectWorkflowInputInput
 
 TOOL_INPUT_MODELS = (
+    *SESSION_BRANCH_INPUT_MODELS,
     InspectDispatchSplitBoundariesInput,
     *AUDIOBOOK_INPUT_MODELS,
     *VOICE_SETUP_INPUT_MODELS,
@@ -362,6 +370,11 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "ForkSessionInput",
+    "GetTranslationProjectInput",
+    "CreateTranslationProjectInput",
+    "CreateTranslationBranchesInput",
+    "SESSION_BRANCH_INPUT_MODELS",
     "GetSubtitleEvidenceRoutesInput",
     "TerminateDispatchRunInput",
     "GetDispatchPreviewInput",

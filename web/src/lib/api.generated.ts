@@ -3016,6 +3016,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/translation-project": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSessionTranslationProject"];
+        put?: never;
+        post: operations["createSessionTranslationProject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/voice-setup": {
         parameters: {
             query?: never;
@@ -3519,6 +3535,38 @@ export interface paths {
         put?: never;
         /** @description Verify the source checksum and enqueue once. Repeated starts return the same job. */
         post: operations["startQuickTranscription"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-projects/{projectId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getTranslationProject"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-projects/{projectId}/branches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createTranslationProjectBranches"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6414,13 +6462,28 @@ export interface components {
         };
         /** SessionForkRequest */
         SessionForkRequest: {
+            /**
+             * Carry Media Assets
+             * @default true
+             */
+            carry_media_assets?: boolean;
             /** Checkpoint Artifact Id */
             checkpoint_artifact_id: string;
+            /**
+             * Expected Revision
+             * @default null
+             */
+            expected_revision?: number | null;
             /**
              * Name
              * @default null
              */
             name?: string | null;
+            /**
+             * Target Language
+             * @default null
+             */
+            target_language?: string | null;
         };
         SessionPurgePreview: {
             blockers: string[];
@@ -7688,6 +7751,35 @@ export interface components {
              * @default 0
              */
             wait_seconds?: number;
+        };
+        /** TranslationBranchTarget */
+        TranslationBranchTarget: {
+            /**
+             * Name
+             * @default
+             */
+            name?: string;
+            /** Target Language */
+            target_language: string;
+        };
+        /** TranslationBranchesCreateRequest */
+        TranslationBranchesCreateRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Targets */
+            targets: components["schemas"]["TranslationBranchTarget"][];
+        };
+        /** TranslationProjectCreateRequest */
+        TranslationProjectCreateRequest: {
+            /** Checkpoint Artifact Id */
+            checkpoint_artifact_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Name
+             * @default
+             */
+            name?: string;
         };
         /** TtsEndpointDiscoveryRequest */
         TtsEndpointDiscoveryRequest: {
@@ -14858,6 +14950,102 @@ export interface operations {
             };
         };
     };
+    getSessionTranslationProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Translation project state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session, checkpoint, or project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, source, or duplicate language */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSessionTranslationProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranslationProjectCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Translation project state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session, checkpoint, or project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, source, or duplicate language */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getVoiceSetup: {
         parameters: {
             query?: never;
@@ -16068,6 +16256,102 @@ export interface operations {
             };
             /** @description Temporary data expired or was deleted */
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTranslationProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Translation project state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session, checkpoint, or project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, source, or duplicate language */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTranslationProjectBranches: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranslationBranchesCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Translation project state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session, checkpoint, or project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, source, or duplicate language */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project request */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

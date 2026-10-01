@@ -2190,6 +2190,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     session_id,
                     payload.checkpoint_artifact_id,
                     name=payload.name or "",
+                    expected_revision=payload.expected_revision,
+                    carry_media_assets=payload.carry_media_assets,
+                    target_language=payload.target_language,
                 )
                 created_directory = forked.directory
                 result = {
@@ -2197,6 +2200,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "forked_from_session_id": session_id,
                     "checkpoint_artifact_id": forked.checkpoint_artifact_id,
                     "copied_stages": list(forked.copied_stages),
+                    "copied_media_artifact_ids": list(forked.copied_media_artifact_ids),
                 }
                 if reservation is not None:
                     services.idempotency.complete(
@@ -2219,6 +2223,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "The session or selected checkpoint was not found.",
                 404,
             )
+        except RevisionConflict as error:
+            return error_response("revision_conflict", str(error), 409)
         except FileNotFoundError as error:
             return error_response("checkpoint_missing", str(error), 409)
         except ValueError as error:
@@ -2981,6 +2987,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .session_flow_routes import register_session_flow_routes
 
     register_session_flow_routes(app, services, require_auth, error_response, context.guards.principal)
+
+    from .translation_project_routes import register_translation_project_routes
+
+    register_translation_project_routes(
+        app, services, require_auth, error_response, context.guards.principal
+    )
 
     @app.post("/api/v1/sessions/<session_id>/sources/adopt-subtitles")
     @require_auth

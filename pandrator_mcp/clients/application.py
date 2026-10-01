@@ -2012,6 +2012,55 @@ class ApplicationClient:
     def get_subtitles(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles")
 
+    def fork_session(
+        self, session_id: str, *, checkpoint_artifact_id: str,
+        expected_revision: int, idempotency_key: str, name: str | None = None,
+        carry_media_assets: bool = True, target_language: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "checkpoint_artifact_id": checkpoint_artifact_id,
+            "expected_revision": expected_revision,
+            "carry_media_assets": carry_media_assets,
+        }
+        if name is not None:
+            body["name"] = name
+        if target_language is not None:
+            body["target_language"] = target_language
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/forks",
+            method="POST", body=body, idempotency_key=idempotency_key,
+        )
+
+    def get_translation_project(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/translation-project"
+        )
+
+    def create_translation_project(
+        self, session_id: str, *, checkpoint_artifact_id: str,
+        expected_revision: int, idempotency_key: str, name: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "checkpoint_artifact_id": checkpoint_artifact_id,
+            "expected_revision": expected_revision,
+        }
+        if name is not None:
+            body["name"] = name
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/translation-project",
+            method="POST", body=body, idempotency_key=idempotency_key,
+        )
+
+    def create_translation_branches(
+        self, project_id: str, *, expected_revision: int,
+        targets: list[dict[str, Any]], idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-projects/{quote(project_id, safe='')}/branches",
+            method="POST", body={"expected_revision": expected_revision, "targets": targets},
+            idempotency_key=idempotency_key,
+        )
+
     def review_subtitles(
         self,
         session_id: str,

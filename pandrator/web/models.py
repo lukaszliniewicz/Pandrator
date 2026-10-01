@@ -191,6 +191,48 @@ class SessionPurge(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class TranslationProject(Base):
+    __tablename__ = "translation_projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    checkpoint_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_language: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_media_edit_revision_id: Mapped[str | None] = mapped_column(String(36))
+    source_media_edit_content_hash: Mapped[str | None] = mapped_column(String(128))
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class TranslationProjectBranch(Base):
+    __tablename__ = "translation_project_branches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("translation_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    target_language: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_checkpoint_artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "target_language", name="uq_translation_project_language"),
+    )
+
+
 class SessionSetting(Base):
     __tablename__ = "session_settings"
 

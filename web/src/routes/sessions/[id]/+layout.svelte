@@ -8,6 +8,7 @@
     Check,
     FileText,
     Layers3,
+    Languages,
     Pencil,
     Settings2,
     Scissors,
@@ -166,12 +167,15 @@
       { href: '/sources', label: 'Sources', icon: Layers3 },
       { href: '/edit', label: 'Edit', icon: Scissors },
       { href: '/text', label: 'Text & subtitles', icon: FileText },
+      { href: '/languages', label: 'Languages', icon: Languages },
       { href: '/voice', label: 'Voice & audio', icon: AudioLines },
       { href: '/output', label: 'Output', icon: Settings2 },
       { href: '/activity', label: 'Activity', icon: Activity },
       { href: '/cleaning', label: 'Cleaning', icon: WandSparkles }
     ].filter(
       (tab) =>
+        (tab.href !== '/languages' ||
+          contextState.session?.workflow_kind !== 'audiobook') &&
         (tab.href !== '/voice' ||
           contextState.session?.workflow_kind !== 'subtitles') &&
         (tab.href !== '/edit' ||

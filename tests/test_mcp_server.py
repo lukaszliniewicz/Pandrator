@@ -63,6 +63,10 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 names = sorted(tool.name for tool in listed.tools)
                 self.assertEqual(
                     sorted([
+                        "pandrator_fork_session",
+                        "pandrator_get_translation_project",
+                        "pandrator_create_translation_project",
+                        "pandrator_create_translation_branches",
                         "pandrator_audition_voice",
                         "pandrator_adopt_performance_plan",
                         "pandrator_analyse_performance_plan",

@@ -78,6 +78,40 @@ previous accepted output and evolving glossary continuity. Passive dispatch is
 sequential. Increase concurrency only after deciding that latency matters more
 than cross-batch consistency.
 
+## Parallel languages from one recording
+
+The session's **Translate** card lists language versions, their subtitle
+status and links to open them. It also links to **Languages** for managing
+branches.
+
+Open **Languages** after selecting the corrected subtitle artifact. Create a
+project, then choose the target languages to create independent sessions. The
+project pins that exact correction and edited timeline. Each language has its
+own translation, voice setup, speech review, generation and exports. Adding
+languages does not start translation or synthesis.
+
+Through MCP, use `pandrator_create_translation_project` with the inspected
+source session revision, correction artifact ID and an idempotency key. Then
+use `pandrator_create_translation_branches` with the project revision and
+`targets: [{"target_language": "de"}, {"target_language": "ja"}]`. Inspect
+the project from either the source or a branch with
+`pandrator_get_translation_project`.
+
+Translation runs in different language sessions can proceed concurrently.
+Passive batches within each run retain sequential context and glossary
+continuity. Claim and submit batches separately for each returned session.
+If the pinned source correction or timeline changes, adding another language
+is refused rather than silently mixing source versions.
+
+For a standalone alternative, use `pandrator_fork_session` with an exact
+correction or translation checkpoint, the inspected session revision and an
+idempotency key. Forks retain the edited base video, timeline and local review
+evidence by default; generated voices and exports are independent. Set
+`carry_media_assets: false` to omit the edited video and timeline. Evidence
+dependencies are still preserved when the chosen subtitles cite them, so
+those references remain valid. The original recording stays attached as a
+shared library source.
+
 ## DeepL differences
 
 DeepL starts from the same deterministic cue mapping and safely repacks text

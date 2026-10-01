@@ -51,6 +51,10 @@ class ActionCatalog:
 
 ACTION_CATALOG = ActionCatalog(
     (
+        ActionSpec("pandrator_fork_session", "Fork a reviewed session", "ForkSessionInput", RiskClass.WRITE, "app.write", "forkSession", "POST", "/api/v1/sessions/{sessionId}/forks", True, requires_idempotency=True),
+        ActionSpec("pandrator_get_translation_project", "Inspect a multilingual project", "GetTranslationProjectInput", RiskClass.READ, "app.read", "getSessionTranslationProject", "GET", "/api/v1/sessions/{sessionId}/translation-project", True),
+        ActionSpec("pandrator_create_translation_project", "Create a multilingual project", "CreateTranslationProjectInput", RiskClass.WRITE, "app.write", "createSessionTranslationProject", "POST", "/api/v1/sessions/{sessionId}/translation-project", True, requires_idempotency=True),
+        ActionSpec("pandrator_create_translation_branches", "Create independent language branches", "CreateTranslationBranchesInput", RiskClass.WRITE, "app.write", "createTranslationProjectBranches", "POST", "/api/v1/translation-projects/{projectId}/branches", True, requires_idempotency=True),
         ActionSpec("pandrator_get_dispatch_preview", "Preview an accepted subtitle batch", "GetDispatchPreviewInput", RiskClass.READ, "app.read", "getDispatchPreview", "GET", "/api/v1/dispatch-runs/{runId}/preview", True),
         ActionSpec("pandrator_get_subtitle_evidence_routes", "Inspect available audio evidence engines", "GetSubtitleEvidenceRoutesInput", RiskClass.READ, "app.read", "listSubtitleEvidenceRoutes", "GET", "/api/v1/subtitle-evidence/routes", True),
         ActionSpec("pandrator_get_workflow_inputs", "Inspect exact workflow inputs", "GetWorkflowInputsInput", RiskClass.READ, "app.read", "getWorkflowInputs", "GET", "/api/v1/sessions/{sessionId}/workflow-inputs", True),
