@@ -167,6 +167,7 @@ from .speech_optimization_dispatch import (
 )
 from .subtitle_evidence import (
     GetSubtitleEvidenceInput,
+    GetSubtitleEvidenceRoutesInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
 )
@@ -221,6 +222,8 @@ from .workflow import (
     PlanWorkflowInput,
     RunWorkflowInput,
 )
+from .workflow_controls import GetDispatchPreviewInput, TerminateDispatchRunInput
+from .workflow_inputs import GetWorkflowInputsInput, SelectWorkflowInputInput
 
 TOOL_INPUT_MODELS = (
     InspectDispatchSplitBoundariesInput,
@@ -242,6 +245,11 @@ TOOL_INPUT_MODELS = (
     DeleteOutputInput,
     GetSessionInput,
     GetSubtitleEvidenceInput,
+    GetSubtitleEvidenceRoutesInput,
+    TerminateDispatchRunInput,
+    GetDispatchPreviewInput,
+    GetWorkflowInputsInput,
+    SelectWorkflowInputInput,
     GetDispatchRunInput,
     GetSourceCleaningDispatchRunInput,
     GetSpeechOptimizationDispatchRunInput,
@@ -351,6 +359,11 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "GetSubtitleEvidenceRoutesInput",
+    "TerminateDispatchRunInput",
+    "GetDispatchPreviewInput",
+    "GetWorkflowInputsInput",
+    "SelectWorkflowInputInput",
     "InspectDispatchSplitBoundariesInput",
     "ConfigureVoiceSetupInput",
     "GetVoiceSetupInput",

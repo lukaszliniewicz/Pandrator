@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+import shutil
 import threading
 import time
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -38,11 +42,12 @@ from pandrator.logic.dubbing.transcription import (
     transcribe_source_file_with_metadata,
 )
 
-from .artifacts import ArtifactService
+from .artifacts import ArtifactService, sha256_file
 from .credentials import hydrate_stt_settings
 from .database import Database
 from .models import (
     Artifact,
+    ArtifactEdge,
     Document,
     DocumentRevision,
     Job,
@@ -81,6 +86,8 @@ RESOLUTION_ACTIONS = frozenset(
     {"accepted", "edited", "deleted", "uncertain", "dismissed"}
 )
 MAX_EXCERPT_MS = 60_000
+EVIDENCE_CACHE_VERSION = 1
+EVIDENCE_CACHE_LOOKBACK = 50
 _STT_STATUS_CACHE_SECONDS = 30.0
 _STT_STATUS_CACHE_LOCK = threading.Lock()
 _STT_STATUS_CACHE_AT = 0.0
@@ -506,6 +513,9 @@ class SubtitleEvidenceService:
         reason = str(values.get("reason") or "")
         if not 1 <= len(reason) <= 4000:
             raise ValueError("reason must be between 1 and 4000 characters.")
+        force_refresh = values.get("force_refresh", False)
+        if not isinstance(force_refresh, bool):
+            raise ValueError("force_refresh must be a boolean.")
         routes = self._normalize_routes(values.get("routes"))
         audio_model_ids = self._normalize_audio_model_ids(values.get("audio_model_ids"))
         if ("audio_llm" in routes) != bool(audio_model_ids):
@@ -554,10 +564,16 @@ class SubtitleEvidenceService:
         )
         session.add(evidence)
         session.flush()
+        job_payload: dict[str, Any] = {
+            "evidence_id": evidence.id,
+            "session_id": session_id,
+        }
+        if force_refresh:
+            job_payload["force_refresh"] = True
         job = self.jobs.enqueue_in_session(
             session,
             "subtitle.evidence",
-            {"evidence_id": evidence.id, "session_id": session_id},
+            job_payload,
             session_id=session_id,
             max_attempts=1,
             resource_keys=[f"session:{session_id}", f"subtitle-evidence:{evidence.id}"],
@@ -1052,6 +1068,413 @@ class SubtitleEvidenceService:
             )
         return media
 
+    @staticmethod
+    def _sha256_json(value: Any) -> str:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _sha256_media(path: Path, cancel_event: threading.Event) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                if cancel_event.is_set():
+                    raise ProcessCancelled("Evidence transcription was canceled.")
+                digest.update(chunk)
+        if cancel_event.is_set():
+            raise ProcessCancelled("Evidence transcription was canceled.")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _sensitive_fingerprint_key(value: Any) -> bool:
+        key = str(value or "").strip().lower().replace("-", "_")
+        return (
+            key.startswith("api_key")
+            or any(
+                marker in key
+                for marker in (
+                    "authorization",
+                    "api_key",
+                    "credential",
+                    "password",
+                    "secret",
+                    "signature",
+                    "access_token",
+                    "refresh_token",
+                    "vertex_credentials",
+                )
+            )
+            or (key.endswith("_key") and key != "provider_key")
+            or key.endswith("_token")
+            or key.startswith("token_")
+            or key in {"secret_ref", "sig", "token"}
+        )
+
+    @staticmethod
+    def _safe_fingerprint_url(value: str) -> str:
+        try:
+            parts = urlsplit(value)
+            if not parts.scheme or not parts.netloc:
+                raise ValueError("URL has no authority")
+            hostname = parts.hostname or ""
+            if ":" in hostname and not hostname.startswith("["):
+                hostname = f"[{hostname}]"
+            try:
+                port = parts.port
+            except ValueError:
+                port = None
+            netloc = f"{hostname}:{port}" if port else hostname
+            query = [
+                (key, item)
+                for key, item in parse_qsl(parts.query, keep_blank_values=True)
+                if not SubtitleEvidenceService._sensitive_fingerprint_key(key)
+            ]
+            return urlunsplit(
+                (parts.scheme, netloc, parts.path, urlencode(query), "")
+            )
+        except ValueError:
+            safe = re.sub(r"(?<=://)[^/@?#]+@", "<redacted>@", value)
+            safe = safe.split("#", 1)[0]
+            prefix, separator, query = safe.partition("?")
+            if not separator:
+                return safe
+            safe_pairs = []
+            for item in query.split("&"):
+                key, equals, content = item.partition("=")
+                if SubtitleEvidenceService._sensitive_fingerprint_key(key):
+                    content = "<redacted>"
+                safe_pairs.append(f"{key}{equals}{content}")
+            return f"{prefix}?{'&'.join(safe_pairs)}"
+
+    @classmethod
+    def _fingerprint_value(cls, value: Any) -> Any:
+        """Build a credential-free value used only as SHA-256 input."""
+
+        if isinstance(value, Mapping):
+            return {
+                str(key): (
+                    cls._safe_fingerprint_url(str(item))
+                    if str(key).strip().lower() in {"api_base", "base_url", "endpoint"}
+                    and isinstance(item, str)
+                    else cls._fingerprint_value(item)
+                )
+                for key, item in value.items()
+                if not cls._sensitive_fingerprint_key(key)
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._fingerprint_value(item) for item in value]
+        if hasattr(value, "__dict__"):
+            return cls._fingerprint_value(vars(value))
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    @classmethod
+    def _configuration_fingerprint(
+        cls,
+        route: str,
+        settings_hash: Any,
+        runtime_settings: Any,
+        *,
+        model_identity: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Hash effective safe settings without persisting their raw values."""
+
+        declared_hash = str(settings_hash or "").strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{64}", declared_hash):
+            declared_hash = ""
+        material = {
+            "route": route,
+            "effective_settings_sha256": declared_hash or None,
+            "runtime_settings": cls._fingerprint_value(runtime_settings),
+            "model_identity": cls._fingerprint_value(model_identity or {}),
+        }
+        return cls._sha256_json(material)
+
+    @staticmethod
+    def _source_language_scope(
+        session, evidence: SubtitleEvidence
+    ) -> dict[str, str | None]:
+        revision = session.get(DocumentRevision, evidence.source_revision_id)
+        document = session.get(Document, revision.document_id) if revision else None
+        session_record = session.get(SessionRecord, evidence.session_id)
+
+        def normalized(value: Any) -> str | None:
+            result = str(value or "").strip().casefold()
+            return result or None
+
+        return {
+            "document": normalized(document.language if document else None),
+            "session": normalized(
+                session_record.source_language if session_record else None
+            ),
+        }
+
+    @staticmethod
+    def _candidate_id(route: str) -> str:
+        return f"{route}-{uuid4().hex}"
+
+    @classmethod
+    def _cache_key(
+        cls,
+        *,
+        session_id: str,
+        media_sha256: str,
+        clip_start_ms: int,
+        clip_end_ms: int,
+        cue_start_ms: int,
+        cue_end_ms: int,
+        source_language: Mapping[str, str | None],
+        route: str,
+        model_id: str,
+        configuration_sha256: str,
+        prompt_sha256: str | None = None,
+    ) -> str:
+        return cls._sha256_json(
+            {
+                "version": EVIDENCE_CACHE_VERSION,
+                "session_id": session_id,
+                "media_sha256": media_sha256,
+                "clip_window_ms": [clip_start_ms, clip_end_ms],
+                "cue_window_ms": [cue_start_ms, cue_end_ms],
+                "source_language": source_language,
+                "route": route,
+                "model_id": model_id,
+                "configuration_sha256": configuration_sha256,
+                "prompt_sha256": prompt_sha256,
+            }
+        )
+
+    @classmethod
+    def _cache_metadata(
+        cls,
+        *,
+        key_sha256: str,
+        media_sha256: str,
+        configuration_sha256: str,
+        prompt_sha256: str | None,
+        route: str,
+        model_id: str,
+        clip_start_ms: int,
+        clip_end_ms: int,
+        cue_start_ms: int,
+        cue_end_ms: int,
+        source_language: Mapping[str, str | None],
+    ) -> dict[str, Any]:
+        return {
+            "version": EVIDENCE_CACHE_VERSION,
+            "key_sha256": key_sha256,
+            "media_sha256": media_sha256,
+            "configuration_sha256": configuration_sha256,
+            "prompt_sha256": prompt_sha256,
+            "route": route,
+            "model_id": model_id,
+            "clip_window_ms": [clip_start_ms, clip_end_ms],
+            "cue_window_ms": [cue_start_ms, cue_end_ms],
+            "source_language_sha256": cls._sha256_json(source_language),
+        }
+
+    def _find_cached_candidate(
+        self,
+        *,
+        session_id: str,
+        evidence_id: str,
+        route: str,
+        expected_cache: Mapping[str, Any],
+        current_media_artifact_id: str,
+        current_media_path: Path,
+        cancel_event: threading.Event,
+    ) -> dict[str, Any] | None:
+        """Return a recent successful witness only when all provenance is live."""
+
+        with self.database.session() as session:
+            records = list(
+                session.scalars(
+                    select(SubtitleEvidence)
+                    .where(
+                        SubtitleEvidence.session_id == session_id,
+                        SubtitleEvidence.id != evidence_id,
+                    )
+                    .order_by(
+                        SubtitleEvidence.created_at.desc(), SubtitleEvidence.id.desc()
+                    )
+                    .limit(EVIDENCE_CACHE_LOOKBACK)
+                ).all()
+            )
+            for record in records:
+                for candidate in record.candidates_json or []:
+                    if (
+                        not isinstance(candidate, dict)
+                        or candidate.get("status") != "success"
+                        or candidate.get("route") != route
+                    ):
+                        continue
+                    cache = candidate.get("cache")
+                    if (
+                        not isinstance(cache, dict)
+                        or any(
+                            cache.get(key) != value
+                            for key, value in expected_cache.items()
+                        )
+                    ):
+                        continue
+                    transcript_id = str(
+                        candidate.get("transcript_artifact_id") or ""
+                    ).strip()
+                    media_id = str(record.source_media_artifact_id or "").strip()
+                    clip_id = str(record.clip_artifact_id or "").strip()
+                    if not transcript_id or not media_id or not clip_id:
+                        continue
+                    source = session.get(Artifact, record.source_artifact_id)
+                    media = session.get(Artifact, media_id)
+                    clip = session.get(Artifact, clip_id)
+                    transcript = session.get(Artifact, transcript_id)
+                    if (
+                        source is None
+                        or media is None
+                        or clip is None
+                        or transcript is None
+                    ):
+                        continue
+                    if not all(
+                        artifact_accessible_in_session(session, session_id, item)
+                        for item in (source, media, clip, transcript)
+                    ):
+                        continue
+                    source_metadata = (
+                        source.metadata_json
+                        if isinstance(source.metadata_json, dict)
+                        else {}
+                    )
+                    clip_metadata = (
+                        clip.metadata_json
+                        if isinstance(clip.metadata_json, dict)
+                        else {}
+                    )
+                    transcript_metadata = (
+                        transcript.metadata_json
+                        if isinstance(transcript.metadata_json, dict)
+                        else {}
+                    )
+                    if (
+                        str(source_metadata.get("revision_id") or "")
+                        != record.source_revision_id
+                        or str(clip_metadata.get("evidence_id") or "") != record.id
+                        or str(clip_metadata.get("source_media_artifact_id") or "")
+                        != media.id
+                        or str(transcript_metadata.get("evidence_id") or "")
+                        != record.id
+                        or transcript.role != "subtitle_evidence_transcript"
+                    ):
+                        continue
+                    parent_ids = set(
+                        session.scalars(
+                            select(ArtifactEdge.parent_artifact_id).where(
+                                ArtifactEdge.child_artifact_id == transcript.id
+                            )
+                        ).all()
+                    )
+                    if not {source.id, clip.id}.issubset(parent_ids):
+                        continue
+                    try:
+                        source_path = self.paths.managed_path(source.relative_path)
+                        transcript_path = self.paths.managed_path(
+                            transcript.relative_path
+                        )
+                        clip_path = self.paths.managed_path(clip.relative_path)
+                        media_path = (
+                            current_media_path
+                            if media.id == current_media_artifact_id
+                            else self.paths.managed_path(media.relative_path)
+                        )
+                        if (
+                            not source_path.is_file()
+                            or not transcript_path.is_file()
+                            or not clip_path.is_file()
+                            or not transcript.content_hash
+                            or sha256_file(transcript_path) != transcript.content_hash
+                        ):
+                            continue
+                        if (
+                            media.id != current_media_artifact_id
+                            and self._sha256_media(media_path, cancel_event)
+                            != expected_cache["media_sha256"]
+                        ):
+                            continue
+                    except (OSError, ValueError):
+                        continue
+
+                    return {
+                        "candidate": deepcopy(candidate),
+                        "transcript_path": transcript_path,
+                        "source_evidence_id": record.id,
+                        "source_candidate_id": str(candidate.get("id") or ""),
+                        "source_transcript_artifact_id": transcript.id,
+                        "source_artifact_id": source.id,
+                        "source_revision_id": record.source_revision_id,
+                        "source_media_artifact_id": media.id,
+                    }
+        return None
+
+    def _materialize_cached_candidate(
+        self,
+        cached: Mapping[str, Any],
+        *,
+        evidence_id: str,
+        session_id: str,
+        source_artifact_id: str,
+        clip_artifact_id: str,
+        route: str,
+        route_dir: Path,
+        cache_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        candidate = deepcopy(cached["candidate"])
+        old_transcript_path = Path(cached["transcript_path"])
+        route_dir.mkdir(parents=True, exist_ok=True)
+        copy_path = route_dir / f"reused-{uuid4().hex}.json"
+        shutil.copyfile(old_transcript_path, copy_path)
+        transcript_artifact = self.artifacts.register(
+            copy_path,
+            kind="json",
+            role="subtitle_evidence_transcript",
+            session_id=session_id,
+            parent_ids=[clip_artifact_id, source_artifact_id],
+            metadata={
+                "evidence_id": evidence_id,
+                "route": route,
+                "language": candidate.get("language"),
+                "engine": candidate.get("engine"),
+                "model": candidate.get("model"),
+                "timing_kind": candidate.get("timing_kind"),
+                "timing_method": candidate.get("timing_method"),
+                "reused_from_evidence_id": cached["source_evidence_id"],
+                "reused_from_transcript_artifact_id": cached[
+                    "source_transcript_artifact_id"
+                ],
+            },
+        )
+        candidate["id"] = self._candidate_id(route)
+        candidate["transcript_artifact_id"] = transcript_artifact.id
+        candidate["cache"] = dict(cache_metadata)
+        candidate["reused_from"] = {
+            "evidence_id": cached["source_evidence_id"],
+            "candidate_id": cached["source_candidate_id"],
+            "transcript_artifact_id": cached["source_transcript_artifact_id"],
+            "source_artifact_id": cached["source_artifact_id"],
+            "source_revision_id": cached["source_revision_id"],
+            "source_media_artifact_id": cached["source_media_artifact_id"],
+        }
+        candidate.pop("resolution", None)
+        return candidate
+
     def _persist_candidates(
         self,
         evidence_id: str,
@@ -1087,7 +1510,12 @@ class SubtitleEvidenceService:
                 evidence.updated_at = utcnow()
 
     def run_request(
-        self, evidence_id: str, progress, cancel_event: threading.Event
+        self,
+        evidence_id: str,
+        progress,
+        cancel_event: threading.Event,
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
         """Run each selected STT route independently and persist safe results."""
 
@@ -1109,11 +1537,12 @@ class SubtitleEvidenceService:
             evidence.updated_at = utcnow()
             session.flush()
             session_id = evidence.session_id
-            source_artifact_id = evidence.source_artifact_id
             cue_start_ms = int(evidence.start_ms)
             cue_end_ms = int(evidence.end_ms)
             clip_start_ms = int(evidence.clip_start_ms)
             clip_end_ms = int(evidence.clip_end_ms)
+            source_artifact_id = evidence.source_artifact_id
+            source_media_artifact_id = str(evidence.source_media_artifact_id or "")
             routes = list(evidence.routes_json or [])
             audio_model_ids = list(evidence.audio_model_ids_json or [])
 
@@ -1126,8 +1555,10 @@ class SubtitleEvidenceService:
                     raise KeyError(evidence_id)
                 media = self._pinned_media(session, evidence)
                 source_path = self.paths.managed_path(media.relative_path)
+                source_language = self._source_language_scope(session, evidence)
             if not source_path.is_file():
                 raise FileNotFoundError(source_path)
+            media_sha256 = self._sha256_media(source_path, cancel_event)
             root = (
                 Path(self.session_dir_resolver(session_id))
                 / "subtitle-evidence"
@@ -1200,7 +1631,7 @@ class SubtitleEvidenceService:
                     )
 
                 try:
-                    settings, _settings_hash = self.workspace_settings.resolve(
+                    settings, settings_hash = self.workspace_settings.resolve(
                         session_id,
                         ["stt"],
                         run_override={"stt": {"stt_engine": route}},
@@ -1210,6 +1641,79 @@ class SubtitleEvidenceService:
                     runtime_settings = hydrate_stt_settings(
                         self.database, self.paths, settings["stt"]
                     )
+                    model_id = str(
+                        runtime_settings.get("stt_model")
+                        or (
+                            runtime_settings.get("qwen_asr_model")
+                            if route == "qwen3"
+                            else None
+                        )
+                        or route
+                    )
+                    configuration_sha256 = self._configuration_fingerprint(
+                        route,
+                        settings_hash,
+                        runtime_settings,
+                        model_identity={"model_id": model_id},
+                    )
+                    key_sha256 = self._cache_key(
+                        session_id=session_id,
+                        media_sha256=media_sha256,
+                        clip_start_ms=clip_start_ms,
+                        clip_end_ms=clip_end_ms,
+                        cue_start_ms=cue_start_ms,
+                        cue_end_ms=cue_end_ms,
+                        source_language=source_language,
+                        route=route,
+                        model_id=model_id,
+                        configuration_sha256=configuration_sha256,
+                    )
+                    cache_metadata = self._cache_metadata(
+                        key_sha256=key_sha256,
+                        media_sha256=media_sha256,
+                        configuration_sha256=configuration_sha256,
+                        prompt_sha256=None,
+                        route=route,
+                        model_id=model_id,
+                        clip_start_ms=clip_start_ms,
+                        clip_end_ms=clip_end_ms,
+                        cue_start_ms=cue_start_ms,
+                        cue_end_ms=cue_end_ms,
+                        source_language=source_language,
+                    )
+                    cached = (
+                        None
+                        if force_refresh
+                        else self._find_cached_candidate(
+                            session_id=session_id,
+                            evidence_id=evidence_id,
+                            route=route,
+                            expected_cache=cache_metadata,
+                            current_media_artifact_id=source_media_artifact_id,
+                            current_media_path=source_path,
+                            cancel_event=cancel_event,
+                        )
+                    )
+                    if cached is not None:
+                        candidate = self._materialize_cached_candidate(
+                            cached,
+                            evidence_id=evidence_id,
+                            session_id=session_id,
+                            source_artifact_id=source_artifact_id,
+                            clip_artifact_id=clip_artifact.id,
+                            route=route,
+                            route_dir=route_dir,
+                            cache_metadata=cache_metadata,
+                        )
+                        candidates.append(candidate)
+                        self._persist_candidates(
+                            evidence_id, candidates, clip_artifact.id
+                        )
+                        progress(
+                            (index + 1.0) / witness_count,
+                            f"Reused {route} evidence from this session",
+                        )
+                        continue
                     transcription = transcribe_source_file_with_metadata(
                         route_dir,
                         clip_path,
@@ -1239,12 +1743,11 @@ class SubtitleEvidenceService:
                         raise ValueError(
                             "The route returned no speech overlapping this cue."
                         )
-                    candidate_id = f"{route}-{index + 1}"
                     timing_method = self._timing_method(
                         route, transcript, runtime_settings
                     )
                     candidate = {
-                        "id": candidate_id,
+                        "id": self._candidate_id(route),
                         "route": route,
                         "status": "success",
                         "text": cue_text,
@@ -1271,6 +1774,7 @@ class SubtitleEvidenceService:
                             transcript.metadata,
                             commercial=route in CLOUD_STT_ENGINE_IDS,
                         ),
+                        "cache": cache_metadata,
                     }
                     transcript_artifact = self.artifacts.register(
                         Path(transcription.word_timestamps_path),
@@ -1307,7 +1811,7 @@ class SubtitleEvidenceService:
                 except Exception as error:  # noqa: BLE001
                     candidates.append(
                         {
-                            "id": f"{route}-{index + 1}",
+                            "id": self._candidate_id(route),
                             "route": route,
                             "status": "failed",
                             "error": self._safe_error(error, self.jobs),
@@ -1336,6 +1840,88 @@ class SubtitleEvidenceService:
                 runtime: dict[str, Any] | None = None
                 try:
                     runtime = self._audio_model_runtime(model_record_id)
+                    prompt = self._audio_prompt(
+                        cue_start_ms, cue_end_ms, clip_start_ms
+                    )
+                    prompt_sha256 = hashlib.sha256(
+                        prompt.encode("utf-8")
+                    ).hexdigest()
+                    configuration_sha256 = self._configuration_fingerprint(
+                        "audio_llm",
+                        None,
+                        runtime.get("llm_settings"),
+                        model_identity={
+                            "record_id": runtime.get("record_id"),
+                            "model_id": runtime.get("model_id"),
+                            "provider_id": runtime.get("provider_id"),
+                            "provider_key": runtime.get("provider_key"),
+                            "canonical_model": runtime.get("canonical_model"),
+                            "resolved_model": runtime.get("resolved_model"),
+                        },
+                    )
+                    model_id = str(
+                        runtime.get("model_id") or runtime.get("resolved_model")
+                    )
+                    key_sha256 = self._cache_key(
+                        session_id=session_id,
+                        media_sha256=media_sha256,
+                        clip_start_ms=clip_start_ms,
+                        clip_end_ms=clip_end_ms,
+                        cue_start_ms=cue_start_ms,
+                        cue_end_ms=cue_end_ms,
+                        source_language=source_language,
+                        route="audio_llm",
+                        model_id=f"{model_record_id}:{model_id}",
+                        configuration_sha256=configuration_sha256,
+                        prompt_sha256=prompt_sha256,
+                    )
+                    audio_model_id = f"{model_record_id}:{model_id}"
+                    cache_metadata = self._cache_metadata(
+                        key_sha256=key_sha256,
+                        media_sha256=media_sha256,
+                        configuration_sha256=configuration_sha256,
+                        prompt_sha256=prompt_sha256,
+                        route="audio_llm",
+                        model_id=audio_model_id,
+                        clip_start_ms=clip_start_ms,
+                        clip_end_ms=clip_end_ms,
+                        cue_start_ms=cue_start_ms,
+                        cue_end_ms=cue_end_ms,
+                        source_language=source_language,
+                    )
+                    cached = (
+                        None
+                        if force_refresh
+                        else self._find_cached_candidate(
+                            session_id=session_id,
+                            evidence_id=evidence_id,
+                            route="audio_llm",
+                            expected_cache=cache_metadata,
+                            current_media_artifact_id=source_media_artifact_id,
+                            current_media_path=source_path,
+                            cancel_event=cancel_event,
+                        )
+                    )
+                    if cached is not None:
+                        candidate = self._materialize_cached_candidate(
+                            cached,
+                            evidence_id=evidence_id,
+                            session_id=session_id,
+                            source_artifact_id=source_artifact_id,
+                            clip_artifact_id=clip_artifact.id,
+                            route="audio_llm",
+                            route_dir=root / "audio_llm" / model_record_id,
+                            cache_metadata=cache_metadata,
+                        )
+                        candidates.append(candidate)
+                        self._persist_candidates(
+                            evidence_id, candidates, clip_artifact.id
+                        )
+                        progress(
+                            (index + 1.0) / witness_count,
+                            "Reused audio evidence from this session",
+                        )
+                        continue
                     progress(
                         (index + 0.05) / witness_count,
                         f"Sending bounded audio to {runtime['model_id']}",
@@ -1356,7 +1942,7 @@ class SubtitleEvidenceService:
 
                     audio_result = transcribe_audio_evidence(
                         clip_path,
-                        self._audio_prompt(cue_start_ms, cue_end_ms, clip_start_ms),
+                        prompt,
                         str(runtime["resolved_model"]),
                         runtime["llm_settings"],
                         provider_key=str(runtime["provider_key"]),
@@ -1372,7 +1958,7 @@ class SubtitleEvidenceService:
                         )
                     transport = dict(audio_result.transport_metadata)
                     candidate = {
-                        "id": f"audio_llm-{model_record_id}",
+                        "id": self._candidate_id("audio_llm"),
                         "route": "audio_llm",
                         "status": "success",
                         "text": audio_result.transcript,
@@ -1396,6 +1982,7 @@ class SubtitleEvidenceService:
                             audio_result.completion.cost,
                             audio_result.completion.cost_source,
                         ),
+                        "cache": cache_metadata,
                     }
                     route_dir = root / "audio_llm" / model_record_id
                     route_dir.mkdir(parents=True, exist_ok=True)
@@ -1452,7 +2039,7 @@ class SubtitleEvidenceService:
                 except Exception as error:  # noqa: BLE001
                     candidates.append(
                         {
-                            "id": f"audio_llm-{model_record_id}",
+                            "id": self._candidate_id("audio_llm"),
                             "route": "audio_llm",
                             "status": "failed",
                             "model": (

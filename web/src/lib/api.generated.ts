@@ -550,6 +550,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dispatch-runs/{runId}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDispatchPreview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dispatch-runs/{runId}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["terminateDispatchRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/document-revisions/{revisionId}/words": {
         parameters: {
             query?: never;
@@ -2952,6 +2984,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/subtitles/split-boundaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["inspectReviewSplitBoundaries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
         parameters: {
             query?: never;
@@ -3001,6 +3049,22 @@ export interface paths {
         };
         get: operations["getWorkflow"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/workflow-inputs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getWorkflowInputs"];
+        put: operations["selectWorkflowInput"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3258,6 +3322,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["claimSpeechOptimizationDispatchBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/subtitle-evidence/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSubtitleEvidenceRoutes"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4564,6 +4644,23 @@ export interface components {
             execution_mode: "parallel";
             max_parallel_batches: unknown;
         });
+        /** DispatchRunTerminationRequest */
+        DispatchRunTerminationRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "cancelled" | "superseded";
+            /** Expected Status */
+            expected_status: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Replacement Run Id
+             * @default null
+             */
+            replacement_run_id?: string | null;
+        };
         /** DispatchSplitBoundariesRequest */
         DispatchSplitBoundariesRequest: {
             /** Cue Id */
@@ -4623,6 +4720,11 @@ export interface components {
             session_id: string;
             /** Source Artifact Id */
             source_artifact_id: string;
+            /**
+             * Source Content Hash
+             * @default null
+             */
+            source_content_hash?: string | null;
             /** Source Language */
             source_language: string;
             /**
@@ -6237,6 +6339,25 @@ export interface components {
             /** Expected State Hash */
             expected_state_hash: string;
         };
+        /** ReviewSplitInspection */
+        ReviewSplitInspection: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Limit
+             * @default 30
+             */
+            limit?: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset?: number;
+            /** Segment Id */
+            segment_id: string;
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
         /** RvcConvertRequest */
         RvcConvertRequest: {
             /**
@@ -7264,6 +7385,11 @@ export interface components {
             /** Cue Id */
             cue_id: number;
             /**
+             * Force Refresh
+             * @default false
+             */
+            force_refresh?: boolean;
+            /**
              * Padding After Ms
              * @default 2000
              */
@@ -7307,6 +7433,11 @@ export interface components {
         SubtitleReviewRequest: {
             /** Expected Revision */
             expected_revision: number;
+            /**
+             * Expected Source Hash
+             * @default null
+             */
+            expected_source_hash?: string | null;
             /** Segments */
             segments: components["schemas"]["SubtitleSegmentInput"][];
             /**
@@ -7322,6 +7453,16 @@ export interface components {
             /** Evidence Ids */
             evidence_ids?: string[];
             /**
+             * Id
+             * @default null
+             */
+            id?: string | null;
+            /**
+             * Origin Segment Id
+             * @default null
+             */
+            origin_segment_id?: string | null;
+            /**
              * Review Note
              * @default
              */
@@ -7332,15 +7473,32 @@ export interface components {
              * @enum {string}
              */
             review_state?: "clear" | "uncertain";
+            /** Source Passage Ids */
+            source_passage_ids?: string[];
             /**
              * Speaker
              * @default null
              */
             speaker?: string | null;
+            /**
+             * Split Boundary Id
+             * @default null
+             */
+            split_boundary_id?: string | null;
             /** Start Ms */
             start_ms: number;
+            /**
+             * Starts New Turn
+             * @default false
+             */
+            starts_new_turn?: boolean;
             /** Text */
             text: string;
+            /**
+             * Turn Id
+             * @default null
+             */
+            turn_id?: string | null;
             /** Uncertain Source Cue Ids */
             uncertain_source_cue_ids?: number[];
         };
@@ -8097,6 +8255,30 @@ export interface components {
              * @default null
              */
             workflow_run_id?: string | null;
+        };
+        /** WorkflowInputSelection */
+        WorkflowInputSelection: {
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Consumer
+             * @enum {string}
+             */
+            consumer: "translation" | "generation";
+            /** Expected Outcome Revision */
+            expected_outcome_revision: number;
+            /** Expected Selection Revision */
+            expected_selection_revision: number;
+            /**
+             * Expected Translation Settings Revision
+             * @default null
+             */
+            expected_translation_settings_revision?: number | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "source" | "correction" | "translation";
         };
         /** WorkflowPlanCreateRequest */
         WorkflowPlanCreateRequest: {
@@ -8937,6 +9119,98 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["DispatchBatchClaimResponse"];
                 };
+            };
+        };
+    };
+    getDispatchPreview: {
+        parameters: {
+            query?: {
+                batch_ordinal?: number;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    terminateDispatchRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchRunTerminationRequest"];
+            };
+        };
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -14504,6 +14778,51 @@ export interface operations {
             };
         };
     };
+    inspectReviewSplitBoundaries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewSplitInspection"];
+            };
+        };
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     saveSubtitleReview: {
         parameters: {
             query?: never;
@@ -14676,6 +14995,94 @@ export interface operations {
         responses: {
             /** @description Workflow snapshot */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWorkflowInputs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    selectWorkflowInput: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowInputSelection"];
+            };
+        };
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15148,6 +15555,48 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SpeechOptimizationDispatchBatchClaimResponse"];
                 };
+            };
+        };
+    };
+    listSubtitleEvidenceRoutes: {
+        parameters: {
+            query?: {
+                language?: string;
+                include_languages?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

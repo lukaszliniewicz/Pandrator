@@ -48,35 +48,39 @@
     onclear: () => void;
   } = $props();
 
-  const routeOptions: Array<{
-    id: SubtitleEvidenceRoute;
-    label: string;
-    description: string;
-    commercial?: boolean;
-  }> = [
-    {
-      id: 'whisper',
-      label: 'Whisper',
-      description: 'Local independent ASR with word timing.'
-    },
-    {
-      id: 'moss',
-      label: 'MOSS',
-      description: 'Local transcription plus alignment.'
-    },
-    {
-      id: 'azure_mai_transcribe_2',
-      label: 'MAI-Transcribe-2',
-      description: 'Azure preview model with native word timing.',
-      commercial: true
-    },
-    {
-      id: 'audio_llm',
-      label: 'Audio-native LLM',
-      description:
-        'A configured multimodal model returns an untimed transcript for the bounded clip.'
+  let routeOptions = $state<
+    Array<{
+      id: SubtitleEvidenceRoute;
+      label: string;
+      description: string;
+      commercial: boolean;
+      available: boolean;
+    }>
+  >([]);
+  let routesLoading = $state(true);
+  let forceRefresh = $state(false);
+
+  async function loadRoutes() {
+    routesLoading = true;
+    try {
+      const result = await sessionApi.subtitleEvidenceRoutes();
+      routeOptions = result.routes.map((route) => ({
+        id: route.route,
+        label: route.label,
+        description:
+          route.reason || `${route.timing_method.replaceAll('_', ' ')} timing`,
+        commercial: route.remote === true,
+        available: route.ready !== false && route.language_supported !== false
+      }));
+      selectedRoutes = selectedRoutes.filter((id) =>
+        routeOptions.some((route) => route.id === id && route.available)
+      );
+    } catch (caught) {
+      error = errorMessage(caught);
+    } finally {
+      routesLoading = false;
     }
-  ];
+  }
 
   type AudioModelOption = {
     id: string;
@@ -207,6 +211,7 @@
   onDestroy(stopPolling);
   onMount(() => {
     void loadAudioModels();
+    void loadRoutes();
   });
 
   async function requestEvidence() {
@@ -223,7 +228,8 @@
         routes: selectedRoutes,
         audio_model_ids: selectedAudioModelIds,
         padding_before_ms: 2000,
-        padding_after_ms: 2000
+        padding_after_ms: 2000,
+        force_refresh: forceRefresh
       });
       const record = response.evidence;
       polledRecord = record;
@@ -364,6 +370,9 @@
     ></textarea>
   </label>
 
+  {#if routesLoading}<p class="muted mt-3 text-xs" role="status">
+      Loading transcription engines…
+    </p>{/if}
   <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
     {#each routeOptions as option}
       <label
@@ -372,6 +381,7 @@
       >
         <input
           type="checkbox"
+          disabled={!option.available || routesLoading}
           checked={selectedRoutes.includes(option.id)}
           onchange={() => toggleRoute(option.id)}
         />
@@ -439,10 +449,15 @@
     </div>
   {/if}
 
+  <label class="muted mt-3 flex items-center gap-2 text-xs">
+    <input type="checkbox" bind:checked={forceRefresh} /> Run again instead of reusing
+    matching audio evidence
+  </label>
   <div class="mt-3 flex flex-wrap gap-2">
     <button
       onclick={requestEvidence}
-      disabled={requesting ||
+      disabled={routesLoading ||
+        requesting ||
         active ||
         !segment.id ||
         !selectedRoutes.length ||

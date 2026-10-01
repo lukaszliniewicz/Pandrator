@@ -215,10 +215,15 @@
         "pandrator_claim_dispatch_batch",
         "pandrator_renew_dispatch_batch",
         "pandrator_release_dispatch_batch",
-        "pandrator_submit_dispatch_batch"
+        "pandrator_submit_dispatch_batch",
+        "pandrator_get_workflow_inputs",
+        "pandrator_select_workflow_input",
+        "pandrator_get_dispatch_preview",
+        "pandrator_terminate_dispatch_run",
+        "pandrator_get_subtitle_evidence_routes"
       ],
       "minimum_application_version": "0.8.16",
-      "revision": 2,
+      "revision": 3,
       "file": "subtitles.md"
     },
     {

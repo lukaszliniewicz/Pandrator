@@ -26,7 +26,8 @@
     SubtitleReviewPayload as Payload,
     SubtitleEvidenceCandidate,
     SubtitleEvidenceRecord,
-    SubtitleSegment as Segment
+    SubtitleSegment as Segment,
+    SubtitleSplitInspection
   } from './api-models';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import GuidedTour from './GuidedTour.svelte';
@@ -64,6 +65,21 @@
   let comparisonLoading = $state(false);
   let saving = $state(false);
   let audioPreview = $state<HTMLAudioElement>();
+  let videoPreview = $state<HTMLVideoElement>();
+  let captionsUrl = $state('');
+  let splitSegment = $state<Segment | null>(null);
+  let splitInspection = $state<SubtitleSplitInspection | null>(null);
+  let splitLoading = $state(false);
+  let selectedSplitBoundary = $state('');
+  let splitLeft = $state('');
+  let splitRight = $state('');
+  let splitStartsTurn = $state(false);
+  let splitError = $state('');
+  let reviewTime = $state(0);
+  function playbackElement() {
+    return sourceIsVideo ? videoPreview : audioPreview;
+  }
+
   let sourceAudioUrl = $state('');
   let sourceAudioPreparing = $state(false);
   let sourceAudioError = $state('');
@@ -98,6 +114,12 @@
   const columns = $derived(payload?.columns ?? []);
   const editColumn = $derived(
     columns.find((column) => column.artifact_id === editArtifactId)
+  );
+  const sourceIsVideo = $derived(
+    editColumn?.source_media_mime_type?.startsWith('video/') ||
+      ['mp4', 'webm', 'mkv', 'mov'].includes(
+        editColumn?.source_media_kind ?? ''
+      )
   );
   const editStage = $derived(editColumn?.stage ?? '');
   const sourceMediaArtifactId = $derived(
@@ -327,6 +349,10 @@
     const next = nextSegment(segment);
     return (
       Boolean(next) &&
+      !segment.origin_segment_id &&
+      !next?.origin_segment_id &&
+      !next?.starts_new_turn &&
+      (segment.turn_id ?? null) === (next?.turn_id ?? null) &&
       speakerLabel(segment.speaker).toLocaleLowerCase() ===
         speakerLabel(next?.speaker).toLocaleLowerCase()
     );
@@ -334,9 +360,11 @@
 
   function mergeTitle(segment: Segment) {
     if (!nextSegment(segment)) return 'There is no following cue';
+    if (segment.origin_segment_id || nextSegment(segment)?.origin_segment_id)
+      return 'Save the split before merging again';
     return canMergeNext(segment)
       ? 'Merge with the next cue'
-      : 'Cues from different speakers cannot be merged';
+      : 'Separate utterances or speakers cannot be merged';
   }
 
   function previousColumnText(row: Row) {
@@ -361,6 +389,8 @@
     refreshCatalog = false
   ) {
     loading = true;
+    splitSegment = null;
+    splitInspection = null;
     error = '';
     try {
       const [nextPayload, nextCatalog] = await Promise.all([
@@ -403,31 +433,83 @@
     await load(remaining);
   }
 
-  function split(segment: Segment) {
+  async function inspectSplit(segment: Segment, offset = 0) {
+    const column = editColumn;
+    if (!column || !segment.id) return;
+    splitSegment = segment;
+    splitInspection = null;
+    splitLoading = true;
+    splitError = '';
+    const selectedArtifact = column.artifact_id;
+    splitStartsTurn = false;
+    try {
+      const inspection = await sessionApi.subtitleSplitBoundaries(sessionId, {
+        source_artifact_id: column.artifact_id,
+        segment_id: segment.id,
+        expected_revision: column.revision,
+        offset
+      });
+      if (editArtifactId !== selectedArtifact || splitSegment !== segment)
+        return;
+      splitInspection = inspection;
+      selectedSplitBoundary = '';
+      if (splitInspection.status === 'unavailable')
+        splitError =
+          splitInspection.reason ?? 'No verified split boundary is available.';
+    } catch (caught) {
+      splitError = errorMessage(caught);
+    } finally {
+      splitLoading = false;
+    }
+  }
+
+  function chooseSplitBoundary() {
+    const anchor = splitInspection?.boundaries.find(
+      (value) => value.id === selectedSplitBoundary
+    );
+    if (!anchor || !splitSegment) return;
+    const words = splitSegment.text.trim().split(/\s+/);
+    splitLeft = words.slice(0, anchor.after_word).join(' ');
+    splitRight = words.slice(anchor.after_word).join(' ');
+  }
+
+  function applySplit() {
+    const segment = splitSegment;
+    const anchor = splitInspection?.boundaries.find(
+      (value) => value.id === selectedSplitBoundary
+    );
     const records = editColumn?.segments;
-    if (!records) return;
+    if (
+      !segment?.id ||
+      !anchor ||
+      !records ||
+      !splitLeft.trim() ||
+      !splitRight.trim()
+    )
+      return;
     const index = stageIndex(segment);
     if (index < 0) return;
-    const midpoint = Math.max(1, Math.floor(segment.text.length / 2));
-    const space = segment.text.lastIndexOf(' ', midpoint);
-    const boundary = space > 0 ? space : midpoint;
-    const time = Math.floor((segment.start_ms + segment.end_ms) / 2);
-    const first = {
+    const shared = {
       ...segment,
       id: undefined,
-      text: segment.text.slice(0, boundary).trim(),
-      end_ms: time
+      origin_segment_id: segment.id,
+      split_boundary_id: anchor.id
+    };
+    const first = {
+      ...shared,
+      text: splitLeft.trim(),
+      end_ms: anchor.left_end_ms
     };
     const second = {
-      ...segment,
-      id: undefined,
-      text: segment.text.slice(boundary).trim(),
-      start_ms: time
+      ...shared,
+      text: splitRight.trim(),
+      start_ms: anchor.right_start_ms,
+      starts_new_turn: splitStartsTurn
     };
-    if (first.text && second.text) {
-      records.splice(index, 1, first, second);
-      replaceInRows(segment, [first, second]);
-    }
+    records.splice(index, 1, first, second);
+    replaceInRows(segment, [first, second]);
+    splitSegment = null;
+    splitInspection = null;
   }
 
   function mergeNext(segment: Segment) {
@@ -442,6 +524,20 @@
         id: undefined,
         end_ms: next.end_ms,
         text: `${segment.text} ${next.text}`.trim(),
+        source_passage_ids: Array.from(
+          new Set([
+            ...(segment.source_passage_ids ?? []),
+            ...(next.source_passage_ids ?? [])
+          ])
+        ),
+        origin_segment_id: undefined,
+        split_boundary_id: undefined,
+        uncertain_source_cue_ids: Array.from(
+          new Set([
+            ...(segment.uncertain_source_cue_ids ?? []),
+            ...(next.uncertain_source_cue_ids ?? [])
+          ])
+        ),
         review_state:
           segment.review_state === 'uncertain' ||
           next.review_state === 'uncertain'
@@ -506,17 +602,18 @@
   function stopCuePreview(pause = false) {
     if (cuePreviewFrame !== null) window.cancelAnimationFrame(cuePreviewFrame);
     cuePreviewFrame = null;
-    if (pause) audioPreview?.pause();
+    if (pause) playbackElement()?.pause();
   }
 
   function watchCueBoundary() {
-    if (!audioPreview || audioPreview.paused) {
+    const player = playbackElement();
+    if (!player || player.paused) {
       cuePreviewFrame = null;
       return;
     }
-    if (audioPreview.currentTime >= cuePreviewEnd - 0.01) {
-      audioPreview.pause();
-      audioPreview.currentTime = cuePreviewEnd;
+    if (player.currentTime >= cuePreviewEnd - 0.01) {
+      player.pause();
+      player.currentTime = cuePreviewEnd;
       cuePreviewFrame = null;
       return;
     }
@@ -524,16 +621,17 @@
   }
 
   async function previewSegment(segment: Segment) {
-    if (!audioPreview) {
+    const player = playbackElement();
+    if (!player) {
       cuePlaybackError = 'Source audio is not ready for cue playback yet.';
       return;
     }
     cuePlaybackError = '';
     stopCuePreview(true);
     try {
-      audioPreview.currentTime = segment.start_ms / 1000;
+      player.currentTime = segment.start_ms / 1000;
       cuePreviewEnd = segment.end_ms / 1000;
-      await audioPreview.play();
+      await player.play();
       cuePreviewFrame = window.requestAnimationFrame(watchCueBoundary);
     } catch (caught) {
       cuePreviewFrame = null;
@@ -561,6 +659,10 @@
     sourceAudioController?.abort();
     stopCuePreview(true);
     sourceAudioUrl = '';
+    if (sourceIsVideo) {
+      sourceAudioUrl = `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
+      return;
+    }
     const controller = new AbortController();
     sourceAudioController = controller;
     sourceAudioPreparing = true;
@@ -629,25 +731,23 @@
         {
           source_artifact_id: column.artifact_id,
           expected_revision: column.revision,
-          segments: column.segments.map(
-            ({
-              start_ms,
-              end_ms,
-              text,
-              speaker,
-              review_state,
-              review_note,
-              evidence_ids
-            }) => ({
-              start_ms,
-              end_ms,
-              text,
-              speaker,
-              review_state: review_state ?? 'clear',
-              review_note: review_note ?? '',
-              evidence_ids: evidence_ids ?? []
-            })
-          )
+          expected_source_hash: column.source_content_hash,
+          segments: column.segments.map((item) => ({
+            id: item.id,
+            turn_id: item.turn_id,
+            source_passage_ids: item.source_passage_ids ?? [],
+            starts_new_turn: item.starts_new_turn ?? false,
+            origin_segment_id: item.origin_segment_id,
+            split_boundary_id: item.split_boundary_id,
+            start_ms: item.start_ms,
+            end_ms: item.end_ms,
+            text: item.text,
+            speaker: item.speaker,
+            review_state: item.review_state ?? 'clear',
+            review_note: item.review_note ?? '',
+            evidence_ids: item.evidence_ids ?? [],
+            uncertain_source_cue_ids: item.uncertain_source_cue_ids ?? []
+          }))
         }
       );
       const previousId = column.artifact_id;
@@ -673,6 +773,7 @@
 
   $effect(() => {
     const artifactId = sourceMediaArtifactId;
+    void sourceIsVideo;
     untrack(() => {
       sourceAudioController?.abort();
       stopCuePreview(true);
@@ -688,6 +789,24 @@
     const artifactId = editArtifactId;
     if (artifactId && artifactId !== evidenceArtifactId)
       void loadEvidence(artifactId);
+  });
+  function vttTime(ms: number) {
+    const value = Math.max(0, Math.round(ms));
+    return `${String(Math.floor(value / 3600000)).padStart(2, '0')}:${String(Math.floor(value / 60000) % 60).padStart(2, '0')}:${String(Math.floor(value / 1000) % 60).padStart(2, '0')}.${String(value % 1000).padStart(3, '0')}`;
+  }
+  $effect(() => {
+    const cues = editColumn?.segments ?? [];
+    const vtt =
+      'WEBVTT\n\n' +
+      cues
+        .map(
+          (cue, index) =>
+            `${index + 1}\n${vttTime(cue.start_ms)} --> ${vttTime(cue.end_ms)}\n${cue.text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n`
+        )
+        .join('\n');
+    const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+    captionsUrl = url;
+    return () => URL.revokeObjectURL(url);
   });
 </script>
 
@@ -874,7 +993,31 @@
       >
         {#if sourceMediaError}<p class="text-xs text-red-500" role="alert">
             {sourceMediaError}
-          </p>{:else if sourceAudioUrl}<AudioPlayer
+          </p>{:else if sourceAudioUrl && sourceIsVideo}<div
+            class="mx-auto max-w-3xl"
+          >
+            <video
+              bind:this={videoPreview}
+              src={sourceAudioUrl}
+              controls
+              preload="metadata"
+              class="max-h-80 w-full rounded-xl bg-black"
+              aria-label="Edited video with selected subtitle revision"
+              ontimeupdate={() =>
+                (reviewTime = (videoPreview?.currentTime ?? 0) * 1000)}
+            >
+              <track
+                kind="captions"
+                src={captionsUrl}
+                srclang={editColumn?.language || 'en'}
+                label="Selected subtitle revision"
+                default
+              />
+            </video>
+            <p class="muted mt-1 text-xs">
+              Selected revision · captions include your current draft changes
+            </p>
+          </div>{:else if sourceAudioUrl}<AudioPlayer
             bind:element={audioPreview}
             src={sourceAudioUrl}
             label="Source audio preview"
@@ -898,6 +1041,67 @@
         {#if cuePlaybackError}<p class="mt-2 text-xs text-red-500" role="alert">
             {cuePlaybackError}
           </p>{/if}
+      </div>{/if}
+    {#if splitSegment}<div
+        class="mx-5 mt-4 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 sm:mx-7"
+      >
+        <div class="flex items-center justify-between">
+          <strong class="text-sm">Split at a source-word boundary</strong
+          ><button
+            onclick={() => (splitSegment = null)}
+            aria-label="Close split preview"><X size={16} /></button
+          >
+        </div>
+        {#if splitLoading}<p class="muted mt-2 text-xs" role="status">
+            Checking word timing…
+          </p>{/if}
+        {#if splitError}<p class="mt-2 text-xs text-red-500" role="alert">
+            {splitError}
+          </p>{/if}
+        {#if splitInspection?.boundaries.length}<label
+            class="mt-3 block text-xs"
+            >Boundary<select
+              bind:value={selectedSplitBoundary}
+              onchange={chooseSplitBoundary}
+              class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] p-2"
+              ><option value="">Choose a verified boundary</option
+              >{#each splitInspection.boundaries as anchor}<option
+                  value={anchor.id}
+                  >{anchor.left_text} | {anchor.right_text} · {(
+                    anchor.left_end_ms / 1000
+                  ).toFixed(2)}s</option
+                >{/each}</select
+            ></label
+          >{/if}
+        {#if splitInspection?.next_offset != null}<button
+            class="mt-2 text-xs underline"
+            onclick={() =>
+              splitSegment &&
+              inspectSplit(splitSegment, splitInspection?.next_offset ?? 0)}
+            >More boundaries</button
+          >{/if}
+        {#if selectedSplitBoundary}<div class="mt-3 grid gap-3 sm:grid-cols-2">
+            <label class="text-xs"
+              >First part<textarea
+                bind:value={splitLeft}
+                class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                rows="3"></textarea></label
+            ><label class="text-xs"
+              >Second part<textarea
+                bind:value={splitRight}
+                class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                rows="3"></textarea></label
+            >
+          </div>
+          <label class="muted mt-2 flex items-center gap-2 text-xs"
+            ><input type="checkbox" bind:checked={splitStartsTurn} /> Second part
+            starts a new utterance</label
+          ><button
+            onclick={applySplit}
+            disabled={!splitLeft.trim() || !splitRight.trim()}
+            class="mt-3 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+            >Apply split</button
+          >{/if}
       </div>{/if}
     {#if error}<div
         class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7"
@@ -965,6 +1169,8 @@
                             class:needs-review={column.artifact_id ===
                               editArtifactId && segmentNeedsReview(item)}
                             class="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-2.5"
+                            class:playing-cue={reviewTime >= item.start_ms &&
+                              reviewTime < item.end_ms}
                           >
                             {#if column.artifact_id === editArtifactId && segmentNeedsReview(item)}<div
                                 class="mb-2 flex items-start gap-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[.65rem] text-amber-800"
@@ -977,6 +1183,18 @@
                                     >{/if}
                                 </span>
                               </div>{/if}
+                            {#if item.turn_id && stageIndex(item) > 0 && editColumn?.segments[stageIndex(item) - 1]?.turn_id !== item.turn_id}<p
+                                class="muted mb-2 text-xs font-semibold"
+                              >
+                                New utterance
+                              </p>{/if}
+                            {#if column.artifact_id === editArtifactId}<label
+                                class="muted mb-2 flex items-center gap-2 text-xs"
+                                ><input
+                                  type="checkbox"
+                                  bind:checked={item.starts_new_turn}
+                                /> Start a new utterance here</label
+                              >{/if}
                             {#if speakerLabel(item.speaker)}<div class="mb-2">
                                 <span
                                   class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]"
@@ -1010,14 +1228,16 @@
                                 <button
                                   type="button"
                                   onclick={() => previewSegment(item)}
-                                  disabled={!sourceAudioUrl || !audioPreview}
-                                  title={sourceAudioUrl && audioPreview
+                                  disabled={!sourceAudioUrl ||
+                                    !playbackElement()}
+                                  title={sourceAudioUrl && playbackElement()
                                     ? 'Play this cue from the source recording'
                                     : 'Source audio is still being prepared'}
                                   class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
                                   ><Play size={13} /> Play</button
                                 ><button
-                                  onclick={() => split(item)}
+                                  onclick={() => inspectSplit(item)}
+                                  disabled={!item.id || splitLoading}
                                   class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
                                   ><Scissors size={13} /> Split</button
                                 ><button
@@ -1113,6 +1333,10 @@
 <GuidedTour tourId="subtitle-review" steps={tourSteps} bind:open={tourOpen} />
 
 <style>
+  .playing-cue {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   .review-overlay.maximized {
     padding: 0;
   }

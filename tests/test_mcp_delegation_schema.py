@@ -36,28 +36,15 @@ def _valid_arguments(model, *, execution_mode: str, max_parallel_batches: int):
 
 
 @pytest.mark.parametrize("model", MIXIN_USERS)
-def test_each_execution_alternative_retains_the_complete_input_schema(model):
+def test_execution_conditionals_keep_flat_arguments_once(model):
     schema = model.model_json_schema()
     Draft202012Validator.check_schema(schema)
-
-    alternatives = schema["oneOf"]
-    assert len(alternatives) == 2
-    common_properties = set(schema["properties"])
-    common_required = set(schema.get("required", ()))
-    for alternative in alternatives:
-        assert common_properties <= set(alternative["properties"])
-        assert common_required <= set(alternative.get("required", ()))
-        assert alternative.get("additionalProperties") == schema.get(
-            "additionalProperties"
-        )
-
-    serial, parallel = alternatives
-    assert serial["properties"]["execution_mode"]["const"] == "serial"
-    assert serial["properties"]["max_parallel_batches"]["const"] == 1
-    assert parallel["properties"]["execution_mode"]["const"] == "parallel"
-    assert parallel["properties"]["max_parallel_batches"]["minimum"] == 2
-    assert parallel["properties"]["max_parallel_batches"]["maximum"] == 8
-    assert {"execution_mode", "max_parallel_batches"} <= set(parallel["required"])
+    assert "oneOf" not in schema
+    assert len(schema["allOf"]) == 2
+    for constraint in schema["allOf"]:
+        assert set(constraint["then"]["properties"]) == {"max_parallel_batches"}
+    assert "session_id" in schema["properties"]
+    assert "session_id" in schema["required"]
 
 
 @pytest.mark.parametrize("model", MIXIN_USERS)
@@ -104,10 +91,10 @@ def test_schema_mutator_preserves_flat_tool_arguments_and_required_fields():
 
     execution_policy_json_schema(schema)
 
-    for alternative in schema["oneOf"]:
-        assert set(schema["properties"]) <= set(alternative["properties"])
-        assert "session_id" in alternative["required"]
-        assert alternative["additionalProperties"] is False
+    assert "oneOf" not in schema
+    assert schema["required"] == ["session_id"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]) == {"session_id", "execution_mode", "max_parallel_batches"}
 
     validator = Draft202012Validator(schema)
     assert validator.is_valid(
@@ -116,3 +103,15 @@ def test_schema_mutator_preserves_flat_tool_arguments_and_required_fields():
     assert not validator.is_valid(
         {"session_id": "session-1", "execution_mode": "serial", "max_parallel_batches": 2}
     )
+
+
+@pytest.mark.parametrize("model", MIXIN_USERS)
+def test_execution_defaults_still_obey_conditional_schema(model):
+    arguments = _valid_arguments(model, execution_mode="serial", max_parallel_batches=1)
+    del arguments["execution_mode"]
+    validator = Draft202012Validator(model.model_json_schema())
+    assert validator.is_valid(arguments)
+    arguments["max_parallel_batches"] = 2
+    assert not validator.is_valid(arguments)
+    with pytest.raises(ValidationError):
+        model.model_validate(arguments)

@@ -726,10 +726,11 @@ def build_translation_task_instructions(
         legacy_enabled=include_timing_context,
         default="none",
     )
+    count_label = "batch.cue_count" if structured_context and dispatch_result else str(int(subtitle_count))
     prompt = TRANSLATION_PROMPT_TEMPLATE.format(
         source_lang=source_language,
         target_lang=target_language,
-        subtitle_count=int(subtitle_count),
+        subtitle_count=count_label,
         removal_policy=(
             "You MUST NOT remove any subtitles. Translate every subtitle, even if it contains filler words."
             if no_remove_subtitles
@@ -748,11 +749,11 @@ def build_translation_task_instructions(
             if logical_passages
             else (
                 f"Return one typed result object with `kind` equal to `translation` "
-                f"and a `translations` array containing exactly {int(subtitle_count)} "
+                f"and a `translations` array containing exactly {count_label} "
                 '`{"cue_id": 1, "text": "translated text"}` items. The optional '
                 "`glossary_updates` object contains only new terminology."
                 if dispatch_result
-                else f"Return EXACTLY {int(subtitle_count)} items as "
+                else f"Return EXACTLY {count_label} items as "
                 '`{"cue_id": 1, "text": "translated text"}` objects.'
             )
         ),
@@ -780,10 +781,10 @@ def build_translation_task_instructions(
             "Return each input ID exactly once, in order. A merged group gets one complete text; never split a passage into separately timed outputs."
             if logical_passages
             else (
-                f"Return exactly {int(subtitle_count)} translations inside the typed "
+                f"Return exactly {count_label} translations inside the typed "
                 "result object, preserving every supplied `cue_id`."
                 if dispatch_result
-                else f"Return exactly {int(subtitle_count)} subtitles with the same "
+                else f"Return exactly {count_label} subtitles with the same "
                 "cue IDs as the input."
             )
         ),

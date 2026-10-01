@@ -325,6 +325,12 @@ class PdfEditRequest(StrictModel):
 
 
 class SubtitleSegmentInput(StrictModel):
+    id: str | None = Field(default=None, max_length=80)
+    turn_id: str | None = Field(default=None, max_length=120)
+    source_passage_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=500)
+    starts_new_turn: bool = Field(default=False, strict=True)
+    origin_segment_id: str | None = Field(default=None, max_length=80)
+    split_boundary_id: str | None = Field(default=None, max_length=120)
     start_ms: int = Field(ge=0)
     end_ms: int = Field(gt=0)
     text: str = Field(min_length=1)
@@ -352,6 +358,7 @@ class SubtitleSegmentInput(StrictModel):
 
 class SubtitleReviewRequest(StrictModel):
     source_artifact_id: str | None = None
+    expected_source_hash: str | None = Field(default=None, min_length=1, max_length=128)
     expected_revision: int = Field(ge=0)
     segments: list[SubtitleSegmentInput] = Field(min_length=1)
 
@@ -374,6 +381,7 @@ class SubtitleEvidenceCreateRequest(StrictModel):
     audio_model_ids: list[str] = Field(default_factory=list, max_length=3)
     padding_before_ms: int = Field(default=2000, ge=0, le=15000)
     padding_after_ms: int = Field(default=2000, ge=0, le=15000)
+    force_refresh: bool = False
 
     @field_validator("routes")
     @classmethod
@@ -1007,6 +1015,30 @@ class DispatchExecutionMixin(StrictModel):
         return self
 
 
+class ReviewSplitInspection(StrictModel):
+    source_artifact_id: str = Field(min_length=1, max_length=80)
+    segment_id: str = Field(min_length=1, max_length=80)
+    expected_revision: int = Field(ge=0)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=30, ge=1, le=100)
+
+
+class WorkflowInputSelection(StrictModel):
+    consumer: Literal["translation", "generation"]
+    role: Literal["source", "correction", "translation"]
+    artifact_id: str = Field(min_length=1, max_length=80)
+    expected_outcome_revision: int = Field(ge=0)
+    expected_selection_revision: int = Field(ge=0)
+    expected_translation_settings_revision: int | None = Field(default=None, ge=0)
+
+
+class DispatchRunTerminationRequest(StrictModel):
+    expected_status: str = Field(min_length=1, max_length=40)
+    action: Literal["cancelled", "superseded"]
+    replacement_run_id: str | None = Field(default=None, min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
 class DispatchRunCreateRequest(DispatchExecutionMixin):
     kind: Literal["correction", "translation"]
     source_artifact_id: str | None = Field(default=None, min_length=1, max_length=80)
@@ -1260,6 +1292,7 @@ class DispatchTaskContract(StrictModel):
     kind: Literal["correction", "translation"]
     output_role: Literal["correction", "translation"]
     source_artifact_id: str
+    source_content_hash: str | None = None
     source_language: str
     target_language: str | None = None
     instructions: str
@@ -1828,6 +1861,9 @@ SCHEMA_MODELS = {
         TtsEndpointDiscoveryRequest,
         AgentRunCreateRequest,
         DispatchRunCreateRequest,
+        DispatchRunTerminationRequest,
+        ReviewSplitInspection,
+        WorkflowInputSelection,
         DispatchBatchClaimRequest,
         DispatchBatchRenewRequest,
         DispatchBatchReleaseRequest,

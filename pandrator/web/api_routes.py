@@ -174,6 +174,7 @@ from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
 from .voice_routes import register_voice_routes
+from .workflow_improvements_routes import register_workflow_improvements_routes
 from .workflow_plan_routes import register_workflow_plan_routes
 
 XTTS_MODEL_BUNDLE_FILENAMES = (
@@ -744,6 +745,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_media_edit_routes(app, context)
     register_media_edit_dispatch_routes(app, context)
     register_dispatch_routes(app, context)
+    register_workflow_improvements_routes(app, context)
     register_source_cleaning_dispatch_routes(app, context)
     register_speech_optimization_dispatch_routes(app, context)
     from .performance_routes import register_performance_routes
@@ -4674,6 +4676,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         payload.expected_revision,
                         [item.model_dump() for item in payload.segments],
                         source_artifact_id=payload.source_artifact_id,
+                        expected_source_hash=payload.expected_source_hash,
                         published_paths=published_paths,
                     )
                     services.idempotency.complete(
@@ -4706,6 +4709,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 payload.expected_revision,
                 [item.model_dump() for item in payload.segments],
                 source_artifact_id=payload.source_artifact_id,
+                expected_source_hash=payload.expected_source_hash,
             )
         except KeyError:
             return error_response("not_found", "Subtitle document not found.", 404)
@@ -4722,6 +4726,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             request.get_json(silent=True) or {}
         )
         values = payload.model_dump(mode="json")
+        if not values.get("force_refresh"):
+            values.pop("force_refresh", None)
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error

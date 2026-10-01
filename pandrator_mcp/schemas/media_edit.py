@@ -34,6 +34,7 @@ class MediaEditKeepRange(ToolInput):
 
 class GetMediaEditArguments(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+    view: Literal["summary", "full"] = "summary"
 
 
 class ListMediaEditCutsArguments(ToolInput):

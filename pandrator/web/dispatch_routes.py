@@ -6,9 +6,10 @@ from typing import Any
 
 from flask import g, jsonify, request
 
-from .dispatch import DispatchError
+from .dispatch import TERMINAL_DISPATCH_RUN_STATUSES, DispatchError
 from .domain_blueprints import DomainBlueprints
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .models import DispatchRun
 from .route_context import RouteContext
 from .schemas import (
     DispatchBatchClaimRequest,
@@ -16,6 +17,7 @@ from .schemas import (
     DispatchBatchRenewRequest,
     DispatchBatchSubmitRequest,
     DispatchRunCreateRequest,
+    DispatchRunTerminationRequest,
     DispatchSplitBoundariesRequest,
 )
 
@@ -158,6 +160,66 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
     def get_dispatch_run(run_id: str):
         try:
             return jsonify(dispatch.get(run_id))
+        except DispatchError as error:
+            return dispatch_error(error)
+
+    @app.post("/api/v1/dispatch-runs/<run_id>/terminate")
+    @require_scope("app.run")
+    def terminate_dispatch_run(run_id: str):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return dispatch_error(
+                DispatchError(
+                    "invalid_termination_request",
+                    "Termination request must be a JSON object.",
+                    422,
+                )
+            )
+        arguments = DispatchRunTerminationRequest.model_validate(body)
+        payload = arguments.model_dump(mode="json")
+        principal = context.guards.principal()
+        if principal is None:
+            return error_response("authentication_required", "Sign in to terminate a dispatch run.", 401)
+        key, key_error = request_key(required=True)
+        if key_error is not None:
+            return key_error
+        assert key is not None
+        try:
+            with database.immediate_session() as db_session:
+                try:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=principal,
+                        operation_id="terminateDispatchRun",
+                        idempotency_key=key,
+                        payload={"run_id": run_id, **payload},
+                    )
+                except (
+                    IdempotencyConflict,
+                    IdempotencyInProgress,
+                    ValueError,
+                ) as error:
+                    return idempotency_error(error)
+                replay = replay_response(reservation)
+                if replay is not None:
+                    return replay
+                result = dispatch.terminate_in_session(
+                    db_session,
+                    run_id=run_id,
+                    expected_status=arguments.expected_status,
+                    action=arguments.action,
+                    replacement_run_id=arguments.replacement_run_id,
+                    reason=arguments.reason,
+                )
+                services.idempotency.complete(
+                    db_session,
+                    reservation,
+                    response=result,
+                    status_code=200,
+                    resource_kind="dispatch_run",
+                    resource_id=run_id,
+                )
+            return jsonify(result)
         except DispatchError as error:
             return dispatch_error(error)
 
@@ -331,36 +393,45 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
                     if isinstance(replay_payload, dict) and isinstance(
                         replay_payload.get("run_id"), str
                     ):
-                        try:
-                            result, retry_status = (
-                                dispatch.retry_finalization_in_session(
-                                    db_session,
-                                    run_id=replay_payload["run_id"],
+                        replayed_run = db_session.get(
+                            DispatchRun,
+                            replay_payload["run_id"],
+                        )
+                        if (
+                            replayed_run is not None
+                            and replayed_run.status
+                            not in TERMINAL_DISPATCH_RUN_STATUSES
+                        ):
+                            try:
+                                result, retry_status = (
+                                    dispatch.retry_finalization_in_session(
+                                        db_session,
+                                        run_id=replay_payload["run_id"],
+                                    )
                                 )
-                            )
-                            if (
-                                retry_status != replay_status
-                                or result != replay_payload
-                            ):
+                                if (
+                                    retry_status != replay_status
+                                    or result != replay_payload
+                                ):
+                                    services.idempotency.complete(
+                                        db_session,
+                                        reservation,
+                                        response=result,
+                                        status_code=retry_status,
+                                        resource_kind="dispatch_batch",
+                                        resource_id=batch_id,
+                                    )
+                                    replay_payload, replay_status = result, retry_status
+                            except DispatchError as error:
                                 services.idempotency.complete(
                                     db_session,
                                     reservation,
-                                    response=result,
-                                    status_code=retry_status,
+                                    response=error_body(error),
+                                    status_code=error.status,
                                     resource_kind="dispatch_batch",
                                     resource_id=batch_id,
                                 )
-                                replay_payload, replay_status = result, retry_status
-                        except DispatchError as error:
-                            services.idempotency.complete(
-                                db_session,
-                                reservation,
-                                response=error_body(error),
-                                status_code=error.status,
-                                resource_kind="dispatch_batch",
-                                resource_id=batch_id,
-                            )
-                            return dispatch_error(error)
+                                return dispatch_error(error)
                     response = jsonify(replay_payload)
                     response.status_code = replay_status
                     response.headers["Idempotency-Replayed"] = "true"

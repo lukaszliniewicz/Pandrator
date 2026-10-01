@@ -42,3 +42,23 @@ the same active lease; it does not authorize changing the source or skipping a
 batch. Renew long work, release abandoned work, and inspect the automatically
 finalized artifact after the last accepted batch. Handle source/output
 conflicts, stale leases, busy runs, and `finalizing` as explicit states.
+
+Use `pandrator_get_workflow_inputs` and `pandrator_select_workflow_input` to pin
+an exact corrected revision for translation or speech. The selection is atomic
+and revision fenced. Read an accepted sample with `pandrator_get_dispatch_preview`
+when style needs checking; cancel or supersede an abandoned run through
+`pandrator_terminate_dispatch_run` before restarting.
+
+For readable source subtitles, `correction_style=publishable` removes incidental
+disfluencies. Keep meaningful repetition and utterance boundaries independently
+of speaker names. Translation preserves the cleaned source's meaning and turns.
+
+Compact claims (`packet_format=compact`) encode cues as `cue_columns`/`cue_rows`
+and turns as a lookup table. Retain the first `manifest` by `manifest_hash` before
+supplying `known_manifest_hash` on subsequent claims. Grouped correction edits
+and translation `items` reduce repeated fields without changing validation.
+Use `response_mode=structured` only when the host consumes `structuredContent`;
+otherwise retain the default full text response. Fragment evidence engines come
+from `pandrator_get_subtitle_evidence_routes`, with `force_refresh` available to
+bypass matching successful evidence. See the repository passive-dispatch guide
+for the complete protocol.

@@ -51,6 +51,11 @@ class ActionCatalog:
 
 ACTION_CATALOG = ActionCatalog(
     (
+        ActionSpec("pandrator_get_dispatch_preview", "Preview an accepted subtitle batch", "GetDispatchPreviewInput", RiskClass.READ, "app.read", "getDispatchPreview", "GET", "/api/v1/dispatch-runs/{runId}/preview", True),
+        ActionSpec("pandrator_get_subtitle_evidence_routes", "Inspect available audio evidence engines", "GetSubtitleEvidenceRoutesInput", RiskClass.READ, "app.read", "listSubtitleEvidenceRoutes", "GET", "/api/v1/subtitle-evidence/routes", True),
+        ActionSpec("pandrator_get_workflow_inputs", "Inspect exact workflow inputs", "GetWorkflowInputsInput", RiskClass.READ, "app.read", "getWorkflowInputs", "GET", "/api/v1/sessions/{sessionId}/workflow-inputs", True),
+        ActionSpec("pandrator_select_workflow_input", "Select an exact workflow input", "SelectWorkflowInputInput", RiskClass.WRITE, "app.write", "selectWorkflowInput", "PUT", "/api/v1/sessions/{sessionId}/workflow-inputs", True, requires_idempotency=True),
+        ActionSpec("pandrator_terminate_dispatch_run", "Cancel or supersede a passive subtitle run", "TerminateDispatchRunInput", RiskClass.WRITE, "app.run", "terminateDispatchRun", "POST", "/api/v1/dispatch-runs/{runId}/terminate", True, requires_idempotency=True),
         ActionSpec("pandrator_get_audiobook_setup", "Inspect audiobook setup", "GetAudiobookSetupInput", RiskClass.READ, "app.read", "getAudiobookSetup", "GET", "/api/v1/sessions/{sessionId}/audiobook-setup", True),
         ActionSpec("pandrator_configure_audiobook", "Configure audiobook voice mode", "ConfigureAudiobookInput", RiskClass.WRITE, "app.write", "configureAudiobook", "PATCH", "/api/v1/sessions/{sessionId}/audiobook-setup", True, requires_idempotency=True),
         ActionSpec("pandrator_preview_speech_segment", "Preview a speech-plan segment", "PreviewSpeechSegmentInput", RiskClass.READ, "app.read", "previewSpeechSegment", "POST", "/api/v1/sessions/{sessionId}/speech-plan/preview", True),

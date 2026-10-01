@@ -386,6 +386,11 @@ export type ArtifactContext = {
 
 export type SubtitleSegment = {
   id?: string;
+  turn_id?: string | null;
+  starts_new_turn?: boolean;
+  source_passage_ids?: string[];
+  origin_segment_id?: string | null;
+  split_boundary_id?: string | null;
   ordinal: number;
   start_ms: number;
   end_ms: number;
@@ -394,10 +399,43 @@ export type SubtitleSegment = {
   review_state?: 'clear' | 'uncertain';
   review_note?: string;
   evidence_ids?: string[];
+  uncertain_source_cue_ids?: number[];
 };
 
 export type SubtitleEvidenceRoute =
-  'whisper' | 'moss' | 'azure_mai_transcribe_2' | 'audio_llm';
+  | 'whisper'
+  | 'parakeet'
+  | 'moss'
+  | 'qwen3'
+  | 'azure_mai_transcribe_1_5'
+  | 'azure_mai_transcribe_2'
+  | 'audio_llm';
+
+export type SubtitleEvidenceRouteOption = {
+  route: SubtitleEvidenceRoute;
+  label: string;
+  local: boolean | null;
+  remote: boolean | null;
+  timing_method: string;
+  ready: boolean | null;
+  language_supported: boolean | null;
+  reason: string;
+};
+
+export type SubtitleSplitInspection = {
+  status: 'available' | 'unavailable';
+  reason: string | null;
+  next_offset: number | null;
+  source_window?: { start_ms: number; end_ms: number };
+  boundaries: Array<{
+    id: string;
+    after_word: number;
+    left_end_ms: number;
+    right_start_ms: number;
+    left_text?: string;
+    right_text?: string;
+  }>;
+};
 
 type SubtitleEvidenceWord = {
   text: string;
@@ -489,7 +527,10 @@ export type SubtitleEvidenceRecord = {
 
 export type SubtitleReviewColumn = {
   artifact_id: string;
+  source_content_hash?: string;
   source_media_artifact_id?: string | null;
+  source_media_mime_type?: string | null;
+  source_media_kind?: string | null;
   source_media_error?: string | null;
   role: string;
   stage: string;

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, model_validator
@@ -19,51 +18,32 @@ _ContextNote = Annotated[str, Field(min_length=1, max_length=2_000)]
 
 
 def execution_policy_json_schema(schema: dict[str, Any]) -> None:
-    """Add self-contained serial/parallel alternatives to a tool schema.
+    """Keep flat tool arguments once, with conditional execution constraints.
 
-    Some MCP clients render each ``oneOf`` branch as the entire input object.
-    Copying the base object's fields and required arguments into every branch
-    keeps those clients from dropping the tool's ordinary parameters.
+    Avoid object alternatives: clients can render them as replacement signatures,
+    and copying every field into both branches triples discovery payloads.
+    Runtime validators enforce the same constraints for simpler schema clients.
     """
 
-    base = deepcopy(schema)
-    base.pop("oneOf", None)
-    base_properties = base.get("properties")
-    if not isinstance(base_properties, dict):
+    if not isinstance(schema.get("properties"), dict):
         raise ValueError("Delegation execution schemas require object properties.")
-
-    base_required = base.get("required", [])
-    if not isinstance(base_required, list):
-        base_required = []
-
-    alternatives: list[dict[str, Any]] = []
-    for mode in ("serial", "parallel"):
-        alternative = deepcopy(base)
-        properties = alternative["properties"]
-
-        execution_mode = deepcopy(properties.get("execution_mode", {}))
-        execution_mode["const"] = mode
-        properties["execution_mode"] = execution_mode
-
-        parallel_width = deepcopy(properties.get("max_parallel_batches", {}))
-        if mode == "serial":
-            parallel_width["const"] = 1
-        else:
-            parallel_width.pop("const", None)
-            parallel_width["minimum"] = 2
-            parallel_width["maximum"] = MAX_PARALLEL_BATCHES
-        properties["max_parallel_batches"] = parallel_width
-
-        required = list(base_required)
-        if mode == "parallel":
-            for field in ("execution_mode", "max_parallel_batches"):
-                if field not in required:
-                    required.append(field)
-        if required or "required" in alternative:
-            alternative["required"] = required
-        alternatives.append(alternative)
-
-    schema["oneOf"] = alternatives
+    schema.pop("oneOf", None)
+    schema["allOf"] = [
+        {
+            "if": {"properties": {"execution_mode": {"const": "serial"}}},
+            "then": {"properties": {"max_parallel_batches": {"const": 1}}},
+        },
+        {
+            "if": {
+                "properties": {"execution_mode": {"const": "parallel"}},
+                "required": ["execution_mode"],
+            },
+            "then": {
+                "properties": {"max_parallel_batches": {"minimum": 2, "maximum": MAX_PARALLEL_BATCHES}},
+                "required": ["max_parallel_batches"],
+            },
+        },
+    ]
 
 
 def _encoded_size(value: ToolInput) -> int:

@@ -716,7 +716,8 @@ class WorkflowHandlers:
         if self.subtitle_evidence is None:
             raise RuntimeError("Subtitle evidence service is not configured.")
         return self.subtitle_evidence.run_request(
-            str(payload.get("evidence_id") or ""), progress, cancel_event
+            str(payload.get("evidence_id") or ""), progress, cancel_event,
+            **({"force_refresh": True} if payload.get("force_refresh", False) else {}),
         )
 
     def _resume_generation_after_regeneration(

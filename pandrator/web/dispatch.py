@@ -79,6 +79,10 @@ from .settings_policy import adapt_runtime_settings
 from .subtitle_evidence import evidence_route_catalog, evidence_stt_routes
 from .workspace_settings import WorkspaceSettingsService
 
+TERMINAL_DISPATCH_RUN_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "superseded"}
+)
+
 
 class DispatchError(RuntimeError):
     """A bounded, API-safe failure from the dispatch state machine."""
@@ -342,6 +346,126 @@ class DispatchRunService:
             return self._run_detail_payload(run, batches)
         with self.database.session() as session:
             return self.get(run_id, db_session=session)
+
+    def terminate_in_session(
+        self,
+        session: Session,
+        *,
+        run_id: str,
+        expected_status: str,
+        action: str,
+        reason: str,
+        replacement_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Cancel or supersede an open run without discarding accepted batches."""
+        run = session.get(DispatchRun, run_id)
+        if run is None:
+            raise DispatchError("not_found", "Dispatch run not found.", 404)
+        if not isinstance(expected_status, str) or not expected_status.strip():
+            raise DispatchError(
+                "invalid_expected_status",
+                "Expected status must be a nonblank dispatch run status.",
+                422,
+            )
+        if not isinstance(action, str) or action not in {"cancelled", "superseded"}:
+            raise DispatchError(
+                "invalid_termination_action",
+                "Termination action must be cancelled or superseded.",
+                422,
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise DispatchError(
+                "termination_reason_required",
+                "A nonblank reason is required to terminate a dispatch run.",
+                422,
+            )
+        if replacement_run_id is not None:
+            if not isinstance(replacement_run_id, str) or not replacement_run_id.strip():
+                raise DispatchError(
+                    "invalid_replacement_run",
+                    "Replacement run ID must be a nonblank string.",
+                    422,
+                )
+            replacement_run_id = replacement_run_id.strip()
+        if action == "superseded" and replacement_run_id is None:
+            raise DispatchError(
+                "replacement_run_required",
+                "Supersession requires a replacement dispatch run.",
+                422,
+            )
+        if action == "cancelled" and replacement_run_id is not None:
+            raise DispatchError(
+                "unexpected_replacement_run",
+                "A replacement run is only valid for supersession.",
+                422,
+            )
+
+        if run.status != expected_status:
+            raise DispatchError(
+                "run_status_conflict",
+                "Dispatch run status changed before termination.",
+                409,
+                details={
+                    "expected_status": expected_status,
+                    "actual_status": run.status,
+                },
+            )
+        if run.status in TERMINAL_DISPATCH_RUN_STATUSES:
+            raise DispatchError(
+                "run_terminal",
+                "A terminal dispatch run cannot be terminated again.",
+                409,
+            )
+
+        replacement = None
+        if replacement_run_id is not None:
+            replacement = session.get(DispatchRun, replacement_run_id)
+            if (
+                replacement is None
+                or replacement.id == run.id
+                or replacement.session_id != run.session_id
+                or replacement.kind != run.kind
+                or replacement.source_revision_id != run.source_revision_id
+                or (
+                    replacement.status in TERMINAL_DISPATCH_RUN_STATUSES
+                    and replacement.status != "completed"
+                )
+            ):
+                raise DispatchError(
+                    "replacement_run_conflict",
+                    "Replacement must be another usable run for the same session, kind, and source revision.",
+                    409,
+                    details={"replacement_run_id": replacement_run_id},
+                )
+
+        now = utcnow()
+        batches = list(
+            session.scalars(
+                select(DispatchBatch).where(
+                    DispatchBatch.dispatch_run_id == run.id
+                )
+            ).all()
+        )
+        for batch in batches:
+            if batch.status == "completed":
+                continue
+            batch.status = action
+            batch.lease_token = None
+            batch.lease_expires_at = None
+            batch.updated_at = now
+
+        run.status = action
+        run.error_code = action
+        run.error_message = reason.strip()
+        run.updated_at = now
+        session.flush()
+        result = self._run_payload(run)
+        result["termination"] = {
+            "action": action,
+            "reason": reason.strip(),
+            "replacement_run_id": replacement.id if replacement is not None else None,
+        }
+        return result
 
     @staticmethod
     def _validate_kind(value: object) -> str:
@@ -1154,6 +1278,7 @@ class DispatchRunService:
                 "kind": run.kind,
                 "output_role": run.output_role,
                 "source_artifact_id": run.source_artifact_id,
+                "source_content_hash": run.source_content_hash,
                 "source_language": run.source_language,
                 "target_language": run.target_language,
                 "instructions": instructions,
@@ -1250,7 +1375,7 @@ class DispatchRunService:
             )
         ):
             return self._claim_response(session, run, replayed, batches)
-        if run.status in {"completed", "failed", "cancelled"}:
+        if run.status in TERMINAL_DISPATCH_RUN_STATUSES:
             raise DispatchError(
                 "run_not_claimable", "Dispatch run is no longer claimable.", 409
             )
@@ -1836,6 +1961,12 @@ class DispatchRunService:
                 "The dispatch batch already has a different accepted submission.",
                 409,
             )
+        if run.status in TERMINAL_DISPATCH_RUN_STATUSES:
+            raise DispatchError(
+                "run_not_submitable",
+                "Dispatch run no longer accepts submissions.",
+                409,
+            )
         now = utcnow()
         if batch.status != "leased" or batch.lease_token != lease_token:
             raise DispatchError(
@@ -1946,7 +2077,7 @@ class DispatchRunService:
         return self._submit_payload(run, batch), status
 
     def _retry_finalize(self, session: Session, run: DispatchRun) -> None:
-        if run.status == "completed":
+        if run.status in TERMINAL_DISPATCH_RUN_STATUSES:
             return
         try:
             with session.begin_nested():
@@ -2005,6 +2136,12 @@ class DispatchRunService:
         return same_timing_language(left, right)
 
     def _materialize(self, session: Session, run: DispatchRun) -> None:
+        if run.status in TERMINAL_DISPATCH_RUN_STATUSES and run.status != "completed":
+            raise DispatchError(
+                "run_terminal",
+                "A terminal dispatch run cannot be finalized.",
+                409,
+            )
         expected_selections = dict(run.selection_snapshot_json or {})
         current_selections = self._selection_snapshot(
             session,

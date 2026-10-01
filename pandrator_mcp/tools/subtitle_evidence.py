@@ -9,6 +9,7 @@ from ..errors import NextAction
 from ..results import ToolOutcome
 from ..schemas.subtitle_evidence import (
     GetSubtitleEvidenceInput,
+    GetSubtitleEvidenceRoutesInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
 )
@@ -100,12 +101,19 @@ def request_subtitle_evidence(
         padding_before_ms=arguments.padding_before_ms,
         padding_after_ms=arguments.padding_after_ms,
         idempotency_key=arguments.idempotency_key,
+        **({"force_refresh": True} if arguments.force_refresh else {}),
     )
     result = _record(payload)
     evidence_id = str(result.get("evidence_id") or "")
     return ToolOutcome(
         result=result,
         next_actions=[_status_action(evidence_id)] if evidence_id else [],
+    )
+
+
+def get_subtitle_evidence_routes(runtime: McpRuntime, arguments: GetSubtitleEvidenceRoutesInput) -> dict[str, Any]:
+    return runtime.require_application().get_subtitle_evidence_routes(
+        language=arguments.language, include_languages=arguments.include_languages,
     )
 
 

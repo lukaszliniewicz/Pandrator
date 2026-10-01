@@ -46,6 +46,8 @@ import type {
   SubtitleReviewCatalog,
   SubtitleEvidenceRecord,
   SubtitleEvidenceRoute,
+  SubtitleEvidenceRouteOption,
+  SubtitleSplitInspection,
   TtsCatalogue,
   TtsCompactCatalogue,
   TtsDiscovery,
@@ -694,6 +696,7 @@ export const sessionApi = {
       audio_model_ids?: string[];
       padding_before_ms?: number;
       padding_after_ms?: number;
+      force_refresh?: boolean;
     }
   ) =>
     apiJson<SubtitleEvidenceProjection>(
@@ -742,7 +745,28 @@ export const sessionApi = {
     >('/api/v1/sessions/{sessionId}/subtitles/{stage}/review', 'post', {
       path: { sessionId, stage },
       body
-    })
+    }),
+  subtitleEvidenceRoutes: (language?: string) =>
+    apiJson<{ routes: SubtitleEvidenceRouteOption[] }>(
+      `/api/v1/subtitle-evidence/routes${language ? `?language=${encodeURIComponent(language)}` : ''}`
+    ),
+  subtitleSplitBoundaries: (
+    sessionId: string,
+    body: {
+      source_artifact_id: string;
+      segment_id: string;
+      expected_revision: number;
+      offset?: number;
+    }
+  ) =>
+    apiJson<SubtitleSplitInspection>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/subtitles/split-boundaries`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }
+    )
 };
 
 export const sourceApi = {

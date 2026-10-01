@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -54,6 +55,7 @@ from .subtitle_sources import subtitle_source_status_in_session
 from .workflow_inputs import workflow_transformations
 
 WORKFLOW_HISTORY_PREVIEW_LIMIT = 10
+MAX_CORRECTION_ANCESTRY_EDGES = 512
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -61,6 +63,51 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _correction_output_descends_from(
+    session: Session,
+    *,
+    ancestor: Artifact,
+    output: Artifact,
+    session_id: str,
+) -> bool:
+    """Check bounded, same-session ArtifactEdge ancestry for a correction."""
+    if (
+        ancestor.session_id != session_id
+        or output.session_id != session_id
+    ):
+        return False
+    if ancestor.id == output.id:
+        return True
+
+    pending = deque([output.id])
+    visited = {output.id}
+    examined_edges = 0
+    while pending and examined_edges < MAX_CORRECTION_ANCESTRY_EDGES:
+        child_id = pending.popleft()
+        remaining_edges = MAX_CORRECTION_ANCESTRY_EDGES - examined_edges
+        parent_ids = list(
+            session.scalars(
+                select(ArtifactEdge.parent_artifact_id)
+                .join(Artifact, Artifact.id == ArtifactEdge.parent_artifact_id)
+                .where(
+                    ArtifactEdge.child_artifact_id == child_id,
+                    Artifact.session_id == session_id,
+                )
+                .limit(remaining_edges + 1)
+            ).all()
+        )
+        if len(parent_ids) > remaining_edges:
+            return False
+        examined_edges += len(parent_ids)
+        for parent_id in parent_ids:
+            if parent_id == ancestor.id:
+                return True
+            if parent_id not in visited:
+                visited.add(parent_id)
+                pending.append(parent_id)
+    return False
 
 
 def _job_run_metrics(job: Job) -> dict[str, Any]:
@@ -1110,7 +1157,20 @@ class WorkflowService:
                     recorded_source_hash = str(
                         metadata.get("source_content_hash") or ""
                     )
-                    if recorded_source_id or recorded_source_hash:
+                    if definition.key == "correct":
+                        # A correction is fresh only on the currently selected
+                        # source branch. Identical bytes do not make a sibling
+                        # revision interchangeable with that selection.
+                        artifact_matches_prerequisite = bool(
+                            recorded_source_id == prerequisite.id
+                            or _correction_output_descends_from(
+                                session,
+                                ancestor=prerequisite,
+                                output=artifact,
+                                session_id=session_id,
+                            )
+                        )
+                    elif recorded_source_id or recorded_source_hash:
                         exact_parent = bool(
                             recorded_source_id == prerequisite.id
                             or session.get(

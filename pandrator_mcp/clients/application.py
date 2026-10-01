@@ -793,6 +793,31 @@ class ApplicationClient:
     def get_dispatch_run(self, run_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/dispatch-runs/{quote(run_id, safe='')}")
 
+    def get_dispatch_preview(self, run_id: str, *, batch_ordinal: int | None = None, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/dispatch-runs/{quote(run_id, safe='')}/preview",
+                                  parameters={"batch_ordinal": batch_ordinal, "offset": offset, "limit": limit})
+
+    def terminate_dispatch_run(self, *, run_id: str, expected_status: str, action: str,
+                               reason: str, idempotency_key: str, replacement_run_id: str | None = None) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/dispatch-runs/{quote(run_id, safe='')}/terminate",
+            method="POST", body={"expected_status": expected_status, "action": action,
+                "replacement_run_id": replacement_run_id, "reason": reason},
+            idempotency_key=idempotency_key)
+
+    def get_workflow_inputs(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/workflow-inputs")
+
+    def select_workflow_input(self, *, session_id: str, consumer: str, role: str,
+                             artifact_id: str, expected_outcome_revision: int,
+                             expected_selection_revision: int, idempotency_key: str,
+                             expected_translation_settings_revision: int | None = None) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/workflow-inputs",
+            method="PUT", body={"consumer": consumer, "role": role, "artifact_id": artifact_id,
+                "expected_outcome_revision": expected_outcome_revision,
+                "expected_selection_revision": expected_selection_revision,
+                "expected_translation_settings_revision": expected_translation_settings_revision},
+            idempotency_key=idempotency_key)
+
     def request_subtitle_evidence(
         self,
         session_id: str,
@@ -805,6 +830,7 @@ class ApplicationClient:
         padding_before_ms: int,
         padding_after_ms: int,
         idempotency_key: str,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/subtitle-evidence",
@@ -817,12 +843,19 @@ class ApplicationClient:
                 "audio_model_ids": list(audio_model_ids),
                 "padding_before_ms": int(padding_before_ms),
                 "padding_after_ms": int(padding_after_ms),
+                **({"force_refresh": True} if force_refresh else {}),
             },
             idempotency_key=idempotency_key,
         )
 
     def get_subtitle_evidence(self, evidence_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/subtitle-evidence/{quote(evidence_id, safe='')}")
+
+    def get_subtitle_evidence_routes(self, *, language: str | None = None, include_languages: bool = False) -> dict[str, Any]:
+        return self._request_json("/api/v1/subtitle-evidence/routes", parameters={
+            **({"language": language} if language else {}),
+            "include_languages": "true" if include_languages else "false",
+        })
 
     def resolve_subtitle_evidence(
         self,

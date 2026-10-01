@@ -128,8 +128,13 @@ from .schemas import (
     UpdateSessionSettingsInput,
     VoiceCatalogInput,
 )
-from .schemas.delegation import DelegationContextCapsuleInput, execution_policy_json_schema
+from .schemas.delegation import (
+    DelegationContextCapsuleInput,
+    DelegationContextDeltaInput,
+    execution_policy_json_schema,
+)
 from .schemas.e2e import AudioCppCatalogueInput
+from .schemas.subtitle_evidence import GetSubtitleEvidenceRoutesInput
 from .schemas.transcription import (
     CancelTranscriptionInput,
     DeleteTranscriptionInput,
@@ -138,6 +143,8 @@ from .schemas.transcription import (
     TranscribeInput,
     TranscriptionSource,
 )
+from .schemas.workflow_controls import GetDispatchPreviewInput, TerminateDispatchRunInput
+from .schemas.workflow_inputs import GetWorkflowInputsInput, SelectWorkflowInputInput
 from .tools import (
     adopt_subtitle_source,
     assemble_generation_run,
@@ -242,6 +249,7 @@ from .tools import (
     voice_catalog,
 )
 from .tools.e2e import audio_cpp_catalogue
+from .tools.subtitle_evidence import get_subtitle_evidence_routes
 from .tools.transcription import (
     cancel_transcription,
     delete_transcription,
@@ -249,6 +257,8 @@ from .tools.transcription import (
     get_transcription_result,
     transcribe,
 )
+from .tools.workflow_controls import get_dispatch_preview, terminate_dispatch_run
+from .tools.workflow_inputs import get_workflow_inputs, select_workflow_input
 
 _STDOUT_GUARD = threading.Lock()
 
@@ -308,6 +318,30 @@ def _call(function, *args) -> dict[str, Any]:
     }
 
 
+def _response(envelope: dict[str, Any], mode: str = "standard") -> Any:
+    """Opt-in structured transport: full data once, compact text fallback.
+
+    Standard mode retains the SDK's full text serialization for older clients.
+    Clients selecting structured mode must consume structuredContent.
+    """
+    if mode == "standard":
+        return envelope
+    from mcp.types import CallToolResult, TextContent
+
+    result = envelope.get("result") or {}
+    summary = {
+        "schema_version": envelope["schema_version"],
+        "request_id": envelope["request_id"],
+        "data": "structuredContent",
+        **{key: result[key] for key in ("run_id", "batch_id", "status", "manifest_hash")
+           if isinstance(result, dict) and key in result},
+    }
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(summary, separators=(",", ":")))],
+        structured_content=envelope,
+    )
+
+
 def _call_with_validated_input(
     function,
     runtime: McpRuntime,
@@ -356,24 +390,15 @@ def build_server(runtime: McpRuntime):
         "Pandrator",
         version=__version__,
         instructions=(
-            "Start unfamiliar work with pandrator_recommend_next_steps, the "
-            "guide index, target status, and capabilities. Operate only on the "
-            "configured target and approved local path roots; never request "
-            "connection URLs or credentials in tool arguments. Resolve TTS "
-            "service, model, and voice names from the live catalog instead of "
-            "assuming examples exist. Passive workflows use the run's selected "
-            "serial or bounded-parallel policy: keep every lease scoped to its "
-            "batch, return every required ID exactly once, submit or release all "
-            "batches in the current wave, and follow next_actions until complete. "
-            "Consequential execution must "
-            "use an exact unexpired plan and every reviewed confirmation. Poll "
-            "durable work until terminal before using its outputs. For a known "
-            "session outcome, prefer pandrator_plan_orchestrated_workflow as the "
-            "single-turn procedure layer; it defers the immutable native plan "
-            "until passive artifacts are complete. Use filtered "
-            "pandrator_describe_parameters when exact setting definitions are needed. "
-            "Use pandrator_patch_session_settings for partial override edits; "
-            "pandrator_update_session_settings replaces the complete override."
+            "Use only the configured target and approved roots; never pass credentials "
+            "or connection URLs. For unfamiliar work read recommend_next_steps and "
+            "the workflow guide; inspect status/capabilities and live model/voice catalogues. "
+            "Passive runs: obey serial/parallel policy, scope leases to batches, return "
+            "every required ID once, submit/release the wave, follow next_actions. "
+            "Execute exact unexpired plans with reviewed confirmations; poll work to "
+            "terminal. Prefer plan_orchestrated_workflow for known session outcomes. "
+            "Use filtered describe_parameters. patch_session_settings merges overrides; "
+            "update_session_settings replaces them."
         ),
     )
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -659,14 +684,48 @@ def build_server(runtime: McpRuntime):
         title="Inspect a Pandrator workflow",
         annotations=read_only,
     )
-    def workflow_get_tool(session_id: str) -> dict[str, Any]:
+    def workflow_get_tool(session_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Inspect the stages, prerequisites, and selections for one session."""
 
-        return _call(
+        envelope = _call(
             get_workflow,
             runtime,
             GetWorkflowInput(session_id=session_id),
         )
+        return _response(envelope, response_mode)
+
+    @server.tool(name="pandrator_get_workflow_inputs", title="Inspect exact workflow inputs", annotations=read_only)
+    def workflow_inputs_get_tool(session_id: str) -> dict[str, Any]:
+        """Read exact consumer inputs, revisions, hashes, and blocking reasons."""
+        return _call_with_validated_input(get_workflow_inputs, runtime, GetWorkflowInputsInput, {"session_id": session_id})
+
+    @server.tool(name="pandrator_select_workflow_input", title="Select an exact workflow input", annotations=write_action)
+    def workflow_input_select_tool(session_id: str, consumer: Literal["translation", "generation"], role: Literal["source", "correction", "translation"], artifact_id: str,
+                                   expected_outcome_revision: Annotated[int, Field(ge=0)], expected_selection_revision: Annotated[int, Field(ge=0)], idempotency_key: str,
+                                   expected_translation_settings_revision: Annotated[int | None, Field(ge=0)] = None) -> dict[str, Any]:
+        """Atomically select an input role/version with current manifest revision fences."""
+        return _call_with_validated_input(select_workflow_input, runtime, SelectWorkflowInputInput,
+            {key: value for key, value in locals().items() if key in SelectWorkflowInputInput.model_fields})
+
+    @server.tool(name="pandrator_get_dispatch_preview", title="Preview an accepted subtitle batch", annotations=read_only)
+    def dispatch_preview_tool(run_id: str, batch_ordinal: Annotated[int | None, Field(ge=1)] = None,
+                              offset: Annotated[int, Field(ge=0)] = 0, limit: Annotated[int, Field(ge=1, le=100)] = 20) -> dict[str, Any]:
+        """Inspect bounded accepted output before publication; never guesses source pairing."""
+        return _call_with_validated_input(get_dispatch_preview, runtime, GetDispatchPreviewInput,
+            {key: value for key, value in locals().items() if key in GetDispatchPreviewInput.model_fields})
+
+    @server.tool(name="pandrator_terminate_dispatch_run", title="Cancel or supersede a passive subtitle run", annotations=write_action)
+    def dispatch_terminate_tool(run_id: str, expected_status: str, action: Literal["cancelled", "superseded"], reason: str,
+                                idempotency_key: str, replacement_run_id: str | None = None) -> dict[str, Any]:
+        """Terminate an open correction/translation run, retaining accepted work. Retry with the same key."""
+        return _call_with_validated_input(terminate_dispatch_run, runtime, TerminateDispatchRunInput,
+            {key: value for key, value in locals().items() if key in TerminateDispatchRunInput.model_fields})
+
+    @server.tool(name="pandrator_get_subtitle_evidence_routes", title="Inspect available audio evidence engines", annotations=read_only)
+    def subtitle_evidence_routes_tool(language: Annotated[str | None, Field(min_length=2, max_length=40)] = None, include_languages: bool = False) -> dict[str, Any]:
+        """Read the live shared engine catalogue; language arrays are opt-in."""
+        return _call_with_validated_input(get_subtitle_evidence_routes, runtime, GetSubtitleEvidenceRoutesInput,
+            {"language": language, "include_languages": include_languages})
 
     @server.tool(
         name="pandrator_get_media_edit",
@@ -675,15 +734,18 @@ def build_server(runtime: McpRuntime):
     )
     def media_edit_get_tool(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        view: Literal["summary", "full"] = "summary",
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Inspect media-edit readiness and the active immutable revision."""
 
-        return _call_with_validated_input(
+        envelope = _call_with_validated_input(
             get_media_edit,
             runtime,
             GetMediaEditArguments,
-            {"session_id": session_id},
+            {"session_id": session_id, "view": view},
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_list_media_edit_cuts",
@@ -1030,10 +1092,11 @@ def build_server(runtime: McpRuntime):
         context: Annotated[int, Field(ge=0, le=20)] = 3,
         start_ordinal: Annotated[int | None, Field(ge=1)] = None,
         end_ordinal: Annotated[int | None, Field(ge=1)] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Preview paginated cues and transcript segments inline without downloading."""
 
-        return _call(
+        envelope = _call(
             preview_subtitles,
             runtime,
             PreviewSubtitlesInput(
@@ -1049,6 +1112,7 @@ def build_server(runtime: McpRuntime):
                 end_ordinal=end_ordinal,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_replace_subtitle_text",
@@ -1489,34 +1553,14 @@ def build_server(runtime: McpRuntime):
         glossary: dict[str, str] | None = None,
         execution_mode: Literal["serial", "parallel"] = "serial",
         max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
-        context_capsule: dict[str, Any] | None = None,
+        context_capsule: DelegationContextCapsuleInput | None = None,
     ) -> dict[str, Any]:
         """Create a serial or bounded-parallel correction/translation run."""
 
-        return _call(
-            create_dispatch_run,
-            runtime,
-            CreateDispatchRunInput(
-                session_id=session_id,
-                kind=kind,
-                source_artifact_id=source_artifact_id,
-                source_language=source_language,
-                target_language=target_language,
-                instructions=instructions,
-                char_limit=char_limit,
-                max_segments_per_batch=max_segments_per_batch,
-                no_remove_subtitles=no_remove_subtitles,
-                correction_style=correction_style,
-                context_before=context_before,
-                context_after=context_after,
-                timing_context_mode=timing_context_mode,
-                substantial_gap_ms=substantial_gap_ms,
-                glossary=glossary or {},
-                execution_mode=execution_mode,
-                max_parallel_batches=max_parallel_batches,
-                context_capsule=DelegationContextCapsuleInput.model_validate(context_capsule or {}),
-                idempotency_key=idempotency_key,
-            ),
+        return _call_with_validated_input(
+            create_dispatch_run, runtime, CreateDispatchRunInput,
+            {key: value for key, value in locals().items()
+             if key in CreateDispatchRunInput.model_fields and value is not None},
         )
 
     @server.tool(
@@ -1574,39 +1618,28 @@ def build_server(runtime: McpRuntime):
         ],
         padding_before_ms: Annotated[int, Field(ge=0, le=15_000)] = 2_000,
         padding_after_ms: Annotated[int, Field(ge=0, le=15_000)] = 2_000,
+        force_refresh: bool = False,
         audio_model_ids: Annotated[list[str] | None, Field(max_length=3)] = None,
     ) -> dict[str, Any]:
         """Queue independent, bounded re-transcriptions for one exact cue."""
 
-        return _call(
-            request_subtitle_evidence,
-            runtime,
-            RequestSubtitleEvidenceInput(
-                session_id=session_id,
-                source_artifact_id=source_artifact_id,
-                cue_id=cue_id,
-                reason=reason,
-                routes=routes,
-                audio_model_ids=audio_model_ids or [],
-                padding_before_ms=padding_before_ms,
-                padding_after_ms=padding_after_ms,
-                idempotency_key=idempotency_key,
-            ),
-        )
+        return _call_with_validated_input(request_subtitle_evidence, runtime, RequestSubtitleEvidenceInput,
+            {key: value for key, value in locals().items() if key in RequestSubtitleEvidenceInput.model_fields and value is not None})
 
     @server.tool(
         name="pandrator_get_subtitle_evidence",
         title="Inspect subtitle audio evidence",
         annotations=read_only,
     )
-    def subtitle_evidence_get_tool(evidence_id: str) -> dict[str, Any]:
+    def subtitle_evidence_get_tool(evidence_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Read candidate transcripts, provenance, timing, and cost status."""
 
-        return _call(
+        envelope = _call(
             get_subtitle_evidence,
             runtime,
             GetSubtitleEvidenceInput(evidence_id=evidence_id),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_resolve_subtitle_evidence",
@@ -1671,18 +1704,18 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+        packet_format: Literal["standard", "compact"] = "standard",
+        known_manifest_hash: Annotated[str | None, Field(pattern=r"^[a-f0-9]{64}$")] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Claim one canonical task packet; each cue and timing value appears once."""
 
-        return _call(
-            claim_dispatch_batch,
-            runtime,
-            ClaimDispatchBatchInput(
-                run_id=run_id,
-                lease_seconds=lease_seconds,
-                idempotency_key=idempotency_key,
-            ),
+        envelope = _call_with_validated_input(
+            claim_dispatch_batch, runtime, ClaimDispatchBatchInput,
+            {key: value for key, value in locals().items()
+             if key in ClaimDispatchBatchInput.model_fields and value is not None},
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_renew_dispatch_batch",
@@ -1761,20 +1794,15 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         result: DispatchStructuredResultInput | None = None,
+        context_delta: DelegationContextDeltaInput | None = None,
         response_text: Annotated[str | None, Field(max_length=524_288)] = None,
     ) -> dict[str, Any]:
         """Submit one typed result; response_text is a legacy compatibility path."""
 
-        return _call(
-            submit_dispatch_batch,
-            runtime,
-            SubmitDispatchBatchInput(
-                batch_id=batch_id,
-                lease_token=lease_token,
-                result=result,
-                response_text=response_text,
-                idempotency_key=idempotency_key,
-            ),
+        return _call_with_validated_input(
+            submit_dispatch_batch, runtime, SubmitDispatchBatchInput,
+            {key: value for key, value in locals().items()
+             if key in SubmitDispatchBatchInput.model_fields and value is not None},
         )
 
     @server.tool(
@@ -2078,32 +2106,14 @@ def build_server(runtime: McpRuntime):
         annotation_only: bool = False,
         execution_mode: Literal["serial", "parallel"] = "serial",
         max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
-        context_capsule: dict[str, Any] | None = None,
+        context_capsule: DelegationContextCapsuleInput | None = None,
     ) -> dict[str, Any]:
         """Queue serial or bounded-parallel speech-text batches for this MCP model."""
 
-        return _call(
-            create_speech_optimization_dispatch_run,
-            runtime,
-            CreateSpeechOptimizationDispatchRunInput(
-                session_id=session_id,
-                source_artifact_id=source_artifact_id,
-                language=language,
-                voice_language=voice_language,
-                tts_service=tts_service,
-                instructions=instructions,
-                char_limit=char_limit,
-                max_units_per_batch=max_units_per_batch,
-                context_before=context_before,
-                context_after=context_after,
-                include_timing=include_timing,
-                annotation_mode=annotation_mode,
-                annotation_only=annotation_only,
-                execution_mode=execution_mode,
-                max_parallel_batches=max_parallel_batches,
-                context_capsule=DelegationContextCapsuleInput.model_validate(context_capsule or {}),
-                idempotency_key=idempotency_key,
-            ),
+        return _call_with_validated_input(
+            create_speech_optimization_dispatch_run, runtime, CreateSpeechOptimizationDispatchRunInput,
+            {key: value for key, value in locals().items()
+             if key in CreateSpeechOptimizationDispatchRunInput.model_fields and value is not None},
         )
 
     @server.tool(
@@ -2750,7 +2760,7 @@ def build_server(runtime: McpRuntime):
         subtitle_format: Literal["srt", "vtt"] = "srt",
         execution_mode: Literal["serial", "parallel"] = "serial",
         max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
-        context_capsule: dict[str, Any] | None = None,
+        context_capsule: DelegationContextCapsuleInput | None = None,
         materialize: bool = False,
         filename: Annotated[str | None, Field(max_length=255)] = None,
         wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
@@ -2764,28 +2774,11 @@ def build_server(runtime: McpRuntime):
         delivery controls handled after the export artifact exists.
         """
 
-        return _call(
-            plan_orchestrated_workflow,
-            runtime,
-            PlanOrchestratedWorkflowInput(
-                session_id=session_id,
-                goal=goal,
-                passive_stages=passive_stages,
-                final_stage=final_stage,
-                overrides=overrides or {},
-                export_mode=export_mode,
-                audio_mode=audio_mode,
-                subtitle_mode=subtitle_mode,
-                subtitle_selection=subtitle_selection,
-                subtitle_format=subtitle_format,
-                execution_mode=execution_mode,
-                max_parallel_batches=max_parallel_batches,
-                context_capsule=DelegationContextCapsuleInput.model_validate(context_capsule or {}),
-                materialize=materialize,
-                filename=filename,
-                wait_seconds=wait_seconds,
-                expires_in_minutes=expires_in_minutes,
-            ),
+        values = {**locals(), "passive_stages": passive_stages, "final_stage": final_stage}
+        return _call_with_validated_input(
+            plan_orchestrated_workflow, runtime, PlanOrchestratedWorkflowInput,
+            {key: value for key, value in values.items()
+             if key in PlanOrchestratedWorkflowInput.model_fields and value is not None},
         )
 
     @server.tool(
@@ -3698,7 +3691,7 @@ def build_server(runtime: McpRuntime):
 
     # MCP 2.2.0 derives a tool's schema from its flat Python signature and has
     # no public hook for a cross-field constraint. Keep the runtime validator
-    # in the strict input models and augment the three exposed flat schemas so
+    # in strict input models and add compact conditionals to the flat schemas so
     # clients cannot mistake serial/2 or parallel/1 for documented-valid input.
     for tool_name in (
         "pandrator_create_dispatch_run",

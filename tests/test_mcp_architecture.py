@@ -332,6 +332,8 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_analyse_performance_plan",
                 "pandrator_attach_existing_source",
                 "pandrator_cancel_work",
+                "pandrator_select_workflow_input",
+                "pandrator_terminate_dispatch_run",
                 "pandrator_claim_dispatch_batch",
                 "pandrator_claim_media_edit_dispatch_batch",
                 "pandrator_claim_performance_batch",

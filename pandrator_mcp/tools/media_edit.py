@@ -76,7 +76,25 @@ def get_media_edit(
 ) -> dict[str, Any]:
     """Inspect the current media-edit readiness state and active revision."""
 
-    return runtime.require_application().get_media_edit(arguments.session_id)
+    payload = runtime.require_application().get_media_edit(arguments.session_id)
+    if arguments.view == "full":
+        return payload
+    result = {key: value for key, value in payload.items() if key != "plan"}
+    plan = payload.get("plan")
+    if isinstance(plan, dict):
+        summary = {key: value for key, value in plan.items()
+                   if key not in {"cues", "evidence", "keep_ranges", "instructions"}}
+        summary["cue_count"] = len(plan.get("cues") or [])
+        ranges = plan.get("keep_ranges") or []
+        summary["keep_range_count"] = len(ranges)
+        summary["kept_duration_ms"] = sum(
+            max(0, int(item.get("end_ms") or 0) - int(item.get("start_ms") or 0))
+            for item in ranges if isinstance(item, dict)
+        )
+        result["plan"] = summary
+    elif "plan" in payload:
+        result["plan"] = plan
+    return result
 
 
 def list_media_edit_cuts(

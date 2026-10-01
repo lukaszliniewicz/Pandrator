@@ -1699,6 +1699,52 @@
         "title": "DispatchRunCreateRequest",
         "type": "object"
       },
+      "DispatchRunTerminationRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "cancelled",
+              "superseded"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "expected_status": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Expected Status",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "replacement_run_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Replacement Run Id"
+          }
+        },
+        "required": [
+          "expected_status",
+          "action",
+          "reason"
+        ],
+        "title": "DispatchRunTerminationRequest",
+        "type": "object"
+      },
       "DispatchSplitBoundariesRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1808,6 +1854,18 @@
           "source_artifact_id": {
             "title": "Source Artifact Id",
             "type": "string"
+          },
+          "source_content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Content Hash"
           },
           "source_language": {
             "title": "Source Language",
@@ -5805,6 +5863,48 @@
         "title": "RepairBatchUndoRequest",
         "type": "object"
       },
+      "ReviewSplitInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 30,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "segment_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "source_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_artifact_id",
+          "segment_id",
+          "expected_revision"
+        ],
+        "title": "ReviewSplitInspection",
+        "type": "object"
+      },
       "RvcConvertRequest": {
         "additionalProperties": false,
         "properties": {
@@ -8368,6 +8468,11 @@
             "title": "Cue Id",
             "type": "integer"
           },
+          "force_refresh": {
+            "default": false,
+            "title": "Force Refresh",
+            "type": "boolean"
+          },
           "padding_after_ms": {
             "default": 2000,
             "maximum": 15000,
@@ -8483,6 +8588,20 @@
             "title": "Expected Revision",
             "type": "integer"
           },
+          "expected_source_hash": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Source Hash"
+          },
           "segments": {
             "items": {
               "$ref": "#/components/schemas/SubtitleSegmentInput"
@@ -8528,6 +8647,32 @@
             "title": "Evidence Ids",
             "type": "array"
           },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "origin_segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin Segment Id"
+          },
           "review_note": {
             "default": "",
             "maxLength": 4000,
@@ -8543,6 +8688,16 @@
             "title": "Review State",
             "type": "string"
           },
+          "source_passage_ids": {
+            "items": {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Source Passage Ids",
+            "type": "array"
+          },
           "speaker": {
             "anyOf": [
               {
@@ -8555,15 +8710,46 @@
             "default": null,
             "title": "Speaker"
           },
+          "split_boundary_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Split Boundary Id"
+          },
           "start_ms": {
             "minimum": 0,
             "title": "Start Ms",
             "type": "integer"
           },
+          "starts_new_turn": {
+            "default": false,
+            "title": "Starts New Turn",
+            "type": "boolean"
+          },
           "text": {
             "minLength": 1,
             "title": "Text",
             "type": "string"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
           },
           "uncertain_source_cue_ids": {
             "items": {
@@ -10425,6 +10611,66 @@
         "title": "WorkView",
         "type": "object"
       },
+      "WorkflowInputSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "consumer": {
+            "enum": [
+              "translation",
+              "generation"
+            ],
+            "title": "Consumer",
+            "type": "string"
+          },
+          "expected_outcome_revision": {
+            "minimum": 0,
+            "title": "Expected Outcome Revision",
+            "type": "integer"
+          },
+          "expected_selection_revision": {
+            "minimum": 0,
+            "title": "Expected Selection Revision",
+            "type": "integer"
+          },
+          "expected_translation_settings_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Translation Settings Revision"
+          },
+          "role": {
+            "enum": [
+              "source",
+              "correction",
+              "translation"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "consumer",
+          "role",
+          "artifact_id",
+          "expected_outcome_revision",
+          "expected_selection_revision"
+        ],
+        "title": "WorkflowInputSelection",
+        "type": "object"
+      },
       "WorkflowPlanCreateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -11461,6 +11707,137 @@
               }
             },
             "description": "Claimed subtitle batch"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/dispatch-runs/{runId}/preview": {
+      "get": {
+        "operationId": "getDispatchPreview",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "batch_ordinal",
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/dispatch-runs/{runId}/terminate": {
+      "post": {
+        "operationId": "terminateDispatchRun",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRunTerminationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
           }
         },
         "security": [
@@ -19343,6 +19720,58 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/subtitles/split-boundaries": {
+      "post": {
+        "operationId": "inspectReviewSplitBoundaries",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewSplitInspection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
       "post": {
         "operationId": "saveSubtitleReview",
@@ -19559,6 +19988,108 @@
           {
             "nativeOAuth": [
               "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/workflow-inputs": {
+      "get": {
+        "operationId": "getWorkflowInputs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "put": {
+        "operationId": "selectWorkflowInput",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowInputSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
             ]
           }
         ]
@@ -20351,6 +20882,56 @@
           {
             "nativeOAuth": [
               "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/subtitle-evidence/routes": {
+      "get": {
+        "operationId": "listSubtitleEvidenceRoutes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "language",
+            "schema": {
+              "maxLength": 40,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_languages",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
             ]
           }
         ]

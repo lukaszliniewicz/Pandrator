@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -92,11 +94,25 @@ _CLAIM_KEYS = (
     "batch",
     "delegation",
 )
+_COMPACT_MANIFEST_KEYS = (
+    "instructions",
+    "result_contract",
+    "quality_policy",
+    "kind",
+    "output_role",
+    "source_language",
+    "target_language",
+    "no_remove_subtitles",
+    "correction_style",
+    "timing_context_mode",
+    "substantial_gap_ms",
+)
 _TASK_KEYS = (
     "session_id",
     "kind",
     "output_role",
     "source_artifact_id",
+    "source_content_hash",
     "source_language",
     "target_language",
     "instructions",
@@ -109,6 +125,7 @@ _TASK_KEYS = (
     "substantial_gap_ms",
     "quality_policy",
 )
+_COMPACT_TASK_KEYS = tuple(key for key in _TASK_KEYS if key not in _COMPACT_MANIFEST_KEYS)
 _DELEGATION_KEYS = (
     "execution_mode",
     "max_parallel_batches",
@@ -129,13 +146,33 @@ _CLAIMED_BATCH_KEYS = (
     "cue_count",
     "valid_cue_ids",
 )
-_CUE_KEYS = ("cue_id", "evidence_cue_ids", "text", "speaker", "turn_id")
+_CUE_KEYS = (
+    "cue_id",
+    "evidence_cue_ids",
+    "text",
+    "speaker",
+    "turn_id",
+    "timing_basis",
+)
 _BOUNDARY_CUE_KEYS = ("text", "speaker")
 _TIMING_KEYS = (
     "start_ms",
     "end_ms",
     "gap_from_previous_ms",
     "overlap_with_previous_ms",
+    "timing_basis",
+)
+_COMPACT_CUE_COLUMNS = (
+    "cue_id",
+    "evidence_cue_ids",
+    "text",
+    "speaker",
+    "turn_index",
+    "start_ms",
+    "end_ms",
+    "gap_from_previous_ms",
+    "overlap_with_previous_ms",
+    "timing_basis",
 )
 _LEASE_KEYS = (
     "batch_id",
@@ -274,6 +311,93 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _canonical_sha256(value: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _turn_table(cues: list[dict[str, Any]]) -> tuple[list[Any], list[int | None]]:
+    turns: list[Any] = []
+    indexes: dict[str, int] = {}
+    cue_indexes: list[int | None] = []
+    for cue in cues:
+        turn_id = cue.get("turn_id")
+        if turn_id is None:
+            cue_indexes.append(None)
+            continue
+        key = json.dumps(
+            turn_id,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if key not in indexes:
+            indexes[key] = len(turns)
+            turns.append(turn_id)
+        cue_indexes.append(indexes[key])
+    return turns, cue_indexes
+
+
+def _compact_claim(
+    projected: dict[str, Any],
+    *,
+    known_manifest_hash: str | None,
+) -> dict[str, Any]:
+    """Encode the canonical claim projection in the versioned compact form."""
+
+    result = dict(projected)
+    result["packet_format"] = "compact-v1"
+
+    task = projected.get("task")
+    manifest = _project_fields(task, _COMPACT_MANIFEST_KEYS) if isinstance(task, dict) else {}
+    manifest_hash = _canonical_sha256(manifest)
+    result["manifest_hash"] = manifest_hash
+    if known_manifest_hash != manifest_hash:
+        result["manifest"] = manifest
+    if isinstance(task, dict):
+        result["task"] = _project_fields(task, _COMPACT_TASK_KEYS)
+
+    batch = projected.get("batch")
+    if isinstance(batch, dict):
+        compact_batch = dict(batch)
+        cues = batch.get("cues")
+        if isinstance(cues, list):
+            turns, turn_indexes = _turn_table(cues)
+            rows: list[list[Any]] = []
+            for cue, turn_index in zip(cues, turn_indexes, strict=True):
+                timing = cue.get("timing")
+                timing = timing if isinstance(timing, dict) else {}
+                rows.append(
+                    [
+                        cue.get("cue_id"),
+                        cue.get("evidence_cue_ids"),
+                        cue.get("text"),
+                        cue.get("speaker"),
+                        turn_index,
+                        timing.get("start_ms"),
+                        timing.get("end_ms"),
+                        timing.get("gap_from_previous_ms"),
+                        timing.get("overlap_with_previous_ms"),
+                        (
+                            cue.get("timing_basis")
+                            if cue.get("timing_basis") is not None
+                            else timing.get("timing_basis")
+                        ),
+                    ]
+                )
+            compact_batch.pop("cues", None)
+            compact_batch["cue_columns"] = list(_COMPACT_CUE_COLUMNS)
+            compact_batch["cue_rows"] = rows
+            compact_batch["turns"] = turns
+        result["batch"] = compact_batch
+    return result
+
+
 def _lease(payload: dict[str, Any]) -> dict[str, Any]:
     result = {"schema_version": "1"}
     result.update(_project_fields(payload, _LEASE_KEYS))
@@ -284,6 +408,75 @@ def _submission(payload: dict[str, Any]) -> dict[str, Any]:
     result = {"schema_version": "1"}
     result.update(_project_fields(payload, _SUBMIT_KEYS))
     return result
+
+
+def _native_submit_result(result: Any) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    if result.kind == "correction":
+        grouped_fields = {"edits", "deletes", "merges", "splits"}
+        grouped = bool(grouped_fields.intersection(result.model_fields_set))
+        operations: list[dict[str, Any]] = []
+        if grouped:
+            for edit in result.edits:
+                operation: dict[str, Any] = {
+                    "action": "edit",
+                    "cue_ids": [edit.cue_id],
+                    "texts": [edit.text],
+                    "starts_new_turn": edit.starts_new_turn,
+                }
+                if edit.speaker is not None:
+                    operation["speakers"] = [edit.speaker]
+                operations.append(operation)
+            operations.extend(
+                {"action": "delete", "cue_ids": [cue_id]} for cue_id in result.deletes
+            )
+            for merge in result.merges:
+                operation = merge.model_dump(mode="json")
+                operation["action"] = "merge"
+                operations.append(operation)
+            for split in result.splits:
+                operation = split.model_dump(mode="json")
+                operation["action"] = "split"
+                operation["cue_ids"] = [operation.pop("cue_id")]
+                operations.append(operation)
+        else:
+            operations = [operation.model_dump(mode="json") for operation in result.operations]
+        native = {
+            "kind": "correction",
+            "operations": operations,
+            "uncertainties": [
+                uncertainty.model_dump(mode="json") for uncertainty in result.uncertainties
+            ],
+        }
+        return (
+            type(result)
+            .model_validate(native)
+            .model_dump(
+                mode="json",
+                include={"kind", "operations", "uncertainties"},
+            )
+        )
+    if result.kind == "translation":
+        translations = (
+            [item.model_dump(mode="json") for item in result.translations]
+            if result.translations is not None
+            else [item.model_dump(mode="json") for item in result.items]
+        )
+        native = {
+            "kind": "translation",
+            "translations": translations,
+            "glossary_updates": result.glossary_updates,
+        }
+        return (
+            type(result)
+            .model_validate(native)
+            .model_dump(
+                mode="json",
+                exclude={"items"},
+            )
+        )
+    return result.model_dump(mode="json")
 
 
 def _run_id(payload: dict[str, Any], fallback: str | None = None) -> str:
@@ -404,7 +597,9 @@ def get_dispatch_run(
     return _metadata(runtime.require_application().get_dispatch_run(arguments.run_id))
 
 
-def inspect_dispatch_split_boundaries(runtime: McpRuntime, arguments: InspectDispatchSplitBoundariesInput) -> dict[str, Any]:
+def inspect_dispatch_split_boundaries(
+    runtime: McpRuntime, arguments: InspectDispatchSplitBoundariesInput
+) -> dict[str, Any]:
     return runtime.require_application().inspect_dispatch_split_boundaries(**arguments.model_dump())
 
 
@@ -418,6 +613,11 @@ def claim_dispatch_batch(
         idempotency_key=arguments.idempotency_key,
     )
     projected = _claim(result)
+    if arguments.packet_format == "compact":
+        projected = _compact_claim(
+            projected,
+            known_manifest_hash=arguments.known_manifest_hash,
+        )
     next_actions = []
     if _is_completed(result):
         next_actions.append(_get_next_action(arguments.run_id))
@@ -465,7 +665,7 @@ def submit_dispatch_batch(
     result = runtime.require_application().submit_dispatch_batch(
         arguments.batch_id,
         lease_token=arguments.lease_token,
-        result=(arguments.result.model_dump(mode="json") if arguments.result is not None else None),
+        result=_native_submit_result(arguments.result),
         response_text=arguments.response_text,
         context_delta=arguments.context_delta.model_dump(mode="json"),
         idempotency_key=arguments.idempotency_key,

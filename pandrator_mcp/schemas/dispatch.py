@@ -79,6 +79,11 @@ class ClaimDispatchBatchInput(ToolInput):
 
     run_id: str = _RUN_ID
     lease_seconds: int = Field(default=900, ge=30, le=3_600)
+    packet_format: Literal["standard", "compact"] = "standard"
+    known_manifest_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,
@@ -120,7 +125,9 @@ class ReleaseDispatchBatchInput(ToolInput):
 
 
 class DispatchCorrectionOperationInput(ToolInput):
-    split_boundary_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=499)
+    split_boundary_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
+        default_factory=list, max_length=499
+    )
     starts_new_turn: bool = Field(default=False, strict=True)
     action: Literal["edit", "delete", "merge", "split"]
     cue_ids: list[Annotated[int, Field(ge=1)]] = Field(
@@ -138,7 +145,9 @@ class DispatchCorrectionOperationInput(ToolInput):
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "DispatchCorrectionOperationInput":
-        if self.split_boundary_ids and (self.action != "split" or len(self.split_boundary_ids) != len(self.texts) - 1):
+        if self.split_boundary_ids and (
+            self.action != "split" or len(self.split_boundary_ids) != len(self.texts) - 1
+        ):
             raise ValueError("split_boundary_ids must match the boundaries between split texts.")
         if self.starts_new_turn and self.action not in {"edit", "split"}:
             raise ValueError("starts_new_turn requires edit or split.")
@@ -175,6 +184,66 @@ class DispatchCorrectionUncertaintyInput(ToolInput):
         return value
 
 
+class DispatchCompactCorrectionEditInput(ToolInput):
+    """One cue edit in the grouped correction submission form."""
+
+    cue_id: int = Field(ge=1, strict=True)
+    text: str = Field(min_length=1, max_length=16_000)
+    speaker: str | None = Field(default=None, max_length=500)
+    starts_new_turn: bool = Field(default=False, strict=True)
+
+
+class DispatchCompactCorrectionMergeInput(ToolInput):
+    """One explicit merge operation in a grouped correction submission."""
+
+    cue_ids: list[Annotated[int, Field(ge=1, strict=True)]] = Field(
+        min_length=2,
+        max_length=500,
+    )
+    texts: list[Annotated[str, Field(min_length=1, max_length=16_000)]] = Field(
+        min_length=1,
+        max_length=500,
+    )
+    speakers: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+    @model_validator(mode="after")
+    def validate_merge_shape(self) -> "DispatchCompactCorrectionMergeInput":
+        if len(set(self.cue_ids)) != len(self.cue_ids):
+            raise ValueError("Correction operation cue_ids must be unique.")
+        if self.speakers and len(self.speakers) != len(self.texts):
+            raise ValueError("speakers must be empty or match texts one-for-one.")
+        return self
+
+
+class DispatchCompactCorrectionSplitInput(ToolInput):
+    """One explicit split operation in a grouped correction submission."""
+
+    cue_id: int = Field(ge=1, strict=True)
+    texts: list[Annotated[str, Field(min_length=1, max_length=16_000)]] = Field(
+        min_length=2,
+        max_length=500,
+    )
+    speakers: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    split_boundary_ids: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
+        default_factory=list, max_length=499
+    )
+    starts_new_turn: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def validate_split_shape(self) -> "DispatchCompactCorrectionSplitInput":
+        if self.split_boundary_ids and len(self.split_boundary_ids) != len(self.texts) - 1:
+            raise ValueError("split_boundary_ids must match the boundaries between split texts.")
+        if self.speakers and len(self.speakers) != len(self.texts):
+            raise ValueError("speakers must be empty or match texts one-for-one.")
+        return self
+
+
 class DispatchCorrectionResultInput(ToolInput):
     kind: Literal["correction"]
     operations: list[DispatchCorrectionOperationInput] = Field(
@@ -185,6 +254,42 @@ class DispatchCorrectionResultInput(ToolInput):
         default_factory=list,
         max_length=500,
     )
+    edits: list[DispatchCompactCorrectionEditInput] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    deletes: list[Annotated[int, Field(ge=1, strict=True)]] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    merges: list[DispatchCompactCorrectionMergeInput] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    splits: list[DispatchCompactCorrectionSplitInput] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+    @model_validator(mode="after")
+    def validate_submission_shape(self) -> "DispatchCorrectionResultInput":
+        grouped_fields = {"edits", "deletes", "merges", "splits"}
+        if (
+            grouped_fields.intersection(self.model_fields_set)
+            and "operations" in self.model_fields_set
+        ):
+            raise ValueError("Provide grouped correction fields or operations, not both.")
+        if len(set(self.deletes)) != len(self.deletes):
+            raise ValueError("Delete cue IDs must be unique.")
+        return self
+
+
+class DispatchCompactTranslationItemInput(ToolInput):
+    """One cue translation in the compact one-cue-per-item form."""
+
+    cue_id: int = Field(ge=1, strict=True)
+    text: str = Field(min_length=1, max_length=16_000)
+    speaker: str | None = Field(default=None, max_length=500)
 
 
 class DispatchTranslationItemInput(ToolInput):
@@ -206,11 +311,23 @@ class DispatchTranslationItemInput(ToolInput):
 
 class DispatchTranslationResultInput(ToolInput):
     kind: Literal["translation"]
-    translations: list[DispatchTranslationItemInput] = Field(
+    translations: list[DispatchTranslationItemInput] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
+    items: list[DispatchCompactTranslationItemInput] | None = Field(
+        default=None,
         min_length=1,
         max_length=500,
     )
     glossary_updates: dict[str, str] = Field(default_factory=dict, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_submission_shape(self) -> "DispatchTranslationResultInput":
+        if (self.translations is None) == (self.items is None):
+            raise ValueError("Provide exactly one of translations or compact items.")
+        return self
 
     @field_validator("glossary_updates")
     @classmethod

@@ -315,3 +315,58 @@ and timing parameters; the
 PDF/EPUB extraction and narration preparation. The
 [speech-optimization reference](../reference/speech-optimization.md) documents
 native and passive speech preparation.
+
+### Bounded review and controls
+
+Use `pandrator_get_dispatch_preview` after an accepted batch to inspect its
+materialized output before processing the rest when editorial style is uncertain.
+It does not publish or pause the run. It returns paged output rows, plus source
+cues where native passage IDs support pairing. Legacy outputs without IDs remain
+readable, with `source_pairing=unavailable` instead of a guessed comparison.
+
+Use `pandrator_terminate_dispatch_run` to cancel an abandoned run or supersede it
+with a compatible replacement. Supply the current status and an idempotency key.
+Accepted batches remain available for inspection; revoked leases cannot submit.
+
+Before translation or speech preparation, read `pandrator_get_workflow_inputs`
+and select the exact reviewed artifact with `pandrator_select_workflow_input`.
+Supply the manifest's outcome, producer-selection and translation-settings
+revision fences. This commits the consumer input and producer selection together.
+Correction descendants remain fresh on the selected source branch; translation
+still requires its exact pinned source. A different artifact with identical text
+is not automatically interchangeable.
+
+### Compact MCP packets
+
+The default packet and response formats remain compatible. Hosts that consume
+`structuredContent` can request `response_mode=structured` on workflow, media-edit,
+subtitle-preview, evidence and subtitle-claim reads. Full data then appears once;
+the text content is a short receipt. A text-only host should keep the default.
+
+Claim with `packet_format=compact` to receive `compact-v1`: map each `cue_rows`
+array through `cue_columns`, and resolve `turn_index` through `turns`. IDs, text,
+timing, evidence and dynamic context remain intact. Cache `manifest` by its
+SHA-256 `manifest_hash`; on later claims supply `known_manifest_hash` only if
+that exact manifest is retained. A mismatch returns the full manifest. Policy
+instructions refer to `batch.cue_count`, so different batch sizes do not change
+the shared manifest. Never replace omitted context or source text with guesses.
+
+Correction can submit grouped `edits`, `deletes`, `merges` and `splits` instead of
+`operations`; translation can use `items` instead of `translations`. Do not mix
+both representations. Native coverage, speaker, utterance and split validators
+still apply. Context capsules accept `overview`, `terminology`, `entities`,
+`style_rules`, `decisions`, and `notes`; `context_delta` accepts those fields
+except `overview`. Unsupported fields are rejected with validation details.
+
+For readable subtitles and later voiceover, prefer `correction_style=publishable`:
+remove incidental fillers, hesitations, false starts, stutters and accidental
+repetition while retaining meaning and deliberate repetition. Utterance boundaries
+are separate from speaker names. Preserve or mark them even when identity is
+unknown; never infer a speaker change solely from a change in topic.
+
+Discover fragment-transcription engines through
+`pandrator_get_subtitle_evidence_routes`. The player uses the same catalogue.
+Matching successful audio evidence is reused only with identical media, window,
+language, engine/model and effective configuration. Editorial decisions are not
+reused. `force_refresh=true` requests new evidence; provider calls retain their
+existing disclosure and configuration requirements.

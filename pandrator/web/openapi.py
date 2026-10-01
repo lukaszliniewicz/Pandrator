@@ -30,12 +30,14 @@ from .voice_catalog_openapi import (
     voice_catalog_paths,
 )
 from .work import EventBounds, WorkError, WorkEvent, WorkEventPage, WorkView
+from .workflow_improvements_openapi import WORKFLOW_IMPROVEMENT_SCHEMAS, workflow_improvements_paths
 
 
 def build_openapi_document() -> dict:
     schemas: dict[str, dict] = dict(SESSION_PURGE_SCHEMAS)
     contract_models = {
         **SCHEMA_MODELS,
+        **WORKFLOW_IMPROVEMENT_SCHEMAS,
         **FLOW_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
@@ -3270,6 +3272,8 @@ def build_openapi_document() -> dict:
         parameters = paths[path][method].setdefault("parameters", [])
         if not any(item.get("name") == "If-Match" for item in parameters):
             parameters.append(dict(revision_parameter))
+
+    paths.update(workflow_improvements_paths())
 
     mcp_scoped_operations = (
         ("/api/v1/system/identity", "get", "app.read"),

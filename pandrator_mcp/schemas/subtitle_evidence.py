@@ -29,6 +29,7 @@ class RequestSubtitleEvidenceInput(ToolInput):
     audio_model_ids: list[str] = Field(default_factory=list, max_length=3)
     padding_before_ms: int = Field(default=2_000, ge=0, le=15_000)
     padding_after_ms: int = Field(default=2_000, ge=0, le=15_000)
+    force_refresh: bool = False
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,
@@ -64,6 +65,11 @@ class RequestSubtitleEvidenceInput(ToolInput):
 
 class GetSubtitleEvidenceInput(ToolInput):
     evidence_id: str = Field(min_length=1, max_length=120)
+
+
+class GetSubtitleEvidenceRoutesInput(ToolInput):
+    language: str | None = Field(default=None, min_length=2, max_length=40)
+    include_languages: bool = False
 
 
 class ResolveSubtitleEvidenceInput(ToolInput):

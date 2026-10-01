@@ -680,10 +680,11 @@ def build_correction_task_instructions(
             "   - Treat punctuation as provisional. Short passages may intentionally contain clauses or parts of one sentence; keep those boundaries when the corrected wording still belongs to each passage.\n",
         )
     actions = "edit|delete|merge" if logical_passages and not dispatch_result else "edit|delete|merge|split"
+    count_label = "batch.cue_count" if structured_context and dispatch_result else str(int(subtitle_count))
     base_prompt = CORRECTION_PROMPT_TEMPLATE.format(
         correction_instructions=correction_instructions
         or "No additional instructions provided.",
-        subtitle_count=int(subtitle_count),
+        subtitle_count=count_label,
         response_shape=(
             '{"kind":"correction","operations":['
             '{"action":"' + actions + '","cue_ids":[1],'

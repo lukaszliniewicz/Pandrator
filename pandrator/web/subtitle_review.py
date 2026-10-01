@@ -9,15 +9,24 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from sqlalchemy import func, select
 
+from pandrator.logic.dubbing.correction_splits import split_boundaries
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.srt_utils import compose_srt, split_speaker_label
 
 from .artifacts import ArtifactService
 from .database import Database
+from .logical_passages import (
+    attach_passages,
+    load_timing_reference,
+    passage_review_metadata,
+    same_timing_language,
+    source_passages,
+    stored_passages,
+)
 from .models import (
     Artifact,
     Document,
@@ -40,6 +49,12 @@ MAX_REVIEW_ARTIFACTS = 4
 
 
 class ReviewedSubtitleSegment(TypedDict):
+    id: str | None
+    turn_id: str | None
+    source_passage_ids: list[str]
+    starts_new_turn: bool
+    origin_segment_id: str | None
+    split_boundary_id: str | None
     start_ms: int
     end_ms: int
     text: str
@@ -48,6 +63,7 @@ class ReviewedSubtitleSegment(TypedDict):
     review_note: str
     evidence_ids: list[str]
     uncertain_source_cue_ids: list[int]
+    _source_word_ids: NotRequired[list[str]]
 
 
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
@@ -68,12 +84,224 @@ def _segments_hash(segments: Sequence[Mapping[str, Any]]) -> str:
             "uncertain_source_cue_ids": list(
                 item.get("uncertain_source_cue_ids") or []
             ),
+            "turn_id": item.get("turn_id"),
+            "source_passage_ids": list(item.get("source_passage_ids") or []),
+            "starts_new_turn": bool(item.get("starts_new_turn")),
+            "origin_segment_id": item.get("origin_segment_id"),
+            "split_boundary_id": item.get("split_boundary_id"),
         }
         for item in segments
     ]
     return hashlib.sha256(
         json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _overlaps(start: int, end: int, row: Mapping[str, Any]) -> bool:
+    return min(end, int(row["end_ms"])) > max(start, int(row["start_ms"]))
+
+
+def _review_passage_rows(
+    source_rows: list[dict[str, Any]],
+    source_segments: list[Segment],
+    reviewed: list[ReviewedSubtitleSegment],
+    *,
+    source_hash: str,
+) -> list[dict[str, Any]]:
+    """Project reviewed display cues through explicit source identity and windows."""
+    by_segment = {item.id: item for item in source_segments}
+    by_passage = {row["id"]: row for row in source_rows}
+    output: list[dict[str, Any]] = []
+    used: set[str] = set()
+    carried: dict[str, dict[str, Any]] = {}
+    carried_reviews: dict[str, list[ReviewedSubtitleSegment]] = {}
+    fragments: dict[str, list[tuple[Segment, ReviewedSubtitleSegment]]] = {}
+    track_turns = any(row.get("turn_id") for row in source_rows) or any(
+        cue.get("starts_new_turn") for cue in reviewed
+    )
+    active_turn = (
+        "turn-" + hashlib.sha256(source_hash.encode()).hexdigest()[:24]
+        if track_turns else ""
+    )
+    previous_source_turn = ""
+    for ordinal, cue in enumerate(reviewed):
+        segment_id = cue.get("origin_segment_id") or cue.get("id")
+        segment = by_segment.get(segment_id) if segment_id else None
+        if segment_id and segment is None:
+            raise ValueError("Reviewed segment identity does not belong to the selected source.")
+        if segment is not None and (
+            segment.start_ms is None
+            or segment.end_ms is None
+            or not _overlaps(cue["start_ms"], cue["end_ms"], {
+                "start_ms": segment.start_ms, "end_ms": segment.end_ms,
+            })
+        ):
+            raise ValueError("Reviewed segment identity does not overlap its selected source.")
+        if segment is None:
+            exact = [
+                item for item in source_segments
+                if item.start_ms == cue["start_ms"]
+                and item.end_ms == cue["end_ms"]
+            ]
+            if len(exact) > 1 and cue["speaker"]:
+                exact = [
+                    item for item in exact
+                    if _speaker_and_text(item)[0].casefold() == cue["speaker"].casefold()
+                ]
+            if len(exact) == 1:
+                segment = exact[0]
+        candidates = [
+            row for row in source_rows
+            if _overlaps(cue["start_ms"], cue["end_ms"], row)
+        ]
+        owned = (
+            [row for row in candidates if segment.id in row.get("source_cue_ids", [])]
+            if segment is not None else []
+        )
+        if not owned and segment is not None:
+            owned = [
+                row for row in candidates
+                if row["start_ms"] == segment.start_ms
+                and row["end_ms"] == segment.end_ms
+            ]
+        if not owned:
+            owned = candidates
+        supplied = cue.get("source_passage_ids") or []
+        if supplied:
+            if len(set(supplied)) != len(supplied) or any(value not in by_passage for value in supplied):
+                raise ValueError("Logical source references do not belong to the selected source.")
+            selected = [by_passage[value] for value in supplied]
+            if any(row not in owned for row in selected) or any(row not in selected for row in owned):
+                raise ValueError("Logical source references conflate or omit selected source passages.")
+            owned = selected
+        if not owned:
+            raise ValueError("Reviewed cue has no selected logical source passage.")
+        exact_inherited = (
+            segment is not None
+            and segment.start_ms == cue["start_ms"]
+            and segment.end_ms == cue["end_ms"]
+        )
+        supplied_turn = str(cue.get("turn_id") or "")
+        owned_turns = {str(row.get("turn_id") or "") for row in owned}
+        if supplied_turn and (len(owned_turns) != 1 or supplied_turn not in owned_turns):
+            raise ValueError("Reviewed turn_id does not belong to the selected source.")
+        display_reflow = exact_inherited and (
+            len(owned) > 1
+            or owned[0]["start_ms"] != cue["start_ms"]
+            or owned[0]["end_ms"] != cue["end_ms"]
+        )
+        if display_reflow and segment is not None:
+            if cue.get("starts_new_turn"):
+                raise ValueError("A display reflow cannot start a turn without a separate logical passage.")
+            if cue.get("origin_segment_id") or cue.get("split_boundary_id"):
+                raise ValueError("A display reflow cannot be split without one logical source passage.")
+            if cue.get("id") != segment.id or supplied != [row["id"] for row in owned]:
+                raise ValueError("Display fragment requires its exact source segment and logical references.")
+            if len(owned) > 1 and _speaker_and_text(segment)[1] != cue["text"]:
+                raise ValueError("Display cue contains multiple logical passages; edit their source passages separately.")
+            # Keep each canonical row once even when display cues split or
+            # combine it. Fragment text is reconstructed only after complete
+            # source ownership has been verified below.
+            for row in owned:
+                row_id = row["id"]
+                if row_id not in carried:
+                    carried[row_id] = dict(row)
+                    output.append(carried[row_id])
+                    used.add(row_id)
+                carried_reviews.setdefault(row_id, []).append(cue)
+                if len(owned) == 1:
+                    fragments.setdefault(row_id, []).append((segment, cue))
+            continue
+        turns = {
+            str(row.get("turn_id") or "")
+            for row in (owned if exact_inherited or cue.get("origin_segment_id") else candidates)
+        }
+        if len(turns) > 1:
+            raise ValueError("Cannot merge across a preserved utterance turn boundary.")
+        inherited_turn = str(owned[0].get("turn_id") or "")
+        if inherited_turn and inherited_turn != previous_source_turn:
+            active_turn = inherited_turn
+        previous_source_turn = inherited_turn
+        if cue.get("starts_new_turn"):
+            active_turn = "turn-" + hashlib.sha256(
+                json.dumps([source_hash, [row["id"] for row in owned], ordinal]).encode()
+            ).hexdigest()[:24]
+        turn_id = active_turn
+        for row in owned:
+            if row["id"] in used and not cue.get("origin_segment_id"):
+                raise ValueError("One logical source passage is assigned to multiple reviewed cues.")
+        if len(owned) > 1 and cue.get("origin_segment_id"):
+            raise ValueError("A split must originate from one logical source passage.")
+        if len(owned) > 1 and len(turns) > 1:
+            raise ValueError("Cannot merge across a preserved utterance turn boundary.")
+        if len(owned) > 1 and segment is not None and len(owned) != len(candidates):
+            raise ValueError("Reviewed merge omits overlapping logical source passages.")
+        if len(owned) > 1 and segment is not None and _speaker_and_text(segment)[1] != cue["text"]:
+            # Multiple logical rows in one display cue cannot be edited as a
+            # single text value without an explicit passage-level edit.
+            raise ValueError("Display cue contains multiple logical passages; edit their source passages separately.")
+        source_ids = [row["id"] for row in owned]
+        source_words = list(dict.fromkeys(
+            word_id for row in owned for word_id in row.get("source_word_ids") or []
+        ))
+        evidence_ids = list(dict.fromkeys(
+            value for row in owned for value in row.get("evidence_ids") or []
+        ))
+        evidence_ids = list(dict.fromkeys([*evidence_ids, *cue["evidence_ids"]]))
+        uncertain_ids = list(dict.fromkeys(
+            value for row in owned for value in row.get("uncertain_source_cue_ids") or []
+        ))
+        uncertain_ids = list(dict.fromkeys([*uncertain_ids, *cue["uncertain_source_cue_ids"]]))
+        source_cue_ids = list(dict.fromkeys(
+            value for row in owned for value in row.get("source_cue_ids") or []
+        ))
+        mapped = {
+            "id": f"p{len(output) + 1:06d}",
+            "text": cue["text"],
+            "start_ms": cue["start_ms"],
+            "end_ms": cue["end_ms"],
+            "speaker": cue["speaker"] or "",
+            **({"turn_id": turn_id} if turn_id else {}),
+            "source_passage_ids": source_ids,
+            "source_cue_ids": source_cue_ids,
+            "timing_basis": "source_word_split" if cue.get("split_boundary_id") else "source_passage_window",
+            "review_state": cue["review_state"],
+            "review_note": cue["review_note"],
+            "evidence_ids": evidence_ids,
+            "uncertain_source_cue_ids": uncertain_ids,
+            **({"source_word_ids": source_words} if source_words else {}),
+        }
+        output.append(mapped)
+        used.update(source_ids)
+    for row_id, stored in carried.items():
+        source = by_passage[row_id]
+        reviews: list[dict[str, Any]] = [
+            source,
+            *(dict(cue) for cue in carried_reviews[row_id]),
+        ]
+        stored.update(passage_review_metadata(reviews))
+        if row_id not in fragments:
+            continue
+        direct = [
+            segment for segment in source_segments
+            if segment.id in source.get("source_cue_ids", [])
+        ]
+        expected = direct or [
+            segment for segment in source_segments
+            if segment.start_ms is not None
+            and segment.end_ms is not None
+            and _overlaps(segment.start_ms, segment.end_ms, source)
+        ]
+        actual = fragments[row_id]
+        if (
+            len(actual) != len(expected)
+            or {segment.id for segment, _cue in actual} != {segment.id for segment in expected}
+        ):
+            raise ValueError("Display fragment review must include every inherited source segment exactly once.")
+        ordered = sorted(actual, key=lambda pair: (pair[0].start_ms, pair[0].end_ms, pair[0].ordinal))
+        if any(_speaker_and_text(segment)[1] != cue["text"] for segment, cue in ordered):
+            stored["text"] = " ".join(cue["text"] for _segment, cue in ordered)
+    return output
 
 
 class SubtitleReviewService:
@@ -84,12 +312,105 @@ class SubtitleReviewService:
         self.artifacts = artifacts
         self.session_dir_resolver = session_dir_resolver
 
+    def inspect_review_split_boundaries(
+        self,
+        session_id: str,
+        source_artifact_id: str,
+        segment_id: str,
+        expected_revision: int,
+        offset: int = 0,
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("Invalid split boundary page.")
+        with self.database.session() as session:
+            source = session.get(Artifact, source_artifact_id)
+            if (
+                source is None
+                or source.session_id != session_id
+                or source.role not in ARTIFACT_ROLE_TO_STAGE
+                or source.state == "deleted"
+            ):
+                raise KeyError(source_artifact_id)
+            revision_id = str((source.metadata_json or {}).get("revision_id") or "")
+            revision = session.get(DocumentRevision, revision_id)
+            if revision is None or revision.revision_number != expected_revision:
+                raise RuntimeError("Subtitle source revision changed.")
+            document = session.get(Document, revision.document_id)
+            if (
+                document is None
+                or document.session_id != session_id
+                or document.stage != ARTIFACT_ROLE_TO_STAGE[source.role]
+            ):
+                raise KeyError(source_artifact_id)
+            segment = session.get(Segment, segment_id)
+            if segment is None or segment.revision_id != revision_id:
+                raise KeyError(segment_id)
+            result: dict[str, Any] = {
+                "source_artifact_id": source.id,
+                "source_revision_id": revision_id,
+                "source_content_hash": source.content_hash,
+                "segment_id": segment_id,
+                "status": "unavailable",
+                "reason": None,
+                "total": 0,
+                "offset": offset,
+                "boundaries": [],
+                "next_offset": None,
+            }
+            if not self._source_hash_matches(source):
+                result["reason"] = "The selected source content hash is unavailable or changed."
+                return result
+            rows = source_passages(session, source)
+            owned = [row for row in rows if segment.id in row.get("source_cue_ids", [])]
+            if not owned:
+                owned = [
+                    row for row in rows
+                    if segment.start_ms is not None
+                    and segment.end_ms is not None
+                    and row["start_ms"] == segment.start_ms
+                    and row["end_ms"] == segment.end_ms
+                ]
+            if len(owned) != 1:
+                result["reason"] = "The display cue does not identify one logical source passage."
+                return result
+            words, reference = load_timing_reference(session, source)
+            record = session.get(SessionRecord, session_id)
+            language = document.language or (record.source_language if record else None)
+            if not same_timing_language(language, (reference or {}).get("language")):
+                result["reason"] = "Matching source-word timing language is unavailable."
+                return result
+            boundaries = split_boundaries(
+                owned[0], words, str((reference or {}).get("revision_id") or revision_id)
+            )
+            result.update(
+                status="available" if boundaries else "unavailable",
+                reason=None if boundaries else "Complete matching source-word timing is unavailable; no split timings are guessed.",
+                total=len(boundaries),
+                boundaries=boundaries[offset : offset + limit],
+                next_offset=offset + limit if offset + limit < len(boundaries) else None,
+                source_passage_id=owned[0]["id"],
+                source_window={"start_ms": owned[0]["start_ms"], "end_ms": owned[0]["end_ms"]},
+            )
+            return result
+
+    def _source_hash_matches(self, source: Artifact) -> bool:
+        if not source.content_hash:
+            return False
+        try:
+            path = self.artifacts.paths.managed_path(source.relative_path)
+            return hashlib.sha256(path.read_bytes()).hexdigest() == source.content_hash
+        except (OSError, ValueError):
+            return False
+
     @staticmethod
     def _payload(segment: Segment) -> dict[str, Any]:
         speaker, text = _speaker_and_text(segment)
         metadata = dict(segment.metadata_json or {})
         return {
             "id": segment.id,
+            "turn_id": metadata.get("turn_id"),
+            "source_passage_ids": list(metadata.get("source_passage_ids") or []),
             "ordinal": segment.ordinal,
             "start_ms": segment.start_ms,
             "end_ms": segment.end_ms,
@@ -106,6 +427,27 @@ class SubtitleReviewService:
                 metadata.get("uncertain_source_cue_ids") or []
             )[:20],
         }
+
+    @classmethod
+    def _payload_with_passages(
+        cls, segment: Segment, passages: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        payload = cls._payload(segment)
+        owned = [
+            row for row in passages
+            if segment.id in row.get("source_cue_ids", [])
+        ]
+        if not owned:
+            owned = [
+                row for row in passages
+                if segment.start_ms is not None
+                and segment.end_ms is not None
+                and _overlaps(segment.start_ms, segment.end_ms, row)
+            ]
+        payload["source_passage_ids"] = [row["id"] for row in owned]
+        turns = {str(row.get("turn_id") or "") for row in owned}
+        payload["turn_id"] = next(iter(turns)) if len(turns) == 1 else None
+        return payload
 
     def documents(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
@@ -325,17 +667,24 @@ class SubtitleReviewService:
                     )
                 records = segments_by_revision[revision_id]
                 segment_sets[artifact_id] = records
+                passages = stored_passages(artifact) or []
                 source_media_artifact_id: str | None = None
                 source_media_error: str | None = None
+                source_media_mime_type: str | None = None
+                source_media_kind: str | None = None
                 try:
-                    source_media_artifact_id = resolve_subtitle_media(
+                    media_artifact = resolve_subtitle_media(
                         session, session_id, artifact
-                    ).id
+                    )
+                    source_media_artifact_id = media_artifact.id
+                    source_media_mime_type = media_artifact.mime_type
+                    source_media_kind = media_artifact.kind
                 except ValueError as error:
                     source_media_error = str(error)
                 columns.append(
                     {
                         "artifact_id": artifact_id,
+                        "source_content_hash": artifact.content_hash,
                         "role": artifact.role,
                         "stage": document.stage,
                         "document_id": document.id,
@@ -344,8 +693,12 @@ class SubtitleReviewService:
                         "reviewed": revision.reviewed,
                         "language": document.language,
                         "source_media_artifact_id": source_media_artifact_id,
+                        "source_media_mime_type": source_media_mime_type,
+                        "source_media_kind": source_media_kind,
                         "source_media_error": source_media_error,
-                        "segments": [self._payload(item) for item in records],
+                        "segments": [
+                            self._payload_with_passages(item, passages) for item in records
+                        ],
                     }
                 )
             rows = self._comparison_rows_by_key(session, segment_sets, ordered_ids)
@@ -493,9 +846,28 @@ class SubtitleReviewService:
         values: list[dict[str, Any]],
         *,
         source_artifact_id: str | None = None,
+        expected_source_hash: str | None = None,
         db_session=None,
         published_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
+        if db_session is None:
+            owned_paths: list[Path] = []
+            try:
+                with self.database.session() as session:
+                    return self.save_review(
+                        session_id,
+                        stage,
+                        expected_revision,
+                        values,
+                        source_artifact_id=source_artifact_id,
+                        expected_source_hash=expected_source_hash,
+                        db_session=session,
+                        published_paths=owned_paths,
+                    )
+            except Exception:
+                for path in owned_paths:
+                    path.unlink(missing_ok=True)
+                raise
         if stage not in STAGE_ORDER:
             raise ValueError(f"Unsupported subtitle stage: {stage}")
         normalized: list[ReviewedSubtitleSegment] = []
@@ -511,6 +883,12 @@ class SubtitleReviewService:
                 raise ValueError(f"Segment {index + 1} has invalid timing.")
             normalized.append(
                 {
+                    "id": str(item.get("id") or "").strip() or None,
+                    "turn_id": str(item.get("turn_id") or "").strip() or None,
+                    "source_passage_ids": list(item.get("source_passage_ids") or []),
+                    "starts_new_turn": bool(item.get("starts_new_turn")),
+                    "origin_segment_id": str(item.get("origin_segment_id") or "").strip() or None,
+                    "split_boundary_id": str(item.get("split_boundary_id") or "").strip() or None,
                     "start_ms": start_ms,
                     "end_ms": end_ms,
                     "text": text,
@@ -587,8 +965,14 @@ class SubtitleReviewService:
                 source_artifact is None
                 or source_artifact.session_id != session_id
                 or ARTIFACT_ROLE_TO_STAGE.get(source_artifact.role) != stage
+                or source_artifact.state == "deleted"
             ):
                 raise KeyError(source_artifact_id)
+            if source_artifact is not None and (
+                (expected_source_hash is not None and source_artifact.content_hash != expected_source_hash)
+                or not self._source_hash_matches(source_artifact)
+            ):
+                raise RuntimeError("Subtitle source content hash changed.")
             source_metadata = (
                 source_artifact.metadata_json or {} if source_artifact else {}
             )
@@ -657,6 +1041,103 @@ class SubtitleReviewService:
                         .order_by(Segment.ordinal)
                     ).all()
                 )
+            if source_artifact is None and previous is not None:
+                source_artifact = session.scalar(
+                    select(Artifact)
+                    .where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == ("tts_optimized" if stage == "tts_optimization" else stage),
+                        Artifact.state != "deleted",
+                    )
+                    .order_by(Artifact.created_at.desc())
+                )
+                if source_artifact is not None and (
+                    (source_artifact.metadata_json or {}).get("revision_id") != previous.id
+                    or not self._source_hash_matches(source_artifact)
+                ):
+                    source_artifact = None
+            if expected_source_hash is not None and (
+                source_artifact is None
+                or source_artifact.content_hash != expected_source_hash
+            ):
+                raise RuntimeError("Subtitle source content hash changed.")
+            if source_artifact is not None:
+                source_rows = source_passages(session, source_artifact, segments=previous_segments)
+                if not source_rows:
+                    raise ValueError("The selected source has no valid logical passages.")
+                if (source_artifact.metadata_json or {}).get("revision_id") != (previous.id if previous else None):
+                    raise RuntimeError("Subtitle source revision changed.")
+                for origin_id in {item["origin_segment_id"] for item in normalized if item["origin_segment_id"]}:
+                    children = [item for item in normalized if item["origin_segment_id"] == origin_id]
+                    if len(children) != 2 or not children[0]["split_boundary_id"] or children[0]["split_boundary_id"] != children[1]["split_boundary_id"]:
+                        raise ValueError("A review split requires two children with one shared verified boundary.")
+                    if any(item["id"] is not None and item["id"] != origin_id for item in children):
+                        raise ValueError("Split child id must be absent or match origin_segment_id.")
+                    inspection = self.inspect_review_split_boundaries(
+                        session_id, source_artifact.id, origin_id, expected_revision,
+                        offset=0, limit=100,
+                    )
+                    boundary = next((row for row in inspection["boundaries"] if row["id"] == children[0]["split_boundary_id"]), None)
+                    while boundary is None and inspection["next_offset"] is not None:
+                        inspection = self.inspect_review_split_boundaries(
+                            session_id, source_artifact.id, origin_id,
+                            expected_revision, offset=inspection["next_offset"], limit=100,
+                        )
+                        boundary = next((row for row in inspection["boundaries"] if row["id"] == children[0]["split_boundary_id"]), None)
+                    if boundary is None:
+                        raise ValueError("Split boundary is unavailable or stale; inspect source anchors.")
+                    origin = next(item for item in previous_segments if item.id == origin_id)
+                    if (children[0]["start_ms"], children[0]["end_ms"]) != (origin.start_ms, boundary["left_end_ms"]) or (children[1]["start_ms"], children[1]["end_ms"]) != (boundary["right_start_ms"], origin.end_ms):
+                        raise ValueError("Review split timing must match verified source-word windows.")
+                    source_row = next(row for row in source_rows if row["id"] == inspection["source_passage_id"])
+                    if any(
+                        item["source_passage_ids"]
+                        and item["source_passage_ids"] != [source_row["id"]]
+                        for item in children
+                    ):
+                        raise ValueError("Split child logical source references must match the verified origin passage.")
+                    split_at = boundary["after_word"]
+                    children[0]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[:split_at]
+                    children[1]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[split_at:]
+                if any(item["split_boundary_id"] and not item["origin_segment_id"] for item in normalized):
+                    raise ValueError("Split boundary requires origin_segment_id.")
+                logical_rows = _review_passage_rows(
+                    source_rows, previous_segments, normalized,
+                    source_hash=source_artifact.content_hash or "",
+                )
+                for item in normalized:
+                    if "_source_word_ids" not in item:
+                        continue
+                    matching = [
+                        row for row in logical_rows
+                        if row["start_ms"] == item["start_ms"]
+                        and row["end_ms"] == item["end_ms"]
+                    ]
+                    if len(matching) != 1:
+                        raise ValueError("Split child has ambiguous logical passage timing.")
+                    matching[0]["source_word_ids"] = item["_source_word_ids"]
+            else:
+                if any(item["id"] or item["turn_id"] or item["source_passage_ids"] or item["origin_segment_id"] or item["split_boundary_id"] for item in normalized):
+                    raise ValueError("Reviewed identity requires an exact selected source artifact.")
+                logical_rows = []
+                active_turn = ""
+                for index, item in enumerate(normalized, start=1):
+                    if item["starts_new_turn"]:
+                        active_turn = "turn-" + hashlib.sha256(
+                            json.dumps([session_id, stage, index, item["start_ms"]]).encode()
+                        ).hexdigest()[:24]
+                    logical_rows.append({
+                        "id": f"p{index:06d}",
+                        "text": item["text"],
+                        "start_ms": item["start_ms"],
+                        "end_ms": item["end_ms"],
+                        "speaker": item["speaker"] or "",
+                        **({"turn_id": active_turn} if active_turn else {}),
+                        "review_state": item["review_state"],
+                        "review_note": item["review_note"],
+                        "evidence_ids": item["evidence_ids"],
+                        "uncertain_source_cue_ids": item["uncertain_source_cue_ids"],
+                    })
             for index, reviewed in enumerate(normalized, start=1):
                 # Genuine crosstalk can make an existing cue overlap another speaker.
                 # Preserve that inherited overlap when the reviewed cue keeps the same
@@ -724,6 +1205,11 @@ class SubtitleReviewService:
             session.flush()
             children = []
             for ordinal, reviewed in enumerate(normalized):
+                linked = [
+                    row for row in logical_rows
+                    if _overlaps(reviewed["start_ms"], reviewed["end_ms"], row)
+                ]
+                linked_turns = {str(row.get("turn_id") or "") for row in linked}
                 child = Segment(
                     revision_id=revision.id,
                     ordinal=ordinal,
@@ -738,6 +1224,12 @@ class SubtitleReviewService:
                         "uncertain_source_cue_ids": reviewed[
                             "uncertain_source_cue_ids"
                         ],
+                        "source_passage_ids": list(dict.fromkeys(
+                            source_id
+                            for row in linked
+                            for source_id in row.get("source_passage_ids") or [row["id"]]
+                        )),
+                        **({"turn_id": next(iter(linked_turns))} if len(linked_turns) == 1 and next(iter(linked_turns)) else {}),
                     },
                 )
                 session.add(child)
@@ -830,6 +1322,18 @@ class SubtitleReviewService:
                         ),
                     },
                 )
+                source_packet = (
+                    ((source_artifact.metadata_json or {}).get("logical_passages") or {})
+                    if source_artifact is not None else {}
+                )
+                attach_passages(
+                    artifact,
+                    logical_rows,
+                    source=source_artifact or artifact,
+                    source_passage_settings=source_packet.get("source_passage_settings"),
+                    source_passage_settings_revision=source_packet.get("source_passage_settings_revision"),
+                    policy_version=source_packet.get("policy_version"),
+                )
             except Exception:
                 if newly_published:
                     destination.unlink(missing_ok=True)
@@ -852,6 +1356,7 @@ class SubtitleReviewService:
         values: list[dict[str, Any]],
         *,
         source_artifact_id: str | None = None,
+        expected_source_hash: str | None = None,
         published_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
         """Persist a review without committing the caller-owned transaction."""
@@ -861,6 +1366,7 @@ class SubtitleReviewService:
             expected_revision,
             values,
             source_artifact_id=source_artifact_id,
+            expected_source_hash=expected_source_hash,
             db_session=session,
             published_paths=published_paths,
         )
@@ -909,5 +1415,5 @@ class _SessionContext:
     def __enter__(self):
         return self.session
 
-    def __exit__(self, exc_type, exc, traceback):
+    def __exit__(self, _exc_type, _exc, _traceback):
         return False
