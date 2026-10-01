@@ -1,13 +1,19 @@
 import unittest
 from types import SimpleNamespace
 
+from pydantic import ValidationError
+
+from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.schemas.generation import (
     AssembleGenerationRunInput,
+    GenerateSpeechPlanInput,
     ListGenerationSegmentsInput,
     RegenerateSegmentsInput,
+    ReviseSpeechBlockPlanBatchInput,
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     UpdateGenerationSegmentInput,
+    UpdateGenerationSegmentsInput,
 )
 from pandrator_mcp.schemas.sessions import (
     CuePatchInput,
@@ -19,11 +25,14 @@ from pandrator_mcp.schemas.sessions import (
 )
 from pandrator_mcp.tools.generation import (
     assemble_generation_run,
+    generate_speech_plan,
     list_generation_segments,
     regenerate_segments,
     revise_speech_block_plan,
+    revise_speech_block_plan_batch,
     select_take,
     update_generation_segment,
+    update_generation_segments,
 )
 from pandrator_mcp.tools.sessions import (
     import_subtitles,
@@ -37,6 +46,8 @@ from pandrator_mcp.tools.sessions import (
 class _FakeApplication:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.topology_batch_error: PandratorMcpError | None = None
+        self.generation_run_error: PandratorMcpError | None = None
 
     def list_sessions(self, limit=50, query=None, include_trashed=False):
         self.calls.append(
@@ -297,6 +308,24 @@ class _FakeApplication:
             "affected_segment_ids": ["segment-1"],
         }
 
+    def revise_generation_plan_topology_batch(
+        self, session_id, *, expected_revision_id, operations, idempotency_key
+    ):
+        self.calls.append(
+            (
+                "revise_generation_plan_topology_batch",
+                {
+                    "session_id": session_id,
+                    "expected_revision_id": expected_revision_id,
+                    "operations": operations,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+        )
+        if self.topology_batch_error is not None:
+            raise self.topology_batch_error
+        return {"plan_revision_id": "plan-revision-4", "revision_number": 4}
+
     def update_generation_segment(
         self, segment_id, *, changes, expected_revision, idempotency_key
     ):
@@ -319,13 +348,47 @@ class _FakeApplication:
             "start_ms": 0,
             "end_ms": 2000,
             "speaker": "Narrator",
-            "text": "Original cue text",
+            "text": changes.get("text", "Original cue text"),
+            "removed": changes.get("removed", False),
             "optimized_text": changes.get("optimized_text", "Optimized spoken text"),
             "voice_id": changes.get("voice_id", "voice-pl-1"),
             "voice": changes.get("voice", "Marek"),
             "language": changes.get("language", "pl"),
             "selected_take_id": "take-1",
             "takes": [],
+        }
+
+    def update_generation_segments(self, session_id, *, updates, idempotency_key):
+        self.calls.append(
+            (
+                "update_generation_segments",
+                {
+                    "session_id": session_id,
+                    "updates": updates,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+        )
+        return {
+            "items": [
+                {
+                    "id": item["id"],
+                    "revision": item["revision"] + 1,
+                    "ordinal": index,
+                    "status": "ready",
+                    "text": item["changes"].get("text", "Original cue text"),
+                    "optimized_text": item["changes"].get(
+                        "optimized_text", "Optimized spoken text"
+                    ),
+                    "removed": item["changes"].get("removed", False),
+                    "voice_id": item["changes"].get("voice_id", "voice-pl-1"),
+                    "voice": item["changes"].get("voice", "Marek"),
+                    "language": item["changes"].get("language", "pl"),
+                    "speech_block_provenance": {"large": "private details"},
+                    "takes": [{"id": "take-private", "artifact_id": "artifact"}],
+                }
+                for index, item in enumerate(updates, start=1)
+            ]
         }
 
     def select_generation_take(
@@ -352,7 +415,14 @@ class _FakeApplication:
         }
 
     def start_generation_run(
-        self, session_id, *, segment_ids=None, operation="generate", idempotency_key=""
+        self,
+        session_id,
+        *,
+        segment_ids=None,
+        operation="generate",
+        idempotency_key="",
+        speech_plan_revision_id=None,
+        stale_only=False,
     ):
         self.calls.append(
             (
@@ -362,9 +432,13 @@ class _FakeApplication:
                     "segment_ids": segment_ids,
                     "operation": operation,
                     "idempotency_key": idempotency_key,
+                    "speech_plan_revision_id": speech_plan_revision_id,
+                    "stale_only": stale_only,
                 },
             )
         )
+        if self.generation_run_error is not None:
+            raise self.generation_run_error
         return {
             "id": "run-gen-1",
             "job_id": "job-gen-1",
@@ -482,6 +556,230 @@ class PreviewAndGenerationTests(unittest.TestCase):
         )
         self.assertEqual(4, updated.result["revision"])
         self.assertEqual("Better spoken text", updated.result["optimized_text"])
+        self.assertFalse(updated.result["removed"])
+        single_call = next(
+            payload
+            for name, payload in self.application.calls
+            if name == "update_generation_segment"
+        )
+        self.assertEqual({"optimized_text": "Better spoken text"}, single_call["changes"])
+
+    def test_generation_segment_text_and_removed_can_be_updated_and_restored(self):
+        edited = update_generation_segment(
+            self.runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:text:1",
+                text="Reviewed source text",
+                removed=True,
+            ),
+        )
+        restored = update_generation_segment(
+            self.runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=4,
+                idempotency_key="gen-update:restore:1",
+                removed=False,
+            ),
+        )
+
+        self.assertEqual("Reviewed source text", edited.result["text"])
+        self.assertTrue(edited.result["removed"])
+        self.assertFalse(restored.result["removed"])
+        calls = [
+            payload
+            for name, payload in self.application.calls
+            if name == "update_generation_segment"
+        ]
+        self.assertEqual(
+            {"text": "Reviewed source text", "removed": True},
+            calls[0]["changes"],
+        )
+        self.assertEqual({"removed": False}, calls[1]["changes"])
+        with self.assertRaises(ValidationError):
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=5,
+                idempotency_key="gen-update:blank:1",
+                text=" \t ",
+            )
+
+    def test_single_explicit_none_keeps_legacy_no_change_semantics(self):
+        update_generation_segment(
+            self.runtime,
+            UpdateGenerationSegmentInput(
+                session_id="session-1",
+                segment_id="segment-1",
+                expected_revision=3,
+                idempotency_key="gen-update:none:1",
+                text=None,
+                removed=None,
+            ),
+        )
+        application_call = next(
+            payload
+            for name, payload in self.application.calls
+            if name == "update_generation_segment"
+        )
+        self.assertEqual({}, application_call["changes"])
+
+    def test_generation_segment_batch_validation_routing_and_compact_projection(self):
+        arguments = UpdateGenerationSegmentsInput(
+            session_id="session-1",
+            idempotency_key="generation-batch:1",
+            updates=[
+                {
+                    "id": "segment-1",
+                    "revision": 4,
+                    "changes": {"text": "Reviewed", "removed": False},
+                },
+                {
+                    "id": "segment-2",
+                    "revision": 2,
+                    "changes": {"optimized_text": None, "voice_id": None},
+                },
+            ],
+        )
+        outcome = update_generation_segments(self.runtime, arguments)
+
+        application_call = next(
+            payload
+            for name, payload in self.application.calls
+            if name == "update_generation_segments"
+        )
+        self.assertEqual("session-1", application_call["session_id"])
+        self.assertEqual("generation-batch:1", application_call["idempotency_key"])
+        self.assertEqual(
+            [
+                {
+                    "id": "segment-1",
+                    "revision": 4,
+                    "changes": {"text": "Reviewed", "removed": False},
+                },
+                {
+                    "id": "segment-2",
+                    "revision": 2,
+                    "changes": {"optimized_text": None, "voice_id": None},
+                },
+            ],
+            application_call["updates"],
+        )
+        self.assertEqual(5, outcome.result["items"][0]["revision"])
+        self.assertFalse(outcome.result["items"][0]["removed"])
+        self.assertNotIn("takes", outcome.result["items"][0])
+        self.assertNotIn("speech_block_provenance", outcome.result["items"][0])
+
+    def test_generation_segment_batch_rejects_empty_duplicate_and_unknown_changes(self):
+        common = {
+            "session_id": "session-1",
+            "idempotency_key": "generation-batch:1",
+        }
+        for item in (
+            {"id": "segment-1", "revision": 1, "changes": {}},
+            {
+                "id": "segment-1",
+                "revision": 1,
+                "changes": {"audio_source": "not supported"},
+            },
+        ):
+            with self.subTest(item=item), self.assertRaises(ValidationError):
+                UpdateGenerationSegmentsInput(**common, updates=[item])
+        duplicate = {"id": "segment-1", "revision": 1, "changes": {"removed": False}}
+        with self.assertRaises(ValidationError):
+            UpdateGenerationSegmentsInput(**common, updates=[duplicate, duplicate])
+        with self.assertRaises(ValidationError):
+            UpdateGenerationSegmentsInput(
+                **common,
+                updates=[{"id": "segment-1", "revision": 0, "changes": {"text": "x"}}],
+            )
+        with self.assertRaises(ValidationError):
+            UpdateGenerationSegmentsInput(
+                **common,
+                updates=[{"id": "segment-1", "revision": 1, "changes": {"removed": None}}],
+            )
+
+    def test_topology_batch_timeout_preserves_details_and_adds_safe_replay_actions(self):
+        self.application.topology_batch_error = PandratorMcpError(
+            "application_response_timeout",
+            "The Pandrator mutation timed out before a response; its outcome is unknown.",
+            details={
+                "timeout_seconds": 120.0,
+                "operation_outcome": "unknown",
+                "retry_policy": "same_request_and_idempotency_key",
+            },
+            retryable=True,
+        )
+        arguments = ReviseSpeechBlockPlanBatchInput(
+            session_id="session-1",
+            expected_revision_id="plan-revision-3",
+            idempotency_key="topology:batch:timeout-1",
+            operations=[{"action": "split", "segment_id": "segment-1", "cursor": 2}],
+        )
+
+        with self.assertRaises(PandratorMcpError) as caught:
+            revise_speech_block_plan_batch(self.runtime, arguments)
+
+        self.assertEqual(
+            {
+                "timeout_seconds": 120.0,
+                "operation_outcome": "unknown",
+                "retry_policy": "same_request_and_idempotency_key",
+            },
+            caught.exception.details,
+        )
+        self.assertEqual(
+            ["pandrator_get_speech_plan_status", "pandrator_revise_speech_block_plan_batch"],
+            [action.tool for action in caught.exception.next_actions],
+        )
+        replay = caught.exception.next_actions[1].arguments
+        self.assertEqual("topology:batch:timeout-1", replay["idempotency_key"])
+        self.assertEqual("plan-revision-3", replay["expected_revision_id"])
+
+    def test_generate_speech_plan_timeout_inspects_runs_and_replays_exact_arguments(self):
+        self.application.generation_run_error = PandratorMcpError(
+            "application_response_timeout",
+            "The Pandrator mutation timed out before a response; its outcome is unknown.",
+            details={
+                "timeout_seconds": 120.0,
+                "operation_outcome": "unknown",
+                "retry_policy": "same_request_and_idempotency_key",
+            },
+            retryable=True,
+        )
+        arguments = GenerateSpeechPlanInput(
+            session_id="session-1",
+            speech_plan_revision_id="plan-revision-17",
+            stale_only=True,
+            idempotency_key="generation:timeout:exact-replay-1",
+        )
+
+        with self.assertRaises(PandratorMcpError) as caught:
+            generate_speech_plan(self.runtime, arguments)
+
+        self.assertEqual(self.application.generation_run_error.details, caught.exception.details)
+        self.assertEqual(
+            ["pandrator_list_generation_runs", "pandrator_generate_speech_plan"],
+            [action.tool for action in caught.exception.next_actions],
+        )
+        self.assertEqual(
+            {"session_id": "session-1", "limit": 5},
+            caught.exception.next_actions[0].arguments,
+        )
+        self.assertEqual(
+            arguments.model_dump(mode="json", exclude_unset=True),
+            caught.exception.next_actions[1].arguments,
+        )
+        self.assertEqual("plan-revision-17", caught.exception.next_actions[1].arguments["speech_plan_revision_id"])
+        self.assertEqual("generation:timeout:exact-replay-1", caught.exception.next_actions[1].arguments["idempotency_key"])
+        self.assertEqual(
+            ["start_generation_run"],
+            [name for name, _payload in self.application.calls],
+        )
 
     def test_revise_speech_block_plan_exposes_typed_split_and_follow_up(self):
         revised = revise_speech_block_plan(

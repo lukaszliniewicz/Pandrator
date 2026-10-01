@@ -748,6 +748,18 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_update_generation_segments",
+            "Atomically update reviewed generation segments",
+            "UpdateGenerationSegmentsInput",
+            RiskClass.WRITE,
+            "app.write",
+            "updateGenerationSegments",
+            "PATCH",
+            "/api/v1/sessions/{sessionId}/generation-segments",
+            True,
+            True,
+        ),
+        ActionSpec(
             "pandrator_select_take",
             "Select an alternative audio take for a generation segment",
             "SelectTakeInput",

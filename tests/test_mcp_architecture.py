@@ -393,6 +393,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_submit_source_cleaning_dispatch_batch",
                 "pandrator_submit_speech_optimization_dispatch_batch",
                 "pandrator_update_generation_segment",
+                "pandrator_update_generation_segments",
                 "pandrator_update_generation_controls",
                 "pandrator_update_media_edit",
                 "pandrator_update_session",

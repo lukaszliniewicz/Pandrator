@@ -331,6 +331,31 @@ class ApplicationClient:
                 "tls_validation_failed",
                 "The target's TLS identity could not be validated.",
             ) from error
+        except requests.exceptions.Timeout as error:
+            is_read = method in {"GET", "HEAD"}
+            retry_policy = (
+                "safe_to_retry_read"
+                if is_read
+                else (
+                    "same_request_and_idempotency_key"
+                    if idempotency_key is not None
+                    else "inspect_state"
+                )
+            )
+            raise PandratorMcpError(
+                "application_response_timeout",
+                (
+                    "The Pandrator read request timed out."
+                    if is_read
+                    else "The Pandrator mutation timed out before a response; its outcome is unknown."
+                ),
+                details={
+                    "timeout_seconds": request_timeout,
+                    "operation_outcome": "not_applicable" if is_read else "unknown",
+                    "retry_policy": retry_policy,
+                },
+                retryable=retry_policy != "inspect_state",
+            ) from error
         except requests.RequestException as error:
             raise PandratorMcpError(
                 "application_unavailable",
@@ -2511,6 +2536,7 @@ class ApplicationClient:
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-plan/topology/batch",
             method="POST", body={"expected_revision_id": expected_revision_id, "operations": operations},
             if_match_revision=expected_revision_id, idempotency_key=idempotency_key,
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )
 
     def adopt_subtitle_source(
@@ -2562,6 +2588,7 @@ class ApplicationClient:
             body=body,
             if_match_revision=expected_revision_id,
             idempotency_key=idempotency_key,
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )
 
     def update_generation_segment(
@@ -2578,6 +2605,22 @@ class ApplicationClient:
             body=changes,
             if_match_revision=expected_revision,
             idempotency_key=idempotency_key,
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
+        )
+
+    def update_generation_segments(
+        self,
+        session_id: str,
+        *,
+        updates: list[dict[str, Any]],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/generation-segments",
+            method="PATCH",
+            body={"updates": updates},
+            idempotency_key=idempotency_key,
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )
 
     def select_generation_take(
@@ -2615,6 +2658,7 @@ class ApplicationClient:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs",
             method="POST", body=body, idempotency_key=idempotency_key,
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )
 
     def create_output_assembly(

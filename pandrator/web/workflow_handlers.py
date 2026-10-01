@@ -1225,11 +1225,8 @@ class WorkflowHandlers:
     def _matches_active_media_edit_revision(
         self, session_id: str, artifact: Artifact | None
     ) -> bool:
-        if artifact is None:
+        if artifact is None or artifact.role != "media_edit_subtitles":
             return False
-        metadata = (
-            artifact.metadata_json if isinstance(artifact.metadata_json, dict) else {}
-        )
         with self.database.session() as session:
             revision = session.scalar(
                 select(MediaEditPlanRevision)
@@ -1239,11 +1236,9 @@ class WorkflowHandlers:
                 )
                 .where(MediaEditPlan.session_id == session_id)
             )
-        return bool(
-            revision is not None
-            and str(metadata.get("revision_id") or "") == revision.id
-            and str(metadata.get("content_hash") or "") == revision.content_hash
-        )
+        from .workflows import WorkflowService
+
+        return WorkflowService._matches_active_media_edit_revision(artifact, revision)
 
     @staticmethod
     def _continuation_input_roles(

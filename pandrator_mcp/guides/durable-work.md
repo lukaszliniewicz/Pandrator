@@ -23,6 +23,12 @@ states. Cancellation is a request and may take time while a task reaches a safe
 boundary. Retrying or re-executing must use the idempotency key associated with
 the exact reviewed action.
 
+`application_response_timeout` means the app did not reply within the transport
+deadline. A mutation may still have committed. Follow the returned recovery
+actions: inspect current state and replay the exact request with the same
+idempotency key when supported. Never invent a new key or assume failure means
+no change. A connection failure remains `application_unavailable`.
+
 ## Passive dispatch runs
 
 Subtitle correction and translation dispatch is passive pull work. Create a

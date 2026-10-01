@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..context import McpRuntime
-from ..errors import NextAction
+from ..errors import NextAction, PandratorMcpError
 from ..results import ToolOutcome
 from ..schemas.generation import (
     AdoptSubtitleSourceInput,
@@ -21,6 +21,7 @@ from ..schemas.generation import (
     SelectTakeInput,
     SpeechPlanStatusInput,
     UpdateGenerationSegmentInput,
+    UpdateGenerationSegmentsInput,
 )
 from ..work_mapping import application_work_reference
 
@@ -54,6 +55,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "alignment_group": segment.get("alignment_group"),
         "text": segment.get("text"),
         "optimized_text": segment.get("optimized_text"),
+        "removed": segment.get("removed"),
         "speech_block_provenance": segment.get("speech_block_provenance") or {},
         "speech_plan": segment.get("speech_plan") or {},
         "optimization_status": segment.get("optimization_status"),
@@ -65,6 +67,25 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "selected_take_id": segment.get("selected_take_id"),
         "takes": safe_takes,
     }
+
+
+def _generation_segment_update_projection(segment: dict[str, Any]) -> dict[str, Any]:
+    """Keep update receipts compact while retaining current row revisions."""
+
+    fields = (
+        "id",
+        "previous_segment_id",
+        "ordinal",
+        "revision",
+        "status",
+        "text",
+        "optimized_text",
+        "removed",
+        "voice_id",
+        "voice",
+        "language",
+    )
+    return {field: segment[field] for field in fields if field in segment}
 
 
 def list_generation_segments(
@@ -173,11 +194,33 @@ def list_speech_plan_revisions(runtime: McpRuntime, arguments: ListSpeechPlanRev
 
 
 def revise_speech_block_plan_batch(runtime: McpRuntime, arguments: ReviseSpeechBlockPlanBatchInput) -> ToolOutcome:
-    result = runtime.require_application().revise_generation_plan_topology_batch(
-        arguments.session_id, expected_revision_id=arguments.expected_revision_id,
-        operations=[operation.model_dump(exclude_none=True) for operation in arguments.operations],
-        idempotency_key=arguments.idempotency_key,
-    )
+    operations = [
+        operation.model_dump(exclude_none=True)
+        for operation in arguments.operations
+    ]
+    try:
+        result = runtime.require_application().revise_generation_plan_topology_batch(
+            arguments.session_id,
+            expected_revision_id=arguments.expected_revision_id,
+            operations=operations,
+            idempotency_key=arguments.idempotency_key,
+        )
+    except PandratorMcpError as error:
+        if error.code != "application_response_timeout":
+            raise
+        error.next_actions = [
+            NextAction(
+                tool="pandrator_get_speech_plan_status",
+                arguments={"session_id": arguments.session_id},
+                reason="Inspect the active speech-plan revision after the request timed out.",
+            ),
+            NextAction(
+                tool="pandrator_revise_speech_block_plan_batch",
+                arguments=arguments.model_dump(mode="json", exclude_unset=True),
+                reason="Replay the original topology batch only with the same expected revision and idempotency key.",
+            ),
+        ]
+        raise
     return ToolOutcome(result=result, next_actions=[NextAction(
         tool="pandrator_list_generation_segments",
         arguments={"session_id": arguments.session_id, "plan_revision_id": result.get("plan_revision_id"), "view": "compact"},
@@ -186,10 +229,27 @@ def revise_speech_block_plan_batch(runtime: McpRuntime, arguments: ReviseSpeechB
 
 
 def generate_speech_plan(runtime: McpRuntime, arguments: GenerateSpeechPlanInput) -> ToolOutcome:
-    result = runtime.require_application().start_generation_run(
-        arguments.session_id, speech_plan_revision_id=arguments.speech_plan_revision_id,
-        stale_only=arguments.stale_only, idempotency_key=arguments.idempotency_key,
-    )
+    try:
+        result = runtime.require_application().start_generation_run(
+            arguments.session_id, speech_plan_revision_id=arguments.speech_plan_revision_id,
+            stale_only=arguments.stale_only, idempotency_key=arguments.idempotency_key,
+        )
+    except PandratorMcpError as error:
+        if error.code != "application_response_timeout":
+            raise
+        error.next_actions = [
+            NextAction(
+                tool="pandrator_list_generation_runs",
+                arguments={"session_id": arguments.session_id, "limit": 5},
+                reason="Inspect recent generation runs to learn whether the timed-out request queued work.",
+            ),
+            NextAction(
+                tool="pandrator_generate_speech_plan",
+                arguments=arguments.model_dump(mode="json", exclude_unset=True),
+                reason="Replay the original generation request only with the same pinned revision and idempotency key.",
+            ),
+        ]
+        raise
     return ToolOutcome(
         result={"schema_version": "1", "session_id": arguments.session_id, **result},
         work=application_work_reference(result),
@@ -207,8 +267,12 @@ def update_generation_segment(
 ) -> ToolOutcome:
     application = runtime.require_application()
     changes: dict[str, Any] = {}
+    if arguments.text is not None:
+        changes["text"] = arguments.text
     if arguments.optimized_text is not None:
         changes["optimized_text"] = arguments.optimized_text
+    if arguments.removed is not None:
+        changes["removed"] = arguments.removed
     if arguments.voice_id is not None:
         changes["voice_id"] = arguments.voice_id
     if arguments.voice is not None:
@@ -233,6 +297,49 @@ def update_generation_segment(
             )
         ],
     )
+
+
+def update_generation_segments(
+    runtime: McpRuntime,
+    arguments: UpdateGenerationSegmentsInput,
+) -> ToolOutcome:
+    updates = [
+        {
+            "id": item.id,
+            "revision": item.revision,
+            "changes": item.changes.model_dump(mode="json", exclude_unset=True),
+        }
+        for item in arguments.updates
+    ]
+    payload = runtime.require_application().update_generation_segments(
+        arguments.session_id,
+        updates=updates,
+        idempotency_key=arguments.idempotency_key,
+    )
+    result: dict[str, Any] = {
+        "schema_version": "1",
+        "session_id": arguments.session_id,
+        "items": [
+            _generation_segment_update_projection(item)
+            for item in (payload.get("items") or [])[:100]
+            if isinstance(item, dict)
+        ] if isinstance(payload, dict) else [],
+    }
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == "items":
+                continue
+            if (
+                isinstance(key, str)
+                and ("revision" in key.casefold() or key in {"count", "updated_count"})
+                and isinstance(value, (str, int, float, bool))
+            ):
+                result[key] = value
+    return ToolOutcome(result=result, next_actions=[NextAction(
+        tool="pandrator_list_generation_segments",
+        arguments={"session_id": arguments.session_id, "view": "compact"},
+        reason="Review updated rows and their current revisions.",
+    )])
 
 
 def select_take(

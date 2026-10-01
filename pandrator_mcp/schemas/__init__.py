@@ -50,7 +50,9 @@ from .generation import (
     ReviseSpeechBlockPlanInput,
     SelectTakeInput,
     SpeechPlanStatusInput,
+    UpdateGenerationSegmentBatchItem,
     UpdateGenerationSegmentInput,
+    UpdateGenerationSegmentsInput,
 )
 from .generation_controls import (
     GENERATION_CONTROLS_INPUT_MODELS,
@@ -343,6 +345,7 @@ TOOL_INPUT_MODELS = (
     AdoptSubtitleSourceInput,
 
     UpdateGenerationSegmentInput,
+    UpdateGenerationSegmentsInput,
     SelectTakeInput,
     RegenerateSegmentsInput,
     ReviseSpeechBlockPlanInput,
@@ -517,7 +520,9 @@ __all__ = [
     "TOOL_INPUT_MODELS",
     "ToolEnvelope",
     "ToolInput",
+    "UpdateGenerationSegmentBatchItem",
     "UpdateGenerationSegmentInput",
+    "UpdateGenerationSegmentsInput",
     "UpdateMediaEditArguments",
     "UpdateSessionInput",
     "UpdateSessionSettingsInput",

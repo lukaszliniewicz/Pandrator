@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -503,6 +504,130 @@ class MediaEditWorkflowTests(unittest.TestCase):
             {"correction": False, "translation": False},
         )
         self.assertEqual({"generate_audio"}, required)
+
+    def test_continuation_accepts_materialized_subtitles_with_document_revision_id(self):
+        edited_subtitles = self._artifact(
+            "materialized-edited.srt",
+            role="media_edit_subtitles",
+            kind="srt",
+            content=b"1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+            metadata={
+                "media_edit_revision_id": self.plan["revision_id"],
+                "revision_id": "document-revision-id",
+                "plan_id": self.plan["plan_id"],
+                "revision": self.plan["revision"],
+                "content_hash": self.plan["content_hash"],
+            },
+        )
+        corrected_sources = []
+
+        def correct(payload, _progress, _cancel_event):
+            corrected_sources.append(payload["source_artifact_id"])
+            return {"artifact_id": "fixture-correction"}
+
+        with mock.patch.object(
+            self.handlers,
+            "handler_registry",
+            {
+                "dubbing.transcribe": lambda *_args: {},
+                "dubbing.correct": correct,
+            },
+        ):
+            result = self.handlers.continue_workflow(
+                {"session_id": self.record.id, "target_stage": "correct"},
+                self._progress,
+                threading.Event(),
+            )
+
+        self.assertEqual([edited_subtitles.id], corrected_sources)
+        self.assertEqual("correct", result["target_stage"])
+
+    def test_active_media_edit_subtitle_revision_metadata_compatibility(self):
+        cases = (
+            (
+                "dedicated revision id takes precedence",
+                "media_edit_subtitles",
+                {
+                    "media_edit_revision_id": self.plan["revision_id"],
+                    "revision_id": "document-revision-id",
+                    "content_hash": self.plan["content_hash"],
+                },
+                True,
+            ),
+            (
+                "legacy generic revision id",
+                "media_edit_subtitles",
+                self._edit_metadata(),
+                True,
+            ),
+            (
+                "legacy plan and revision metadata",
+                "media_edit_subtitles",
+                {
+                    "revision_id": "document-revision-id",
+                    "plan_id": self.plan["plan_id"],
+                    "revision": self.plan["revision"],
+                    "content_hash": self.plan["content_hash"],
+                },
+                True,
+            ),
+            (
+                "wrong dedicated revision id does not fall back",
+                "media_edit_subtitles",
+                {
+                    "media_edit_revision_id": "another-edit-revision",
+                    "revision_id": self.plan["revision_id"],
+                    "plan_id": self.plan["plan_id"],
+                    "revision": self.plan["revision"],
+                    "content_hash": self.plan["content_hash"],
+                },
+                False,
+            ),
+            (
+                "stale content hash",
+                "media_edit_subtitles",
+                {
+                    "media_edit_revision_id": self.plan["revision_id"],
+                    "content_hash": "stale-content-hash",
+                },
+                False,
+            ),
+            (
+                "stale plan id",
+                "media_edit_subtitles",
+                {
+                    "revision_id": "document-revision-id",
+                    "plan_id": "another-plan",
+                    "revision": self.plan["revision"],
+                    "content_hash": self.plan["content_hash"],
+                },
+                False,
+            ),
+            (
+                "unrelated artifact role",
+                "transcription",
+                self._edit_metadata(),
+                False,
+            ),
+        )
+
+        for index, (label, role, metadata, expected) in enumerate(cases):
+            with self.subTest(label=label):
+                artifact = self._artifact(
+                    f"revision-case-{index}.srt",
+                    role=role,
+                    kind="srt",
+                    content=b"1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                    metadata=metadata,
+                )
+
+                self.assertEqual(
+                    expected,
+                    self.handlers._matches_active_media_edit_revision(
+                        self.record.id,
+                        artifact,
+                    ),
+                )
 
 
 if __name__ == "__main__":

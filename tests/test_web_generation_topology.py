@@ -14,6 +14,7 @@ from pandrator.web.models import (
     GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
+    GenerationSegmentRevision,
     Job,
     OutputAssembly,
 )
@@ -262,6 +263,141 @@ class GenerationTopologyTests(unittest.TestCase):
             f"/api/v1/sessions/{self.session_id}/generation-segments",
             query_string=query,
         ).get_json()
+
+    def _enable_markup_preview(self):
+        from pandrator.web.generation_controls import (
+            get_generation_controls,
+            save_generation_controls,
+        )
+
+        with self.database.session() as session:
+            controls = get_generation_controls(session, self.session_id)
+            save_generation_controls(
+                session,
+                self.session_id,
+                expected_revision=controls["revision"],
+                characters=[
+                    {
+                        "id": "c-alice",
+                        "display_name": "Alice",
+                        "voice_category": "female",
+                    }
+                ],
+                cast={
+                    "narrator": {"voice": "Kore"},
+                    "characters": {"c-alice": {"voice": "Puck"}},
+                },
+            )
+        settings = self.app.extensions["pandrator"]["workspace_settings"]
+        tts = settings.get(self.session_id, "tts")
+        settings.update(
+            self.session_id,
+            "tts",
+            tts["revision"],
+            {
+                **tts["effective"],
+                "service": "gemini",
+                "model": "gemini-2.5-flash-tts",
+                "casting_enabled": True,
+                "performance_enabled": False,
+            },
+        )
+
+    def _put_markup(self, segment_id, xml):
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_id)
+            segment.speech_plan_json = {"speech_xml": xml}
+
+    @staticmethod
+    def _rich_markup(segment_id, text):
+        return (
+            f'<segment id="{segment_id}" boundary_after="scene">'
+            '<dialogue><speaker ref="c-alice">'
+            f"<ins>Speak softly.</ins>{text}</speaker></dialogue>"
+            '<event kind="pause" duration_ms="120"/>'
+            "</segment>"
+        )
+
+    def _edit_rollback_state(self, segment_ids):
+        from sqlalchemy import func
+
+        with self.database.session() as session:
+            rows = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.id.in_(segment_ids))
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            active_revision_id = session.scalar(
+                select(GenerationPlan.active_revision_id).where(
+                    GenerationPlan.session_id == self.session_id
+                )
+            )
+            segment_history = tuple(
+                (
+                    item.generation_segment_id,
+                    item.revision,
+                    item.ordinal,
+                    item.text,
+                    item.optimized_text,
+                    item.speech_plan_json,
+                )
+                for item in session.scalars(
+                    select(GenerationSegmentRevision)
+                    .where(
+                        GenerationSegmentRevision.generation_segment_id.in_(segment_ids)
+                    )
+                    .order_by(
+                        GenerationSegmentRevision.generation_segment_id,
+                        GenerationSegmentRevision.revision,
+                    )
+                ).all()
+            )
+            return (
+                active_revision_id,
+                session.scalar(select(func.count(GenerationPlanRevision.id))),
+                session.scalar(select(func.count(GenerationSegment.id))),
+                session.scalar(select(func.count(GenerationSegmentRevision.id))),
+                session.scalar(select(func.count(AudioTake.id))),
+                tuple(
+                    (
+                        row.id,
+                        row.text,
+                        row.optimized_text,
+                        row.speech_plan_json,
+                        row.revision,
+                    )
+                    for row in rows
+                ),
+                segment_history,
+            )
+
+    def _parse_markup(self, segment):
+        from pandrator.logic.speech_markup import parse_speech_markup
+        from pandrator.web.generation_controls import get_generation_controls
+
+        with self.database.session() as session:
+            current = session.get(GenerationSegment, segment["id"])
+            controls = get_generation_controls(session, self.session_id)
+            return parse_speech_markup(
+                current.speech_plan_json["speech_xml"],
+                expected_segment_id=current.id,
+                expected_text=current.optimized_text or current.text,
+                characters=controls["characters"],
+            )
+
+    def _assert_preview(self, revision_id, segment):
+        from pandrator.web.speech_plan_preview import preview_speech_segment
+
+        preview = preview_speech_segment(
+            self.app.extensions["pandrator"],
+            self.session_id,
+            revision_id=revision_id,
+            segment_id=segment["id"],
+        )
+        self.assertEqual(segment["optimized_text"] or segment["text"], preview["text"])
+        return preview
 
     def test_topology_requires_idempotency_key_for_browser_calls(self):
         response = self.client.post(
@@ -530,6 +666,423 @@ class GenerationTopologyTests(unittest.TestCase):
             )
             self.assertEqual([1, 2, 3, 4], [item.revision_number for item in revisions])
             self.assertEqual(4, len({item.content_hash for item in revisions}))
+
+    def test_topology_rebinds_rich_markup_and_reuses_unchanged_annotated_takes(self):
+        self._enable_markup_preview()
+        with self.database.session() as session:
+            first = session.get(GenerationSegment, self.initial_segment_ids[0])
+            second = session.get(GenerationSegment, self.initial_segment_ids[1])
+            first_xml = (
+                f'<segment id="{first.id}" boundary_after="scene">'
+                '<dialogue><speaker ref="c-alice">'
+                "<ins>Speak softly.</ins>A🙂 B</speaker></dialogue>"
+                '<event kind="pause" duration_ms="120"/>'
+                "</segment>"
+            )
+            second_xml = (
+                f'<segment id="{second.id}" boundary_after="paragraph">'
+                '<dialogue><speaker ref="c-alice">'
+                "<ins>Speak clearly.</ins>A second block.</speaker></dialogue>"
+                '<event kind="laugh"/>'
+                "</segment>"
+            )
+            first.speech_plan_json = {"speech_xml": first_xml}
+            second.speech_plan_json = {"speech_xml": second_xml}
+
+        split = self._topology(
+            self.initial_revision_id,
+            {
+                "action": "split",
+                "segment_id": self.initial_segment_ids[0],
+                "cursor": 2,
+                "text_layer": "display",
+            },
+            "topology-rich-split-1",
+        )
+        self.assertEqual(201, split.status_code, split.get_json())
+        split_revision_id = split.get_json()["plan_revision_id"]
+        split_page = self._segments()
+        left, right, untouched = split_page["items"]
+        self.assertEqual(
+            ["A🙂", "B", "A second block."], [item["text"] for item in split_page["items"]]
+        )
+        left_markup = self._parse_markup(left)
+        right_markup = self._parse_markup(right)
+        untouched_markup = self._parse_markup(untouched)
+        for item, parsed in zip(
+            split_page["items"],
+            (left_markup, right_markup, untouched_markup),
+            strict=True,
+        ):
+            self.assertEqual(item["id"], parsed.segment_id)
+            self.assertEqual(item["optimized_text"] or item["text"], parsed.transcript)
+        self.assertEqual("c-alice", left_markup.spans[0].speaker_id)
+        self.assertEqual("c-alice", right_markup.spans[0].speaker_id)
+        self.assertTrue(left_markup.spans[0].dialogue)
+        self.assertEqual("Speak softly.", left_markup.spans[0].delivery["instruction"])
+        self.assertEqual("Speak softly.", right_markup.spans[0].delivery["instruction"])
+        self.assertEqual("scene", right_markup.boundary_after)
+        self.assertEqual("pause", right_markup.events[0].kind)
+        self.assertEqual("c-alice", untouched_markup.spans[0].speaker_id)
+        self.assertEqual("laugh", untouched_markup.events[0].kind)
+        reused = next(take for take in untouched["takes"] if take["is_active"])
+        self.assertEqual(self.initial_take_ids[1], reused["parent_take_id"])
+        for item in split_page["items"]:
+            self._assert_preview(split_revision_id, item)
+
+        with self.database.session() as session:
+            self.assertEqual(
+                first_xml,
+                session.get(GenerationSegment, self.initial_segment_ids[0]).speech_plan_json[
+                    "speech_xml"
+                ],
+            )
+            self.assertEqual(
+                second_xml,
+                session.get(GenerationSegment, self.initial_segment_ids[1]).speech_plan_json[
+                    "speech_xml"
+                ],
+            )
+            split_revision = session.get(GenerationPlanRevision, split_revision_id)
+            persisted_segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == split_revision_id)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            self.assertEqual(
+                stable_hash(
+                    {
+                        "parent_revision_id": split_revision.parent_revision_id,
+                        "operation": split_revision.operation_json,
+                        "segments": [
+                            GenerationService._segment_copy_values(segment)
+                            for segment in persisted_segments
+                        ],
+                    }
+                ),
+                split_revision.content_hash,
+            )
+
+        merged = self._topology(
+            split_revision_id,
+            {
+                "action": "merge",
+                "left_segment_id": left["id"],
+                "right_segment_id": right["id"],
+            },
+            "topology-rich-merge-1",
+        )
+        self.assertEqual(201, merged.status_code, merged.get_json())
+        merged_revision_id = merged.get_json()["plan_revision_id"]
+        merged_items = self._segments()["items"]
+        merged_markup = self._parse_markup(merged_items[0])
+        self.assertEqual("c-alice", merged_markup.spans[0].speaker_id)
+        self.assertEqual("Speak softly.", merged_markup.spans[0].delivery["instruction"])
+        self.assertEqual("pause", merged_markup.events[0].kind)
+        self._assert_preview(merged_revision_id, merged_items[0])
+
+        repeated = self._topology(
+            merged_revision_id,
+            {
+                "action": "split",
+                "segment_id": merged_items[0]["id"],
+                "cursor": 2,
+                "text_layer": "display",
+            },
+            "topology-rich-repeat-1",
+        )
+        self.assertEqual(201, repeated.status_code, repeated.get_json())
+        repeated_revision_id = repeated.get_json()["plan_revision_id"]
+        repeated_items = self._segments()["items"]
+        repeated_markup = [self._parse_markup(item) for item in repeated_items]
+        self.assertEqual(
+            [item["id"] for item in repeated_items],
+            [item.segment_id for item in repeated_markup],
+        )
+        self.assertEqual("pause", repeated_markup[1].events[0].kind)
+        for item in repeated_items:
+            self._assert_preview(repeated_revision_id, item)
+
+        restored = self._topology(
+            repeated_revision_id,
+            {"action": "restore", "target_revision_id": self.initial_revision_id},
+            "topology-rich-restore-1",
+        )
+        self.assertEqual(201, restored.status_code, restored.get_json())
+        restored_revision_id = restored.get_json()["plan_revision_id"]
+        restored_items = self._segments()["items"]
+        restored_markup = [self._parse_markup(item) for item in restored_items]
+        self.assertEqual(
+            [item["id"] for item in restored_items],
+            [item.segment_id for item in restored_markup],
+        )
+        self.assertEqual("scene", restored_markup[0].boundary_after)
+        self.assertEqual("pause", restored_markup[0].events[0].kind)
+        for item in restored_items:
+            self._assert_preview(restored_revision_id, item)
+
+        from pandrator.web.models import SessionRecord
+
+        with self.database.session() as session:
+            session.get(SessionRecord, self.session_id).workflow_kind = "audiobook"
+            for job in session.scalars(select(Job).where(Job.session_id == self.session_id)):
+                if job.status in {"queued", "running", "cancel_requested"}:
+                    job.status = "canceled"
+
+        resegmented = self._topology(
+            restored_revision_id,
+            {
+                "action": "resegment",
+                "segment_ids": [restored_items[0]["id"]],
+                "boundaries": [2],
+            },
+            "topology-rich-resegment-1",
+        )
+        self.assertEqual(201, resegmented.status_code, resegmented.get_json())
+        self.assertTrue(resegmented.get_json()["is_draft"])
+        draft_revision_id = resegmented.get_json()["plan_revision_id"]
+        with self.database.session() as session:
+            draft_segments = list(
+                session.scalars(
+                    select(GenerationSegment)
+                    .where(GenerationSegment.plan_revision_id == draft_revision_id)
+                    .order_by(GenerationSegment.ordinal)
+                ).all()
+            )
+            self.assertEqual(3, len(draft_segments))
+            from pandrator.logic.speech_markup import parse_speech_markup
+            from pandrator.web.generation_controls import get_generation_controls
+
+            controls = get_generation_controls(session, self.session_id)
+            for segment in draft_segments:
+                parsed = parse_speech_markup(
+                    segment.speech_plan_json["speech_xml"],
+                    expected_segment_id=segment.id,
+                    expected_text=segment.optimized_text or segment.text,
+                    characters=controls["characters"],
+                )
+                self.assertEqual(segment.id, parsed.segment_id)
+            self.assertEqual(
+                "pause",
+                parse_speech_markup(
+                    draft_segments[1].speech_plan_json["speech_xml"],
+                    expected_segment_id=draft_segments[1].id,
+                    expected_text=draft_segments[1].text,
+                    characters=controls["characters"],
+                )
+                .events[0]
+                .kind,
+            )
+        adopted = self._topology(
+            restored_revision_id,
+            {"action": "restore", "target_revision_id": draft_revision_id},
+            "topology-rich-resegment-adopt-1",
+        )
+        self.assertEqual(201, adopted.status_code, adopted.get_json())
+        adopted_revision_id = adopted.get_json()["plan_revision_id"]
+        adopted_items = self._segments()["items"]
+        adopted_markup = [self._parse_markup(item) for item in adopted_items]
+        self.assertEqual(
+            [item["id"] for item in adopted_items],
+            [item.segment_id for item in adopted_markup],
+        )
+        self.assertEqual("pause", adopted_markup[1].events[0].kind)
+        for item in adopted_items:
+            self._assert_preview(adopted_revision_id, item)
+
+    def test_invalid_topology_markup_rolls_back(self):
+        service = self.app.extensions["pandrator"]["generation"]
+        with self.database.session() as session:
+            first = session.get(GenerationSegment, self.initial_segment_ids[0])
+            malformed = f'<segment id="{first.id}"><speaker>'
+            mismatch = f'<segment id="{first.id}">Different text.</segment>'
+
+        from sqlalchemy import func
+
+        for invalid_xml in (malformed, mismatch):
+            self._put_markup(self.initial_segment_ids[0], invalid_xml)
+            with self.database.session() as session:
+                revision_count = session.scalar(select(func.count(GenerationPlanRevision.id)))
+                active_revision_id = session.scalar(
+                    select(GenerationPlan.active_revision_id).where(
+                        GenerationPlan.session_id == self.session_id
+                    )
+                )
+            with self.assertRaises(ValueError):
+                service.revise_topology(
+                    self.session_id,
+                    self.initial_revision_id,
+                    {
+                        "action": "split",
+                        "segment_id": self.initial_segment_ids[0],
+                        "cursor": 2,
+                        "text_layer": "display",
+                    },
+                )
+            with self.database.session() as session:
+                self.assertEqual(
+                    revision_count,
+                    session.scalar(select(func.count(GenerationPlanRevision.id))),
+                )
+                self.assertEqual(
+                    active_revision_id,
+                    session.scalar(
+                        select(GenerationPlan.active_revision_id).where(
+                            GenerationPlan.session_id == self.session_id
+                        )
+                    ),
+                )
+                self.assertEqual(
+                    invalid_xml,
+                    session.get(GenerationSegment, self.initial_segment_ids[0]).speech_plan_json[
+                        "speech_xml"
+                    ],
+                )
+
+    def test_optimized_text_rebuilds_only_plain_markup_and_keeps_cue_only_markup(self):
+        from pandrator.logic.speech_markup import parse_speech_markup
+
+        segment_id = self.initial_segment_ids[0]
+        plain_xml = f'<segment id="{segment_id}" boundary_after="scene">A🙂 B</segment>'
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_id)
+            segment.optimized_text = "A🙂 B"
+            segment.speech_plan_json = {"speech_xml": plain_xml}
+
+        service = self.app.extensions["pandrator"]["generation"]
+        edited = service.update_segment(
+            segment_id,
+            1,
+            {"optimized_text": "Spoken words."},
+        )
+        self.assertNotEqual(segment_id, edited["id"])
+        edited_xml = edited["speech_plan"]["speech_xml"]
+        parsed = parse_speech_markup(
+            edited_xml,
+            expected_segment_id=edited["id"],
+            expected_text="Spoken words.",
+        )
+        self.assertEqual("scene", parsed.boundary_after)
+        with self.database.session() as session:
+            self.assertEqual(
+                plain_xml,
+                session.get(GenerationSegment, segment_id).speech_plan_json["speech_xml"],
+            )
+
+        cue_only = service.update_segment(
+            edited["id"],
+            edited["revision"],
+            {"text": "New display cue", "optimized_text": "Spoken words."},
+        )
+        self.assertEqual(edited["id"], cue_only["id"])
+        self.assertEqual(edited_xml, cue_only["speech_plan"]["speech_xml"])
+        self.assertEqual("Spoken words.", cue_only["optimized_text"])
+
+        cleared = service.update_segment(
+            cue_only["id"], cue_only["revision"], {"optimized_text": ""}
+        )
+        self.assertEqual({}, cleared["speech_plan"])
+
+    def test_rich_markup_spoken_text_edits_are_rejected_without_frozen_copy(self):
+        self._enable_markup_preview()
+        segment_id = self.initial_segment_ids[0]
+        source_xml = self._rich_markup(segment_id, "A🙂 B")
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_id)
+            segment.optimized_text = "A🙂 B"
+            segment.speech_plan_json = {"speech_xml": source_xml}
+
+        service = self.app.extensions["pandrator"]["generation"]
+        before = self._edit_rollback_state([segment_id])
+        for changes in (
+            {"optimized_text": "Changed spoken words."},
+            {"text": "Changed spoken words."},
+        ):
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(ValueError, "cannot be changed by a plain text edit"):
+                    service.update_segment(segment_id, 1, changes)
+                self.assertEqual(before, self._edit_rollback_state([segment_id]))
+
+        with self.database.session() as session:
+            original = session.get(GenerationSegment, segment_id)
+            self.assertEqual("A🙂 B", original.optimized_text)
+            self.assertEqual(source_xml, original.speech_plan_json["speech_xml"])
+
+    def test_batch_rich_markup_rejection_rolls_back_plain_edit_and_frozen_copies(self):
+        self._enable_markup_preview()
+        plain_id, rich_id = self.initial_segment_ids
+        plain_xml = f'<segment id="{plain_id}" boundary_after="paragraph">A🙂 B</segment>'
+        rich_xml = self._rich_markup(rich_id, "A second block.")
+        with self.database.session() as session:
+            plain = session.get(GenerationSegment, plain_id)
+            plain.optimized_text = "A🙂 B"
+            plain.speech_plan_json = {"speech_xml": plain_xml}
+            rich = session.get(GenerationSegment, rich_id)
+            rich.optimized_text = "A second block."
+            rich.speech_plan_json = {"speech_xml": rich_xml}
+
+        service = self.app.extensions["pandrator"]["generation"]
+        before = self._edit_rollback_state([plain_id, rich_id])
+        with self.assertRaisesRegex(ValueError, "cannot be changed by a plain text edit"):
+            service.update_segments(
+                self.session_id,
+                [
+                    {
+                        "id": plain_id,
+                        "revision": 1,
+                        "changes": {"optimized_text": "Changed plain words."},
+                    },
+                    {
+                        "id": rich_id,
+                        "revision": 1,
+                        "changes": {"optimized_text": "Changed rich words."},
+                    },
+                ],
+            )
+
+        self.assertEqual(before, self._edit_rollback_state([plain_id, rich_id]))
+        with self.database.session() as session:
+            self.assertEqual(
+                plain_xml, session.get(GenerationSegment, plain_id).speech_plan_json["speech_xml"]
+            )
+            self.assertEqual(
+                rich_xml, session.get(GenerationSegment, rich_id).speech_plan_json["speech_xml"]
+            )
+
+    def test_rich_markup_cue_only_edit_preserves_speech_annotations(self):
+        self._enable_markup_preview()
+        segment_id = self.initial_segment_ids[0]
+        source_xml = self._rich_markup(segment_id, "A🙂 B")
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, segment_id)
+            segment.optimized_text = "A🙂 B"
+            segment.speech_plan_json = {"speech_xml": source_xml}
+
+        service = self.app.extensions["pandrator"]["generation"]
+        updated = service.update_segment(
+            segment_id,
+            1,
+            {"text": "Updated display cue", "optimized_text": "A🙂 B"},
+        )
+        self.assertNotEqual(segment_id, updated["id"])
+        self.assertEqual("Updated display cue", updated["text"])
+        self.assertEqual("A🙂 B", updated["optimized_text"])
+        parsed = self._parse_markup(updated)
+        self.assertEqual(updated["id"], parsed.segment_id)
+        self.assertEqual("A🙂 B", parsed.transcript)
+        self.assertEqual("scene", parsed.boundary_after)
+        self.assertEqual("c-alice", parsed.spans[0].speaker_id)
+        self.assertTrue(parsed.spans[0].dialogue)
+        self.assertEqual("Speak softly.", parsed.spans[0].delivery["instruction"])
+        self.assertEqual("pause", parsed.events[0].kind)
+
+        with self.database.session() as session:
+            original = session.get(GenerationSegment, segment_id)
+            self.assertEqual("A🙂 B", original.text)
+            self.assertEqual("A🙂 B", original.optimized_text)
+            self.assertEqual(source_xml, original.speech_plan_json["speech_xml"])
 
     def test_split_preserves_source_references_for_legacy_rows_without_spans(self):
         response = self._topology(

@@ -35,6 +35,7 @@ from .generation import (
     select_take,
     speech_plan_status,
     update_generation_segment,
+    update_generation_segments,
 )
 from .guidance import explain_system
 from .inventory import describe_parameters, list_artifacts, provider_status, voice_catalog
@@ -262,6 +263,7 @@ __all__ = [
     "tts_catalog",
     "trash_session",
     "update_generation_segment",
+    "update_generation_segments",
     "update_media_edit",
     "update_session",
     "update_session_settings",

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 FailureCode = Literal[
     "application_unavailable",
+    "application_response_timeout",
     "manager_unavailable",
     "recovery_enrollment_required",
     "authentication_required",
@@ -126,11 +127,13 @@ class PandratorMcpError(RuntimeError):
         *,
         details: dict[str, Any] | None = None,
         retryable: bool = False,
+        next_actions: list[NextAction] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.details = dict(details or {})
         self.retryable = retryable
+        self.next_actions = list(next_actions or [])
 
 
 class TargetResolutionError(PandratorMcpError):

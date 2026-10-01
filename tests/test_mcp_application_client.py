@@ -82,6 +82,21 @@ class FakeSession(requests.Session):
         return self.responses.pop(0)
 
 
+class RaisingSession(requests.Session):
+    def __init__(self, error: requests.RequestException) -> None:
+        super().__init__()
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        raise self.error
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        raise self.error
+
+
 def local_registry(origin: str) -> TargetRegistry:
     profile = TargetProfile(
         name="local",
@@ -493,6 +508,203 @@ class ApplicationClientTests(unittest.TestCase):
             "topology:split:1",
             request["headers"]["Idempotency-Key"],
         )
+
+    def test_speech_block_topology_batch_requests_extended_timeout(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession([FakeResponse(200, {"plan_revision_id": "plan-revision-4"})])
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.revise_generation_plan_topology_batch(
+            "session-1",
+            expected_revision_id="plan-revision-3",
+            operations=[{"action": "split", "segment_id": "segment-1", "cursor": 7}],
+            idempotency_key="topology:batch:1",
+        )
+
+        request = session.calls[0]
+        self.assertEqual(120.0, request["timeout"])
+        self.assertEqual("topology:batch:1", request["headers"]["Idempotency-Key"])
+
+    def test_generation_segment_single_remove_restore_and_atomic_batch_routes(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [
+                FakeResponse(200, {"id": "segment-1", "revision": 2, "removed": True}),
+                FakeResponse(200, {"id": "segment-1", "revision": 3, "removed": False}),
+                FakeResponse(200, {"items": [{"id": "segment-1", "revision": 4}]}),
+            ]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.update_generation_segment(
+            "segment-1",
+            changes={"removed": True},
+            expected_revision=1,
+            idempotency_key="segment-remove:1",
+        )
+        client.update_generation_segment(
+            "segment-1",
+            changes={"removed": False},
+            expected_revision=2,
+            idempotency_key="segment-restore:1",
+        )
+        updates = [
+            {"id": "segment-1", "revision": 3, "changes": {"text": "Reviewed", "removed": False}}
+        ]
+        client.update_generation_segments(
+            "session-1",
+            updates=updates,
+            idempotency_key="generation-batch:1",
+        )
+
+        remove, restore, batch = session.calls
+        self.assertEqual("PATCH", remove["method"])
+        self.assertTrue(remove["url"].endswith("/api/v1/generation-segments/segment-1"))
+        self.assertEqual({"removed": True}, json.loads(remove["data"]))
+        self.assertEqual('"1"', remove["headers"]["If-Match"])
+        self.assertEqual("PATCH", restore["method"])
+        self.assertEqual({"removed": False}, json.loads(restore["data"]))
+        self.assertEqual("PATCH", batch["method"])
+        self.assertTrue(
+            batch["url"].endswith("/api/v1/sessions/session-1/generation-segments")
+        )
+        self.assertEqual({"updates": updates}, json.loads(batch["data"]))
+        self.assertEqual("generation-batch:1", batch["headers"]["Idempotency-Key"])
+
+    def test_request_timeouts_are_distinct_and_never_auto_retried(self):
+        origin = "http://127.0.0.1:8097"
+
+        def client_for(error: requests.RequestException):
+            session = RaisingSession(error)
+            client = ApplicationClient(
+                local_registry(origin).bind("local"),
+                CredentialResolver(()),
+                session=session,
+                local_bootstrap=lambda _target, _session: "csrf-value",
+            )
+            return client, session
+
+        client, session = client_for(requests.exceptions.Timeout("late response"))
+        with self.assertRaises(PandratorMcpError) as timed_out:
+            client.update_generation_segments(
+                "session-1",
+                updates=[{"id": "segment-1", "revision": 1, "changes": {"removed": False}}],
+                idempotency_key="generation-batch:timeout:1",
+            )
+        self.assertEqual("application_response_timeout", timed_out.exception.code)
+        self.assertIn("outcome is unknown", str(timed_out.exception))
+        self.assertEqual(
+            {
+                "timeout_seconds": 120.0,
+                "operation_outcome": "unknown",
+                "retry_policy": "same_request_and_idempotency_key",
+            },
+            timed_out.exception.details,
+        )
+        self.assertTrue(timed_out.exception.retryable)
+        self.assertEqual(1, len(session.calls))
+
+        client, session = client_for(requests.exceptions.Timeout("slow read"))
+        with self.assertRaises(PandratorMcpError) as read_timeout:
+            client.list_generation_segments("session-1")
+        self.assertEqual("application_response_timeout", read_timeout.exception.code)
+        self.assertEqual(15.0, read_timeout.exception.details["timeout_seconds"])
+        self.assertEqual("not_applicable", read_timeout.exception.details["operation_outcome"])
+        self.assertEqual("safe_to_retry_read", read_timeout.exception.details["retry_policy"])
+        self.assertTrue(read_timeout.exception.retryable)
+        self.assertEqual(1, len(session.calls))
+
+        client, session = client_for(requests.exceptions.Timeout("unknown write"))
+        with self.assertRaises(PandratorMcpError) as non_idempotent_timeout:
+            client._request_json("/api/v1/test", method="PATCH", body={})
+        self.assertEqual("inspect_state", non_idempotent_timeout.exception.details["retry_policy"])
+        self.assertEqual(15.0, non_idempotent_timeout.exception.details["timeout_seconds"])
+        self.assertFalse(non_idempotent_timeout.exception.retryable)
+        self.assertEqual(1, len(session.calls))
+
+        client, session = client_for(requests.exceptions.ConnectionError("offline"))
+        with self.assertRaises(PandratorMcpError) as connection_error:
+            client.list_generation_segments("session-1")
+        self.assertEqual("application_unavailable", connection_error.exception.code)
+        self.assertTrue(connection_error.exception.retryable)
+        self.assertEqual({}, connection_error.exception.details)
+        self.assertEqual(1, len(session.calls))
+
+    def test_expensive_generation_mutations_use_extended_timeout_and_idempotency(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession([FakeResponse(200, {}) for _ in range(4)])
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client.revise_generation_plan_topology(
+            "session-1",
+            expected_revision_id="plan-revision-3",
+            action="split",
+            segment_id="segment-1",
+            cursor=7,
+            idempotency_key="topology:single:timeout-1",
+        )
+        client.update_generation_segment(
+            "segment-1",
+            changes={"removed": False},
+            expected_revision=3,
+            idempotency_key="segment:single:timeout-1",
+        )
+        client.update_generation_segments(
+            "session-1",
+            updates=[{"id": "segment-1", "revision": 4, "changes": {"removed": False}}],
+            idempotency_key="segment:batch:timeout-1",
+        )
+        client.start_generation_run(
+            "session-1",
+            speech_plan_revision_id="plan-revision-3",
+            stale_only=True,
+            idempotency_key="generation:run:timeout-1",
+        )
+
+        expected = [
+            (
+                "POST",
+                "/api/v1/sessions/session-1/generation-plan/topology",
+                "topology:single:timeout-1",
+            ),
+            (
+                "PATCH",
+                "/api/v1/generation-segments/segment-1",
+                "segment:single:timeout-1",
+            ),
+            (
+                "PATCH",
+                "/api/v1/sessions/session-1/generation-segments",
+                "segment:batch:timeout-1",
+            ),
+            (
+                "POST",
+                "/api/v1/sessions/session-1/generation-runs",
+                "generation:run:timeout-1",
+            ),
+        ]
+        self.assertEqual(4, len(session.calls))
+        for request, (method, path, idempotency_key) in zip(session.calls, expected, strict=True):
+            with self.subTest(path=path):
+                self.assertEqual(method, request["method"])
+                self.assertTrue(request["url"].endswith(path))
+                self.assertEqual(120.0, request["timeout"])
+                self.assertEqual(idempotency_key, request["headers"]["Idempotency-Key"])
 
     def test_dispatch_methods_map_exact_routes_bodies_and_queries(self):
         origin = "http://127.0.0.1:8097"

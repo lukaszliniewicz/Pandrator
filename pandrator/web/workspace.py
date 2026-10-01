@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -1029,6 +1030,7 @@ class GenerationService:
             )
         )
         old_effective_speech = segment.optimized_text or segment.text
+        old_speech_xml = (segment.speech_plan_json or {}).get("speech_xml")
         explicit_optimized = "optimized_text" in changes
         text_changed = (
             "text" in changes and str(changes["text"]).strip() != segment.text
@@ -1112,6 +1114,50 @@ class GenerationService:
             else:
                 segment.speech_plan_json = {}
         new_effective_speech = segment.optimized_text or segment.text
+        if (
+            new_effective_speech != old_effective_speech
+            and isinstance(old_speech_xml, str)
+            and not (explicit_optimized and segment.optimized_text is None)
+        ):
+            from pandrator.logic.speech_markup import (
+                parse_speech_markup,
+                plain_speech_markup,
+            )
+
+            from .generation_controls import get_generation_controls
+
+            plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
+            plan = session.get(GenerationPlan, plan_revision.plan_id) if plan_revision else None
+            characters = (
+                get_generation_controls(session, plan.session_id).get("characters") or []
+                if plan is not None
+                else []
+            )
+            parsed_markup = parse_speech_markup(
+                old_speech_xml,
+                expected_segment_id=segment.id,
+                expected_text=old_effective_speech,
+                characters=characters,
+            )
+            old_root = ET.fromstring(parsed_markup.xml)
+            if list(old_root):
+                raise ValueError(
+                    "Speech text with speaker, delivery, or event markup cannot be "
+                    "changed by a plain text edit. Clear and reapply the annotations explicitly first."
+                )
+            elif segment.optimized_text:
+                new_root = ET.fromstring(plain_speech_markup(segment.id, new_effective_speech))
+                for attribute in ("version", "boundary_after"):
+                    if attribute in old_root.attrib:
+                        new_root.set(attribute, old_root.attrib[attribute])
+                speech_plan = dict(segment.speech_plan_json or {})
+                speech_plan["speech_xml"] = parse_speech_markup(
+                    ET.tostring(new_root, encoding="unicode"),
+                    expected_segment_id=segment.id,
+                    expected_text=new_effective_speech,
+                    characters=characters,
+                ).xml
+                segment.speech_plan_json = speech_plan
         audio_stale = (
             new_effective_speech != old_effective_speech
             or any(key in changes for key in ("voice_id", "voice", "language"))
@@ -2260,6 +2306,34 @@ class GenerationService:
             self._recompute_alignment_groups(new_segments)
         session.flush()
 
+        speech_markup_characters: list[dict[str, Any]] = []
+        speech_markup_controls_loaded = False
+        if any(
+            isinstance((segment.speech_plan_json or {}).get("speech_xml"), str)
+            and (segment.speech_plan_json or {}).get("speech_xml")
+            for segment in new_segments
+        ):
+            from .generation_cast_runtime import remap_markup
+            from .generation_controls import get_generation_controls
+
+            speech_markup_characters = (
+                get_generation_controls(session, session_id).get("characters") or []
+            )
+            speech_markup_controls_loaded = True
+            for persisted, segment in zip(persisted_values, new_segments, strict=True):
+                speech_plan = deepcopy(segment.speech_plan_json or {})
+                xml = speech_plan.get("speech_xml")
+                if not isinstance(xml, str) or not xml:
+                    continue
+                speech_plan["speech_xml"] = remap_markup(
+                    xml,
+                    segment.id,
+                    segment.optimized_text or segment.text,
+                    speech_markup_characters,
+                )
+                segment.speech_plan_json = speech_plan
+                persisted["speech_plan_json"] = deepcopy(speech_plan)
+
         # Reuse takes only for byte-for-byte unchanged segments and exact
         # restore copies.  Split/merge replacements intentionally have no
         # source take mapping.
@@ -2280,6 +2354,26 @@ class GenerationService:
                     continue
                 source_values = self._segment_copy_values(source)
                 target_values = self._segment_copy_values(new_segments[new_index])
+                source_plan = dict(source_values.get("speech_plan_json") or {})
+                target_plan = dict(target_values.get("speech_plan_json") or {})
+                source_xml = source_plan.get("speech_xml")
+                target_xml = target_plan.get("speech_xml")
+                if (
+                    isinstance(source_xml, str)
+                    and source_xml
+                    and isinstance(target_xml, str)
+                    and target_xml
+                    and speech_markup_controls_loaded
+                ):
+                    from .generation_cast_runtime import remap_markup
+
+                    source_plan["speech_xml"] = remap_markup(
+                        source_xml,
+                        new_segments[new_index].id,
+                        source.optimized_text or source.text,
+                        speech_markup_characters,
+                    )
+                    source_values["speech_plan_json"] = source_plan
                 # Alignment groups are assembly bookkeeping, not TTS input.
                 for ignored_key in ("ordinal", "revision", "alignment_group"):
                     source_values.pop(ignored_key, None)
@@ -3231,7 +3325,8 @@ class GenerationService:
                 .where(AudioTake.generation_run_id.in_(output_run_ids))
                 .group_by(AudioTake.generation_run_id)
             ):
-                take_counts[generation_run_id] = int(count)
+                if generation_run_id is not None:
+                    take_counts[generation_run_id] = int(count)
 
         usage_by_run_id: dict[str, list[UsageEvent]] = {}
         if output_run_ids:

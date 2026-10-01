@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictInt, model_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 
 from .common import ToolInput
 
@@ -23,15 +23,93 @@ class ListGenerationSegmentsInput(ToolInput):
     radius: int = Field(default=2, ge=0, le=25)
 
 
-class UpdateGenerationSegmentInput(ToolInput):
-    session_id: str = Field(min_length=1, max_length=80)
-    segment_id: str = Field(min_length=1, max_length=80)
-    expected_revision: int = Field(ge=0)
+class GenerationSegmentChangesInput(ToolInput):
+    text: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        pattern=r"\S",
+    )
     optimized_text: str | None = Field(default=None, max_length=2000)
+    removed: bool | None = None
     voice_id: str | None = Field(default=None, max_length=100)
     voice: str | None = Field(default=None, max_length=100)
     language: str | None = Field(default=None, max_length=20)
+
+    @field_validator("text")
+    @classmethod
+    def validate_nonblank_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("text must not be blank.")
+        return value
+
+class UpdateGenerationSegmentInput(GenerationSegmentChangesInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    segment_id: str = Field(min_length=1, max_length=80)
+    expected_revision: int = Field(ge=0)
     idempotency_key: str = Field(min_length=1, max_length=120)
+
+
+class GenerationSegmentBatchChangesInput(ToolInput):
+    text: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        pattern=r"\S",
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
+                    "pattern": r"\S",
+                }
+            ]
+        },
+    )
+    optimized_text: str | None = Field(default=None, max_length=2000)
+    removed: bool | None = Field(
+        default=None,
+        json_schema_extra={"anyOf": [{"type": "boolean"}]},
+    )
+    voice_id: str | None = Field(default=None, max_length=100)
+    voice: str | None = Field(default=None, max_length=100)
+    language: str | None = Field(default=None, max_length=20)
+
+    @field_validator("text")
+    @classmethod
+    def validate_nonblank_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("text must not be blank.")
+        return value
+
+
+class UpdateGenerationSegmentBatchItem(ToolInput):
+    id: str = Field(min_length=1, max_length=80)
+    revision: StrictInt = Field(ge=1)
+    changes: GenerationSegmentBatchChangesInput
+
+    @model_validator(mode="after")
+    def require_changes(self) -> "UpdateGenerationSegmentBatchItem":
+        if not self.changes.model_fields_set:
+            raise ValueError("changes must contain at least one supported field.")
+        for field_name in ("text", "removed"):
+            if field_name in self.changes.model_fields_set and getattr(self.changes, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null when supplied.")
+        return self
+
+
+class UpdateGenerationSegmentsInput(ToolInput):
+    session_id: str = Field(min_length=1, max_length=80)
+    idempotency_key: str = Field(min_length=8, max_length=120)
+    updates: list[UpdateGenerationSegmentBatchItem] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def require_unique_ids(self) -> "UpdateGenerationSegmentsInput":
+        identifiers = [item.id for item in self.updates]
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("Each generation segment ID may appear only once.")
+        return self
 
 
 class SelectTakeInput(ToolInput):

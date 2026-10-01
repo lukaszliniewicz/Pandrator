@@ -204,6 +204,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_transcription_result",
                         "pandrator_trash_session",
                         "pandrator_update_generation_segment",
+                        "pandrator_update_generation_segments",
                         "pandrator_update_generation_controls",
                         "pandrator_update_catalog_voice_metadata",
                         "pandrator_update_media_edit",

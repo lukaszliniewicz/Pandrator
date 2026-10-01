@@ -66,6 +66,20 @@ already-running TTS job.
 
 ## Catalog-backed generation and deliverables
 
+Before generation, inspect speech blocks separately from display captions.
+Use `pandrator_update_generation_segments` for atomic speech wording and
+exclusion edits, with each current block ID and revision. Set `removed=true`
+for material that should remain in subtitles but should not be spoken; restore
+it with `removed=false`. Use `optimized_text` for spoken wording while keeping
+display text. Keep utterance boundaries intact, then review the new speech-plan
+content signature and preview representative provider requests.
+
+When a continuation plan proposes re-running accepted passive correction or
+translation because their settings cannot be verified, create a fresh plan with
+`overrides.reuse_stages` naming those stages. Inspect the resulting artifact
+IDs and reuse decisions before executing; never replace accepted host work
+with an unintended provider pass.
+
 Do not infer a provider, model, or voice ID from a user's example. Call
 `pandrator_get_tts_catalog` (with refresh when current service readiness
 matters), match the requested qualities against advertised compatible choices,

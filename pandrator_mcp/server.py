@@ -122,7 +122,9 @@ from .schemas import (
     TargetStatusInput,
     TrashSessionInput,
     TtsCatalogInput,
+    UpdateGenerationSegmentBatchItem,
     UpdateGenerationSegmentInput,
+    UpdateGenerationSegmentsInput,
     UpdateMediaEditArguments,
     UpdateSessionInput,
     UpdateSessionSettingsInput,
@@ -243,6 +245,7 @@ from .tools import (
     trash_session,
     tts_catalog,
     update_generation_segment,
+    update_generation_segments,
     update_media_edit,
     update_session,
     update_session_settings,
@@ -270,6 +273,7 @@ def _tool_failure(error: PandratorMcpError, request_id: str) -> Exception:
         request_id=request_id,
         details=error.details,
         retryable=error.retryable,
+        next_actions=error.next_actions,
     )
     # Import lazily so ordinary CLI/configuration operations remain usable
     # without importing the protocol runtime. ToolError is the SDK's expected
@@ -3246,7 +3250,9 @@ def build_server(runtime: McpRuntime):
         segment_id: Annotated[str, Field(min_length=1, max_length=80)],
         expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        text: Annotated[str | None, Field(min_length=1, max_length=2000, pattern=r"\S")] = None,
         optimized_text: Annotated[str | None, Field(max_length=2000)] = None,
+        removed: bool | None = None,
         voice_id: Annotated[str | None, Field(max_length=100)] = None,
         voice: Annotated[str | None, Field(max_length=100)] = None,
         language: Annotated[str | None, Field(max_length=20)] = None,
@@ -3261,11 +3267,35 @@ def build_server(runtime: McpRuntime):
                 segment_id=segment_id,
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
+                text=text,
                 optimized_text=optimized_text,
+                removed=removed,
                 voice_id=voice_id,
                 voice=voice,
                 language=language,
             ),
+        )
+
+    @server.tool(
+        name="pandrator_update_generation_segments",
+        title="Atomically update reviewed generation segments",
+        annotations=write_action,
+    )
+    def generation_segments_update_tool(
+        session_id: Annotated[str, Field(min_length=1, max_length=80)],
+        idempotency_key: Annotated[str, Field(min_length=8, max_length=120)],
+        updates: Annotated[
+            list[UpdateGenerationSegmentBatchItem],
+            Field(min_length=1, max_length=100),
+        ],
+    ) -> dict[str, Any]:
+        """Atomically update reviewed speech text or exclude/restore blocks. All supplied segment revisions must match; retained source subtitles and audio history are unchanged."""
+
+        return _call_with_validated_input(
+            update_generation_segments,
+            runtime,
+            UpdateGenerationSegmentsInput,
+            {key: value for key, value in locals().items() if key in UpdateGenerationSegmentsInput.model_fields},
         )
 
     @server.tool(

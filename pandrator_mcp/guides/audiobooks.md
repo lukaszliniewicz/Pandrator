@@ -74,7 +74,23 @@ only typed immutable topology edits with
 `pandrator_revise_speech_block_plan` (split, merge, restore, or resegment), then follow
 its next action to re-list the new revision.
 
+Use `pandrator_update_generation_segment` for a single wording change or
+`removed=true` to exclude a block from synthesis; `removed=false` restores it.
+For up to 100 edits, `pandrator_update_generation_segments` accepts
+`updates: [{id, revision, changes}]` and applies them atomically. Read current
+row revisions first. These edits preserve source subtitles and audio history,
+and invalidate the speech-plan review. Re-read the content signature and review
+the exact resulting plan before generation.
+
+For dependent split/merge edits, use `pandrator_revise_speech_block_plan_batch`
+with references to preceding results. If an application response times out,
+inspect speech-plan status, then replay the exact original request with the
+same idempotency key to recover its receipt. A timeout does not prove rollback.
+
 Split and merge preserve exact speaker/narrator spans and delivery markup.
+Plain speech wording changes keep their generated markup in sync. Wording
+changes to blocks with authored speaker or delivery markup are rejected by
+plain text updates; clear and reapply those annotations explicitly first.
 For a larger repair, use `action=resegment` with 1–100 contiguous `segment_ids`
 in reading order. Choose `max_chars` (40–4,000; default 300), or explicit
 `boundaries`: increasing Unicode code-point offsets into the selected texts
