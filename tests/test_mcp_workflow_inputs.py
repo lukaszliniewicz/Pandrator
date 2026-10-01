@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from pydantic import ValidationError
 
+from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.schemas.workflow_inputs import (
     GetWorkflowInputsInput,
     SelectWorkflowInputInput,
@@ -57,7 +58,7 @@ class WorkflowInputsMcpTests(unittest.TestCase):
         result = select_workflow_input(self.runtime, arguments)
 
         self.application.select_workflow_input.assert_called_once_with(
-            "session-1",
+            session_id="session-1",
             consumer="translation",
             role="correction",
             artifact_id="artifact-1",
@@ -67,6 +68,36 @@ class WorkflowInputsMcpTests(unittest.TestCase):
             idempotency_key="workflow-input-123",
         )
         self.assertIs(expected, result)
+
+    def test_select_handler_uses_real_client_signature_and_request_shape(self) -> None:
+        application = object.__new__(ApplicationClient)
+        runtime = SimpleNamespace(require_application=lambda: application)
+        arguments = SelectWorkflowInputInput(
+            session_id="session-1",
+            consumer="translation",
+            role="correction",
+            artifact_id="artifact-1",
+            expected_outcome_revision=5,
+            expected_selection_revision=2,
+            expected_translation_settings_revision=4,
+            idempotency_key="workflow-input-123",
+        )
+        expected = {"selected": {"artifact_id": "artifact-1"}}
+        with patch.object(ApplicationClient, "_request_json", return_value=expected) as request:
+            self.assertIs(expected, select_workflow_input(runtime, arguments))
+        request.assert_called_once_with(
+            "/api/v1/sessions/session-1/workflow-inputs",
+            method="PUT",
+            body={
+                "consumer": "translation",
+                "role": "correction",
+                "artifact_id": "artifact-1",
+                "expected_outcome_revision": 5,
+                "expected_selection_revision": 2,
+                "expected_translation_settings_revision": 4,
+            },
+            idempotency_key="workflow-input-123",
+        )
 
     def test_schema_requires_translation_revision_and_forbids_translation_loop(self) -> None:
         with self.assertRaises(ValidationError):

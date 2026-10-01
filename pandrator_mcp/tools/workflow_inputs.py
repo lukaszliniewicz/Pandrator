@@ -27,7 +27,7 @@ def select_workflow_input(
     """Select an exact producer artifact with revision and idempotency guards."""
 
     return runtime.require_application().select_workflow_input(
-        arguments.session_id,
+        session_id=arguments.session_id,
         consumer=arguments.consumer,
         role=arguments.role,
         artifact_id=arguments.artifact_id,
