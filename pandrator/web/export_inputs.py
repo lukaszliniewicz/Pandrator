@@ -12,7 +12,7 @@ from .artifact_selection import selected_artifacts
 from .export_contract import (
     ExportContract,
     export_uses_generated_audio,
-    normalize_audio_mode,
+    resolve_export_audio_mode,
 )
 from .models import (
     Artifact,
@@ -338,6 +338,14 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
     media_edit_plan = inputs.media_edit_plan
     active_media_edit_revision = inputs.active_media_edit_revision
     selected_audio = inputs.selected_audio
+    canonical_audio_mode = (
+        contract.audio_mode
+        if contract is not None
+        else resolve_export_audio_mode(
+            workflow_kind=record.workflow_kind,
+            settings=settings,
+        )
+    )
 
     upload_media = next(
         (
@@ -384,6 +392,10 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
         export_mode = contract.export_mode
     requires_edited_media = (
         record.workflow_kind == "media_edit" and export_mode == "media"
+    ) or (
+        record.workflow_kind == "media_edit"
+        and export_mode == "audio"
+        and canonical_audio_mode in {"mixed", "dubbing_only"}
     ) or (
         record.workflow_kind == "voiceover"
         and export_mode in {"media", "audio"}
@@ -469,12 +481,9 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
         or upload_media is None
         else []
     )
-    if record.workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
-        canonical_audio_mode = (
-            contract.audio_mode
-            if contract is not None
-            else normalize_audio_mode(settings.get("audio_mode"))
-        )
+    if canonical_audio_mode is None:
+        audio_mode = "source"
+    else:
         if canonical_audio_mode in {"preserve", "mixed"} and not (
             upload_media or upload_audio
         ):
@@ -488,8 +497,6 @@ def select_media_export(inputs: ExportInputs) -> MediaExportSelection:
             "mixed": "mixed",
         }
         audio_mode = audio_mode_by_setting[canonical_audio_mode]
-    else:
-        audio_mode = "source"
     dubbing_audio = (
         select_generated_audio(inputs, legacy_role="dubbing_audio")
         if export_mode in {"media", "audio"}

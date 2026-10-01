@@ -9,19 +9,28 @@ from pandrator.runtime import DataPaths
 from pandrator.web.artifact_selection import STAGE_OUTPUT_ROLES
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database, upgrade_database
+from pandrator.web.export_inputs import resolve_export_inputs, select_media_export
 from pandrator.web.jobs import JobQueue
 from pandrator.web.media_edit import MediaEditService
 from pandrator.web.models import (
     Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
     MediaEditPlan,
     OutcomePlan,
+    OutputAssembly,
     SessionSource,
     SourceAsset,
 )
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import MEDIA_EDIT_STAGES, WorkflowService
-from pandrator.web.workspace import OutcomePlanService
+from pandrator.web.workspace import (
+    OutcomePlanService,
+    expected_output_assembly_snapshot,
+    output_assembly_settings_hash,
+)
 
 
 class MediaEditWorkflowTests(unittest.TestCase):
@@ -155,6 +164,65 @@ class MediaEditWorkflowTests(unittest.TestCase):
             duration_probe=lambda _path: 5000,
         )
 
+    def _generation_run(self, *, status="completed", session_id=None):
+        session_id = session_id or self.record.id
+        with self.database.session() as session:
+            plan = GenerationPlan(session_id=session_id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                settings_json={},
+                operation_json={},
+                content_hash=f"{session_id}-generation-plan",
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            run = GenerationRun(
+                session_id=session_id,
+                plan_revision_id=revision.id,
+                sequence_number=1,
+                status=status,
+                settings_snapshot_json={},
+            )
+            session.add(run)
+            session.flush()
+            return run.id
+
+    def _store_run_assembly(self, run_id, snapshot, *, name="selected.wav"):
+        assembly_path = self.session_dir / name
+        assembly_path.write_bytes(b"selected run assembly")
+        artifact = self.artifacts.register(
+            assembly_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=self.record.id,
+        )
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_id)
+            expected_snapshot = expected_output_assembly_snapshot(
+                session,
+                run,
+                snapshot,
+            )
+            expected_hash = output_assembly_settings_hash(snapshot)
+            assembly = OutputAssembly(
+                session_id=self.record.id,
+                generation_run_id=run_id,
+                status="completed",
+                artifact_id=artifact.id,
+                settings_json={
+                    "resolved": expected_snapshot,
+                    "plan_revision_id": run.plan_revision_id,
+                },
+                settings_hash=expected_hash,
+            )
+            session.add(assembly)
+            session.flush()
+        return artifact
+
     def test_definitions_make_edit_reviewable_and_downstream(self):
         self.assertEqual(
             [
@@ -253,6 +321,282 @@ class MediaEditWorkflowTests(unittest.TestCase):
         self.assertEqual("derived_media_edit", contract["source_resolution"])
         self.assertEqual(edited_media.id, resolved.source_artifact_id)
         self.assertNotEqual(self.original.id, contract["source_artifact_id"])
+
+    def test_pinned_run_mixed_or_dubbed_exports_route_through_variant(self):
+        edited_media = self._rendered_media()
+        run_id = self._generation_run()
+
+        for export_mode in ("media", "audio"):
+            for audio_mode in ("mixed", "dubbing_only"):
+                with self.subTest(export_mode=export_mode, audio_mode=audio_mode):
+                    resolved = self.workflow.resolve_stage(
+                        self.record.id,
+                        "export",
+                        {
+                            "export_mode": export_mode,
+                            "audio_mode": audio_mode,
+                            "generation_run_id": run_id,
+                        },
+                    )
+
+                    self.assertEqual("export.variant", resolved.job_kind)
+                    self.assertEqual(run_id, resolved.payload["settings"]["generation_run_id"])
+                    contract = resolved.payload["export_contract"]
+                    self.assertEqual(audio_mode, contract["audio_mode"])
+                    self.assertEqual(edited_media.id, contract["source_artifact_id"])
+                    self.assertEqual(
+                        edited_media.content_hash,
+                        contract["source_content_hash"],
+                    )
+                    self.assertEqual("derived_media_edit", contract["source_resolution"])
+
+    def test_pinned_preserve_and_unpinned_media_edit_exports_stay_source_only(self):
+        edited_media = self._rendered_media()
+        run_id = self._generation_run()
+
+        pinned_preserve = self.workflow.resolve_stage(
+            self.record.id,
+            "export",
+            {
+                "export_mode": "media",
+                "audio_mode": "preserve",
+                "generation_run_id": run_id,
+            },
+        )
+        self.assertEqual("export.create", pinned_preserve.job_kind)
+        self.assertEqual("preserve", pinned_preserve.payload["export_contract"]["audio_mode"])
+
+        legacy_mixed_without_run = self.workflow.resolve_stage(
+            self.record.id,
+            "export",
+            {"export_mode": "media", "audio_mode": "mixed"},
+        )
+        self.assertEqual("export.create", legacy_mixed_without_run.job_kind)
+        self.assertIsNone(legacy_mixed_without_run.payload["export_contract"]["audio_mode"])
+        self.assertEqual(
+            edited_media.id,
+            legacy_mixed_without_run.payload["export_contract"]["source_artifact_id"],
+        )
+        for resolved in (pinned_preserve, legacy_mixed_without_run):
+            inputs = resolve_export_inputs(
+                self.handlers._output_workflow_context(),
+                resolved.payload,
+            )
+            selection = select_media_export(inputs)
+            self.assertEqual("source", selection.audio_mode)
+            self.assertIsNone(selection.dubbing_audio)
+        with self.database.session() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(OutputAssembly).where(
+                        OutputAssembly.session_id == self.record.id,
+                    )
+                )
+            )
+
+    def test_subtitle_and_text_exports_do_not_assemble_selected_run(self):
+        self._rendered_media()
+        run_id = self._generation_run()
+        for export_mode in ("subtitles", "text"):
+            with self.subTest(export_mode=export_mode):
+                resolved = self.workflow.resolve_stage(
+                    self.record.id,
+                    "export",
+                    {
+                        "export_mode": export_mode,
+                        "audio_mode": "invalid-audio-mode",
+                        "generation_run_id": run_id,
+                    },
+                )
+
+                self.assertEqual("export.create", resolved.job_kind)
+                self.assertEqual(run_id, resolved.payload["settings"]["generation_run_id"])
+                self.assertIsNone(resolved.payload["export_contract"]["audio_mode"])
+        with self.database.session() as session:
+            self.assertIsNone(
+                session.scalar(
+                    select(OutputAssembly).where(
+                        OutputAssembly.session_id == self.record.id,
+                        OutputAssembly.generation_run_id == run_id,
+                    )
+                )
+            )
+
+    def test_pinned_media_edit_export_rejects_foreign_or_unfinished_runs(self):
+        self._rendered_media()
+        unfinished_run_id = self._generation_run(status="running")
+        foreign_session = SessionService(self.database).create(
+            "Another media edit", workflow_kind="media_edit"
+        )
+        foreign_run_id = self._generation_run(session_id=foreign_session.id)
+
+        for run_id, message in (
+            (unfinished_run_id, "Only a completed generation run"),
+            (foreign_run_id, "does not belong to this session"),
+        ):
+            with self.subTest(run_id=run_id):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.workflow.resolve_stage(
+                        self.record.id,
+                        "export",
+                        {
+                            "export_mode": "media",
+                            "audio_mode": "mixed",
+                            "generation_run_id": run_id,
+                        },
+                    )
+
+    def test_variant_export_uses_exact_run_assembly_and_mixed_or_dubbed_audio(self):
+        edited_media = self._rendered_media()
+        run_id = self._generation_run()
+        settings = {
+            "export_mode": "media",
+            "audio_mode": "mixed",
+            "generation_run_id": run_id,
+        }
+        initial = self.workflow.resolve_stage(self.record.id, "export", settings)
+        assembly = self._store_run_assembly(
+            run_id,
+            initial.payload["resolved_settings_snapshot"],
+        )
+        chosen_audio = []
+
+        def render_stub(context, inputs, selection, *, output_dir, export_name, **_kwargs):
+            chosen_audio.append(
+                (selection.audio_mode, selection.upload_media.id, selection.dubbing_audio.id)
+            )
+            destination = output_dir / f"{export_name}_{selection.audio_mode}.mp4"
+            destination.write_bytes(b"stubbed rendered video")
+            return context.artifacts.register(
+                destination,
+                kind="export",
+                role=f"export_{selection.audio_mode}",
+                session_id=inputs.session_id,
+                parent_ids=[selection.upload_media.id, selection.dubbing_audio.id],
+                settings=inputs.settings,
+            )
+
+        for audio_mode, expected_worker_mode in (
+            ("mixed", "mixed"),
+            ("dubbing_only", "dubbed"),
+        ):
+            with self.subTest(audio_mode=audio_mode):
+                queued = self.workflow.resolve_stage(
+                    self.record.id,
+                    "export",
+                    {**settings, "audio_mode": audio_mode},
+                )
+                self.assertEqual("export.variant", queued.job_kind)
+                self.assertEqual(audio_mode, queued.payload["export_contract"]["audio_mode"])
+                with (
+                    mock.patch(
+                        "pandrator.logic.dubbing.audio_sync.media_has_audio_stream",
+                        return_value=True,
+                    ),
+                    mock.patch(
+                        "pandrator.web.workflow_export.render_video_export",
+                        side_effect=render_stub,
+                    ) as render,
+                ):
+                    result = self.handlers.export_variant(
+                        queued.payload,
+                        self._progress,
+                        threading.Event(),
+                    )
+
+                self.assertEqual(1, len(result["artifact_ids"]))
+                self.assertEqual(edited_media.id, chosen_audio[-1][1])
+                self.assertEqual(assembly.id, chosen_audio[-1][2])
+                self.assertEqual(expected_worker_mode, chosen_audio[-1][0])
+                render.assert_called_once()
+
+    def test_selected_run_without_matching_assembly_does_not_fall_back_to_history(self):
+        self._rendered_media()
+        self._artifact(
+            "historical-assembly.wav",
+            role="assembled_audio",
+            kind="audio",
+            content=b"unrelated historical audio",
+        )
+        run_id = self._generation_run()
+        queued = self.workflow.resolve_stage(
+            self.record.id,
+            "export",
+            {
+                "export_mode": "media",
+                "audio_mode": "mixed",
+                "generation_run_id": run_id,
+            },
+        )
+
+        with self.assertRaisesRegex(ValueError, "Assemble the selected generation run"):
+            self.handlers.export(queued.payload, self._progress, threading.Event())
+
+        self.assertFalse((self.session_dir / "exports").exists())
+
+    def test_worker_rejects_audio_mode_that_disagrees_with_media_edit_contract(self):
+        self._rendered_media()
+        run_id = self._generation_run()
+        settings = {
+            "export_mode": "media",
+            "audio_mode": "mixed",
+            "generation_run_id": run_id,
+        }
+        initial = self.workflow.resolve_stage(self.record.id, "export", settings)
+        assembly = self._store_run_assembly(
+            run_id,
+            initial.payload["resolved_settings_snapshot"],
+        )
+        queued = self.workflow.resolve_stage(self.record.id, "export", settings)
+        payload = {
+            **queued.payload,
+            "pinned_assembly_artifact_id": assembly.id,
+            "export_contract": {
+                **queued.payload["export_contract"],
+                "audio_mode": "dubbing_only",
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "queued audio mode"):
+            self.handlers.export(payload, self._progress, threading.Event())
+
+        self.assertFalse((self.session_dir / "exports").exists())
+
+    def test_audio_only_pinned_generated_export_rejects_changed_edit_revision(self):
+        edited_media = self._rendered_media()
+        run_id = self._generation_run()
+        settings = {
+            "export_mode": "audio",
+            "audio_mode": "mixed",
+            "generation_run_id": run_id,
+        }
+        initial = self.workflow.resolve_stage(self.record.id, "export", settings)
+        self._store_run_assembly(run_id, initial.payload["resolved_settings_snapshot"])
+        queued = self.workflow.resolve_stage(self.record.id, "export", settings)
+        self._media_edit_service().update(
+            self.record.id,
+            self.plan["revision"],
+            keep_ranges=self.plan["keep_ranges"],
+            instructions="A newer edit after queueing the audio export.",
+        )
+        with self.database.session() as session:
+            session.get(Artifact, edited_media.id).state = "current"
+
+        with (
+            mock.patch(
+                "pandrator.logic.dubbing.audio_sync.media_has_audio_stream"
+            ) as media_has_audio_stream,
+            mock.patch("pandrator.web.workflow_export.render_video_export") as render,
+        ):
+            with self.assertRaisesRegex(ValueError, "media-edit revision changed"):
+                self.handlers.export_variant(
+                    queued.payload,
+                    self._progress,
+                    threading.Event(),
+                )
+
+        media_has_audio_stream.assert_not_called()
+        render.assert_not_called()
 
     def test_export_rejects_render_from_an_obsolete_edit_revision(self):
         edited_media = self._artifact(

@@ -39,6 +39,26 @@ def normalize_audio_mode(value: Any) -> str:
     return result
 
 
+def resolve_export_audio_mode(
+    *, workflow_kind: str, settings: dict[str, Any]
+) -> str | None:
+    """Resolve audio intent only for exports that explicitly consume it."""
+
+    if workflow_kind not in {"voiceover", "media_edit"}:
+        return None
+    if workflow_kind == "media_edit" and not str(
+        settings.get("generation_run_id") or ""
+    ).strip():
+        return None
+    export_mode = normalize_export_mode(
+        settings.get("export_mode"),
+        workflow_kind=workflow_kind,
+    )
+    if export_mode not in {"media", "audio"}:
+        return None
+    return normalize_audio_mode(settings.get("audio_mode"))
+
+
 def export_uses_generated_audio(
     *, workflow_kind: str, settings: dict[str, Any]
 ) -> bool:
@@ -46,15 +66,10 @@ def export_uses_generated_audio(
 
     if workflow_kind == "audiobook":
         return True
-    if workflow_kind != "voiceover":
-        return False
-    export_mode = normalize_export_mode(
-        settings.get("export_mode"),
+    audio_mode = resolve_export_audio_mode(
         workflow_kind=workflow_kind,
+        settings=settings,
     )
-    if export_mode not in {"media", "audio"}:
-        return False
-    audio_mode = normalize_audio_mode(settings.get("audio_mode"))
     return audio_mode in {"mixed", "dubbing_only"}
 
 
@@ -82,17 +97,18 @@ def build_export_contract(
         settings.get("export_mode"),
         workflow_kind=workflow_kind,
     )
-    audio_mode = None
-    if workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
-        audio_mode = normalize_audio_mode(settings.get("audio_mode"))
-        if audio_mode in {"preserve", "mixed"} and (
-            source.artifact is None or not source.has_audio
-        ):
-            label = "Preserving" if audio_mode == "preserve" else "Mixing"
-            raise ValueError(
-                f"{label} source audio requires an attached audio or video source. "
-                "Attach the intended source or choose Voiceover only."
-            )
+    audio_mode = resolve_export_audio_mode(
+        workflow_kind=workflow_kind,
+        settings=settings,
+    )
+    if audio_mode in {"preserve", "mixed"} and (
+        source.artifact is None or not source.has_audio
+    ):
+        label = "Preserving" if audio_mode == "preserve" else "Mixing"
+        raise ValueError(
+            f"{label} source audio requires an attached audio or video source. "
+            "Attach the intended source or choose Voiceover only."
+        )
     return {
         "version": EXPORT_CONTRACT_VERSION,
         "workflow_kind": workflow_kind,
@@ -142,10 +158,13 @@ class ExportContract:
         )
         if export_mode != requested_export_mode:
             raise ValueError("The queued export mode does not match its immutable export contract.")
-        audio_mode = None
-        if workflow_kind == "voiceover" and export_mode in {"media", "audio"}:
-            audio_mode = normalize_audio_mode(payload.get("audio_mode"))
-            if audio_mode != normalize_audio_mode(settings.get("audio_mode")):
+        audio_mode = resolve_export_audio_mode(
+            workflow_kind=workflow_kind,
+            settings=settings,
+        )
+        if audio_mode is not None:
+            contract_audio_mode = normalize_audio_mode(payload.get("audio_mode"))
+            if contract_audio_mode != audio_mode:
                 raise ValueError(
                     "The queued audio mode does not match its immutable export contract."
                 )
