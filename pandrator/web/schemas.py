@@ -22,6 +22,7 @@ from .dispatch_context import (
     MAX_PARALLEL_BATCHES,
     validate_context_size,
 )
+from .multilingual_setup import MultilingualSetup, validate_source
 from .voice_catalog_schemas import VoiceProfile
 
 CredentialBackend = Literal["database", "environment", "keyring", "file"]
@@ -72,6 +73,19 @@ class SessionCreate(StrictModel):
     workflow_preset: str = "custom"
     included_stages: list[str] = Field(default_factory=list)
     overwrite_session_id: str | None = None
+    multilingual_setup: MultilingualSetup | None = None
+
+    @model_validator(mode="after")
+    def validate_multilingual_source(self) -> "SessionCreate":
+        if self.multilingual_setup is not None:
+            self.included_stages = validate_source(
+                self.multilingual_setup,
+                workflow_kind=self.workflow_kind,
+                source_language=self.source_language,
+                target_language=self.target_language,
+                included_stages=self.included_stages,
+            )
+        return self
 
 
 class SessionUpdate(StrictModel):
@@ -84,6 +98,7 @@ class SessionUpdate(StrictModel):
     workflow_preset: str | None = None
     included_stages: list[str] | None = None
     status: str | None = None
+    multilingual_setup: MultilingualSetup | None = None
 
 
 class SessionForkRequest(StrictModel):
@@ -1789,6 +1804,7 @@ SCHEMA_MODELS = {
         ErrorBody,
         SessionCreate,
         SessionUpdate,
+        MultilingualSetup,
         SessionForkRequest,
         JobCreate,
         LoginRequest,

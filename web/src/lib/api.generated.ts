@@ -5760,6 +5760,21 @@ export interface components {
              */
             output_modalities?: ("text" | "image" | "audio")[] | null;
         };
+        /** MultilingualSetup */
+        MultilingualSetup: {
+            /**
+             * Generate Voiceover
+             * @default false
+             */
+            generate_voiceover?: boolean;
+            /**
+             * Keep Source Subtitles
+             * @default true
+             */
+            keep_source_subtitles?: boolean;
+            /** Target Languages */
+            target_languages: string[];
+        };
         /** OptimizationReviewItem */
         OptimizationReviewItem: {
             /** Index */
@@ -6431,6 +6446,8 @@ export interface components {
         SessionCreate: {
             /** Included Stages */
             included_stages?: string[];
+            /** @default null */
+            multilingual_setup?: components["schemas"]["MultilingualSetup"] | null;
             /** Name */
             name: string;
             /**
@@ -6527,6 +6544,8 @@ export interface components {
              * @default null
              */
             included_stages?: string[] | null;
+            /** @default null */
+            multilingual_setup?: components["schemas"]["MultilingualSetup"] | null;
             /**
              * Name
              * @default null
@@ -7773,6 +7792,11 @@ export interface components {
         TranslationProjectCreateRequest: {
             /** Checkpoint Artifact Id */
             checkpoint_artifact_id: string;
+            /**
+             * Create Planned Branches
+             * @default false
+             */
+            create_planned_branches?: boolean;
             /** Expected Revision */
             expected_revision: number;
             /**

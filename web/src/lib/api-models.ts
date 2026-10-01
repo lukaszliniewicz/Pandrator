@@ -138,6 +138,7 @@ export type TranslationProjectBranch = {
   session_id: string;
   name: string;
   target_language: string;
+  workflow_kind: 'subtitles' | 'voiceover';
   source_checkpoint_artifact_id: string;
   source_content_hash: string;
   status: string;
@@ -162,7 +163,19 @@ export type TranslationProject = {
   branches: TranslationProjectBranch[];
 };
 
-export type TranslationProjectPayload = { project: TranslationProject | null };
+export type MultilingualSetup = {
+  target_languages: string[];
+  generate_voiceover: boolean;
+  keep_source_subtitles: boolean;
+};
+
+export type TranslationProjectPayload = {
+  project: TranslationProject | null;
+  setup: MultilingualSetup | null;
+  setup_state: 'none' | 'awaiting_correction' | 'blocked' | 'ready' | 'active';
+  setup_blocked_reason: string | null;
+  correction_checkpoint_artifact_id: string | null;
+};
 
 export type JobRecord = {
   id: string;

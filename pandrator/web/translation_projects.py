@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -28,24 +27,15 @@ from .models import (
     TranslationProjectBranch,
     utcnow,
 )
+from .multilingual_setup import SECTION, canonical_language, read_setup
 from .outcome_plans import derive_legacy_outcome
 from .session_forks import SessionForkService
 from .settings_policy import RevisionConflict
-
-_LANGUAGE = re.compile(r"^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$")
+from .workspace_settings import WorkspaceSettingsService
 
 
 class TranslationProjectConflict(RevisionConflict):
     """A pinned snapshot or project revision no longer matches the live source."""
-
-
-def canonical_language(value: str) -> str:
-    normalized = str(value or "").strip().replace("_", "-").lower()
-    if not 2 <= len(normalized) <= 40 or not _LANGUAGE.fullmatch(normalized):
-        raise ValueError("Use a language code of 2-40 letters, digits, and hyphens.")
-    if normalized == "auto":
-        raise ValueError("Choose a specific target language.")
-    return normalized
 
 
 def _source_edit(session: Session, source_session_id: str) -> tuple[str | None, str | None]:
@@ -156,6 +146,7 @@ def _branch_payload(session: Session, branch: TranslationProjectBranch) -> dict[
         "id": branch.id,
         "session_id": branch.session_id,
         "name": record.name,
+        "workflow_kind": record.workflow_kind,
         "target_language": branch.target_language,
         "source_checkpoint_artifact_id": branch.source_checkpoint_artifact_id,
         "source_content_hash": branch.source_content_hash,
@@ -204,12 +195,15 @@ def get_project(session: Session, project_id: str) -> dict[str, Any]:
     return project_payload(session, project)
 
 
-def get_session_project(session: Session, session_id: str) -> dict[str, Any]:
+def get_session_project(
+    session: Session, session_id: str, *, paths: DataPaths | None = None
+) -> dict[str, Any]:
     if session.get(SessionRecord, session_id) is None:
         raise KeyError(session_id)
     project = session.scalar(
         select(TranslationProject).where(TranslationProject.source_session_id == session_id)
     )
+    branch = None
     if project is None:
         branch = session.scalar(
             select(TranslationProjectBranch).where(
@@ -217,7 +211,45 @@ def get_session_project(session: Session, session_id: str) -> dict[str, Any]:
             )
         )
         project = session.get(TranslationProject, branch.project_id) if branch else None
-    return project_payload(session, project) if project else {"project": None}
+    setup = None if branch else read_setup(session, session_id)
+    checkpoint_id = project.checkpoint_artifact_id if project and not branch else None
+    state = "active" if setup is not None and project and not branch else "none"
+    blocked_reason = None
+    if setup is not None and state == "none":
+        state = "awaiting_correction"
+        if paths is not None:
+            candidates = session.scalars(
+                select(Artifact).where(
+                    Artifact.session_id == session_id,
+                    Artifact.role == "correction",
+                    Artifact.state == "current",
+                ).order_by(Artifact.created_at.desc(), Artifact.id.desc()).limit(50)
+            )
+            for candidate in candidates:
+                try:
+                    _, source_language = _checkpoint(session, paths, session_id, candidate.id)
+                    _source_edit(session, session_id)
+                except (KeyError, ValueError, RevisionConflict, OSError) as error:
+                    blocked_reason = blocked_reason or str(error)
+                    continue
+                if source_language in setup.target_languages:
+                    checkpoint_id = candidate.id
+                    blocked_reason = blocked_reason or "A planned target repeats the correction language."
+                    continue
+                checkpoint_id = candidate.id
+                state = "ready"
+                blocked_reason = None
+                break
+            if state != "ready" and blocked_reason is not None:
+                state = "blocked"
+    result: dict[str, Any] = project_payload(session, project) if project else {"project": None}
+    result.update({
+        "setup": setup.model_dump(mode="json") if setup else None,
+        "setup_state": state,
+        "setup_blocked_reason": blocked_reason,
+        "correction_checkpoint_artifact_id": checkpoint_id,
+    })
+    return result
 
 
 def create_project_in_session(
@@ -228,6 +260,9 @@ def create_project_in_session(
     expected_revision: int,
     *,
     paths: DataPaths,
+    create_planned_branches: bool = False,
+    session_forks: SessionForkService | None = None,
+    created_directories: list[Path] | None = None,
 ) -> dict[str, Any]:
     source = db.get(SessionRecord, source_session_id)
     if source is None or source.trashed_at is not None:
@@ -247,6 +282,11 @@ def create_project_in_session(
     ):
         raise TranslationProjectConflict("A language branch cannot become a project source.")
     checkpoint, language = _checkpoint(db, paths, source_session_id, checkpoint_artifact_id)
+    setup = read_setup(db, source_session_id) if create_planned_branches else None
+    if create_planned_branches and setup is None:
+        raise ValueError("Save multilingual setup before creating planned branches.")
+    if setup is not None and language in setup.target_languages:
+        raise ValueError("A planned target repeats the correction language.")
     title = str(name or "").strip() or f"{source.name} translations"
     if len(title) > 255:
         raise ValueError("A project name cannot exceed 255 characters.")
@@ -262,7 +302,16 @@ def create_project_in_session(
     )
     db.add(project)
     db.flush()
-    return project_payload(db, project)
+    if setup is not None:
+        if session_forks is None or created_directories is None:
+            raise ValueError("Planned branch creation requires a fork service and cleanup list.")
+        create_branches_in_session(
+            db, project.id, project.revision,
+            [{"target_language": language} for language in setup.target_languages],
+            session_forks=session_forks, paths=paths,
+            created_directories=created_directories,
+        )
+    return get_session_project(db, source_session_id, paths=paths)
 
 
 def create_branches_in_session(
@@ -283,6 +332,7 @@ def create_branches_in_session(
     source = db.get(SessionRecord, project.source_session_id)
     if source is None or source.trashed_at is not None:
         raise TranslationProjectConflict("The source session is unavailable.")
+    setup = read_setup(db, source.id)
     _pinned_checkpoint, live_language = _checkpoint(
         db,
         paths,
@@ -333,13 +383,17 @@ def create_branches_in_session(
         )
         created_directories.append(fork.directory)
         record = fork.record
+        inherited_setup = db.get(SessionSetting, (record.id, SECTION))
+        if inherited_setup is not None:
+            db.delete(inherited_setup)
         record.workflow_kind = (
+            "voiceover" if setup.generate_voiceover else "subtitles"
+        ) if setup is not None else (
             "voiceover" if source.workflow_kind in {"voiceover", "media_edit"} else "subtitles"
         )
         record.target_language = language
-        stages = [
-            stage
-            for stage in (record.included_stages_json or [])
+        stages = [] if setup is not None else [
+            stage for stage in (record.included_stages_json or [])
             if stage not in {"transcribe", "correct", "edit_media"}
         ]
         required = (
@@ -359,6 +413,38 @@ def create_branches_in_session(
             "source_language": project.source_language,
             "target_language": language,
         }
+        branch_output: dict[str, Any] | None = None
+        for section in ("tts", "output"):
+            child_setting = db.get(SessionSetting, (record.id, section))
+            if child_setting is None:
+                child_setting = SessionSetting(session_id=record.id, section=section, value_json={})
+                db.add(child_setting)
+            child_value = dict(child_setting.value_json or {})
+            child_value.pop("target_language", None)
+            child_value["language"] = language
+            if section == "output" and setup is not None:
+                child_value["subtitle_selection"] = (
+                    "dual" if setup.keep_source_subtitles else "translation"
+                )
+                if setup.generate_voiceover:
+                    context = WorkspaceSettingsService._output_context(db, record)
+                    child_value["export_mode"] = "media"
+                    child_value["audio_mode"] = "dubbing_only"
+                    if source.workflow_kind == "subtitles" or child_value.get("subtitle_mode") not in {
+                        "none", "soft", "burned",
+                    }:
+                        child_value["subtitle_mode"] = (
+                            "soft" if context["has_source_video"] else "none"
+                        )
+                else:
+                    child_value.update({
+                        "export_mode": "subtitles",
+                        "audio_mode": "preserve",
+                        "subtitle_mode": "none",
+                    })
+            child_setting.value_json = child_value
+            if section == "output":
+                branch_output = child_value
         outcome = db.get(OutcomePlan, record.id)
         if outcome is None:
             outcome = OutcomePlan(session_id=record.id, value_json=derive_legacy_outcome(record))
@@ -391,7 +477,15 @@ def create_branches_in_session(
         )
         value["deliverables"] = deliverables
         export = dict(value.get("export") or {})
-        export["subtitles"] = "translation"
+        export["subtitles"] = (
+            "dual" if setup and setup.keep_source_subtitles else "translation"
+        )
+        export["audio"] = "generated" if record.workflow_kind == "voiceover" else "preserve"
+        export["target_language"] = language
+        if setup is not None and branch_output is not None:
+            export["mode"] = branch_output["export_mode"]
+            export["subtitle_mode"] = branch_output["subtitle_mode"]
+            export["audio_mode"] = branch_output["audio_mode"]
         value["export"] = export
         outcome.value_json = value
         cloned = db.get(Artifact, fork.checkpoint_artifact_id)

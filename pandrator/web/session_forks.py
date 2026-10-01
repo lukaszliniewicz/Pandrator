@@ -384,6 +384,8 @@ class SessionForkService:
             for setting in session.scalars(
                 select(SessionSetting).where(SessionSetting.session_id == source_session_id)
             ).all():
+                if setting.section == "multilingual_setup":
+                    continue
                 copied_setting = SessionSetting(
                     session_id=record.id,
                     section=setting.section,

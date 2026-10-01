@@ -10,6 +10,9 @@ from contextlib import redirect_stdout
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
+from pydantic.experimental.missing_sentinel import MISSING
+
+from pandrator.web.multilingual_setup import MultilingualSetup
 
 from . import __version__
 from .context import McpRuntime
@@ -2488,6 +2491,7 @@ def build_server(runtime: McpRuntime):
             ],
             ...,
         ] = (),
+        multilingual_setup: MultilingualSetup | None = None,
     ) -> dict[str, Any]:
         """Create one session; retries with the same key replay the first result."""
 
@@ -2501,6 +2505,7 @@ def build_server(runtime: McpRuntime):
                 target_language=target_language,
                 workflow_preset=workflow_preset,
                 included_stages=included_stages,
+                multilingual_setup=multilingual_setup,
                 idempotency_key=idempotency_key,
             ),
         )
@@ -2525,6 +2530,7 @@ def build_server(runtime: McpRuntime):
             "media_edit",
         ]
         | None = None,
+        multilingual_setup: MultilingualSetup | None | MISSING = MISSING,
         source_language: Annotated[
             str | None,
             Field(min_length=2, max_length=40),
@@ -2574,6 +2580,8 @@ def build_server(runtime: McpRuntime):
             "included_stages": included_stages,
         }
         values.update({key: value for key, value in optional.items() if value is not None})
+        if multilingual_setup is not MISSING:
+            values["multilingual_setup"] = multilingual_setup
         return _call(
             update_session,
             runtime,

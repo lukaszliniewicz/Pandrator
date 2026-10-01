@@ -4,13 +4,15 @@
   import { onMount } from 'svelte';
   import type {
     TranslationProject,
+    MultilingualSetup,
+    TranslationProjectPayload,
     SubtitleReviewCatalogItem
   } from '$lib/api-models';
   import { sessionApi, translationProjectApi } from '$lib/domain-api';
   import { errorMessage } from '$lib/errors';
   import { invalidationBus } from '$lib/invalidation';
   import { useSessionContext } from '$lib/session-context';
-  import { LANGUAGE_OPTIONS } from '$lib/settings-fields';
+  import LanguagePicker from '$lib/LanguagePicker.svelte';
   import {
     translationBranchStatus,
     translationLanguageName as languageName
@@ -19,6 +21,14 @@
   const context = useSessionContext();
   const sessionId = $derived(String(page.params.id));
   let project = $state<TranslationProject | null>(null);
+  let setup = $state<MultilingualSetup | null>(null);
+  let setupState = $state<TranslationProjectPayload['setup_state']>('none');
+  let readyCheckpointId = $state('');
+  let blockedReason = $state('');
+  let editingSetup = $state(false);
+  let plannedLanguages = $state<string[]>([]);
+  let plannedVoiceover = $state(false);
+  let plannedSourceSubtitles = $state(true);
   let loading = $state(true);
   let busy = $state(false);
   let error = $state('');
@@ -31,24 +41,45 @@
   const correction = $derived(
     context.workflow.snapshot?.stages.find((stage) => stage.key === 'correct')
   );
+  const selectedCorrectionId = $derived(
+    correction?.selected_artifact_id || correction?.artifact?.id || ''
+  );
   const checkpointId = $derived(
     chosenCheckpointId ||
-      correction?.selected_artifact_id ||
-      correction?.artifact?.id ||
+      (checkpointOptions.some(
+        (item) => item.artifact_id === selectedCorrectionId
+      )
+        ? selectedCorrectionId
+        : '') ||
+      readyCheckpointId ||
       checkpointOptions.at(-1)?.artifact_id ||
       ''
   );
-  const availableLanguages = $derived(
-    LANGUAGE_OPTIONS.filter((option) => {
-      const code = String(option.value).toLowerCase();
-      return (
-        code !== 'auto' &&
-        code !== project?.source_language.toLowerCase() &&
-        !project?.branches.some(
-          (branch) => branch.target_language.toLowerCase() === code
+  const effectiveSourceLanguage = $derived(
+    [
+      project?.source_language,
+      checkpointOptions.find((item) => item.artifact_id === checkpointId)
+        ?.language,
+      context.session?.source_language
+    ].find((code) => code && code !== 'auto') ?? 'auto'
+  );
+  const excludedLanguages = $derived([
+    effectiveSourceLanguage,
+    ...(project?.branches.map((branch) => branch.target_language) ?? [])
+  ]);
+  const planValid = $derived(
+    plannedLanguages.length > 0 &&
+      plannedLanguages.length <= 20 &&
+      !plannedLanguages.includes(effectiveSourceLanguage.toLowerCase())
+  );
+  const branchesValid = $derived(
+    languages.length > 0 &&
+      languages.length <= 20 &&
+      !languages.some((code) =>
+        excludedLanguages.some(
+          (excluded) => excluded.toLowerCase() === code.toLowerCase()
         )
-      );
-    })
+      )
   );
 
   async function load(id = sessionId) {
@@ -61,6 +92,15 @@
         : null;
       if (current === request) {
         project = result.project;
+        setup = result.setup;
+        setupState = result.setup_state;
+        blockedReason = result.setup_blocked_reason ?? '';
+        readyCheckpointId = result.correction_checkpoint_artifact_id ?? '';
+        if (!editingSetup) {
+          plannedLanguages = [...(setup?.target_languages ?? [])];
+          plannedVoiceover = setup?.generate_voiceover ?? false;
+          plannedSourceSubtitles = setup?.keep_source_subtitles ?? true;
+        }
         checkpointOptions =
           catalog?.items.filter(
             (item) => item.stage === 'correction' && item.state === 'current'
@@ -76,6 +116,9 @@
 
   $effect(() => {
     project = null;
+    setup = null;
+    editingSetup = false;
+    readyCheckpointId = '';
     languages = [];
     checkpointOptions = [];
     chosenCheckpointId = '';
@@ -93,14 +136,22 @@
 
   async function createProject(event: SubmitEvent) {
     event.preventDefault();
-    if (!context.session || !checkpointId || busy) return;
+    if (
+      !context.session ||
+      !checkpointId ||
+      busy ||
+      editingSetup ||
+      (setup && setupState !== 'ready')
+    )
+      return;
     busy = true;
     error = '';
     const id = sessionId;
     const body = {
       checkpoint_artifact_id: checkpointId,
       expected_revision: context.session.revision,
-      name: name.trim() || context.session.name
+      name: name.trim() || context.session.name,
+      create_planned_branches: Boolean(setup)
     };
     try {
       const result = await translationProjectApi.create(
@@ -108,7 +159,10 @@
         body,
         requestKey(body)
       );
-      if (id === sessionId) project = result.project;
+      if (id === sessionId) {
+        project = result.project;
+        setupState = result.setup_state;
+      }
       pending = null;
     } catch (caught) {
       if (id === sessionId) error = errorMessage(caught);
@@ -119,7 +173,7 @@
 
   async function addBranches(event: SubmitEvent) {
     event.preventDefault();
-    if (!project || !languages.length || languages.length > 20 || busy) return;
+    if (!project || !branchesValid || busy) return;
     busy = true;
     error = '';
     const id = sessionId;
@@ -139,6 +193,39 @@
         languages = [];
       }
       pending = null;
+    } catch (caught) {
+      if (id === sessionId) error = errorMessage(caught);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveSetup(event: SubmitEvent) {
+    event.preventDefault();
+    if (!context.session || !planValid || busy) return;
+    busy = true;
+    error = '';
+    const id = sessionId;
+    const body = {
+      multilingual_setup: {
+        target_languages: plannedLanguages,
+        generate_voiceover: plannedVoiceover,
+        keep_source_subtitles: plannedSourceSubtitles
+      }
+    };
+    try {
+      await sessionApi.update(
+        id,
+        context.session.revision,
+        body,
+        requestKey({ expected_revision: context.session.revision, ...body })
+      );
+      pending = null;
+      if (id === sessionId) {
+        editingSetup = false;
+        await context.reload();
+        await load(id);
+      }
     } catch (caught) {
       if (id === sessionId) error = errorMessage(caught);
     } finally {
@@ -230,7 +317,7 @@
             >
               <a href={`/sessions/${branch.session_id}`}>Open language</a>
               <a href={`/sessions/${branch.session_id}/text`}>Subtitles</a>
-              {#if context.session?.workflow_kind !== 'subtitles'}<a
+              {#if branch.workflow_kind === 'voiceover'}<a
                   href={`/sessions/${branch.session_id}/voice`}>Voice & audio</a
                 >{/if}
               <a href={`/sessions/${branch.session_id}/output`}>Output</a>
@@ -249,34 +336,16 @@
         Choose up to 20 languages. Each gets its own workspace, so translations
         can proceed in parallel.
       </p>
-      <label
-        for="project-target-languages"
-        class="mt-4 block text-sm font-semibold">Target languages</label
-      >
-      <select
-        id="project-target-languages"
-        multiple
-        size="6"
-        bind:value={languages}
-        disabled={busy}
-        class="mt-2 w-full max-w-lg rounded-xl border border-[var(--line)] bg-[var(--paper)] p-3"
-      >
-        {#each availableLanguages as option}<option value={String(option.value)}
-            >{option.label}</option
-          >{/each}
-      </select>
-      <p class="muted mt-2 text-xs">
-        Hold Ctrl or Command to choose multiple languages. {languages.length} selected.
-      </p>
-      {#if languages.length > 20}<p
-          role="alert"
-          class="mt-2 text-sm text-red-500"
-        >
-          Choose at most 20 languages at a time.
-        </p>{/if}
+      <div class="mt-4 max-w-xl">
+        <LanguagePicker
+          bind:value={languages}
+          excluded={excludedLanguages}
+          disabled={busy}
+        />
+      </div>
       <button
         type="submit"
-        disabled={busy || !languages.length || languages.length > 20}
+        disabled={busy || !branchesValid}
         class="mt-5 flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
       >
         {#if busy}<LoaderCircle class="animate-spin" size={16} />Creating
@@ -284,11 +353,83 @@
       </button>
     </form>
   {:else}
+    {#if setup}
+      <section class="surface max-w-3xl rounded-2xl p-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h3 class="text-lg font-semibold">Your language plan</h3>
+          <button
+            type="button"
+            disabled={busy}
+            onclick={() => {
+              editingSetup = !editingSetup;
+              plannedLanguages = [...setup!.target_languages];
+              plannedVoiceover = setup!.generate_voiceover;
+              plannedSourceSubtitles = setup!.keep_source_subtitles;
+            }}
+            class="text-sm font-semibold text-[var(--accent)]"
+            >{editingSetup ? 'Cancel changes' : 'Edit language plan'}</button
+          >
+        </div>
+        {#if editingSetup}
+          <form onsubmit={saveSetup} class="mt-4 space-y-4">
+            <LanguagePicker
+              bind:value={plannedLanguages}
+              excluded={[effectiveSourceLanguage]}
+              disabled={busy}
+            />
+            <label class="flex items-start gap-2 text-sm"
+              ><input
+                type="checkbox"
+                bind:checked={plannedVoiceover}
+                disabled={busy}
+              /><span>Include voiceovers in each language</span></label
+            >
+            <label class="flex items-start gap-2 text-sm"
+              ><input
+                type="checkbox"
+                bind:checked={plannedSourceSubtitles}
+                disabled={busy}
+              /><span>Keep source subtitles alongside translations</span></label
+            >
+            <button
+              type="submit"
+              disabled={busy || !planValid}
+              class="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >{busy ? 'Saving…' : 'Save language plan'}</button
+            >
+          </form>
+        {:else}
+          <p class="mt-3 text-sm font-semibold">
+            {setup.target_languages.map(languageName).join(', ')}
+          </p>
+          <p class="muted mt-2 text-sm">
+            {setup.generate_voiceover
+              ? 'Subtitles and voiceovers'
+              : 'Subtitles only'} · {setup.keep_source_subtitles
+              ? 'Source subtitles included'
+              : 'Translated subtitles only'}
+          </p>
+          <p class="mt-3 text-sm leading-6" role="status">
+            {setupState === 'ready'
+              ? 'Source correction is ready. Review it before creating your language workspaces.'
+              : setupState === 'blocked'
+                ? blockedReason
+                : 'First correct and review the source subtitles. Your selected languages are saved.'}
+          </p>
+        {/if}
+        <a
+          href={`/sessions/${sessionId}/text${checkpointId ? `?review=${encodeURIComponent(checkpointId)}` : ''}`}
+          class="mt-3 inline-block text-sm font-semibold text-[var(--accent)]"
+          >Review source subtitles</a
+        >
+      </section>
+    {/if}
     <form onsubmit={createProject} class="surface max-w-3xl rounded-2xl p-6">
       <h3 class="text-lg font-semibold">Create a multilingual project</h3>
       <p class="muted mt-2 text-sm leading-6">
         Save the current corrected source as the starting point for every
-        language.
+        language. {#if setup}Create all selected workspaces together;
+          translation and voice generation start separately inside each one.{/if}
       </p>
       {#if checkpointId}
         {#if checkpointOptions.length > 1}
@@ -324,11 +465,16 @@
         />
         <button
           type="submit"
-          disabled={busy || !context.session}
+          disabled={busy ||
+            !context.session ||
+            editingSetup ||
+            (Boolean(setup) && setupState !== 'ready')}
           class="mt-5 flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
         >
           {#if busy}<LoaderCircle class="animate-spin" size={16} />Creating
-            project…{:else}<Languages size={16} />Create multilingual project{/if}
+            project…{:else}<Languages size={16} />{setup
+              ? 'Create language workspaces'
+              : 'Create multilingual project'}{/if}
         </button>
       {:else}<p class="mt-4 text-sm">
           Finish subtitle correction before creating language branches.

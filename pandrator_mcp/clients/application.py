@@ -2039,10 +2039,12 @@ class ApplicationClient:
     def create_translation_project(
         self, session_id: str, *, checkpoint_artifact_id: str,
         expected_revision: int, idempotency_key: str, name: str | None = None,
+        create_planned_branches: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "checkpoint_artifact_id": checkpoint_artifact_id,
             "expected_revision": expected_revision,
+            "create_planned_branches": create_planned_branches,
         }
         if name is not None:
             body["name"] = name
@@ -2139,6 +2141,7 @@ class ApplicationClient:
         workflow_preset: str,
         included_stages: tuple[str, ...],
         idempotency_key: str,
+        multilingual_setup: Any = None,
     ) -> dict[str, Any]:
         return self._request_json(
             "/api/v1/sessions",
@@ -2150,6 +2153,7 @@ class ApplicationClient:
                 "target_language": target_language,
                 "workflow_preset": workflow_preset,
                 "included_stages": list(included_stages),
+                **({"multilingual_setup": multilingual_setup.model_dump(mode="json") if hasattr(multilingual_setup, "model_dump") else multilingual_setup} if multilingual_setup is not None else {}),
             },
             idempotency_key=idempotency_key,
         )

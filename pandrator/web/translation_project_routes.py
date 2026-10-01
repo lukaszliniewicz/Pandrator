@@ -26,6 +26,7 @@ class TranslationProjectCreateRequest(BaseModel):
     checkpoint_artifact_id: str = Field(min_length=1, max_length=80)
     name: str = Field(default="", max_length=255)
     expected_revision: int = Field(ge=1)
+    create_planned_branches: bool = False
 
 
 class TranslationBranchTarget(BaseModel):
@@ -201,7 +202,7 @@ def register_translation_project_routes(
     def session_translation_project(session_id):
         try:
             with services.database.session() as db:
-                return jsonify(get_session_project(db, session_id))
+                return jsonify(get_session_project(db, session_id, paths=services.paths))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 
@@ -215,8 +216,10 @@ def register_translation_project_routes(
             session_id,
             "createSessionTranslationProject",
             payload,
-            lambda db, _directories: create_project_in_session(
-                db, session_id, **payload, paths=services.paths
+            lambda db, directories: create_project_in_session(
+                db, session_id, **payload, paths=services.paths,
+                session_forks=services.session_forks,
+                created_directories=directories,
             ),
         )
 

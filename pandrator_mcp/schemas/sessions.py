@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from pandrator.web.multilingual_setup import MultilingualSetup
+
 from .common import ToolInput
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
@@ -331,6 +333,7 @@ class CreateSessionInput(ToolInput):
         max_length=200,
         pattern=_SAFE_KEY,
     )
+    multilingual_setup: MultilingualSetup | None = None
 
     @field_validator("included_stages")
     @classmethod
@@ -381,6 +384,7 @@ class UpdateSessionInput(ToolInput):
         max_length=200,
         pattern=_SAFE_KEY,
     )
+    multilingual_setup: MultilingualSetup | None = None
 
     @model_validator(mode="after")
     def require_change(self) -> "UpdateSessionInput":

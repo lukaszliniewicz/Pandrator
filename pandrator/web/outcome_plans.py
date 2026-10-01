@@ -133,12 +133,14 @@ class OutcomePlanService:
             "pipeline": result["pipeline"],
         }
 
+    @staticmethod
     def update_in_session(
-        self,
         session: Session,
         session_id: str,
         expected_revision: int,
         value: dict[str, Any],
+        *,
+        sync_session: bool = True,
     ) -> dict[str, Any]:
         """Update an outcome plan inside a caller-owned transaction."""
 
@@ -185,26 +187,27 @@ class OutcomePlanService:
             from .artifact_selection import clear_selection
 
             clear_selection(session, session_id, "translate")
-        record.workflow_kind = str(
-            value.get("workflow_kind") or record.workflow_kind
-        )
-        record.workflow_preset = "custom"
-        pipeline_keys = {item["key"] for item in resolve_pipeline(value)}
-        record.included_stages_json = [
-            key
-            for key in (
-                "transcribe",
-                "edit_media",
-                "correct",
-                "translate",
-                "optimize_tts",
-                "generate_audio",
-                "export",
+        if sync_session:
+            record.workflow_kind = str(
+                value.get("workflow_kind") or record.workflow_kind
             )
-            if key in pipeline_keys
-        ]
-        record.revision += 1
-        record.updated_at = utcnow()
+            record.workflow_preset = "custom"
+            pipeline_keys = {item["key"] for item in resolve_pipeline(value)}
+            record.included_stages_json = [
+                key
+                for key in (
+                    "transcribe",
+                    "edit_media",
+                    "correct",
+                    "translate",
+                    "optimize_tts",
+                    "generate_audio",
+                    "export",
+                )
+                if key in pipeline_keys
+            ]
+            record.revision += 1
+            record.updated_at = utcnow()
         session.flush()
         return {
             "value": deepcopy(value),

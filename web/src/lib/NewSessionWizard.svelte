@@ -25,6 +25,8 @@
   import SearchReplaceBar from './SearchReplaceBar.svelte';
   import type { TextSearchMatch } from './search-replace';
   import { modalFocus } from './modal-focus';
+  import LanguagePicker from './LanguagePicker.svelte';
+  import { translationLanguageName } from './translation-project-display';
 
   let {
     initialKind = 'audiobook',
@@ -50,21 +52,46 @@
   let sourceAssetId = $state('');
   let reusableSources = $state<SourceAsset[]>([]);
   let name = $state('');
-  let correct = $state(false);
-  let translate = $state(false);
-  let keepSourceSubtitles = $state(true);
   let sourceLanguage = $state('auto');
+  let generateVoiceover = $state(false);
+  let correct = $state(false);
+  let translationMode = $state<'none' | 'single' | 'multilingual'>('none');
+  const translate = $derived(
+    translationMode === 'single' && kind !== 'audiobook'
+  );
+  const multilingual = $derived(
+    translationMode === 'multilingual' && kind !== 'audiobook' && !custom
+  );
+  let targetLanguages = $state<string[]>([]);
+  let multilingualVoiceover = $state(
+    untrack(() => initialKind === 'voiceover')
+  );
+  const correctionEnabled = $derived(correct || multilingual);
+  const sourceGeneratesAudio = $derived(
+    !multilingual &&
+      (kind === 'voiceover' ||
+        kind === 'audiobook' ||
+        (kind === 'media_edit' && generateVoiceover))
+  );
+  const languageSelectionValid = $derived(
+    !multilingual ||
+      (targetLanguages.length > 0 &&
+        targetLanguages.length <= 20 &&
+        !targetLanguages.includes(sourceLanguage.toLowerCase()))
+  );
+  let keepSourceSubtitles = $state(true);
   let targetLanguage = $state('en');
   let subtitleMode = $state<'none' | 'soft' | 'burned'>('soft');
   let subtitleExport = $state<'srt' | 'vtt' | 'text'>('srt');
   let normalizeText = $state(true);
   let optimizeTts = $state(false);
-  let generateVoiceover = $state(false);
   let audiobookFormat = $state<'m4b' | 'mp3' | 'opus' | 'flac' | 'wav'>('m4b');
   let creating = $state(false);
   let progress = $state(0);
   let progressDetail = $state('');
   let error = $state('');
+  let createdSessionId = $state('');
+  let creationRequest: { signature: string; key: string } | null = null;
   let duplicateFromServer = $state<SessionRecord | null>(null);
   let pastedTextArea = $state<HTMLTextAreaElement>();
 
@@ -120,19 +147,24 @@
         ? ['Transcribe']
         : ['Use subtitles']),
     ...(kind === 'media_edit' ? ['Plan and review cuts', 'Render edit'] : []),
-    ...(kind !== 'audiobook' && correct ? ['Correct'] : []),
+    ...(kind !== 'audiobook' && correctionEnabled ? ['Correct'] : []),
     ...(kind !== 'audiobook' && translate ? ['Translate'] : []),
+    ...(multilingual
+      ? [
+          'Review source',
+          `Create ${targetLanguages.length} language workspaces`,
+          'Translate each language'
+        ]
+      : []),
     ...(kind === 'audiobook' ? ['Segment narration'] : []),
-    ...(kind === 'voiceover' ||
-    (kind === 'media_edit' && generateVoiceover) ||
+    ...((!multilingual &&
+      (kind === 'voiceover' || (kind === 'media_edit' && generateVoiceover))) ||
     (kind === 'audiobook' && normalizeText)
       ? ['Deterministic speech normalization']
       : []),
     ...(kind === 'audiobook' && optimizeTts ? ['LLM speech optimization'] : []),
-    ...(kind === 'voiceover' ||
-    kind === 'audiobook' ||
-    (kind === 'media_edit' && generateVoiceover)
-      ? ['Generate audio']
+    ...(sourceGeneratesAudio || (multilingual && multilingualVoiceover)
+      ? [multilingual ? 'Voice & audio in each language' : 'Generate audio']
       : []),
     kind === 'subtitles'
       ? subtitleExport === 'text'
@@ -156,6 +188,8 @@
 
   function chooseKind(value: typeof kind, full = false) {
     kind = value;
+    if (value === 'audiobook' || full) translationMode = 'none';
+    if (value === 'voiceover') multilingualVoiceover = true;
     if (value === 'audiobook' && sourceMode === 'url') sourceMode = 'upload';
     if (value === 'audiobook' && sourceLanguage === 'auto')
       sourceLanguage = 'en';
@@ -195,7 +229,7 @@
   }
 
   async function create(overwrite = false) {
-    if (!name.trim()) return;
+    if (!name.trim() || !languageSelectionValid || createdSessionId) return;
     const existing = duplicateSession;
     if (existing && !overwrite) {
       error = 'Choose whether to open the existing session or replace it.';
@@ -213,24 +247,34 @@
             ...(kind === 'audiobook' ? ['clean_source', 'prepare_text'] : []),
             ...(needsTranscription ? ['transcribe'] : []),
             ...(kind === 'media_edit' ? ['edit_media'] : []),
-            ...(correct ? ['correct'] : []),
+            ...(correctionEnabled ? ['correct'] : []),
             ...(translate ? ['translate'] : []),
-            ...(kind === 'voiceover' ||
-            kind === 'audiobook' ||
-            (kind === 'media_edit' && generateVoiceover)
-              ? ['generate_audio']
-              : []),
+            ...(sourceGeneratesAudio ? ['generate_audio'] : []),
             'export'
           ];
-      const session = await sessionApi.create({
+      const createBody: Parameters<typeof sessionApi.create>[0] = {
         name: unique,
         workflow_kind: kind,
         source_language: sourceLanguage,
         target_language: translate ? targetLanguage : null,
         workflow_preset: 'custom',
         included_stages: included,
+        ...(multilingual
+          ? {
+              multilingual_setup: {
+                target_languages: targetLanguages,
+                generate_voiceover: multilingualVoiceover,
+                keep_source_subtitles: keepSourceSubtitles
+              }
+            }
+          : {}),
         ...(overwrite && existing ? { overwrite_session_id: existing.id } : {})
-      });
+      };
+      const signature = JSON.stringify(createBody);
+      if (creationRequest?.signature !== signature)
+        creationRequest = { signature, key: crypto.randomUUID() };
+      const session = await sessionApi.create(createBody, creationRequest.key);
+      createdSessionId = session.id;
       let sessionRevision = session.revision;
       progress = 0.15;
       progressDetail = 'Saving workflow plan';
@@ -243,30 +287,28 @@
           audiobook: kind === 'audiobook',
           subtitles: kind === 'subtitles' || subtitleMode !== 'none',
           voiceover:
-            kind === 'voiceover' ||
-            (kind === 'media_edit' && generateVoiceover),
+            !multilingual &&
+            (kind === 'voiceover' ||
+              (kind === 'media_edit' && generateVoiceover)),
           edited_media: kind === 'media_edit'
         },
         transformations: {
           transcribe: needsTranscription,
           media_edit: kind === 'media_edit',
-          correct: kind === 'audiobook' ? false : correct,
+          correct: kind === 'audiobook' ? false : correctionEnabled,
           translate: kind === 'audiobook' ? false : translate,
           deterministic_normalization:
             kind === 'audiobook' ? normalizeText : true,
           llm_tts_document_optimization: false,
           llm_tts_optimization: kind === 'audiobook' && optimizeTts,
-          generate_audio:
-            kind === 'voiceover' ||
-            kind === 'audiobook' ||
-            (kind === 'media_edit' && generateVoiceover),
+          generate_audio: sourceGeneratesAudio,
           rvc: false
         },
         inputs: {
-          translation: correct ? 'correction' : 'source',
+          translation: correctionEnabled ? 'correction' : 'source',
           generation: translate
             ? 'translation'
-            : correct
+            : correctionEnabled
               ? 'correction'
               : kind === 'media_edit'
                 ? 'media_edit'
@@ -279,12 +321,7 @@
                 ? 'text'
                 : 'subtitles'
               : 'media',
-          audio:
-            kind === 'voiceover' ||
-            kind === 'audiobook' ||
-            (kind === 'media_edit' && generateVoiceover)
-              ? 'generated'
-              : 'preserve',
+          audio: sourceGeneratesAudio ? 'generated' : 'preserve',
           subtitle_mode:
             kind === 'audiobook' || kind === 'subtitles'
               ? 'none'
@@ -341,14 +378,18 @@
             : kind === 'media_edit'
               ? {
                   export_mode: 'media',
-                  audio_mode: generateVoiceover ? 'dubbing_only' : 'preserve',
+                  audio_mode: sourceGeneratesAudio
+                    ? 'dubbing_only'
+                    : 'preserve',
                   subtitle_mode: subtitleMode,
                   subtitle_selection: subtitleSelection,
                   language: speechLanguage
                 }
               : {
                   export_mode: 'media',
-                  audio_mode: 'dubbing_only',
+                  audio_mode: sourceGeneratesAudio
+                    ? 'dubbing_only'
+                    : 'preserve',
                   subtitle_mode: subtitleMode,
                   subtitle_selection: subtitleSelection,
                   language: speechLanguage
@@ -660,19 +701,65 @@
                 >{/each}</select
             ></label
           ><label class="option"
-            ><input type="checkbox" bind:checked={correct} /><span
+            ><input
+              type="checkbox"
+              checked={correctionEnabled}
+              onchange={(event) => (correct = event.currentTarget.checked)}
+              disabled={multilingual}
+            /><span
               ><strong>Correct same-language subtitles</strong><small
-                >Creates a separate reviewed source-language asset.</small
+                >{multilingual
+                  ? 'Required: every language starts from this reviewed source.'
+                  : 'Creates a separate reviewed source-language asset.'}</small
               ></span
             ></label
-          ><label class="option"
-            ><input type="checkbox" bind:checked={translate} /><span
-              ><strong>Translate</strong><small
-                >A professional translation can clean minor source errors
-                without creating a correction asset.</small
-              ></span
-            ></label
-          >{#if translate}<label class="text-sm font-semibold"
+          ><label class="text-sm font-semibold">
+            Translation workflow<select
+              bind:value={translationMode}
+              class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
+            >
+              <option value="none">Source language only</option>
+              <option value="single">Translate into one language</option>
+              <option value="multilingual">Multilingual project</option>
+            </select>
+          </label>
+          {#if multilingual}<div
+              class="space-y-4 rounded-2xl border border-[var(--line)] p-4 md:col-span-2"
+            >
+              <LanguagePicker
+                bind:value={targetLanguages}
+                excluded={[sourceLanguage]}
+              />
+              <label class="option"
+                ><input
+                  type="checkbox"
+                  bind:checked={multilingualVoiceover}
+                /><span
+                  ><strong>Include voiceovers in each language</strong><small
+                    >Choose a voice and review the speech plan inside each
+                    language workspace before generation.</small
+                  ></span
+                ></label
+              >
+              <label class="option"
+                ><input
+                  type="checkbox"
+                  bind:checked={keepSourceSubtitles}
+                /><span
+                  ><strong>Keep source subtitles alongside translations</strong
+                  ><small
+                    >Prepare both subtitle tracks for each language’s exports.</small
+                  ></span
+                ></label
+              >
+              <p class="muted text-sm leading-6">
+                Correct and review the source first. Your language choices are
+                saved now; create their independent workspaces from Languages
+                when the source is ready. Translation and speech generation
+                start separately.
+              </p>
+            </div>{/if}
+          {#if translate}<label class="text-sm font-semibold"
               >Target language<select
                 bind:value={targetLanguage}
                 class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
@@ -686,7 +773,8 @@
                   >Allows source/translation dual-track exports.</small
                 ></span
               ></label
-            >{/if}{#if kind === 'media_edit'}<label class="option"
+            >{/if}{#if kind === 'media_edit' && !multilingual}<label
+              class="option"
               ><input type="checkbox" bind:checked={generateVoiceover} /><span
                 ><strong>Generate a voiceover after editing</strong><small
                   >Uses the retimed edited subtitles, so correction and
@@ -742,6 +830,19 @@
                   size={15}
                 />{/if}{/each}
           </div>
+          {#if multilingual}<p class="mt-4 text-sm">
+              <strong
+                >{targetLanguages.map(translationLanguageName).join(', ') ||
+                  'Choose target languages'}</strong
+              >
+              · {multilingualVoiceover
+                ? 'Subtitles and voiceovers'
+                : 'Subtitles only'}
+            </p>
+            <p class="muted mt-2 text-sm">
+              The first workspace prepares the source. Languages will guide you
+              through review and creating the selected versions.
+            </p>{/if}
           <p class="muted mt-4 text-xs">
             You can customize this plan later without deleting completed
             artifacts.
@@ -774,7 +875,9 @@
               ><FolderOpen size={15} /> Open existing</a
             ><button
               onclick={() => create(true)}
-              disabled={creating}
+              disabled={creating ||
+                Boolean(createdSessionId) ||
+                !languageSelectionValid}
               class="flex items-center gap-2 rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-600"
               ><Trash2 size={15} />
               {creating ? 'Replacing...' : 'Replace older session'}</button
@@ -782,6 +885,15 @@
           </div>
         </div>
       {/if}
+      {#if createdSessionId && error}<p class="mt-4 text-sm">
+          Your workspace and saved plan are available. Continue there to finish
+          source setup.
+        </p>
+        <a
+          href={`/sessions/${createdSessionId}`}
+          class="mt-3 inline-block text-sm font-semibold text-[var(--accent)]"
+          >Open saved workspace</a
+        >{/if}
       {#if creating}<div class="mt-5">
           <div class="mb-1.5 flex items-center justify-between gap-3 text-xs">
             <span class="muted truncate">{progressDetail}</span><span
@@ -818,10 +930,16 @@
               inferName();
               step = 4;
             }}
-            class="primary">Review <ArrowRight size={16} /></button
+            disabled={!languageSelectionValid}
+            class="primary disabled:opacity-40"
+            >Review <ArrowRight size={16} /></button
           >{:else}<button
             onclick={() => create()}
-            disabled={creating || !name.trim() || Boolean(duplicateSession)}
+            disabled={creating ||
+              Boolean(createdSessionId) ||
+              !name.trim() ||
+              !languageSelectionValid ||
+              Boolean(duplicateSession)}
             class="primary disabled:opacity-40"
             >{creating
               ? 'Creating…'

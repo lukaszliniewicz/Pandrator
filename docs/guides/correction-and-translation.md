@@ -90,12 +90,35 @@ project pins that exact correction and edited timeline. Each language has its
 own translation, voice setup, speech review, generation and exports. Adding
 languages does not start translation or synthesis.
 
+You can also choose **Multilingual project** in the new-session wizard for
+subtitles, voiceovers or recording edits. Select target languages with the
+searchable checkboxes and choose subtitles only or subtitles with voiceovers.
+The language plan is saved with the source session; correction is required and
+translation and audio generation take place in the language sessions. The
+overview shows the saved plan and next step. **Languages** lets you edit the
+plan until the project is created. After reviewing the correction, **Create
+language workspaces** pins the chosen source and creates all selected languages
+in one operation. Failed creation leaves no partial project or language sessions.
+
 Through MCP, use `pandrator_create_translation_project` with the inspected
 source session revision, correction artifact ID and an idempotency key. Then
 use `pandrator_create_translation_branches` with the project revision and
 `targets: [{"target_language": "de"}, {"target_language": "ja"}]`. Inspect
 the project from either the source or a branch with
 `pandrator_get_translation_project`.
+
+For the same deferred setup through MCP, pass `multilingual_setup` to
+`pandrator_create_session`:
+`{"target_languages": ["de", "ja"], "generate_voiceover": true,
+"keep_source_subtitles": true}`. Inspect the saved setup and readiness with
+`pandrator_get_translation_project`; update it through
+`pandrator_update_session` before project creation. After correction and review,
+use `pandrator_create_translation_project` with `create_planned_branches: true`
+to create the project and planned languages atomically. Subtitle-only language
+sessions preserve the original audio; voiceover sessions require independent
+voice selection and speech-plan review. Each branch's language is applied to
+translation, speech and export settings. Creating these workspaces does not
+start provider work.
 
 Translation runs in different language sessions can proceed concurrently.
 Passive batches within each run retain sequential context and glossary

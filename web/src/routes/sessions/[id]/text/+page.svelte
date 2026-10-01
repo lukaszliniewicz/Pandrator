@@ -15,15 +15,28 @@
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import SubtitleReview from '$lib/SubtitleReview.svelte';
   import { artifactFilename, formatBytes } from '$lib/artifact-display';
+  import { errorMessage } from '$lib/errors';
 
-  const sessionId = String(page.params.id);
+  const sessionId = $derived(String(page.params.id));
   let documents = $state<DocumentRecord[]>([]);
   let reviewArtifactId = $state('');
   let activeTab = $state<'settings' | 'history'>('settings');
   let preview = $state<ArtifactRecord | null>(null);
+  let error = $state('');
+  let request = 0;
+  let openedReviewRequest = $state('');
 
-  async function load() {
-    documents = (await sessionApi.documents(sessionId)).items;
+  async function load(id = sessionId) {
+    const current = ++request;
+    try {
+      const result = await sessionApi.documents(id);
+      if (current === request && id === sessionId) {
+        documents = result.items;
+        error = '';
+      }
+    } catch (caught) {
+      if (current === request && id === sessionId) error = errorMessage(caught);
+    }
   }
 
   function duration(value: number) {
@@ -70,10 +83,39 @@
     preview = artifact;
   }
 
-  load();
+  $effect(() => {
+    const id = sessionId;
+    documents = [];
+    reviewArtifactId = '';
+    preview = null;
+    activeTab = 'settings';
+    openedReviewRequest = '';
+    void load(id);
+  });
+  $effect(() => {
+    const requested = page.url.searchParams.get('review');
+    const key = `${sessionId}:${requested}`;
+    if (!requested || openedReviewRequest === key) return;
+    if (
+      documents.some((document) =>
+        document.revisions.some(
+          (revision) => revision.artifact?.id === requested
+        )
+      )
+    ) {
+      openedReviewRequest = key;
+      reviewArtifactId = requested;
+    }
+  });
 </script>
 
 <div class="space-y-5">
+  {#if error}<p
+      role="alert"
+      class="rounded-xl bg-red-500/10 p-4 text-sm text-red-500"
+    >
+      {error}
+    </p>{/if}
   <div class="flex flex-wrap items-end justify-between gap-4">
     <div>
       <h2 class="text-2xl font-semibold">Text and subtitles</h2>
@@ -235,7 +277,7 @@
     {sessionId}
     primaryArtifactId={reviewArtifactId}
     onclose={() => (reviewArtifactId = '')}
-    onsaved={load}
+    onsaved={() => void load()}
   />{/if}
 {#if preview}<ArtifactPreview
     artifact={preview}

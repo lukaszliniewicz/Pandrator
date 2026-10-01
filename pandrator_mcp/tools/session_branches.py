@@ -115,6 +115,7 @@ def register_session_branch_tools(
             "pandrator_create_translation_project",
             "Create a multilingual project",
             "Pin an exact corrected source and edited timeline for a multilingual project. "
+            "Set create_planned_branches to create the saved session language plan atomically. "
             "Does not translate or start synthesis.",
             write_action,
         ),

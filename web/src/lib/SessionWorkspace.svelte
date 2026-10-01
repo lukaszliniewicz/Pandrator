@@ -3310,7 +3310,10 @@
   {:else if snapshot}
     <div class="space-y-4">
       {#if !sourceCardStage}{@render sessionSource()}{/if}
-      {#if ['audiobook', 'voiceover'].includes(session.workflow_kind)}
+      {#if session.workflow_kind !== 'audiobook' && session.included_stages_json.includes('correct') && !session.included_stages_json.includes('translate')}
+        <TranslationVersions sessionId={session.id} plannedOnly />
+      {/if}
+      {#if session.workflow_kind === 'audiobook' || (session.workflow_kind === 'voiceover' && session.included_stages_json.includes('generate_audio'))}
         <VoiceSetupCard
           bind:castPanel={audiobookCastPanel}
           navigationManaged={workspaceMode === 'review' &&
@@ -3397,7 +3400,7 @@
           onloadmore={() => loadMoreStageArtifacts(stage)}
         >
           {#snippet languageVersions()}
-            {#if stage.key === 'translate' && session.workflow_kind !== 'audiobook'}
+            {#if stage.key === 'translate' && stage.included && session.workflow_kind !== 'audiobook'}
               <TranslationVersions sessionId={session.id} />
             {/if}
           {/snippet}

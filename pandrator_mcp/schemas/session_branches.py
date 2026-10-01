@@ -27,6 +27,7 @@ class CreateTranslationProjectInput(ToolInput):
     expected_revision: int = Field(ge=1)
     idempotency_key: str = Field(pattern=_KEY)
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    create_planned_branches: bool = False
 
 
 class TranslationBranchTargetInput(ToolInput):

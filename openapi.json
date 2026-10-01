@@ -4398,6 +4398,35 @@
         "title": "ModelUpdate",
         "type": "object"
       },
+      "MultilingualSetup": {
+        "additionalProperties": false,
+        "properties": {
+          "generate_voiceover": {
+            "default": false,
+            "title": "Generate Voiceover",
+            "type": "boolean"
+          },
+          "keep_source_subtitles": {
+            "default": true,
+            "title": "Keep Source Subtitles",
+            "type": "boolean"
+          },
+          "target_languages": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Target Languages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "target_languages"
+        ],
+        "title": "MultilingualSetup",
+        "type": "object"
+      },
       "OptimizationReviewItem": {
         "additionalProperties": false,
         "properties": {
@@ -5965,6 +5994,17 @@
             "title": "Included Stages",
             "type": "array"
           },
+          "multilingual_setup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MultilingualSetup"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "name": {
             "maxLength": 255,
             "minLength": 1,
@@ -6250,6 +6290,17 @@
             ],
             "default": null,
             "title": "Included Stages"
+          },
+          "multilingual_setup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MultilingualSetup"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "name": {
             "anyOf": [
@@ -9370,6 +9421,11 @@
             "minLength": 1,
             "title": "Checkpoint Artifact Id",
             "type": "string"
+          },
+          "create_planned_branches": {
+            "default": false,
+            "title": "Create Planned Branches",
+            "type": "boolean"
           },
           "expected_revision": {
             "minimum": 1,

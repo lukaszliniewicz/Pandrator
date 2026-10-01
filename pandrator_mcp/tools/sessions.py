@@ -425,6 +425,7 @@ def create_session(
         target_language=arguments.target_language,
         workflow_preset=arguments.workflow_preset,
         included_stages=arguments.included_stages,
+        multilingual_setup=arguments.multilingual_setup,
         idempotency_key=arguments.idempotency_key,
     )
     session = {
@@ -435,9 +436,16 @@ def create_session(
         result=session,
         next_actions=[
             NextAction(
-                tool="pandrator_list_sources",
-                arguments={"state": "current", "limit": 50},
-                reason=("Inspect reusable sources before attaching one to the new session."),
+                tool=("pandrator_get_translation_project" if arguments.multilingual_setup else "pandrator_list_sources"),
+                arguments=(
+                    {"session_id": result["id"]}
+                    if arguments.multilingual_setup else {"state": "current", "limit": 50}
+                ),
+                reason=(
+                    "Inspect deferred language setup and correction readiness."
+                    if arguments.multilingual_setup else
+                    "Inspect reusable sources before attaching one to the new session."
+                ),
             )
         ],
     )

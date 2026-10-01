@@ -194,6 +194,7 @@ export const translationProjectApi = {
       checkpoint_artifact_id: string;
       expected_revision: number;
       name?: string;
+      create_planned_branches?: boolean;
     },
     idempotencyKey: string
   ) =>
@@ -231,11 +232,16 @@ export const translationProjectApi = {
 
 export const sessionApi = {
   list: (includeTrashed = false) => appApi.sessions(includeTrashed),
-  create: (body: ApiSchema<'SessionCreate'>) =>
+  create: (body: ApiSchema<'SessionCreate'>, idempotencyKey?: string) =>
     typedApiJson<'/api/v1/sessions', 'post', SessionRecord>(
       '/api/v1/sessions',
       'post',
-      { body }
+      {
+        body,
+        ...(idempotencyKey
+          ? { headers: { 'Idempotency-Key': idempotencyKey } }
+          : {})
+      }
     ),
   forkAtCheckpoint: (
     sessionId: string,
@@ -262,14 +268,18 @@ export const sessionApi = {
   update: (
     sessionId: string,
     revision: number,
-    body: ApiSchema<'SessionUpdate'>
+    body: ApiSchema<'SessionUpdate'>,
+    idempotencyKey?: string
   ) =>
     typedApiJson<'/api/v1/sessions/{sessionId}', 'patch', SessionRecord>(
       '/api/v1/sessions/{sessionId}',
       'patch',
       {
         path: { sessionId },
-        headers: { 'If-Match': `"${revision}"` },
+        headers: {
+          'If-Match': `"${revision}"`,
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {})
+        },
         body
       }
     ),

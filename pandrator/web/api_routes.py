@@ -2061,6 +2061,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         target_language=payload.target_language,
                         workflow_preset=payload.workflow_preset,
                         included_stages=payload.included_stages,
+                        multilingual_setup=payload.multilingual_setup,
                         record_id=record_id,
                         storage_key=storage_key,
                         db_session=db_session,
@@ -2130,6 +2131,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             target_language=payload.target_language,
             workflow_preset=payload.workflow_preset,
             included_stages=payload.included_stages,
+            multilingual_setup=payload.multilingual_setup,
         )
         (paths.sessions / record.storage_key).mkdir(parents=True, exist_ok=False)
         response = jsonify(_session_payload(record))
@@ -2257,7 +2259,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         changes = {
             key: value
             for key, value in raw_changes.items()
-            if value is not None or key == "target_language"
+            if value is not None or key in {"target_language", "multilingual_setup"}
         }
         if "included_stages" in changes:
             changes["included_stages_json"] = changes.pop("included_stages")
