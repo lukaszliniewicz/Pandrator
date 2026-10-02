@@ -228,6 +228,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_voice_library.py",
         "tests/test_web_work_api.py",
         "tests/test_web_workflow_handlers.py",
+        "tests/test_automatic_generation_output.py",
     ),
     "web-04-serial": (
         "tests/test_audio_cpp_catalogue_api.py",

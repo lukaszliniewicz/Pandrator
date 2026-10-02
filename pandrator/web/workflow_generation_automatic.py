@@ -10,10 +10,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from .generation_plan_store import DefaultSilenceProtocol
-from .models import Artifact, AudioTake, GenerationPlan, GenerationSegment, new_id, utcnow
+from .models import Artifact, GenerationPlan, GenerationSegment, new_id, utcnow
+from .workflow_generation_automatic_output import (
+    AutomaticAudioOutput,
+    AutomaticTakePublication,
+    assemble_automatic_output,
+    publish_automatic_take,
+)
 from .workflow_generation_binding import GenerationPlanStoreProtocol
 from .workflow_generation_protocols import (
     ApplySegmentTtsOverridesProtocol,
@@ -76,12 +82,6 @@ def generate_audio(
     role: str,
     job_id: str | None = None,
 ) -> dict[str, Any]:
-    from .audio_assembly import (
-        AudioAssemblyPart,
-        assemble_audio_plan,
-        build_audio_assembly_plan,
-        preferred_pcm_format,
-    )
     from .media_process import MediaProcessCancelled
 
     settings = context._hydrate_tts_settings(
@@ -488,68 +488,42 @@ def generate_audio(
         if casting_enabled and cancel_event.is_set():
             sentence_path.unlink(missing_ok=True)
             raise MediaProcessCancelled("Audio generation was canceled.")
-        take_artifact = context.artifacts.register(
-            sentence_path,
-            kind="audio",
-            role="generation_take",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=context._secret_free_tts_settings(segment_tts_settings),
-            metadata={
-                "generation_segment_id": generation_segment_id,
-                "kind": "tts",
-                "source_text": text,
-                "synthesized_text": synthesized_text,
-                "llm_optimized": synthesized_text != text,
-                "llm_model": optimization_model or None,
-                **(
-                    {"render_parts": render_manifest}
-                    if render_manifest
-                    else {}
-                ),
-                **(
-                    {"audio_verification": verification}
-                    if verification is not None
-                    else {}
-                ),
-            },
+        take_artifact, segment = publish_automatic_take(
+            context.database,
+            context.artifacts,
+            AutomaticTakePublication(
+                path=sentence_path,
+                session_id=session_id,
+                segment_id=generation_segment_id,
+                source_artifact_id=source_artifact.id,
+                stored_settings=context._secret_free_tts_settings(segment_tts_settings),
+                usage_settings=segment_tts_settings,
+                synthesized_text=synthesized_text,
+                duration_ms=len(audio),
+                job_id=job_id,
+                metadata={
+                    "generation_segment_id": generation_segment_id,
+                    "kind": "tts",
+                    "source_text": text,
+                    "synthesized_text": synthesized_text,
+                    "llm_optimized": synthesized_text != text,
+                    "llm_model": optimization_model or None,
+                    **(
+                        {"render_parts": render_manifest}
+                        if render_manifest
+                        else {}
+                    ),
+                    **(
+                        {"audio_verification": verification}
+                        if verification is not None
+                        else {}
+                    ),
+                },
+                verification=verification,
+            ),
+            record_tts_usage=context._record_tts_usage,
         )
         take_artifact_ids.append(take_artifact.id)
-        context._record_tts_usage(
-            session_id,
-            segment_tts_settings,
-            synthesized_text,
-            len(audio),
-            job_id=job_id,
-            artifact_id=take_artifact.id,
-        )
-        with context.database.immediate_session() as session:
-            segment = session.get(GenerationSegment, generation_segment_id)
-            if segment is None:
-                raise KeyError(generation_segment_id)
-            session.execute(
-                update(AudioTake)
-                .where(
-                    AudioTake.generation_segment_id == generation_segment_id,
-                    AudioTake.is_active.is_(True),
-                )
-                .values(is_active=False, revision=AudioTake.revision + 1)
-                .execution_options(synchronize_session=False)
-            )
-            segment.status = "completed"
-            if verification is not None and verification.get("status") != "passed":
-                segment.marked = True
-            session.add(
-                AudioTake(
-                    generation_segment_id=generation_segment_id,
-                    artifact_id=take_artifact.id,
-                    kind="tts",
-                    status="completed",
-                    settings_hash=take_artifact.settings_hash,
-                    duration_ms=len(audio),
-                    is_active=True,
-                )
-            )
         silence_after = context._default_silence_after_ms(
             record,
             settings,
@@ -574,84 +548,19 @@ def generate_audio(
     if parallel_wave_error is not None:
         raise parallel_wave_error
 
-    fade_enabled = bool(
-        settings.get("fade_enabled", settings.get("enable_fade", False))
+    return assemble_automatic_output(
+        context.artifacts,
+        AutomaticAudioOutput(
+            session_id=session_id,
+            source_artifact_id=source_artifact.id,
+            role=role,
+            destination=destination,
+            settings=settings,
+            assembly_inputs=assembly_inputs,
+            take_artifact_ids=take_artifact_ids,
+            segment_count=len(records),
+            plan_revision_id=revision_id,
+        ),
+        progress,
+        cancel_event,
     )
-    fade_in_ms = (
-        max(
-            0,
-            int(
-                settings.get("fade_in_ms", settings.get("fade_in_duration", 0)) or 0
-            ),
-        )
-        if fade_enabled
-        else 0
-    )
-    fade_out_ms = (
-        max(
-            0,
-            int(
-                settings.get("fade_out_ms", settings.get("fade_out_duration", 0))
-                or 0
-            ),
-        )
-        if fade_enabled
-        else 0
-    )
-    sample_rate_hz, channels = preferred_pcm_format(
-        assembly_inputs[0][0],
-        cancel_event=cancel_event,
-    )
-    plan = build_audio_assembly_plan(
-        [
-            AudioAssemblyPart(
-                path=path,
-                expected_duration_ms=duration_ms,
-                silence_after_ms=(
-                    max(0, int(silence_after_ms or 0))
-                    if index < len(assembly_inputs) - 1
-                    else 0
-                ),
-                fade_in_ms=fade_in_ms,
-                fade_out_ms=fade_out_ms,
-            )
-            for index, (path, duration_ms, silence_after_ms) in enumerate(
-                assembly_inputs
-            )
-        ],
-        output_format="wav",
-        sample_rate_hz=sample_rate_hz,
-        channels=channels,
-    )
-    try:
-        assembly_result = assemble_audio_plan(
-            plan,
-            destination,
-            cancel_event=cancel_event,
-        )
-    except MediaProcessCancelled:
-        return {}
-    artifact = context.artifacts.register(
-        destination,
-        kind="audio",
-        role=role,
-        session_id=session_id,
-        parent_ids=[source_artifact.id, *take_artifact_ids],
-        settings=settings,
-        metadata={
-            "segment_count": len(records),
-            "service": settings.get("service")
-            or settings.get("tts_service")
-            or "XTTS",
-            "duration_ms": assembly_result.duration_ms,
-            "assembly_backend": assembly_result.backend,
-        },
-    )
-    progress(1.0, "Audio ready")
-    return {
-        "artifact_id": artifact.id,
-        "path": artifact.relative_path,
-        "segments": len(records),
-        "generation_plan_revision_id": revision_id,
-    }
-
