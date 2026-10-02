@@ -106,15 +106,23 @@ test('Qwen quick transcription explains timing limits and submits local model an
   await expect(qwen).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Transcribe', exact: true })
-  ).toBeDisabled();
-  await expect(page.getByRole('alert')).toContainText('source language');
+  ).toBeEnabled();
   await qwen
     .getByRole('combobox', { name: 'Source language', exact: true })
     .selectOption('ar');
+  await expect(
+    page.getByRole('button', { name: 'Transcribe', exact: true })
+  ).toBeEnabled();
+  await page
+    .getByRole('combobox', { name: 'Output format', exact: true })
+    .selectOption('srt');
   await expect(page.getByRole('alert')).toContainText('word alignment');
   await expect(
     page.getByRole('button', { name: 'Transcribe', exact: true })
   ).toBeDisabled();
+  await page
+    .getByRole('combobox', { name: 'Output format', exact: true })
+    .selectOption('txt');
   await qwen
     .getByRole('combobox', { name: 'Source language', exact: true })
     .selectOption('pl');

@@ -176,27 +176,25 @@ test('transcribe dialog shows passage defaults and keeps an explicit 48-char sub
   await expect(
     dialog.getByLabel('Diagnostic span (not a cap)', { exact: true })
   ).toHaveValue('8000');
-  const automatic = dialog.getByLabel(
-    'Automatic limits for each subtitle language'
-  );
+  const automatic = dialog.getByLabel('Automatic language limits');
   await expect(automatic).toBeChecked();
   await expect(
-    dialog.getByRole('spinbutton', { name: 'Characters / line' })
+    dialog.getByRole('spinbutton', { name: 'Display units / line' })
   ).toHaveCount(0);
   await automatic.uncheck();
   // Missing backend key falls back to 60, never the old 48.
   await expect(
-    dialog.getByRole('spinbutton', { name: 'Characters / line' })
+    dialog.getByRole('spinbutton', { name: 'Display units / line' })
   ).toHaveValue('60');
   // A saved legacy override remains custom when the settings are opened again.
   await automatic.check();
   legacySubtitleLimit = 48;
   const reopened = await openTranscribeSettings(page, sessionId);
   await expect(
-    reopened.getByLabel('Automatic limits for each subtitle language')
+    reopened.getByLabel('Automatic language limits')
   ).not.toBeChecked();
   await expect(
-    reopened.getByRole('spinbutton', { name: 'Characters / line' })
+    reopened.getByRole('spinbutton', { name: 'Display units / line' })
   ).toHaveValue('48');
 });
 

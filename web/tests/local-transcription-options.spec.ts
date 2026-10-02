@@ -109,8 +109,8 @@ async function fixture(
 for (const scenario of [
   { name: 'session source language', override: {}, expected: 'zh' },
   {
-    name: 'canonical language over a stale automatic alias',
-    override: { stt_language: 'zh', original_language: 'auto' },
+    name: 'normalized legacy source-language alias',
+    override: { original_language: 'zh' },
     expected: 'zh'
   },
   {
@@ -137,7 +137,7 @@ for (const scenario of [
       await page.request.get(`/api/v1/sessions/${id}/settings/stt`)
     ).json();
     expect(saved.effective.stt_language).toBe(scenario.expected);
-    expect(saved.effective.original_language).toBe(scenario.expected);
+    expect(saved.effective).not.toHaveProperty('original_language');
     expect(errors).toEqual([]);
   });
 }
@@ -212,22 +212,16 @@ test('Qwen model and optional vocal isolation save without starting transcriptio
 test('Qwen accepts Polish recognition with fallback but explains unsupported timed Arabic', async ({
   page
 }) => {
-  const { dialog, errors } = await fixture(page);
+  const { dialog, errors } = await fixture(page, 'ar');
   await dialog
     .getByRole('combobox', { name: 'Recognition model', exact: true })
     .selectOption('qwen3');
   const qwen = dialog.getByRole('region', {
     name: 'Qwen3 transcription options'
   });
-  await qwen
-    .getByRole('combobox', { name: 'Source language', exact: true })
-    .selectOption('pl');
-  await expect(qwen.getByTestId('qwen-timing-explanation')).toContainText(
-    'Canary CTC'
-  );
-  await qwen
-    .getByRole('combobox', { name: 'Source language', exact: true })
-    .selectOption('ar');
+  await expect(
+    qwen.getByRole('combobox', { name: 'Source language', exact: true })
+  ).toHaveValue('ar');
   await expect(
     dialog.getByRole('alert').filter({ hasText: 'word alignment' })
   ).toBeVisible();
@@ -236,5 +230,15 @@ test('Qwen accepts Polish recognition with fallback but explains unsupported tim
     .click();
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText('Timed transcription for ar');
+  await qwen
+    .getByRole('combobox', { name: 'Source language', exact: true })
+    .selectOption('pl');
+  await expect(qwen.getByTestId('qwen-timing-explanation')).toContainText(
+    'Canary CTC'
+  );
+  await dialog
+    .getByRole('button', { name: 'Save settings', exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
   expect(errors).toEqual([]);
 });

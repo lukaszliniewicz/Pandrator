@@ -32,12 +32,12 @@ _SUBTITLE = "1\n00:00:01,000 --> 00:00:02,000\nFixture subtitle.\n"
 class WorkflowInputTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
         bootstrap = BootstrapTokenStore()
         self.app = create_app(data_root=self.temporary.name, testing=True, bootstrap_tokens=bootstrap)
         self.client = self.app.test_client()
         self.csrf = self.client.post("/api/v1/auth/bootstrap", json={"token": bootstrap.issue()}).get_json()["csrf_token"]
         self.addCleanup(self.app.extensions["pandrator"]["database"].dispose)
-        self.addCleanup(self.temporary.cleanup)
         self.services = self.app.extensions["pandrator"]
         self.database = self.services["database"]
 

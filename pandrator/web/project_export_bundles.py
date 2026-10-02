@@ -1107,7 +1107,8 @@ class ProjectExportBundleService:
             raise ProjectExportBundleError(
                 "bundle_publication_invalid", "The deterministic bundle directory is unsafe."
             )
-        if stat.S_IMODE(published.lstat().st_mode) & 0o077:
+        # Windows st_mode does not expose DACLs; managed workspace ACLs apply there.
+        if os.name != "nt" and stat.S_IMODE(published.lstat().st_mode) & 0o077:
             raise ProjectExportBundleError(
                 "bundle_publication_invalid", "The deterministic bundle directory is not private."
             )

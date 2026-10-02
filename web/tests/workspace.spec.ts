@@ -562,7 +562,18 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
             : ordinal === 0
               ? 'The alternate transcription.'
               : `${artifactId === 'artifact-15' ? 'Newest' : 'Alternate'} transcription ${ordinal + 1}.`,
-        speaker: 'SPEAKER_0'
+        speaker: 'SPEAKER_0',
+        edit_capabilities: {
+          ownership: 'exact',
+          text: true,
+          display_timing: true,
+          speaker: true,
+          start_new_utterance: true,
+          split: true,
+          merge: true,
+          delete: true,
+          reason: ''
+        }
       });
       await route.fulfill({
         contentType: 'application/json',
@@ -698,7 +709,13 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   await expect(review.getByText('Showing 1–50 of 75 rows')).toBeVisible();
 
   await review.getByText('Find, filter & compare', { exact: true }).click();
+  await expect(
+    review.getByRole('button', { name: 'Delete' }).last()
+  ).toBeEnabled();
   await review.getByRole('button', { name: 'Delete' }).last().focus();
+  await expect(
+    review.getByRole('button', { name: 'Delete' }).last()
+  ).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(
     review.getByRole('button', { name: 'Recheck audio' }).last()
@@ -809,7 +826,7 @@ test('a selected correction checkpoint can fork a clean session branch', async (
   });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText(
-    'Generation runs, audio takes, assemblies, and exports stay in the original session.'
+    'Its translations, voices and exports can then develop independently.'
   );
   await dialog.getByLabel('New session name').fill('Polish alternate');
   await dialog.getByRole('button', { name: 'Create fork' }).click();
@@ -2399,7 +2416,9 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   await dialog
     .getByLabel('Voice / managed reference')
     .selectOption('alternate-reference');
-  await dialog.getByLabel('Language').selectOption('fr');
+  await dialog
+    .getByRole('combobox', { name: 'Speech language', exact: true })
+    .selectOption('fr');
   await dialog
     .getByLabel('Generation prompt / instructions')
     .fill('Warm, quiet delivery.');

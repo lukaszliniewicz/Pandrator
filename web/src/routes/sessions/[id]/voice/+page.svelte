@@ -53,7 +53,11 @@
   </div>
   {#if error}<p role="alert" class="text-sm text-red-600">{error}</p>{/if}
   {#if context.session && ['audiobook', 'voiceover'].includes(context.session.workflow_kind)}
-    <VoiceSetupCard {sessionId} onchanged={loadSettings} />
+    <VoiceSetupCard
+      {sessionId}
+      initialCastOpen={true}
+      onchanged={loadSettings}
+    />
   {/if}
   <SettingsPanel
     {sessionId}

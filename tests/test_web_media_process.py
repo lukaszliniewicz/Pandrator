@@ -21,10 +21,9 @@ def _python_command(source):
 def test_progress_callback_receives_complete_records_and_preserves_capture():
     command = _python_command(
         "import sys\n"
-        "sys.stdout.write('unstructured output\\n'"
-        "+ 'out_time_us=1000000\\nprogress=continue\\n'"
-        "+ 'out_time_ms=not-a-number\\nprogress=end\\n')\n"
-        "sys.stdout.flush()\n"
+        "sys.stdout.buffer.write(b'unstructured output\\n'"
+        "+ b'out_time_us=1000000\\nprogress=continue\\n'"
+        "+ b'out_time_ms=not-a-number\\nprogress=end\\n')\n"
     )
     records = []
 
@@ -38,8 +37,13 @@ def test_progress_callback_receives_complete_records_and_preserves_capture():
     assert records[0]["out_time_us"] == "1000000"
     assert "unstructured output" not in records[0]
     assert records[1]["out_time_ms"] == "not-a-number"
-    assert result.stdout.startswith("unstructured output\n")
-    assert "progress=end\n" in result.stdout
+    assert result.stdout == (
+        "unstructured output\n"
+        "out_time_us=1000000\n"
+        "progress=continue\n"
+        "out_time_ms=not-a-number\n"
+        "progress=end\n"
+    )
 
 
 def test_progress_callback_cancellation_stops_process_and_cleans_reader(tmp_path):

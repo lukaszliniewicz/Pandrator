@@ -87,6 +87,10 @@ for (const saveAsDefaults of [false, true]) {
         })
       ).ok()
     ).toBeTruthy();
+    const storedBeforeSwitch = (
+      await (await page.request.get(settingsUrl)).json()
+    ).override;
+    expect(storedBeforeSwitch).toMatchObject(oldSettings);
     await page.route('**/api/v1/services/tts**', (route) =>
       route.fulfill({ json: { services, default_service: 'audio_cpp' } })
     );
@@ -119,7 +123,7 @@ for (const saveAsDefaults of [false, true]) {
     ).toBeDisabled();
     expect(
       (await (await page.request.get(settingsUrl)).json()).override
-    ).toEqual(oldSettings);
+    ).toEqual(storedBeforeSwitch);
     await dialog
       .getByLabel('I reviewed the target model, voice, and settings reset.')
       .check();

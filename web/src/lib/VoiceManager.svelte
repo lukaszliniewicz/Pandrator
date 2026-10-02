@@ -1327,7 +1327,8 @@
           </section>
 
           <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <label class="text-sm font-semibold"
+            <label
+              class="w-full min-w-0 max-w-full text-sm font-semibold sm:w-auto"
               >Voice language
               <select
                 value={sampleLanguage}
@@ -1338,7 +1339,7 @@
                   transcribingCount > 0 ||
                   recording ||
                   savingRecording}
-                class="mt-1 block min-w-52 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
+                class="mt-1 block w-full min-w-0 max-w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal sm:w-52"
               >
                 {#if !LANGUAGE_OPTIONS.some((item) => item.value === sampleLanguage)}<option
                     value={sampleLanguage}>{sampleLanguage}</option

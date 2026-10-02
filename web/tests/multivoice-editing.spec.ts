@@ -457,12 +457,12 @@ test('audiobook voice mode is an atomic choice and exposes model-aware narration
 }, info) => {
   const id = await login(page);
   await page.goto(`/sessions/${id}`);
-  const card = page.getByRole('region', { name: 'Audiobook voices' });
+  const card = page.getByRole('region', { name: 'Voices', exact: true });
   await expect(card).toBeVisible();
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   await card.getByTestId('cast-help-summary').click();
   await expect(
-    card.getByRole('list', { name: 'Multiple-voice audiobook steps' })
+    card.getByRole('list', { name: 'Multiple-voice steps' })
   ).toBeVisible();
   await expect(card).toContainText('Identify speakers');
   const response = await page.request.get(

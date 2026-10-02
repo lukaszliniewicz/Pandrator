@@ -24,7 +24,7 @@ async function createAudiobookSession(page: Page) {
 
 async function openSessionMultiVoice(page: Page, id: string) {
   await page.goto(`/sessions/${id}`);
-  const card = page.getByRole('region', { name: 'Audiobook voices' });
+  const card = page.getByRole('region', { name: 'Voices', exact: true });
   await expect(card).toBeVisible();
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   return card;
@@ -150,7 +150,7 @@ test('cast load errors stay visible while collapsed and retry succeeds', async (
     })
   );
   await page.goto(`/sessions/${id}`);
-  const card = page.getByRole('region', { name: 'Audiobook voices' });
+  const card = page.getByRole('region', { name: 'Voices', exact: true });
   await expect(card).toBeVisible();
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   const disclosure = card.getByTestId('cast-disclosure');

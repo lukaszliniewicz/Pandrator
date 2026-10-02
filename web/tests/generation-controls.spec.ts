@@ -170,7 +170,7 @@ async function setup(page: Page) {
     .getByRole('region', { name: 'Speech plan', exact: true })
     .locator('details')
     .filter({
-      has: page.locator('summary').filter({ hasText: /^Speech direction/ })
+      has: page.locator('summary').filter({ hasText: /^Speakers and delivery/ })
     })
     .first();
   await panel.locator('summary').first().click();
@@ -325,10 +325,10 @@ test('recognition settings and managed voice categories are editable without gen
 });
 
 async function openAudiobookCast(page: Page) {
-  const card = page.getByRole('region', { name: 'Audiobook voices' });
+  const card = page.getByRole('region', { name: 'Voices', exact: true });
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
-  const cast = card.locator('details.speech-controls');
-  await cast.locator(':scope > summary').click();
+  const cast = card.getByTestId('cast-disclosure');
+  await cast.getByTestId('cast-summary').click();
   await expect(
     cast.getByRole('button', { name: 'Add character', exact: true })
   ).toBeVisible();

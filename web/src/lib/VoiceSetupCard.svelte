@@ -28,6 +28,7 @@
     plan = null,
     busy = false,
     navigationManaged = false,
+    initialCastOpen = false,
     castPanel = $bindable<CastDraftController | undefined>(),
     onchanged,
     onsettings
@@ -36,6 +37,7 @@
     plan?: SpeechPlanState | null;
     busy?: boolean;
     navigationManaged?: boolean;
+    initialCastOpen?: boolean;
     castPanel?: CastDraftController;
     onchanged: () => void | Promise<void>;
     onsettings?: () => void;
@@ -201,17 +203,20 @@
         Review speakers and assign their voices below. Optional speaker analysis
         is available in the prepared speech plan.
       </p>
-      <GenerationCastPanel
-        bind:this={castPanel}
-        {sessionId}
-        service={setup.tts.service}
-        model={setup.tts.model}
-        sessionVoice={setup.tts.voice}
-        standalone={true}
-        {navigationManaged}
-        busy={busy || pending}
-        onchanged={() => void onchanged()}
-      />
+      <div id="characters-cast">
+        <GenerationCastPanel
+          bind:this={castPanel}
+          {sessionId}
+          service={setup.tts.service}
+          model={setup.tts.model}
+          sessionVoice={setup.tts.voice}
+          standalone={true}
+          initialOpen={initialCastOpen}
+          {navigationManaged}
+          busy={busy || pending}
+          onchanged={() => void onchanged()}
+        />
+      </div>
       {#if selected}<p class="muted mt-4 flex items-center gap-2 text-xs">
           {#if selected.reviewed}<Check
               size={15}

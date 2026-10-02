@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import threading
 import zipfile
 from pathlib import Path
@@ -234,6 +236,25 @@ def _complete_exports(case, branches=None, *, fail_branch_ids=(), operation_key=
 def _bundle_job(case, body):
     with case.database.session() as db:
         return db.get(m.Job, body["job_id"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory mode bits are not Windows ACLs")
+def test_published_bundle_directory_rejects_group_or_world_access_on_posix(bundle_case):
+    case = bundle_case
+    published = case.root / "unsafe-directory-mode"
+    published.mkdir()
+    original_mode = stat.S_IMODE(published.stat().st_mode)
+    try:
+        published.chmod(0o755)
+        with pytest.raises(ProjectExportBundleError, match="not private"):
+            case.bundles._verify_published_directory(
+                published,
+                b"",
+                [],
+                cancel_event=None,
+            )
+    finally:
+        published.chmod(original_mode)
 
 
 def test_manifest_and_bundle_keep_language_exports_separate_and_use_no_generation_run(

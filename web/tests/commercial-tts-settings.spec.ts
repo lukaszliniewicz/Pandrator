@@ -100,7 +100,10 @@ test('session TTS settings filter MAI voices by model and language and retain mu
   await card.getByRole('button', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
   const voice = dialog.getByRole('combobox', { name: 'Voice', exact: true });
-  const language = dialog.getByLabel('Speech language');
+  const language = dialog.getByRole('combobox', {
+    name: 'Speech language',
+    exact: true
+  });
   await expect(voice.locator('optgroup option')).toHaveText([
     'Klaus · Male · German (Germany)',
     'Mia · Female · German (Germany)'

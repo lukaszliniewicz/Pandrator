@@ -57,13 +57,22 @@ test('model catalogue exposes reviewed choices, licence filters and all-package 
     .getByRole('combobox', { name: 'Commercial use', exact: true })
     .selectOption('');
   await page.getByLabel('Recommended starting points').uncheck();
+  const allModels = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/v1/services/models/catalogue?') &&
+      response.ok()
+  );
   await page.getByRole('button', { name: 'Apply filters' }).click();
+  const { total } = await (await allModels).json();
+  expect(total).toBeGreaterThan(256);
   await expect(
-    page.getByText('256 matching models', { exact: false })
+    page.getByText(`${total} matching models`, { exact: false })
   ).toBeVisible();
   await expect(page.locator('article')).toHaveCount(20);
   await page.getByRole('button', { name: 'Next', exact: true }).click();
-  await expect(page.getByText('21–40 of 256', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(`21–40 of ${total}`, { exact: true })
+  ).toBeVisible();
   await page.getByLabel('Task family').selectOption('asr');
   await page.getByRole('button', { name: 'Apply filters' }).click();
   await expect(

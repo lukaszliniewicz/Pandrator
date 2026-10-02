@@ -26,6 +26,8 @@ Platform CI then found two compatibility failures: Windows CP1252 decoding of Un
 
 The Ubuntu remainder lane also exposed an FFmpeg-version difference in its native progress test: a pre-frame `N/A` timestamp was parsed as an integer. The test now skips that unavailable value, tries the alternate timestamp field, and still requires numeric timestamps in monotonic order and a final `end` record. All ten focused media-process tests passed after this assertion repair; application code was unchanged.
 
+The subsequent Windows Python matrix exposed two platform-only failures and a test cleanup ordering error. Bundle publication now applies the POSIX private-directory mode check only on POSIX: Windows mode bits do not describe DACLs, and the existing managed-workspace ACL policy remains authoritative there. All managed-path, symlink, regular-file, exact-output, hash and frozen-receipt checks remain enforced. A POSIX regression still rejects group/world access. The media-process capture fixture emits explicit LF bytes and asserts its complete stdout, and workflow-input cleanup disposes the database before deleting its directory. The three focused suites passed 34 tests; owned Ruff and locked CI typing passed with no baseline expansion. Native Windows rerun remains required for this commit.
+
 ## Migration and package isolation
 
 An actual old-HEAD 0051 fixture was copied and upgraded to 0052. Its 73 existing tables and six managed files were preserved; integrity, foreign-key and reference checks passed. The original fixture was untouched. Final migration source hashes still match this experiment.
@@ -44,6 +46,14 @@ CUA operated the real bundled frontend and real application/worker in an isolate
 - Real subtitle export jobs completed for Japanese, Polish and German. The downloaded ZIP was 1,786 bytes, SHA-256 `022846453ba9d0717128d154f9cea78afa13ae481767b7a1b10620bd8696b469`; its embedded manifest and three SRT members matched every recorded size/hash and managed source file. Restart/repeat recovered the same completed bundle. A version change correctly required a fresh target-bound operation preview.
 
 Screenshots are retained with this record. No complete screen-reader audit or every codec/device/provider matrix is claimed.
+
+### Browser matrix qualification repairs
+
+The first interaction matrix exposed 25 failing cases. Most used old control labels or fixtures: canonical settings no longer return a duplicated STT alias; timed-language pickers exclude recognition-only languages; strict single-voice sessions correctly hide the cast; explicit edit capabilities are required before a Delete button can receive focus. Assertions were aligned with those contracts without removing pagination, preservation, save, accessibility, keyboard, or navigation checks. Qwen Quick Transcribe now explicitly checks that automatic/Arabic recognition is allowed for TXT while Arabic timed output is blocked.
+
+Two product regressions were repaired: the expanded voice-language selector overflowed at 390 CSS pixels, and cast links still targeted an anchor removed during the voice-card consolidation. The dedicated voice editor also now opens its cast while the overview remains collapsed. The actual mobile selector changed from 427.7 pixels wide (document scroll width 461) to 311.0 pixels (document scroll width 377, viewport 390), with all 746 options retained. See [mobile voice-language acceptance](voice-language-mobile-fixed.png).
+
+`npm run quality` and `npm run build` passed; Svelte reported zero errors/warnings. Focused `test_frontend_architecture.py`, `test_voice_setup.py`, and `test_audiobook_setup.py` checks passed 25 tests. Full platform browser acceptance remains a separate gate for the repaired commit.
 
 ## Native synthesis and external translation boundary
 

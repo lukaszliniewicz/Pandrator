@@ -534,6 +534,10 @@ test('voice page exposes a compact cast, inheritance and a navigation guard', as
   );
   expect(result.ok(), await result.text()).toBeTruthy();
   await page.goto(`/sessions/${session.id}/voice`);
+  await page
+    .getByRole('region', { name: 'Voices', exact: true })
+    .getByRole('radio', { name: /Multiple voices/ })
+    .check();
   const cast = page.locator('#characters-cast');
   await expect(
     cast.getByRole('heading', { name: 'Scrooge', exact: true })

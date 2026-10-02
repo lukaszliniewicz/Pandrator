@@ -185,7 +185,7 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   const panel = card
     .locator('details')
     .filter({
-      has: page.locator('summary').filter({ hasText: 'Speech direction' })
+      has: page.locator('summary').filter({ hasText: 'Speakers and delivery' })
     })
     .first();
   expect(reads).toBe(0);
