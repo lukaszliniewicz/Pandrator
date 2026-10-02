@@ -157,6 +157,173 @@ class BackendArchitectureTests(unittest.TestCase):
         for name in names:
             self.assertIsNot(getattr(contexts[0], name), getattr(contexts[1], name))
 
+    def test_execution_generation_facade_recaptures_all_ports_and_forwards_identity(self):
+        from dataclasses import FrozenInstanceError, fields
+
+        from pandrator.web import workflow_handlers
+        from pandrator.web.workflow_generation_execution import GenerationExecutionContext
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        names = (
+            "database",
+            "paths",
+            "artifacts",
+            "manager_bridge",
+            "tts_providers",
+            "_session_record",
+            "_session_dir",
+            "_usable_language",
+            "_optimize_generation_texts",
+            "_tts_urls",
+            "_negotiated_tts_batch_size",
+            "prepare_audio_cpp_voice_reference",
+            "_ensure_qwen_cloned_voice",
+            "_start_streaming_tts_batch",
+            "_verification_metadata",
+            "_tts_usage_event",
+            "_resume_generation_after_regeneration",
+            "_finalize_run_audio_verification",
+            "_hydrate_tts_settings",
+            "_apply_segment_tts_overrides",
+            "_apply_selected_segment_tts_override",
+            "_secret_free_tts_settings",
+            "_voiceover_second_pass",
+            "_logger",
+            "_repair_early_generation_blocks",
+            "_regroup_generation_blocks",
+        )
+        self.assertEqual(names, tuple(field.name for field in fields(GenerationExecutionContext)))
+        global_names = {
+            "_hydrate_tts_settings": "hydrate_tts_settings",
+            "_apply_segment_tts_overrides": "_apply_segment_tts_overrides",
+            "_apply_selected_segment_tts_override": "_apply_selected_segment_tts_override",
+            "_secret_free_tts_settings": "_secret_free_tts_settings",
+            "_voiceover_second_pass": "_voiceover_second_pass",
+            "_logger": "logger",
+        }
+        progress, cancel = lambda *_args: None, threading.Event()
+        expected = {"result": []}
+        contexts = []
+        payload = {"segment_ids": []}
+        arguments = (payload, progress, cancel)
+        for _invocation in range(2):
+            ports = {name: object() for name in names}
+            instance_values = {name: value for name, value in ports.items() if name not in global_names}
+            helper_values = {global_names[name]: ports[name] for name in global_names}
+            with patch.multiple(handlers, **instance_values), patch.multiple(
+                workflow_handlers, **helper_values
+            ), patch.object(workflow_handlers, "_execution_run_generation") as owner:
+                owner.return_value = expected
+                self.assertIs(expected, handlers._run_generation(*arguments))
+                self.assertEqual({}, owner.call_args.kwargs)
+                owner.assert_called_once()
+                context, *sent_arguments = owner.call_args.args
+                contexts.append(context)
+                self.assertEqual(len(arguments), len(sent_arguments))
+                for original, sent in zip(arguments, sent_arguments, strict=True):
+                    self.assertIs(original, sent)
+                for name, value in ports.items():
+                    self.assertIs(value, getattr(context, name))
+                self.assertFalse(hasattr(context, "__dict__"))
+                with self.assertRaises(FrozenInstanceError):
+                    context.database = object()
+        self.assertIsNot(contexts[0], contexts[1])
+        for name in names:
+            self.assertIsNot(getattr(contexts[0], name), getattr(contexts[1], name))
+
+    def test_automatic_generation_facade_recaptures_all_ports_and_forwards_identity(self):
+        from dataclasses import FrozenInstanceError, fields
+
+        from pandrator.web import workflow_handlers
+        from pandrator.web.workflow_generation_automatic import AutomaticGenerationContext
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        names = (
+            "database",
+            "paths",
+            "artifacts",
+            "manager_bridge",
+            "tts_providers",
+            "_session_dir",
+            "_operation_dir",
+            "_store_generation_plan",
+            "_usable_language",
+            "_optimize_generation_texts",
+            "_tts_urls",
+            "_negotiated_tts_batch_size",
+            "prepare_audio_cpp_voice_reference",
+            "_ensure_qwen_cloned_voice",
+            "_start_streaming_tts_batch",
+            "_verification_metadata",
+            "_record_tts_usage",
+            "_is_subtitle_generation_record",
+            "_hydrate_tts_settings",
+            "_apply_segment_tts_overrides",
+            "_secret_free_tts_settings",
+            "_default_silence_after_ms",
+            "_logger",
+        )
+        self.assertEqual(names, tuple(field.name for field in fields(AutomaticGenerationContext)))
+        global_names = {
+            "_hydrate_tts_settings": "hydrate_tts_settings",
+            "_apply_segment_tts_overrides": "_apply_segment_tts_overrides",
+            "_secret_free_tts_settings": "_secret_free_tts_settings",
+            "_default_silence_after_ms": "_default_silence_after_ms",
+            "_logger": "logger",
+        }
+        progress, cancel = lambda *_args: None, threading.Event()
+        expected = {"result": []}
+        contexts = []
+        source, source_path, settings = object(), Path("prepared.json"), {"unchanged": []}
+        arguments = ("session", source, source_path, settings, progress, cancel)
+        for explicit in (False, True):
+            ports = {name: object() for name in names}
+            instance_values = {name: value for name, value in ports.items() if name not in global_names}
+            helper_values = {global_names[name]: ports[name] for name in global_names}
+            with patch.multiple(handlers, **instance_values), patch.multiple(
+                workflow_handlers, **helper_values
+            ), patch.object(workflow_handlers, "_automatic_generate_audio") as owner:
+                owner.return_value = expected
+                optional = {"role": "controlled-role", **({"job_id": "controlled-job"} if explicit else {})}
+                self.assertIs(expected, handlers._generate_audio(*arguments, **optional))
+                self.assertEqual(
+                    {"role": "controlled-role", "job_id": "controlled-job" if explicit else None},
+                    owner.call_args.kwargs,
+                )
+                owner.assert_called_once()
+                context, *sent_arguments = owner.call_args.args
+                contexts.append(context)
+                self.assertEqual(len(arguments), len(sent_arguments))
+                for original, sent in zip(arguments, sent_arguments, strict=True):
+                    self.assertIs(original, sent)
+                for name, value in ports.items():
+                    self.assertIs(value, getattr(context, name))
+                self.assertFalse(hasattr(context, "__dict__"))
+                with self.assertRaises(FrozenInstanceError):
+                    context.database = object()
+        self.assertIsNot(contexts[0], contexts[1])
+        for name in names:
+            self.assertIsNot(getattr(contexts[0], name), getattr(contexts[1], name))
+
+    def test_generation_postpasses_keep_original_facade_and_argument_identity(self):
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        progress, cancel = lambda *_args: None, threading.Event()
+        run_id = "controlled-run"
+        for method, target in (
+            ("_repair_early_generation_blocks", "pandrator.web.voiceover_repair.repair_early_blocks"),
+            ("_regroup_generation_blocks", "pandrator.web.voiceover_regroup.repair_regroup_blocks"),
+        ):
+            with self.subTest(method=method), patch(target) as postpass:
+                expected = {"unchanged": []}
+                postpass.return_value = expected
+                self.assertIs(expected, getattr(handlers, method)(run_id, progress, cancel))
+                postpass.assert_called_once()
+                self.assertEqual({}, postpass.call_args.kwargs)
+                for original, sent in zip(
+                    (handlers, run_id, progress, cancel), postpass.call_args.args, strict=True
+                ):
+                    self.assertIs(original, sent)
+
     def test_extension_mapping_uses_the_composed_service_instances(self):
         extension = self.app.extensions["pandrator"]
         services = extension["services"]
