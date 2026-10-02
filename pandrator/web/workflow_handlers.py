@@ -939,8 +939,8 @@ class WorkflowHandlers:
         target_dir = self.paths.artifacts / "tts-previews"
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{preview_key}.wav"
-        exported = audio.export(target, format="wav")
-        exported.close()
+        with target.open("wb") as output:
+            audio.export(output, format="wav")
         artifact = self.artifacts.register(
             target,
             kind="audio",
@@ -6335,7 +6335,9 @@ class WorkflowHandlers:
                 capabilities=batch_capabilities,
             )
         parallel_synthesis_batch = bool(
-            effective_batch_size > 1 and batch_capabilities.parallel_synthesis
+            effective_batch_size > 1
+            and batch_capabilities is not None
+            and batch_capabilities.parallel_synthesis
         )
         if effective_batch_size > 1:
             batch_items: list[tuple[str, str, dict[str, Any]]] = []
@@ -6598,8 +6600,8 @@ class WorkflowHandlers:
             )
             take_dir.mkdir(parents=True, exist_ok=True)
             sentence_path = take_dir / f"tts-{new_id()}.wav"
-            exported = audio.export(sentence_path, format="wav")
-            exported.close()
+            with sentence_path.open("wb") as output:
+                audio.export(output, format="wav")
             if casting_enabled and cancel_event.is_set():
                 sentence_path.unlink(missing_ok=True)
                 raise MediaProcessCancelled("Audio generation was canceled.")
@@ -6640,6 +6642,8 @@ class WorkflowHandlers:
             )
             with self.database.session() as session:
                 segment = session.get(GenerationSegment, generation_segment_id)
+                if segment is None:
+                    raise KeyError(generation_segment_id)
                 segment.status = "completed"
                 if verification is not None and verification.get("status") != "passed":
                     segment.marked = True
@@ -7327,6 +7331,8 @@ class WorkflowHandlers:
             with self.database.session() as session:
                 run = session.get(GenerationRun, run_id)
                 segment = session.get(GenerationSegment, segment_id)
+                if run is None:
+                    raise KeyError(run_id)
                 if run.cancel_requested or cancel_event.is_set():
                     run.status = "canceled"
                     run.updated_at = utcnow()
@@ -7354,6 +7360,8 @@ class WorkflowHandlers:
                         f"Kept completed segment {index + 1} of {len(segment_ids)}",
                     )
                     continue
+                if segment is None:
+                    raise KeyError(segment_id)
                 segment.status = "running"
                 segment.updated_at = utcnow()
                 text = segment.text
@@ -7367,6 +7375,7 @@ class WorkflowHandlers:
             )
             take_path: Path | None = None
             take_committed = False
+            take_parent_ids: list[str] = []
             render_manifest: list[dict[str, Any]] = []
             cast_render = operation != "rvc" and bool(
                 (selected_tts_runtime or tts_settings).get("casting_enabled")
@@ -7414,6 +7423,9 @@ class WorkflowHandlers:
                                 "The selected segment has no active audio take for RVC."
                             )
                         source_artifact = session.get(Artifact, source_take.artifact_id)
+                        if source_artifact is None:
+                            raise KeyError(source_take.artifact_id)
+                        take_parent_ids = [source_artifact.id]
                         source_take_id = source_take.id
                     source_path = self.paths.managed_path(source_artifact.relative_path)
                     source_audio = AudioSegment.from_file(source_path)
@@ -7482,7 +7494,7 @@ class WorkflowHandlers:
                         text_to_synthesize: str = synthesized_text,
                         settings_for_segment: dict[str, Any] = segment_tts_settings,
                         segment_index: int = index,
-                    ):
+                    ) -> AudioSegment | None:
                         return self.tts_providers.synthesize(
                             text_to_synthesize,
                             settings_for_segment,
@@ -7510,7 +7522,7 @@ class WorkflowHandlers:
                         segment_tts_settings: dict[str, Any] = segment_tts_settings,
                         segment_id: str = segment_id,
                         synthesized_text: str = synthesized_text,
-                    ):
+                    ) -> AudioSegment | None:
                         nonlocal render_manifest
                         if not segment_tts_settings.get("casting_enabled"):
                             return synthesize_request()
@@ -7522,8 +7534,10 @@ class WorkflowHandlers:
                             segment_id, synthesized_text,
                         )
                         def render_part(
-                            part_text, part_settings, segment_id: str = segment_id
-                        ):
+                            part_text: str,
+                            part_settings: dict[str, Any],
+                            segment_id: str = segment_id,
+                        ) -> AudioSegment | None:
                             prepared = self.prepare_audio_cpp_voice_reference(part_settings)
                             self._ensure_qwen_cloned_voice(
                                 prepared, base_url=tts_urls["kobold_qwen_base_url"],
@@ -7565,11 +7579,13 @@ class WorkflowHandlers:
                                     failed_segment = session.get(
                                         GenerationSegment, segment_id
                                     )
-                                    failed_segment.status = "failed"
-                                    failed_segment.updated_at = utcnow()
+                                    if failed_segment is not None:
+                                        failed_segment.status = "failed"
+                                        failed_segment.updated_at = utcnow()
                                     failed_run = session.get(GenerationRun, run_id)
-                                    failed_run.status = "failed"
-                                    failed_run.updated_at = utcnow()
+                                    if failed_run is not None:
+                                        failed_run.status = "failed"
+                                        failed_run.updated_at = utcnow()
                                 continue
                             if not batch_result.error.retryable:
                                 raise batch_result.error
@@ -7614,8 +7630,8 @@ class WorkflowHandlers:
                 )
                 take_dir.mkdir(parents=True, exist_ok=True)
                 take_path = take_dir / f"{take_kind}-{new_id()}.wav"
-                exported = audio.export(take_path, format="wav")
-                exported.close()
+                with take_path.open("wb") as output:
+                    audio.export(output, format="wav")
                 stored_take_settings = _secret_free_tts_settings(take_settings)
                 prepared_artifact = self.artifacts.prepare_registration(
                     take_path,
@@ -7627,13 +7643,15 @@ class WorkflowHandlers:
                         if cancel_event.is_set() or current_run is None or current_run.cancel_requested:
                             raise MediaProcessCancelled("Audio generation was canceled.")
                     segment = session.get(GenerationSegment, segment_id)
+                    if segment is None:
+                        raise KeyError(segment_id)
                     artifact = self.artifacts.register_in_session(
                         session,
                         take_path,
                         kind="audio",
                         role="generation_take",
                         session_id=session_id,
-                        parent_ids=([source_artifact.id] if operation == "rvc" else []),
+                        parent_ids=take_parent_ids,
                         settings=stored_take_settings,
                         metadata={
                             "generation_segment_id": segment_id,
@@ -7768,6 +7786,8 @@ class WorkflowHandlers:
         verification_warning_count = self._finalize_run_audio_verification(output_run_id)
         with self.database.session() as session:
             run = session.get(GenerationRun, run_id)
+            if run is None:
+                raise KeyError(run_id)
             if operation == "rvc" or (
                 operation == "regenerate" and run.output_generation_run_id is None
             ):
@@ -7859,7 +7879,9 @@ class WorkflowHandlers:
                 result["early_repair_status"] = "failed"
             finally:
                 with self.database.session() as session:
-                    session.get(GenerationRun, run_id).status = final_status
+                    current = session.get(GenerationRun, run_id)
+                    if current is not None:
+                        current.status = final_status
             if result.get("repaired_blocks"):
                 result["source_generation_run_id"] = run_id
                 result["generation_run_id"] = result["repaired_generation_run_id"]
@@ -7879,7 +7901,9 @@ class WorkflowHandlers:
                 result["regroup_status"] = "failed"
             finally:
                 with self.database.session() as session:
-                    session.get(GenerationRun, run_id).status = final_status
+                    current = session.get(GenerationRun, run_id)
+                    if current is not None:
+                        current.status = final_status
             if result.get("regrouped_groups"):
                 result["source_generation_run_id"] = run_id
                 result["generation_run_id"] = result["regrouped_generation_run_id"]

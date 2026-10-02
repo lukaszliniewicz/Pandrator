@@ -437,3 +437,19 @@ def test_execution_is_contiguous_and_failure_or_cancel_returns_no_partial_result
 
     with pytest.raises(RuntimeError, match="failed"):
         execute_render_parts(parts, synthesize=fail, cancelled=lambda: False)
+
+
+def test_execution_rejects_missing_audio_without_returning_a_partial_result():
+    parts = [
+        {"text": "First.", "settings": {}},
+        {"text": "Second.", "settings": {}},
+    ]
+    synthesized = []
+
+    def synthesize(text, _settings):
+        synthesized.append(text)
+        return AudioSegment.silent(duration=10) if text == "First." else None
+
+    with pytest.raises(RuntimeError, match=r"Speech part 1 produced no audio\."):
+        execute_render_parts(parts, synthesize=synthesize, cancelled=lambda: False)
+    assert synthesized == ["First.", "Second."]

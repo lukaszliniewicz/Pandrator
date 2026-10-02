@@ -527,7 +527,7 @@ def build_render_parts(
 def execute_render_parts(
     parts: list[dict[str, Any]],
     *,
-    synthesize: Callable[[str, dict[str, Any]], AudioSegment],
+    synthesize: Callable[[str, dict[str, Any]], AudioSegment | None],
     cancelled: Callable[[], bool],
 ) -> tuple[AudioSegment, list[dict[str, Any]]]:
     """Synthesize and concatenate all planned parts without partial results."""

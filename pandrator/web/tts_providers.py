@@ -11,6 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import requests
+from pydub import AudioSegment
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
@@ -677,7 +678,7 @@ class TtsBatchItem:
 @dataclass(frozen=True, slots=True)
 class TtsBatchResult:
     id: str
-    audio: Any = None
+    audio: AudioSegment | None = None
     error: TtsProviderError | None = None
 
 
@@ -763,7 +764,7 @@ class TtsProviderAdapter(Protocol):
         text: str,
         settings: dict[str, Any],
         **options: Any,
-    ): ...
+    ) -> AudioSegment | None: ...
 
     def upload_voice(
         self,
@@ -852,7 +853,7 @@ class LegacyTtsAdapter:
         text: str,
         settings: dict[str, Any],
         **options: Any,
-    ):
+    ) -> AudioSegment | None:
         try:
             return tts_handler.text_to_audio(text, settings, **options)
         except tts_handler.TtsGenerationError as error:
@@ -1033,7 +1034,7 @@ class AudioCppAdapter(LegacyTtsAdapter):
         text: str,
         settings: dict[str, Any],
         **options: Any,
-    ):
+    ) -> AudioSegment | None:
         options.setdefault("request_session", self._session_for(settings))
         return super().synthesize(text, settings, **options)
 
@@ -1657,7 +1658,7 @@ class TtsProviderRegistry:
         text: str,
         settings: dict[str, Any],
         **options: Any,
-    ):
+    ) -> AudioSegment | None:
         service_id = self.service_id_for_settings(settings)
         adapter = self.get(service_id)
         policy = TtsRetryPolicy.from_settings(

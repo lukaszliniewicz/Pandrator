@@ -3767,6 +3767,47 @@ A single reviewed cue.
             )
         self.assertEqual(segment_ids, [take.generation_segment_id for take in takes])
 
+    def test_generation_rejects_segment_deleted_during_synthesis_before_publication(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Transient segment."}], settings={}
+        )
+        segment_id = segment_ids[0]
+        with self.database.session() as db:
+            run = GenerationRun(
+                session_id=self.session.id, plan_revision_id=revision_id, status="queued",
+                settings_snapshot_json={"tts": {"service": "XTTS"}},
+            )
+            db.add(run)
+            db.flush()
+            run_id = run.id
+
+        def synthesize(_text, _settings, **_options):
+            # Inject invalid helper state after the audio identity check; this
+            # does not model an ordinary supported API deletion.
+            with self.database.session() as db:
+                db.delete(db.get(GenerationSegment, segment_id))
+            return AudioSegment.silent(duration=25)
+
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio", side_effect=synthesize,
+        ) as synthesis, self.assertRaises(KeyError) as raised:
+            self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                self.progress, threading.Event(),
+            )
+        self.assertEqual((segment_id,), raised.exception.args)
+        self.assertEqual(1, synthesis.call_count)
+        with self.database.session() as db:
+            self.assertIsNone(db.get(GenerationSegment, segment_id))
+            self.assertEqual("failed", db.get(GenerationRun, run_id).status)
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(AudioTake)))
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(Artifact).where(
+                Artifact.session_id == self.session.id, Artifact.role == "generation_take",
+            )))
+        self.assertEqual([], list((
+            self.session_dir / "generation" / revision_id / segment_id
+        ).glob("*.wav")))
+
     def test_generated_segment_database_writes_roll_back_as_one_unit(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id,
