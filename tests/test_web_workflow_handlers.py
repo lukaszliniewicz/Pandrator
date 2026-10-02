@@ -1562,6 +1562,227 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(first_file_bytes, first_path.read_bytes())
         self.assertEqual(source_bytes, source_path.read_bytes())
 
+    def test_automatic_retry_preserves_old_audio_and_selects_only_new_takes(self):
+        source_path = self.session_dir / "automatic-retry.json"
+        source_bytes = json.dumps(
+            [{"text": "First paid narration."}, {"text": "Second paid narration."}]
+        ).encode()
+        source_path.write_bytes(source_bytes)
+        source = self.artifacts.register(
+            source_path, kind="json", role="prepared_text", session_id=self.session.id
+        )
+        with self.database.session() as db:
+            upsert_credential(
+                db,
+                tts_service_credential_key("elevenlabs"),
+                "Synthetic retry fixture",
+                "synthetic-retry-key",
+            )
+        settings = {
+            "service": "ElevenLabs",
+            "model": "eleven_multilingual_v2",
+            "voice": "fixture-voice",
+            "language": "en",
+            "max_attempts": 1,
+            "tts_concurrent_requests": 1,
+            "sentence_silence_ms": 30,
+        }
+        original_register = self.handlers.artifacts.register
+        old = {}
+
+        def reject_output(path, **kwargs):
+            if kwargs.get("role") == "controlled_automatic_audio":
+                with self.database.session() as db:
+                    for take in db.scalars(select(AudioTake)):
+                        artifact = db.get(Artifact, take.artifact_id)
+                        take_path = self.paths.managed_path(artifact.relative_path)
+                        old[take.id] = (take.artifact_id, take_path, take_path.read_bytes())
+                raise RuntimeError("injected final output registration failure")
+            return original_register(path, **kwargs)
+
+        failed_job = self.handlers.jobs.enqueue(
+            "audiobook.generate_audio", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        claimed = self.handlers.jobs.claim("automatic-failure-fixture")
+        with (
+            mock.patch(
+                "pandrator.logic.tts_handler.text_to_audio",
+                return_value=AudioSegment.silent(duration=40),
+            ),
+            mock.patch.object(self.handlers.artifacts, "register", side_effect=reject_output),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected final output"):
+                self.handlers._generate_audio(
+                    self.session.id,
+                    source,
+                    source_path,
+                    settings,
+                    self.progress,
+                    threading.Event(),
+                    role="controlled_automatic_audio",
+                    job_id=failed_job.id,
+                )
+        self.assertTrue(
+            self.handlers.jobs.fail(
+                failed_job.id,
+                "automatic-failure-fixture",
+                "fixture",
+                "injected final output registration failure",
+                lease_generation=claimed.lease_generation,
+            )
+        )
+        self.assertEqual(2, len(old))
+        retry_job = self.handlers.jobs.enqueue(
+            "audiobook.generate_audio", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        claimed_retry = self.handlers.jobs.claim("automatic-retry-fixture")
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=60),
+        ) as synthesize:
+            result = self.handlers._generate_audio(
+                self.session.id,
+                source,
+                source_path,
+                settings,
+                self.progress,
+                threading.Event(),
+                role="controlled_automatic_audio",
+                job_id=retry_job.id,
+            )
+        self.assertEqual(2, synthesize.call_count)
+        self.handlers.jobs.complete(
+            retry_job.id,
+            "automatic-retry-fixture",
+            result,
+            lease_generation=claimed_retry.lease_generation,
+        )
+        with self.database.session() as db:
+            takes = list(db.scalars(select(AudioTake)))
+            self.assertEqual(4, len(takes))
+            for segment_id in {take.generation_segment_id for take in takes}:
+                current = [
+                    take
+                    for take in takes
+                    if take.generation_segment_id == segment_id and take.is_active
+                ]
+                self.assertEqual(1, len(current))
+                self.assertEqual(60, current[0].duration_ms)
+                self.assertEqual(1, current[0].revision)
+                self.assertEqual("completed", db.get(GenerationSegment, segment_id).status)
+            for take_id, (artifact_id, path, content) in old.items():
+                previous = db.get(AudioTake, take_id)
+                self.assertFalse(previous.is_active)
+                self.assertEqual(2, previous.revision)
+                self.assertEqual(artifact_id, previous.artifact_id)
+                self.assertEqual(40, previous.duration_ms)
+                self.assertEqual("completed", previous.status)
+                self.assertEqual(content, path.read_bytes())
+            usage = list(db.scalars(select(UsageEvent)))
+            self.assertEqual(4, len(usage))
+            self.assertEqual({failed_job.id, retry_job.id}, {row.job_id for row in usage})
+            self.assertEqual(
+                {take.artifact_id for take in takes}, {row.artifact_id for row in usage}
+            )
+            parents = set(
+                db.scalars(
+                    select(ArtifactEdge.parent_artifact_id).where(
+                        ArtifactEdge.child_artifact_id == result["artifact_id"]
+                    )
+                )
+            )
+            self.assertEqual(
+                {source.id, *(take.artifact_id for take in takes if take.is_active)}, parents
+            )
+        output, path = self.artifacts.resolve(result["artifact_id"])
+        with path.open("rb") as stream:
+            self.assertEqual(150, len(AudioSegment.from_wav(stream)))
+        self.assertEqual(source_bytes, source_path.read_bytes())
+
+    def test_automatic_take_failure_rolls_back_previous_selection(self):
+        from sqlalchemy.orm import Session
+
+        source_path = self.session_dir / "automatic-take-rollback.json"
+        source_path.write_text(json.dumps([{"text": "Keep the original selection."}]))
+        source = self.artifacts.register(
+            source_path, kind="json", role="prepared_text", session_id=self.session.id
+        )
+        with self.database.session() as db:
+            upsert_credential(
+                db,
+                tts_service_credential_key("elevenlabs"),
+                "Synthetic take rollback fixture",
+                "synthetic-take-rollback-key",
+            )
+        settings = {
+            "service": "ElevenLabs",
+            "model": "eleven_multilingual_v2",
+            "voice": "fixture-voice",
+            "language": "en",
+            "max_attempts": 1,
+            "tts_concurrent_requests": 1,
+        }
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=40),
+        ):
+            self.handlers._generate_audio(
+                self.session.id,
+                source,
+                source_path,
+                settings,
+                self.progress,
+                threading.Event(),
+                role="controlled_automatic_audio",
+            )
+        with self.database.session() as db:
+            original = db.scalar(select(AudioTake))
+            old_id, old_artifact_id = original.id, original.artifact_id
+        old_path = self.artifacts.resolve(old_artifact_id)[1]
+        old_content = old_path.read_bytes()
+
+        def reject_new_take(db, _context, _instances):
+            if any(isinstance(row, AudioTake) for row in db.new):
+                raise RuntimeError("injected new automatic take flush failure")
+
+        event.listen(Session, "before_flush", reject_new_take)
+        try:
+            with mock.patch(
+                "pandrator.logic.tts_handler.text_to_audio",
+                return_value=AudioSegment.silent(duration=60),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected new automatic take"):
+                    self.handlers._generate_audio(
+                        self.session.id,
+                        source,
+                        source_path,
+                        settings,
+                        self.progress,
+                        threading.Event(),
+                        role="controlled_automatic_audio",
+                    )
+        finally:
+            event.remove(Session, "before_flush", reject_new_take)
+        with self.database.session() as db:
+            takes = list(db.scalars(select(AudioTake)))
+            self.assertEqual(1, len(takes))
+            original = db.get(AudioTake, old_id)
+            self.assertTrue(original.is_active)
+            self.assertEqual(1, original.revision)
+            self.assertEqual(
+                (old_artifact_id, 40, "completed"),
+                (original.artifact_id, original.duration_ms, original.status),
+            )
+            artifacts = list(db.scalars(select(Artifact).where(Artifact.role == "generation_take")))
+            usage = list(db.scalars(select(UsageEvent)))
+            # Artifact and paid accounting already committed before take publication.
+            self.assertEqual(2, len(artifacts))
+            self.assertEqual(2, len(usage))
+            self.assertEqual({row.id for row in artifacts}, {row.artifact_id for row in usage})
+            for artifact in artifacts:
+                self.assertTrue(self.paths.managed_path(artifact.relative_path).is_file())
+        self.assertEqual(old_content, old_path.read_bytes())
+
     def test_standalone_automatic_generation_publishes_real_wav_and_take_lineage(self):
         from pandrator.web import workflow_handlers
         from pandrator.web.workflow_generation_automatic import (

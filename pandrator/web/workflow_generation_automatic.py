@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .generation_plan_store import DefaultSilenceProtocol
 from .models import Artifact, AudioTake, GenerationPlan, GenerationSegment, new_id, utcnow
@@ -523,10 +523,19 @@ def generate_audio(
             job_id=job_id,
             artifact_id=take_artifact.id,
         )
-        with context.database.session() as session:
+        with context.database.immediate_session() as session:
             segment = session.get(GenerationSegment, generation_segment_id)
             if segment is None:
                 raise KeyError(generation_segment_id)
+            session.execute(
+                update(AudioTake)
+                .where(
+                    AudioTake.generation_segment_id == generation_segment_id,
+                    AudioTake.is_active.is_(True),
+                )
+                .values(is_active=False, revision=AudioTake.revision + 1)
+                .execution_options(synchronize_session=False)
+            )
             segment.status = "completed"
             if verification is not None and verification.get("status") != "passed":
                 segment.marked = True
