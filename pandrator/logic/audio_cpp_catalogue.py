@@ -58,12 +58,12 @@ _NON_LANGUAGE_SENTINELS = frozenset(
 
 @lru_cache(maxsize=1)
 def inventory() -> dict[str, Any]:
-    return json.loads(Path(__file__).with_name("audio_cpp_inventory.json").read_text())
+    return json.loads(Path(__file__).with_name("audio_cpp_inventory.json").read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
 def curation() -> dict[str, Any]:
-    return json.loads(Path(__file__).with_name("audio_cpp_curation.json").read_text())
+    return json.loads(Path(__file__).with_name("audio_cpp_curation.json").read_text(encoding="utf-8"))
 
 
 def family_metadata(family: str) -> dict[str, Any]:

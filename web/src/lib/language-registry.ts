@@ -1,4 +1,4 @@
-import registry from '../../../pandrator/logic/language_registry.json';
+import registry from '../../../pandrator/logic/language_registry.json' with { type: 'json' };
 
 export type LanguageOption = { value: string; label: string };
 export type LanguageSupport = {

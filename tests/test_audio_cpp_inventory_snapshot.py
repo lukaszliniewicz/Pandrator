@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from pandrator.logic import audio_cpp_catalogue
 from scripts.snapshot_audio_cpp_catalogue import (
     SnapshotError,
     build_snapshot,
@@ -12,6 +13,26 @@ from scripts.snapshot_audio_cpp_catalogue import (
     load_specs,
     main,
 )
+
+
+@pytest.mark.parametrize("loader_name", ["inventory", "curation"])
+def test_catalogue_resources_use_utf8_with_legacy_windows_default(monkeypatch, loader_name):
+    original_read = Path.read_text
+
+    def legacy_read(path, encoding=None, errors=None):
+        return original_read(path, encoding=encoding or "cp1252", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", legacy_read)
+    loader = getattr(audio_cpp_catalogue, loader_name)
+    loader.cache_clear()
+    try:
+        resource = Path(audio_cpp_catalogue.__file__).with_name(
+            f"audio_cpp_{loader_name}.json"
+        )
+        expected = json.loads(resource.read_bytes().decode("utf-8"))
+        assert loader() == expected
+    finally:
+        loader.cache_clear()
 
 
 class FixtureClient:

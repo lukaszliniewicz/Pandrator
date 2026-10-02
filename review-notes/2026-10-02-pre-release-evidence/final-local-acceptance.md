@@ -1,6 +1,6 @@
 # Release candidate local acceptance — 2 October 2026
 
-Candidate versions: Pandrator **0.11.0**, MCP **0.6.0**, Manager **0.9.28**. This records local acceptance before commit, platform CI, managed promotion and publication. Those later gates remain required. The original audit describes the earlier failures; it is not the current release verdict.
+Candidate versions: Pandrator **0.11.0**, MCP **0.6.0**, Manager **0.9.28**. This records local acceptance and the first platform-CI repair before managed promotion and publication. Those later gates remain required. The original audit describes the earlier failures; it is not the current release verdict.
 
 ## Automated checks
 
@@ -20,7 +20,9 @@ The final 13 Python lanes cover 291 non-UI test files: **4,233 passed, 10 skippe
 
 Commands used the locked Pixi environment, isolated per-lane data/cache/temp roots and JUnit receipts. Final `pixi run --locked --no-install quality` passed Ruff, basedpyright/import-cycle checks, Vulture and test-lane assignment. CI baseline locking was enabled. The typing baseline was reduced from 1209 to 1199 entries: ten removed, none added. Frontend `npm run quality` and `npm run build` passed with zero Svelte errors or warnings. `git diff --check` and `python scripts/check_docs.py` passed.
 
-All fresh lanes' Python runtime snapshots match SHA-256 `9960a7c0a77e1721cbf1dcb991e26e97452abd75c464ed0dfcc5dc9fa855cf4e`. Two malformed media-test calls and one historical-schema fixture were repaired and the full affected lane rerun. The packaging-only `/reviews` sdist exclusion preserves the strict archive audit. Detailed commands/source snapshots are retained outside Git at `/tmp/pandrator-final-acceptance-20261002/final-summary.json`.
+All fresh lanes' Python runtime snapshots at the first candidate match SHA-256 `9960a7c0a77e1721cbf1dcb991e26e97452abd75c464ed0dfcc5dc9fa855cf4e`. Two malformed media-test calls and one historical-schema fixture were repaired and the full affected lane rerun. The packaging-only `/reviews` sdist exclusion preserves the strict archive audit. Detailed commands/source snapshots are retained outside Git at `/tmp/pandrator-final-acceptance-20261002/final-summary.json`.
+
+Platform CI then found two compatibility failures: Windows CP1252 decoding of Unicode catalogue resources during application import, and Node 24 requiring a JSON import attribute before Playwright could collect tests. The explicit UTF-8 readers and JSON import attribute were repaired. The focused catalogue/model suite passed **29 tests**, including **two new CP1252-default regressions**; frontend quality/build passed and Playwright collected **514 tests** without launching browsers. Full platform reruns qualify the repaired commit separately; the earlier runtime hash is retained as provenance, not asserted for the repaired source.
 
 ## Migration and package isolation
 

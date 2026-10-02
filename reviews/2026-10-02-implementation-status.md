@@ -2,16 +2,16 @@
 
 The accepted scope is the complete [release plan](2026-10-02-release-plan.md). The user authorized implementation, commit, and updating the local installation before creating a release. The original audit records the audited commit; this document tracks the resulting implementation.
 
-Release versions: **Pandrator 0.11.0, MCP 0.6.0, Manager 0.9.28**. The source is not yet committed or promoted. Public release assets are not yet published.
+Release versions: **Pandrator 0.11.0, MCP 0.6.0, Manager 0.9.28**. This is the qualification snapshot after first candidate commit `4a5bac09` and its platform-CI repair, before local promotion and publication. The final release acceptance report records the resulting source identity, installation and public artifacts.
 
 ## Implementation and acceptance
 
 | Requirement | State | Evidence / remaining gate |
 | --- | --- | --- |
 | P1. Settings payloads and legacy migration | Implemented; accepted locally | Revision-safe PATCH, alias precedence, focused regressions; browser save/reopen passed |
-| P1. Independent MCP package | Implemented; initial package accepted | Installed wheel registered tools without Pandrator/SQLAlchemy; rebuild final version pending |
+| P1. Independent MCP package | Implemented; package preflight accepted | Independent MCP 0.6.0 wheel registered 162 tools without Pandrator/Manager/SQLAlchemy |
 | P1. Canonical reviews and strict single voice | Implemented; focused acceptance passed | Role/ID/ancestry, speaker persistence, strict-single preview/runtime tests; browser speaker save/reopen passed |
-| P1. Upload/purge lifecycle | Implemented; focused acceptance passed | Active writer, retry, source ownership and path guards; final integrated lanes pending |
+| P1. Upload/purge lifecycle | Implemented; local acceptance passed | Active writer, retry, source ownership and path guards; integrated lanes passed |
 | P1. Release gates | Implemented; final acceptance running | Collection and lane registration repaired; stale assertions corrected around explicit voice/default behavior |
 | P2. Exact language capabilities | Implemented; mechanical acceptance passed | Provider/model/revision/operation/native route records; exact/subset/claim/unknown distinguished; 745 registry languages; 132 aliases; Silero/cloud/native coverage separated |
 | P2. Operation-aware pickers | Implemented; browser accepted | Searchable registry and saved custom values, exact TTS model support, separate ASR/alignment coverage; Swahili/Burmese/Khmer/Lao/pt-BR/nb searches passed |
@@ -25,8 +25,8 @@ Release versions: **Pandrator 0.11.0, MCP 0.6.0, Manager 0.9.28**. The source is
 | P5. Manifest and ZIP | Implemented; browser accepted | Verified names/hashes and complete-only ZIP; deep retained-retry traversal and committed-publication crash recovery; forged receipt rejection; downloaded three-language ZIP verified against manifest and managed files; restart/repeat recovered the same completed bundle |
 | P6. Quality and platform CI | Local acceptance passed; platform CI pending | 4233 non-UI tests passed, 10 skipped, plus 36 parent-owned UI/source tests; frontend quality/build and locked Ruff/types/cycles/dead code/lane checks passed; typing baseline strictly reduced 1209→1199 (10 removals, zero additions) |
 | P6. Migration | Passed | Actual old-HEAD 0051 fixture cloned and migrated to 0052; 73 existing tables/six managed files unchanged; integrity/FK/reference checks passed |
-| P6. Final installed packages / real TTS and translation | Package preflight running; TTS passed; external translation blocked | Independent MCP 0.6.0 registered 162 tools without app/Manager/SQLAlchemy; Manager core import passed; app archive rebuild pending internal-plan exclusion; actual cached Kokoro synthesis passed. Go requires a session header and Vertex billing is disabled; no successful live translation is claimed |
-| Commit / local update / release | Pending | Final source commit, exact artifacts, no active jobs/operations, backups, retained previous slot, API/worker/MCP/browser parity, then publication |
+| P6. Final installed packages / real TTS and translation | Six-archive preflight passed; TTS passed; external translation blocked | Strict metadata/content audits passed after excluding internal plans from the app sdist; independent MCP and Manager core imports passed; actual cached Kokoro synthesis passed. Go requires a session header and Vertex billing is disabled; no successful live translation is claimed |
+| Commit / local update / release | First candidate committed and staged; final qualification pending | Preserve staged candidate; commit CI repairs and rebuild from that source, then idle check/backups/retained previous slot/API/worker/MCP/browser parity and publication |
 
 ## Decisions and evidence boundaries
 
@@ -39,5 +39,7 @@ Release versions: **Pandrator 0.11.0, MCP 0.6.0, Manager 0.9.28**. The source is
 - Demucs has a smaller download and measured GPU performance on the retained synthetic inputs. Whole-process timings do not separate cold load, long CPU tests hit bounded time/cancel limits, and no listening-based quality comparison was performed. No general acoustic-quality or every-backend speed claim is made.
 - The current Manager identity mismatch was reproduced during fresh native checks. Manager restart adoption assigned surviving services to its new instance, while their process environments retained the old instance ID. Controlled core-service restart during the backed-up local promotion will refresh those IDs; identity checks remain enabled. Unsigned development-slot doctor pointer errors are a separate provenance issue.
 - Specialists used custom GPT-6.1 Sol/high and GPT-6 Luna/max. These are configured assignments; independent runtime model identity was unavailable. Parent owns product decisions, UI, integration and acceptance. Muse/OpenCode external research was not used for this audit.
+
+The first platform run exposed a Windows CP1252 import failure in the expanded catalogue and a Node 24 JSON import-attribute failure before browser-test collection. Both were repaired explicitly. The catalogue/model focused suite passed 29 tests, including two legacy-Windows-encoding regressions; frontend quality/build passed and browser-test collection found 514 tests. Full platform reruns remain required for the repaired commit. The Python typing baseline was not expanded.
 
 Temporary evidence roots: `/tmp/pandrator-final-acceptance-20261002`, `/tmp/pandrator-native-acceptance-20261002`, `/tmp/pandrator-native-tts-translation-20261002`. Durable acceptance summaries will be updated before publication.
