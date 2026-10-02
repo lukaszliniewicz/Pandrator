@@ -20,7 +20,9 @@ jobs:
     if: ${{ !inputs.skip_python }}
     name: Python tests (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 35 }}
+    # The export lane varied from 32 to over 41 minutes of pytest work,
+    # plus 3.5 minutes of setup. Keep its platform overhead inside the budget.
+    timeout-minutes: ${{ matrix.name == 'windows-web-07' && 55 || matrix.os == 'windows-latest' && 45 || 35 }}
     strategy:
       fail-fast: false
       matrix:
