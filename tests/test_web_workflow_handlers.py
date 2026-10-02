@@ -1436,6 +1436,144 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertEqual([original_id], list(db.scalars(select(GenerationPlanRevision.id))))
             self.assertEqual(original_segments, list(db.scalars(select(GenerationSegment.id))))
 
+    def test_standalone_generation_start_freezes_native_plan_with_explicit_ports(self):
+        from pandrator.web.speech_plan_workspace import plan_signature
+        from pandrator.web.workflow_generation_start import (
+            GenerationStartContext,
+            run_reviewable_generation,
+        )
+
+        source_path = self.session_dir / "standalone-generation-start.json"
+        source_bytes = json.dumps([
+            {"text": "First narration."}, {"text": "Second narration."}
+        ]).encode("utf-8")
+        source_path.write_bytes(source_bytes)
+        source = self.artifacts.register(
+            source_path, kind="json", role="prepared_text", session_id=self.session.id
+        )
+        payload = {
+            "session_id": self.session.id,
+            "source_artifact_id": "controlled-source-selection",
+            "settings": {"service": "XTTS", "voice": "fixture", "language": "en"},
+        }
+        snapshot = {"tts": {"service": "XTTS"}, "audio": {"fade_in_ms": 7}}
+        original_payload, original_snapshot = deepcopy(payload), deepcopy(snapshot)
+        job = self.handlers.jobs.enqueue(
+            "workflow.continue", {"session_id": self.session.id}, session_id=self.session.id
+        )
+        cancel = threading.Event()
+        progress_events, callbacks, run_ids, revision_ids = [], [], [], []
+        expected = {"status": "controlled", "unchanged": []}
+        store = self.handlers._store_generation_plan
+
+        def resolve(artifact_id):
+            callbacks.append(("resolve", artifact_id))
+            return source, source_path
+
+        def language(session_id, artifact, settings):
+            self.assertEqual(self.session.id, session_id)
+            self.assertIs(source, artifact)
+            self.assertEqual("en", settings["language"])
+            callbacks.append(("language", artifact.id))
+            return "fr"
+
+        def materialize(*_args):
+            self.fail("JSON narration must use the plan store")
+
+        def store_plan(*args, **kwargs):
+            self.assertEqual("fr", kwargs["settings"]["language"])
+            self.assertEqual(source.id, kwargs["source_artifact_id"])
+            callbacks.append(("store", source.id))
+            return store(*args, **kwargs)
+
+        def secret_free(settings):
+            callbacks.append(("secret_free", None))
+            return _secret_free_tts_settings(settings)
+
+        def generate(sent_payload, sent_progress, sent_cancel):
+            self.assertIs(cancel, sent_cancel)
+            self.assertEqual([], sent_payload["segment_ids"])
+            self.assertEqual("generate", sent_payload["operation"])
+            with self.database.session() as db:
+                run = db.get(GenerationRun, sent_payload["generation_run_id"])
+                self.assertEqual("queued", run.status)
+                self.assertEqual(job.id, run.job_id)
+                revision = db.get(GenerationPlanRevision, run.plan_revision_id)
+                plan = db.scalar(select(GenerationPlan).where(
+                    GenerationPlan.session_id == self.session.id
+                ))
+                self.assertEqual(plan.active_revision_id, revision.id)
+                frozen = run.settings_snapshot_json
+                self.assertEqual(revision.id, frozen["speech_plan_revision_id"])
+                self.assertEqual(bool(run_ids), bool(frozen.get("speech_plan_frozen")))
+                self.assertEqual(len(run_ids) + 1, run.sequence_number)
+                revision_ids.append(revision.id)
+                if run_ids:
+                    self.assertEqual(plan_signature(db, revision.id), frozen["speech_plan_signature"])
+                else:
+                    self.assertNotIn("speech_plan_signature", frozen)
+                self.assertEqual(source.id, frozen["source_artifact_id"])
+                self.assertEqual("fr", frozen["tts"]["language"])
+                self.assertEqual(7, frozen["audio"]["fade_in_ms"])
+                segment_ids = set(db.scalars(select(GenerationSegment.id).where(
+                    GenerationSegment.plan_revision_id == revision.id
+                )))
+                self.assertEqual(segment_ids, set(frozen["generation_audio_identities"]))
+                self.assertEqual(2, len(segment_ids))
+                self.assertEqual(0, db.scalar(select(func.count()).select_from(AudioTake)))
+                self.assertEqual(0, db.scalar(select(func.count()).select_from(OutputAssembly)))
+                self.assertEqual([source.id], list(db.scalars(select(Artifact.id))))
+            run_ids.append(sent_payload["generation_run_id"])
+            callbacks.append(("generate", sent_payload["generation_run_id"]))
+            for value in (-1.0, 0.5, 2.0):
+                sent_progress(value, "controlled synthesis")
+            return expected
+
+        context = GenerationStartContext(
+            database=self.database,
+            _resolve_input=resolve,
+            _generation_language=language,
+            _materialize_subtitle_generation_plan=materialize,
+            _store_generation_plan=store_plan,
+            run_generation=generate,
+            _secret_free_tts_settings=secret_free,
+        )
+        result = run_reviewable_generation(
+            context, payload, lambda value, detail=None: progress_events.append((value, detail)),
+            cancel, resolved_snapshot=snapshot, settings_hash="caller-hash", job_id=job.id,
+        )
+        self.assertIs(expected, result)
+        selected_payload = {**deepcopy(payload), "speech_plan_revision_id": revision_ids[0]}
+        original_selected_payload = deepcopy(selected_payload)
+        selected_result = run_reviewable_generation(
+            context, selected_payload,
+            lambda value, detail=None: progress_events.append((value, detail)), cancel,
+            resolved_snapshot=snapshot, settings_hash="caller-hash", job_id=job.id,
+        )
+        self.assertIs(expected, selected_result)
+        self.assertEqual(original_selected_payload, selected_payload)
+        self.assertEqual(2, len(run_ids))
+        self.assertNotEqual(run_ids[0], run_ids[1])
+        self.assertEqual([revision_ids[0], revision_ids[0]], revision_ids)
+        self.assertEqual(original_payload, payload)
+        self.assertEqual(original_snapshot, snapshot)
+        self.assertEqual(source_bytes, source_path.read_bytes())
+        self.assertEqual([
+            "resolve", "language", "store", "secret_free", "secret_free", "generate",
+            "resolve", "language", "secret_free", "secret_free", "generate",
+        ], [name for name, _value in callbacks])
+        self.assertEqual(("resolve", "controlled-source-selection"), callbacks[0])
+        self.assertEqual(10, len(progress_events))
+        for offset in (0, 5):
+            self.assertEqual([
+                (0.0, "Preparing generation segments"), (0.03, "Generation segments ready")
+            ], progress_events[offset:offset + 2])
+            for expected_value, (value, detail) in zip(
+                (0.03, 0.515, 1.0), progress_events[offset + 2:offset + 5], strict=True
+            ):
+                self.assertAlmostEqual(expected_value, value)
+                self.assertEqual("controlled synthesis", detail)
+
     def test_generation_plan_does_not_persist_hydrated_provider_credentials(self):
         secret = "synthetic-plan-credential"
         key = tts_service_credential_key("elevenlabs")

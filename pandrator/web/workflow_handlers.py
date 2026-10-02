@@ -94,6 +94,8 @@ from .workflow_generation_binding import (
     subtitle_generation_records as _binding_subtitle_generation_records,
 )
 from .workflow_generation_binding import subtitle_speaker_map as _binding_subtitle_speaker_map
+from .workflow_generation_start import GenerationStartContext
+from .workflow_generation_start import run_reviewable_generation as _start_run_reviewable_generation
 from .workflow_inputs import workflow_transformations
 from .workflow_output_assembly import (
     assemble_generation_output as _assemble_generation_output,
@@ -6836,6 +6838,17 @@ class WorkflowHandlers:
             job_id=str(payload.get("_job_id") or "") or None,
         )
 
+    def _generation_start_context(self) -> GenerationStartContext:
+        return GenerationStartContext(
+            database=self.database,
+            _resolve_input=self._resolve_input,
+            _generation_language=self._generation_language,
+            _materialize_subtitle_generation_plan=self._materialize_subtitle_generation_plan,
+            _store_generation_plan=self._store_generation_plan,
+            run_generation=self.run_generation,
+            _secret_free_tts_settings=_secret_free_tts_settings,
+        )
+
     def _run_reviewable_generation(
         self,
         payload: dict[str, Any],
@@ -6846,219 +6859,15 @@ class WorkflowHandlers:
         settings_hash: str | None = None,
         job_id: str | None = None,
     ) -> dict[str, Any]:
-        """Create/resolve the segment plan and generate takes without assembly.
-
-        The workflow card and the generation drawer must describe the same
-        operation.  The former compatibility path generated a combined WAV in
-        the workflow job, leaving no GenerationRun for the drawer to observe.
-        This boundary deliberately stops after immutable per-segment takes;
-        output assembly remains an explicit review action.
-        """
-        session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
+        return _start_run_reviewable_generation(
+            self._generation_start_context(),
+            payload,
+            progress,
+            cancel_event,
+            resolved_snapshot=resolved_snapshot,
+            settings_hash=settings_hash,
+            job_id=job_id,
         )
-        settings = dict(payload.get("settings") or {})
-        language = self._generation_language(session_id, source_artifact, settings)
-        settings = {**settings, "language": language, "target_language": language}
-        top_level_revision_id = str(
-            payload.get("speech_plan_revision_id") or ""
-        ).strip()
-        settings_revision_id = str(
-            settings.get("speech_plan_revision_id") or ""
-        ).strip()
-        from .settings_policy import RevisionConflict
-
-        if (
-            top_level_revision_id
-            and settings_revision_id
-            and top_level_revision_id != settings_revision_id
-        ):
-            raise RevisionConflict(
-                "The requested speech plan revision conflicts with the selected revision."
-            )
-        expected_revision_id = top_level_revision_id or settings_revision_id
-
-        def assert_current_revision(session, revision_id: str):
-            plan = session.scalar(
-                select(GenerationPlan).where(
-                    GenerationPlan.session_id == session_id
-                )
-            )
-            revision = session.get(GenerationPlanRevision, revision_id)
-            if (
-                plan is None
-                or revision is None
-                or revision.plan_id != plan.id
-                or plan.active_revision_id != revision_id
-            ):
-                raise RevisionConflict(
-                    "The selected speech plan revision is no longer available in this session."
-                )
-            revision_settings = (
-                revision.settings_json
-                if isinstance(revision.settings_json, dict)
-                else {}
-            )
-            planned_source_id = str(
-                revision_settings.get("_source_artifact_id") or ""
-            )
-            if planned_source_id and planned_source_id != source_artifact.id:
-                raise RevisionConflict(
-                    "The selected speech plan revision belongs to a different generation input."
-                )
-            return revision
-
-        if expected_revision_id:
-            settings["speech_plan_revision_id"] = expected_revision_id
-            with self.database.session() as session:
-                assert_current_revision(session, expected_revision_id)
-        progress(0.0, "Preparing generation segments")
-
-        plan_revision_id: str | None = None
-        if source_path.suffix.lower() == ".srt":
-            plan_revision_id = self._materialize_subtitle_generation_plan(
-                session_id,
-                source_artifact,
-                source_path,
-                settings,
-                language,
-            )
-        elif source_path.suffix.lower() == ".json":
-            # Segment narration already creates a plan. Preserve any edits the
-            # user made in the drawer. A separately reviewed optimization
-            # artifact, however, is a new source and therefore a new plan.
-            with self.database.session() as session:
-                plan = session.scalar(
-                    select(GenerationPlan).where(
-                        GenerationPlan.session_id == session_id
-                    )
-                )
-                if plan is not None and (
-                    source_artifact.role == "prepared_text" or expected_revision_id
-                ):
-                    active_revision_id = str(plan.active_revision_id or "")
-                    if active_revision_id:
-                        assert_current_revision(session, active_revision_id)
-                        if (
-                            expected_revision_id
-                            and active_revision_id != expected_revision_id
-                        ):
-                            raise RevisionConflict(
-                                "The selected speech plan revision changed before JSON narration reuse."
-                            )
-                        plan_revision_id = active_revision_id
-            if not plan_revision_id:
-                records = json.loads(source_path.read_text(encoding="utf-8-sig"))
-                if not isinstance(records, list) or not records:
-                    raise ValueError("No narration segments were found.")
-                plan_revision_id, _ = self._store_generation_plan(
-                    session_id,
-                    records,
-                    settings=settings,
-                    source_revision_id=str(
-                        (source_artifact.metadata_json or {}).get("revision_id") or ""
-                    )
-                    or None,
-                    source_artifact_id=source_artifact.id,
-                )
-        else:
-            raise ValueError(
-                "Audio generation requires subtitle cues or segmented narration."
-            )
-
-        if not plan_revision_id:
-            raise ValueError(
-                "Create generation segments before starting audio generation."
-            )
-
-        snapshot = (
-            deepcopy(resolved_snapshot) if isinstance(resolved_snapshot, dict) else {}
-        )
-        snapshot = _secret_free_tts_settings(snapshot)
-        # The resolved sections are the immutable source of truth. Merge the
-        # flattened stage values as compatibility aliases so direct Run Now
-        # choices (service, model, voice, and language) cannot be lost.
-        safe_settings = _secret_free_tts_settings(settings)
-        snapshot["tts"] = {**dict(snapshot.get("tts") or {}), **safe_settings}
-        snapshot["audio"] = {**dict(snapshot.get("audio") or {}), **safe_settings}
-        snapshot["text"] = {
-            **dict(snapshot.get("text") or {}),
-            "llm_tts_optimization": bool(settings.get("llm_tts_optimization")),
-            "apply_reviewed_pronunciations": settings.get(
-                "apply_reviewed_pronunciations", True
-            ),
-            "use_existing_speech_plans": source_artifact.role == "tts_optimized",
-        }
-        snapshot["source_artifact_id"] = source_artifact.id
-        snapshot["speech_plan_revision_id"] = plan_revision_id
-        frozen_hash = hashlib.sha256(
-            json.dumps(
-                snapshot,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        with self.database.immediate_session() as session:
-            assert_current_revision(session, plan_revision_id)
-            if expected_revision_id and expected_revision_id != plan_revision_id:
-                raise RevisionConflict(
-                    "The selected speech plan revision changed before workflow generation could start."
-                )
-            from .speech_plan_workspace import freeze_speech_snapshot
-
-            freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(expected_revision_id))
-            from .generation_audio_identity import plan_audio_identities
-
-            snapshot["generation_audio_identities"] = plan_audio_identities(session, plan_revision_id, snapshot)
-            frozen_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-            sequence_number = (
-                int(
-                    session.scalar(
-                        select(func.max(GenerationRun.sequence_number)).where(
-                            GenerationRun.session_id == session_id
-                        )
-                    )
-                    or 0
-                )
-                + 1
-            )
-            run = GenerationRun(
-                session_id=session_id,
-                plan_revision_id=plan_revision_id,
-                job_id=job_id,
-                sequence_number=sequence_number,
-                operation="generate",
-                status="queued",
-                settings_snapshot_json=snapshot,
-                settings_hash=frozen_hash or settings_hash,
-            )
-            session.add(run)
-            session.flush()
-            run_id = run.id
-
-        progress(0.03, "Generation segments ready")
-        try:
-            return self.run_generation(
-                {
-                    "generation_run_id": run_id,
-                    "segment_ids": [],
-                    "operation": "generate",
-                },
-                lambda value, detail=None: progress(
-                    0.03 + max(0.0, min(1.0, float(value))) * 0.97, detail
-                ),
-                cancel_event,
-            )
-        except Exception:
-            with self.database.session() as session:
-                failed = session.get(GenerationRun, run_id)
-                if failed is not None:
-                    failed.status = "failed"
-                    failed.updated_at = utcnow()
-            raise
 
     def run_generation(self, payload, progress, cancel_event):
         """Run synthesis and release any temporary scheduling interruption."""

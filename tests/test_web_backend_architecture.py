@@ -103,6 +103,60 @@ class BackendArchitectureTests(unittest.TestCase):
                     runtime_operations,
                 )
 
+    def test_generation_start_facade_forwards_arguments_and_recaptures_all_ports(self):
+        from dataclasses import FrozenInstanceError, fields
+
+        from pandrator.web import workflow_handlers
+        from pandrator.web.workflow_generation_start import GenerationStartContext
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        names = (
+            "database", "_resolve_input", "_generation_language",
+            "_materialize_subtitle_generation_plan", "_store_generation_plan",
+            "run_generation", "_secret_free_tts_settings",
+        )
+        self.assertEqual(names, tuple(field.name for field in fields(GenerationStartContext)))
+        payload = {"settings": {"unchanged": []}}
+        progress, cancel = lambda *_args: None, threading.Event()
+        snapshot = {"tts": {"unchanged": []}}
+        expected = {"result": []}
+        contexts = []
+        for explicit in (False, True):
+            ports = {name: object() for name in names}
+            instance_ports = {name: value for name, value in ports.items()
+                              if name != "_secret_free_tts_settings"}
+            with patch.multiple(handlers, **instance_ports), patch.object(
+                workflow_handlers, "_secret_free_tts_settings", ports["_secret_free_tts_settings"]
+            ), patch.object(workflow_handlers, "_start_run_reviewable_generation") as owner:
+                owner.return_value = expected
+                optional = (
+                    {"resolved_snapshot": snapshot, "settings_hash": "selected-hash", "job_id": "job"}
+                    if explicit else {}
+                )
+                self.assertIs(expected, handlers._run_reviewable_generation(
+                    payload, progress, cancel, **optional
+                ))
+                owner.assert_called_once()
+                context, sent_payload, sent_progress, sent_cancel = owner.call_args.args
+                contexts.append(context)
+                self.assertIs(payload, sent_payload)
+                self.assertIs(progress, sent_progress)
+                self.assertIs(cancel, sent_cancel)
+                self.assertEqual(
+                    optional or {"resolved_snapshot": None, "settings_hash": None, "job_id": None},
+                    owner.call_args.kwargs,
+                )
+                if explicit:
+                    self.assertIs(snapshot, owner.call_args.kwargs["resolved_snapshot"])
+                for name, value in ports.items():
+                    self.assertIs(value, getattr(context, name))
+                self.assertFalse(hasattr(context, "__dict__"))
+                with self.assertRaises(FrozenInstanceError):
+                    context.database = object()
+        self.assertIsNot(contexts[0], contexts[1])
+        for name in names:
+            self.assertIsNot(getattr(contexts[0], name), getattr(contexts[1], name))
+
     def test_extension_mapping_uses_the_composed_service_instances(self):
         extension = self.app.extensions["pandrator"]
         services = extension["services"]
