@@ -402,6 +402,52 @@ def subtitle_generation_records(
     return records, source_revision_id, display_artifact
 
 
+def _subtitle_plan_state(
+    session: Session,
+    session_id: str,
+    source_artifact_id: str,
+    expected_revision_id: str,
+) -> tuple[str | None, str | None]:
+    """Read the active selection and apply the existing reuse policy."""
+    plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
+    previous_revision_id = plan.active_revision_id if plan else None
+    active_revision = (
+        session.get(GenerationPlanRevision, previous_revision_id)
+        if previous_revision_id
+        else None
+    )
+    if expected_revision_id and expected_revision_id != previous_revision_id:
+        from .settings_policy import RevisionConflict
+
+        raise RevisionConflict("The selected speech plan changed before workflow execution.")
+    reviewed = bool(
+        active_revision
+        and (
+            session.get(SpeechPlanReview, active_revision.id)
+            or active_revision.operation_json
+            or (active_revision.settings_json or {}).get("_prepared_for_review")
+            or session.scalar(
+                select(GenerationSegment.id)
+                .where(
+                    GenerationSegment.plan_revision_id == previous_revision_id,
+                    GenerationSegment.revision > 1,
+                )
+                .limit(1)
+            )
+        )
+    )
+    if active_revision is not None and (expected_revision_id or reviewed):
+        planned_source = str(
+            (active_revision.settings_json or {}).get("_source_artifact_id") or ""
+        )
+        if planned_source and planned_source != source_artifact_id:
+            raise ValueError(
+                "The selected speech plan belongs to a different subtitle source. Restore the matching source or explicitly prepare a new speech plan."
+            )
+        return previous_revision_id, active_revision.id
+    return previous_revision_id, None
+
+
 def materialize_subtitle_generation_plan(
     context: GenerationBindingContext,
     session_id: str,
@@ -411,44 +457,13 @@ def materialize_subtitle_generation_plan(
     language: str,
 ) -> str:
     """Create a new versioned plan revision only when its topology changed."""
+    expected_revision_id = str(settings.get("speech_plan_revision_id") or "")
     with context.database.session() as session:
-        plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
-        previous_revision_id = plan.active_revision_id if plan else None
-        active_revision = (
-            session.get(GenerationPlanRevision, previous_revision_id)
-            if previous_revision_id
-            else None
+        previous_revision_id, reusable_revision_id = _subtitle_plan_state(
+            session, session_id, source_artifact.id, expected_revision_id
         )
-        expected_revision_id = str(settings.get("speech_plan_revision_id") or "")
-        if expected_revision_id and expected_revision_id != previous_revision_id:
-            from .settings_policy import RevisionConflict
-
-            raise RevisionConflict("The selected speech plan changed before workflow execution.")
-        reviewed = bool(
-            active_revision
-            and (
-                session.get(SpeechPlanReview, active_revision.id)
-                or active_revision.operation_json
-                or (active_revision.settings_json or {}).get("_prepared_for_review")
-                or session.scalar(
-                    select(GenerationSegment.id)
-                    .where(
-                        GenerationSegment.plan_revision_id == previous_revision_id,
-                        GenerationSegment.revision > 1,
-                    )
-                    .limit(1)
-                )
-            )
-        )
-        if active_revision is not None and (expected_revision_id or reviewed):
-            planned_source = str(
-                (active_revision.settings_json or {}).get("_source_artifact_id") or ""
-            )
-            if planned_source and planned_source != source_artifact.id:
-                raise ValueError(
-                    "The selected speech plan belongs to a different subtitle source. Restore the matching source or explicitly prepare a new speech plan."
-                )
-            return active_revision.id
+        if reusable_revision_id is not None:
+            return reusable_revision_id
 
     records, source_revision_id, display_artifact = context._subtitle_generation_records(
         source_artifact,
@@ -457,13 +472,26 @@ def materialize_subtitle_generation_plan(
         language,
         session_id=session_id,
     )
-    revision_id, _segment_ids = context._store_generation_plan(
-        session_id,
-        records,
-        settings=settings,
-        source_revision_id=source_revision_id,
-        source_artifact_id=source_artifact.id,
-    )
+    # Record building can outlive a user edit or plan selection. Recheck under
+    # the writer lock and store through that same transaction before publishing.
+    with context.database.immediate_session() as publication_session:
+        current_revision_id, reusable_revision_id = _subtitle_plan_state(
+            publication_session, session_id, source_artifact.id, expected_revision_id
+        )
+        if current_revision_id != previous_revision_id:
+            from .settings_policy import RevisionConflict
+
+            raise RevisionConflict("The selected speech plan changed before workflow execution.")
+        if reusable_revision_id is not None:
+            return reusable_revision_id
+        revision_id, _segment_ids = context._store_generation_plan(
+            session_id,
+            records,
+            settings=settings,
+            source_revision_id=source_revision_id,
+            source_artifact_id=source_artifact.id,
+            db_session=publication_session,
+        )
     if revision_id != previous_revision_id:
         destination = context._next_available_path(
             context._operation_dir(session_id, "speech-blocks")

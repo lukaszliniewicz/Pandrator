@@ -1686,6 +1686,100 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         with self.database.session() as db:
             self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationPlan)))
 
+    def _subtitle_publication_fixture(self):
+        path = self.session_dir / "publication-source.srt"
+        source_bytes = b"1\n00:00:01,000 --> 00:00:05,000\nHello world. A second phrase.\n"
+        path.write_bytes(source_bytes)
+        source = self.artifacts.register(path, kind="srt", role="transcription", session_id=self.session.id)
+        initial = self.handlers._materialize_subtitle_generation_plan(
+            self.session.id, source, path, {"speech_block_max_chars": 220}, "en"
+        )
+        with self.database.session() as db:
+            segment = db.scalar(select(GenerationSegment).where(GenerationSegment.plan_revision_id == initial))
+            segment_id, segment_revision = segment.id, segment.revision
+        service = GenerationService(self.database, JobQueue(self.database), WorkspaceSettingsService(self.database), artifacts=self.artifacts)
+        return path, source_bytes, source, initial, segment_id, segment_revision, service
+
+    def test_materialize_subtitle_plan_rechecks_edits_before_publication(self):
+        path, source_bytes, source, initial, segment_id, segment_revision, service = self._subtitle_publication_fixture()
+        build = self.handlers._subtitle_generation_records
+        def build_then_edit(*args, **kwargs):
+            result = build(*args, **kwargs)
+            service.update_segment(segment_id, segment_revision, {"text": "Concurrent reviewed edit."})
+            return result
+        with mock.patch.object(self.handlers, "_subtitle_generation_records", side_effect=build_then_edit), mock.patch.object(
+            self.handlers, "_store_generation_plan", wraps=self.handlers._store_generation_plan
+        ) as store:
+            selected = self.handlers._materialize_subtitle_generation_plan(
+                self.session.id, source, path, {"speech_block_max_chars": 120}, "en"
+            )
+        self.assertEqual(initial, selected)
+        store.assert_not_called()
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            self.assertEqual(initial, plan.active_revision_id)
+            segment = db.get(GenerationSegment, segment_id)
+            self.assertEqual("Concurrent reviewed edit.", segment.text)
+            self.assertEqual(segment_revision + 1, segment.revision)
+            self.assertEqual(1, db.scalar(select(func.count()).select_from(GenerationPlanRevision)))
+            self.assertEqual(1, db.scalar(select(func.count()).select_from(Artifact).where(Artifact.role == "speech_blocks")))
+
+    def test_materialize_subtitle_plan_stores_in_its_publication_transaction(self):
+        path, source_bytes, source, initial, _segment_id, _revision, _service = self._subtitle_publication_fixture()
+        store = self.handlers._store_generation_plan
+        callers = []
+        def store_in_publication(*args, **kwargs):
+            caller = kwargs.get("db_session")
+            self.assertIsNotNone(caller)
+            callers.append(caller)
+            with mock.patch.object(self.database, "immediate_session", side_effect=AssertionError("nested plan transaction")):
+                result = store(*args, **kwargs)
+            self.assertEqual(result[0], caller.scalar(select(GenerationPlan.active_revision_id).where(GenerationPlan.session_id == self.session.id)))
+            return result
+        with mock.patch.object(self.handlers, "_store_generation_plan", side_effect=store_in_publication):
+            selected = self.handlers._materialize_subtitle_generation_plan(
+                self.session.id, source, path, {"speech_block_max_chars": 120}, "en"
+            )
+        self.assertEqual(1, len(callers))
+        self.assertNotEqual(initial, selected)
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            self.assertEqual(selected, db.scalar(select(GenerationPlan.active_revision_id).where(GenerationPlan.session_id == self.session.id)))
+            self.assertEqual(2, db.scalar(select(func.count()).select_from(GenerationPlanRevision)))
+
+    def test_materialize_subtitle_plan_rejects_changed_active_revision_before_publication(self):
+        from pandrator.web.settings_policy import RevisionConflict
+
+        path, source_bytes, source, initial, segment_id, _segment_revision, service = self._subtitle_publication_fixture()
+        build = self.handlers._subtitle_generation_records
+        captured = {}
+        def build_then_split(*args, **kwargs):
+            result = build(*args, **kwargs)
+            changed = service.revise_topology(self.session.id, initial, {
+                "action": "split", "segment_id": segment_id, "cursor": 5, "text_layer": "display",
+            })
+            captured["revision_id"] = changed["plan_revision_id"]
+            captured["segment_ids"] = changed["segment_ids"]
+            return result
+        with mock.patch.object(self.handlers, "_subtitle_generation_records", side_effect=build_then_split), mock.patch.object(
+            self.handlers, "_store_generation_plan", wraps=self.handlers._store_generation_plan
+        ) as store:
+            with self.assertRaisesRegex(RevisionConflict, "selected speech plan changed"):
+                self.handlers._materialize_subtitle_generation_plan(
+                    self.session.id, source, path, {"speech_block_max_chars": 120}, "en"
+                )
+        store.assert_not_called()
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            self.assertEqual(captured["revision_id"], plan.active_revision_id)
+            self.assertEqual(captured["segment_ids"], list(db.scalars(select(GenerationSegment.id).where(
+                GenerationSegment.plan_revision_id == captured["revision_id"]
+            ).order_by(GenerationSegment.ordinal))))
+            self.assertEqual(2, db.scalar(select(func.count()).select_from(GenerationPlanRevision)))
+            self.assertEqual(1, db.scalar(select(func.count()).select_from(Artifact).where(Artifact.role == "speech_blocks")))
+
     def test_subtitle_plan_threshold_is_monotonic_and_preserves_speaker(self):
         # Explicitly exercise legacy threshold-based merging; passage mode preserves boundaries.
         source_path = self.session_dir / "speaker-safe.srt"
