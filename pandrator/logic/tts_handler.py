@@ -33,6 +33,7 @@ from ..constants import (
 )
 from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .audio_cpp_parameters import validate_audio_cpp_model_options
+from .cancellable_process import ProcessCancelled
 from .retry_utils import (
     retry_after_seconds,
     retry_delay_seconds,
@@ -1985,6 +1986,24 @@ def _audio_cpp_endpoint_lock_for(base_url: str) -> RLock:
 
 
 @contextmanager
+def _audio_cpp_endpoint_guard(base_url: str, cancel_event: Event | None = None):
+    lock = _audio_cpp_endpoint_lock_for(base_url)
+    if cancel_event is None:
+        with lock:
+            yield
+        return
+    while not lock.acquire(timeout=0.05):
+        if cancel_event.is_set():
+            raise ProcessCancelled("Audio.cpp execution was canceled.")
+    try:
+        if cancel_event.is_set():
+            raise ProcessCancelled("Audio.cpp execution was canceled.")
+        yield
+    finally:
+        lock.release()
+
+
+@contextmanager
 def audio_cpp_endpoint_lock(tts_settings: dict, cancel_event=None):
     """Serialize synthesis requests to one audio.cpp endpoint across jobs."""
     endpoint, _error = resolve_openai_audio_endpoint(tts_settings)
@@ -1996,7 +2015,7 @@ def audio_cpp_endpoint_lock(tts_settings: dict, cancel_event=None):
         return
     base_url = str(endpoint.get("base_url") or "")
     with local_tts_audio_cpp_guard(base_url, cancel_event):
-        with _audio_cpp_endpoint_lock_for(base_url):
+        with _audio_cpp_endpoint_guard(base_url, cancel_event):
             yield
 
 

@@ -211,6 +211,67 @@ def test_tts_endpoint_guard_wraps_existing_endpoint_lock(monkeypatch):
     ]
 
 
+def test_remote_tts_cancellation_interrupts_endpoint_lock_wait(monkeypatch):
+    base_url = "http://203.0.113.8:8060"
+    cancel = threading.Event()
+    waiting = threading.Event()
+    finished = threading.Event()
+    errors = []
+    original_lock_for = tts_handler._audio_cpp_endpoint_lock_for
+    lock = original_lock_for(base_url)
+
+    def observed_lock_for(url):
+        endpoint_lock = original_lock_for(url)
+        waiting.set()
+        return endpoint_lock
+
+    def request(*_args, **_kwargs):
+        pytest.fail("Cancelled synthesis must not send a request")
+
+    def synthesize():
+        try:
+            tts_handler.text_to_audio(
+                "Test.",
+                {"service": "audio_cpp", "audio_cpp_base_url": base_url},
+                cancel_event=cancel,
+            )
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(tts_handler, "_audio_cpp_endpoint_lock_for", observed_lock_for)
+    monkeypatch.setattr(tts_handler.requests, "post", request)
+    thread = threading.Thread(target=synthesize)
+    try:
+        with lock:
+            thread.start()
+            assert waiting.wait(1)
+            cancel.set()
+            assert finished.wait(1), "Cancellation must finish while the endpoint is still held"
+            assert len(errors) == 1
+            assert isinstance(errors[0], ProcessCancelled)
+    finally:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_remote_tts_precancellation_does_not_enter_synthesis(monkeypatch):
+    cancel = threading.Event()
+    cancel.set()
+
+    def request(*_args, **_kwargs):
+        pytest.fail("Cancelled synthesis must not send a request")
+
+    monkeypatch.setattr(tts_handler.requests, "post", request)
+    with pytest.raises(ProcessCancelled):
+        tts_handler.text_to_audio(
+            "Test.",
+            {"service": "audio_cpp", "audio_cpp_base_url": "http://203.0.113.9:8060"},
+            cancel_event=cancel,
+        )
+
+
 def test_cpu_skips_residency_http(monkeypatch, tmp_path):
     monkeypatch.setattr(
         guard.urllib.request, "urlopen", lambda *_args, **_kwargs: pytest.fail("HTTP")
