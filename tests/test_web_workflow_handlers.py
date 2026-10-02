@@ -1824,6 +1824,109 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         with self.database.session() as db:
             self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationPlan)))
 
+    def _reviewable_start_source(self):
+        path = self.session_dir / "reviewable-start-source.json"
+        source_bytes = json.dumps([{"text": "Native narration."}]).encode("utf-8")
+        path.write_bytes(source_bytes)
+        source = self.artifacts.register(
+            path, kind="json", role="prepared_text", session_id=self.session.id
+        )
+        return path, source_bytes, source
+
+    def test_reviewable_start_keeps_hydrated_credentials_out_of_run_snapshot(self):
+        from pandrator.web.credentials import hydrate_tts_settings
+
+        path, source_bytes, source = self._reviewable_start_source()
+        secret = "synthetic-reviewable-start-only"
+        key = tts_service_credential_key("elevenlabs")
+        reference = database_reference(key)
+        with self.database.session() as db:
+            upsert_credential(db, key, "Synthetic only", secret)
+        settings = {
+            "service": "ElevenLabs", "voice": "fixture-voice",
+            "provider_configs": [{
+                "id": "elevenlabs", "secret_ref": reference,
+                "connection_mode": "external",
+            }],
+        }
+        runtime = hydrate_tts_settings(
+            self.database, self.paths, settings,
+            manager_bridge=SimpleNamespace(configured=False),
+        )
+        self.assertEqual(secret, runtime["provider_configs"][0]["api_key"])
+        payload = {
+            "session_id": self.session.id, "source_artifact_id": source.id,
+            "settings": runtime,
+        }
+        before = deepcopy(payload)
+        captured = {}
+        result = {"status": "delegation-control"}
+
+        def inspect_run(payload, _progress, _cancel):
+            with self.database.session() as db:
+                run = db.get(GenerationRun, payload["generation_run_id"])
+                captured["snapshot"] = deepcopy(run.settings_snapshot_json)
+            return result
+
+        with mock.patch.object(self.handlers, "run_generation", side_effect=inspect_run):
+            returned = self.handlers._run_reviewable_generation(
+                payload, self.progress, threading.Event()
+            )
+        self.assertIs(result, returned)
+        saved = captured["snapshot"]
+        self.assertFalse(contains_inline_secret(saved))
+        self.assertNotIn(secret, json.dumps(saved))
+        self.assertEqual(reference, saved["tts"]["provider_configs"][0]["secret_ref"])
+        self.assertEqual(reference, saved["audio"]["provider_configs"][0]["secret_ref"])
+        rehydrated = hydrate_tts_settings(
+            self.database, self.paths, saved["tts"],
+            manager_bridge=SimpleNamespace(configured=False),
+        )
+        self.assertEqual(secret, rehydrated["provider_configs"][0]["api_key"])
+        self.assertEqual(before, payload)
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            self.assertEqual(secret, db.get(StoredCredential, key).secret_value)
+
+    def test_reviewable_start_redacts_snapshot_sections_without_mutating_inputs(self):
+        path, source_bytes, source = self._reviewable_start_source()
+        payload = {
+            "session_id": self.session.id, "source_artifact_id": source.id,
+            "settings": {"service": "XTTS", "api_key": "synthetic-flat-key"},
+        }
+        snapshot = {
+            "tts": {"provider_configs": [{
+                "id": "fixture-provider", "api_key": "synthetic-config-key",
+                "secret_ref": "env:FIXTURE_API_KEY",
+            }]},
+            "selected_segment_override": {"tts": {
+                "authorization": "synthetic-authorization", "voice": "fixture-voice",
+            }},
+            "text": {"nested": [{"password": "synthetic-password", "retained": 7}]},
+        }
+        revision_id, _ = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Native narration."}],
+            settings={"service": "XTTS"}, source_artifact_id=source.id,
+        )
+        payload["speech_plan_revision_id"] = revision_id
+        before_payload, before_snapshot = deepcopy(payload), deepcopy(snapshot)
+        with mock.patch.object(self.handlers, "run_generation", return_value={}):
+            self.handlers._run_reviewable_generation(
+                payload, self.progress, threading.Event(), resolved_snapshot=snapshot
+            )
+        with self.database.session() as db:
+            run = db.scalar(select(GenerationRun))
+            saved = run.settings_snapshot_json
+            self.assertFalse(contains_inline_secret(saved))
+            self.assertEqual(7, saved["text"]["nested"][0]["retained"])
+            self.assertEqual("fixture-voice", saved["selected_segment_override"]["tts"]["voice"])
+            self.assertEqual("env:FIXTURE_API_KEY", saved["tts"]["provider_configs"][0]["secret_ref"])
+            self.assertTrue(saved["speech_plan_signature"])
+            self.assertTrue(saved["generation_audio_identities"])
+        self.assertEqual(before_payload, payload)
+        self.assertEqual(before_snapshot, snapshot)
+        self.assertEqual(source_bytes, path.read_bytes())
+
     def _subtitle_publication_fixture(self):
         path = self.session_dir / "publication-source.srt"
         source_bytes = b"1\n00:00:01,000 --> 00:00:05,000\nHello world. A second phrase.\n"

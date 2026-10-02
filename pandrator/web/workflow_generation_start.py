@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from .credentials import redact_inline_secrets
 from .database import Database
 from .models import Artifact, GenerationPlan, GenerationPlanRevision, GenerationRun, utcnow
 from .workflow_generation_binding import GenerationPlanStoreProtocol
@@ -170,11 +171,11 @@ def run_reviewable_generation(
     snapshot = (
         deepcopy(resolved_snapshot) if isinstance(resolved_snapshot, dict) else {}
     )
-    snapshot = context._secret_free_tts_settings(snapshot)
+    snapshot = redact_inline_secrets(context._secret_free_tts_settings(snapshot))
     # The resolved sections are the immutable source of truth. Merge the
     # flattened stage values as compatibility aliases so direct Run Now
     # choices (service, model, voice, and language) cannot be lost.
-    safe_settings = context._secret_free_tts_settings(settings)
+    safe_settings = redact_inline_secrets(context._secret_free_tts_settings(settings))
     snapshot["tts"] = {**dict(snapshot.get("tts") or {}), **safe_settings}
     snapshot["audio"] = {**dict(snapshot.get("audio") or {}), **safe_settings}
     snapshot["text"] = {
@@ -254,4 +255,3 @@ def run_reviewable_generation(
                 failed.status = "failed"
                 failed.updated_at = utcnow()
         raise
-
