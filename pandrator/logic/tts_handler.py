@@ -33,13 +33,25 @@ from ..constants import (
 )
 from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .audio_cpp_parameters import validate_audio_cpp_model_options
-from .cancellable_process import ProcessCancelled
 from .retry_utils import (
     retry_after_seconds,
     retry_delay_seconds,
     retryable_error,
     status_code_from_error,
     wait_for_retry,
+)
+from .tts_endpoint_transport import (
+    _audio_cpp_endpoint_locks as _audio_cpp_endpoint_locks,
+)
+from .tts_endpoint_transport import (
+    _audio_cpp_endpoint_locks_guard as _audio_cpp_endpoint_locks_guard,
+)
+from .tts_endpoint_transport import (
+    audio_cpp_endpoint_key as _audio_cpp_endpoint_key,
+)
+from .tts_endpoint_transport import (
+    audio_cpp_endpoint_lock_for_key,
+    endpoint_lock_guard,
 )
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
@@ -58,11 +70,6 @@ _litellm_speech_import_attempted = False
 _litellm_speech_import_error: BaseException | None = None
 _litellm_speech_import_lock = Lock()
 
-# audio.cpp keeps resident model state, so requests to one normalized endpoint
-# must never overlap.  RLocks intentionally allow the ordered batch adapter to
-# hold the endpoint lock while each item enters text_to_audio again.
-_audio_cpp_endpoint_locks_guard = Lock()
-_audio_cpp_endpoint_locks: dict[str, RLock] = {}
 AUDIO_CPP_API_BASE_URL = "http://127.0.0.1:8060"
 AUDIO_CPP_MAX_REFERENCE_BYTES = 5 * 1024 * 1024
 
@@ -1959,48 +1966,14 @@ def _configured_endpoint_url(base_url: str, path: str) -> str:
     return urljoin(f"{origin}/", normalized_path.lstrip("/"))
 
 
-def _audio_cpp_endpoint_key(base_url: str) -> str:
-    """Return a stable endpoint identity without request or voice data."""
-    normalized = str(base_url or "").strip().rstrip("/")
-    parsed = urlparse(normalized)
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
-    if port is None:
-        port = 443 if scheme == "https" else 80
-    path = parsed.path.rstrip("/") or "/"
-    return f"{scheme}://{hostname}:{port}{path}"
-
-
 def _audio_cpp_endpoint_lock_for(base_url: str) -> RLock:
-    key = _audio_cpp_endpoint_key(base_url)
-    with _audio_cpp_endpoint_locks_guard:
-        lock = _audio_cpp_endpoint_locks.get(key)
-        if lock is None:
-            lock = RLock()
-            _audio_cpp_endpoint_locks[key] = lock
-        return lock
+    return audio_cpp_endpoint_lock_for_key(_audio_cpp_endpoint_key(base_url))
 
 
 @contextmanager
 def _audio_cpp_endpoint_guard(base_url: str, cancel_event: Event | None = None):
-    lock = _audio_cpp_endpoint_lock_for(base_url)
-    if cancel_event is None:
-        with lock:
-            yield
-        return
-    while not lock.acquire(timeout=0.05):
-        if cancel_event.is_set():
-            raise ProcessCancelled("Audio.cpp execution was canceled.")
-    try:
-        if cancel_event.is_set():
-            raise ProcessCancelled("Audio.cpp execution was canceled.")
+    with endpoint_lock_guard(_audio_cpp_endpoint_lock_for(base_url), cancel_event):
         yield
-    finally:
-        lock.release()
 
 
 @contextmanager

@@ -6,7 +6,6 @@ import socket
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from threading import Lock
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
@@ -15,6 +14,7 @@ from pydub import AudioSegment
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
+from pandrator.logic.tts_endpoint_transport import EndpointSessionPool
 from pandrator.logic.tts_language_support import tts_language_support
 from pandrator.logic.tts_provider_policy import (
     DEFAULT_TTS_SERVICE_ID,
@@ -1011,17 +1011,11 @@ class AudioCppAdapter(LegacyTtsAdapter):
 
     def __init__(self, service_id: str):
         super().__init__(service_id)
-        self._sessions_guard = Lock()
-        self._sessions: dict[str, requests.Session] = {}
+        self._session_pool = EndpointSessionPool()
 
     def _session_for_base_url(self, base_url: str) -> requests.Session:
         key = tts_handler._audio_cpp_endpoint_key(base_url)
-        with self._sessions_guard:
-            session = self._sessions.get(key)
-            if session is None:
-                session = requests.Session()
-                self._sessions[key] = session
-            return session
+        return self._session_pool.session_for_key(key, create_session=requests.Session)
 
     def _session_for(self, settings: dict[str, Any]) -> requests.Session:
         endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
