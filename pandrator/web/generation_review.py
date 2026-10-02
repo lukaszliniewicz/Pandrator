@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -242,10 +243,19 @@ def revision_detail(database, session_id: str, revision_id: str) -> dict[str, An
     raise KeyError(revision_id)
 
 
-def source_references(segment: GenerationSegment) -> set[str]:
-    cues = (segment.speech_block_provenance_json or {}).get("source_cues") or []
+def source_reference_values(
+    provenance: Mapping[str, Any] | None,
+    source_segment_ids: Sequence[str | int] | None,
+) -> set[str]:
+    cues = (provenance or {}).get("source_cues") or []
     refs = {str(cue["reference"]) for cue in cues if isinstance(cue, dict) and cue.get("reference") is not None}
-    return refs or {str(value) for value in segment.source_segment_ids_json or []}
+    return refs or {str(value) for value in source_segment_ids or []}
+
+
+def source_references(segment: GenerationSegment) -> set[str]:
+    return source_reference_values(
+        segment.speech_block_provenance_json, segment.source_segment_ids_json
+    )
 
 
 def resolve_segment_selector(rows: list[GenerationSegment], selector: dict[str, Any], lineage: dict[str, list[str]], aliases: dict[str, list[str]]) -> GenerationSegment:

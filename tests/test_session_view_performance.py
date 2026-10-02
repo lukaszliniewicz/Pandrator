@@ -11,11 +11,12 @@ assertions:
 - repair_state_hash stays deterministic across calls.
 """
 
+import inspect
 import tempfile
 import unittest
 import uuid
 import wave
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from sqlalchemy import event, func, select
@@ -163,6 +164,160 @@ class SessionViewPerformanceTests(unittest.TestCase):
             event.remove, self.database.engine, "before_cursor_execute", _record
         )
         return log
+
+    def test_segment_reads_batch_takes_and_artifacts_at_constant_query_budget(self):
+        log = self._statement_log()
+        counts_by_read = {}
+        for count in (1, 10, 50):
+            session_id = self._create_session("Segment-read perf")
+            plan = self._plan(session_id, count)
+            segment_ids = self._seed_reusable_takes(
+                session_id, plan["active_revision_id"], {}
+            )
+            for name, options in (
+                ("full", {}),
+                ("compact", {"view": "compact"}),
+                ("provenance", {"view": "provenance"}),
+                ("search", {"q": "Speech", "text_field": "spoken"}),
+                ("source-cue", {"source_cue_id": "0", "radius": 2}),
+            ):
+                with self.subTest(count=count, read=name):
+                    log.clear()
+                    payload = self.generation.list_segments(
+                        session_id, limit=250, **options
+                    )
+                    selects = [sql for sql in log if sql.lstrip().upper().startswith("SELECT")]
+                    self.assertLessEqual(len(selects), 80)
+                    counts_by_read.setdefault(name, []).append(len(selects))
+                    self.assertEqual(1, sum("FROM audio_takes" in sql for sql in selects))
+                    # Full settings resolution also scans the voice inventory;
+                    # this guard isolates take-artifact retrieval by primary key.
+                    self.assertLessEqual(sum("FROM artifacts" in sql and "artifacts.id IN" in sql for sql in selects), 1)
+                    expected_count = min(count, 3) if name == "source-cue" else count
+                    self.assertEqual(expected_count, len(payload["items"]))
+                    self.assertEqual(segment_ids[:expected_count], [item["id"] for item in payload["items"]])
+                    self.assertEqual(plan["active_revision_id"], payload["plan_revision_id"])
+                    for item in payload["items"]:
+                        self.assertNotIn("plan_revision_id", item)
+                        if name == "provenance":
+                            self.assertNotIn("takes", item)
+                        else:
+                            self.assertTrue(item["has_reusable_take"])
+                            self.assertEqual("reusable", item["audio_reuse_reason"])
+                        if name == "compact":
+                            self.assertEqual(1, item["take_count"])
+                            self.assertTrue(item["active_take_id"])
+                            self.assertTrue(item["has_usable_take"])
+                            self.assertNotIn("speech_block_provenance", item)
+                        else:
+                            cue = item["speech_block_provenance"]["source_cues"][0]
+                            self.assertEqual(item["ordinal"] * 1000, cue["start_ms"])
+                            self.assertEqual(item["ordinal"] * 1000 + 900, cue["end_ms"])
+                            self.assertEqual([[0, 10]], cue["display_spans"])
+                            self.assertEqual([[0, 10]], cue["speech_spans"])
+                            if name != "provenance":
+                                self.assertTrue(item["takes"][0]["is_active"])
+                                self.assertEqual(100, item["takes"][0]["duration_ms"])
+                        if name == "search":
+                            self.assertEqual([{"start": 0, "end": 6}], item["search_matches"])
+        for name, counts in counts_by_read.items():
+            self.assertEqual(1, len(set(counts)), (name, counts))
+
+    def test_standalone_segment_reader_matches_facade_and_forwards_every_keyword(self):
+        from pandrator.web.generation_segment_reads import GenerationSegmentReader
+
+        session_id = self._create_session()
+        self._plan(session_id, 2)
+        reader = GenerationSegmentReader(self.database, self.generation.settings)
+        self.assertEqual(
+            inspect.signature(type(self.generation).list_segments),
+            inspect.signature(GenerationSegmentReader.list_segments),
+        )
+        self.assertEqual(reader.list_segments(session_id), self.generation.list_segments(session_id))
+        options = {
+            "cursor": 3, "limit": 17, "status": "completed", "marked": True,
+            "verification": "issues", "generation_run_id": "run", "plan_revision_id": "revision",
+            "view": "provenance", "fields": ["text"], "end_ordinal": 9,
+            "around_ordinal": 5, "source_cue_id": "cue", "radius": 4,
+            "q": "needle", "match_case": True, "whole_word": True,
+            "text_field": "spoken", "boundary_flags": False,
+        }
+        replacement_database, replacement_settings = object(), object()
+        with patch.object(self.generation, "database", replacement_database), patch.object(
+            self.generation, "settings", replacement_settings
+        ), patch("pandrator.web.workspace.GenerationSegmentReader") as reader_class:
+            expected = {"items": []}
+            reader_class.return_value.list_segments.return_value = expected
+            self.assertIs(expected, self.generation.list_segments(session_id, **options))
+            reader_class.assert_called_once_with(replacement_database, replacement_settings)
+            reader_class.return_value.list_segments.assert_called_once_with(session_id, **options)
+
+    def test_updated_segment_projection_reads_uncommitted_caller_state_without_session(self):
+        from pandrator.web.generation_segment_reads import updated_segment_payload
+
+        session_id = self._create_session()
+        plan = self._plan(session_id, 1)
+        with self.database.session() as session:
+            segment = session.scalar(select(GenerationSegment).where(
+                GenerationSegment.plan_revision_id == plan["active_revision_id"]
+            ))
+            segment.text = "Uncommitted caller text"
+            segment.marked = True
+            session.flush()
+            with patch.object(self.database, "session", side_effect=AssertionError("nested session")):
+                payload = updated_segment_payload(segment)
+                self.assertEqual(payload, self.generation._updated_segment_payload(segment))
+            self.assertEqual("Uncommitted caller text", payload["text"])
+            self.assertTrue(payload["marked"])
+            self.assertEqual(plan["active_revision_id"], payload["plan_revision_id"])
+
+    def test_segment_take_metadata_defaults_do_not_bleed_between_takes(self):
+        session_id = self._create_session()
+        plan = self._plan(session_id, 1)
+        segment_id = self._seed_reusable_takes(session_id, plan["active_revision_id"], {})[0]
+        rich = {
+            "generation_task_run_id": "task-rich", "source_text": "source-rich",
+            "synthesized_text": "spoken-rich", "llm_optimized": "yes",
+            "llm_model": "model-rich", "audio_verification": {"status": "warning"},
+        }
+        with self.database.session() as session:
+            active = session.scalar(select(AudioTake).where(AudioTake.generation_segment_id == segment_id))
+            artifact = session.get(Artifact, active.artifact_id)
+            artifact.metadata_json = {**artifact.metadata_json, **rich}
+            empty = Artifact(session_id=session_id, kind="audio", role="generation_take", relative_path=f"empty-{uuid.uuid4().hex}.wav", metadata_json={})
+            session.add(empty)
+            session.flush()
+            active.created_at = datetime(2025, 1, 2, 3, 4, 5)
+            session.add_all([
+                AudioTake(generation_segment_id=segment_id, artifact_id=artifact.id, created_at=active.created_at - timedelta(seconds=1)),
+                AudioTake(generation_segment_id=segment_id, artifact_id=empty.id, created_at=active.created_at - timedelta(seconds=2)),
+                AudioTake(generation_segment_id=segment_id, created_at=active.created_at - timedelta(seconds=3)),
+            ])
+        takes = self.generation.list_segments(session_id)["items"][0]["takes"]
+        self.assertEqual(4, len(takes))
+        for take in takes[:2]:
+            for key, value in rich.items():
+                self.assertEqual(True if key == "llm_optimized" else value, take[key])
+        for take in takes[2:]:
+            for key in rich:
+                self.assertEqual(False if key == "llm_optimized" else None, take[key])
+        self.assertTrue(takes[0]["is_active"])
+        self.assertIsNone(takes[-1]["artifact_id"])
+        self.assertEqual([
+            "2025-01-02T03:04:05", "2025-01-02T03:04:04",
+            "2025-01-02T03:04:03", "2025-01-02T03:04:02",
+        ], [take["created_at"] for take in takes])
+        for index, take in enumerate(takes):
+            self.assertEqual("tts", take["kind"])
+            self.assertEqual("completed" if index == 0 else "queued", take["status"])
+            self.assertEqual(100 if index == 0 else None, take["duration_ms"])
+            self.assertEqual(index == 0, take["is_active"])
+            self.assertEqual(1, take["revision"])
+            self.assertIsNone(take["generation_run_id"])
+            self.assertIsNone(take["parent_take_id"])
+            self.assertTrue(take["id"])
+        self.assertEqual(takes[0]["artifact_id"], takes[1]["artifact_id"])
+        self.assertNotEqual(takes[1]["artifact_id"], takes[2]["artifact_id"])
 
     def _run_history_fixture(self, count, *, run_status, job_status):
         session_id = self._create_session("Run-history perf")

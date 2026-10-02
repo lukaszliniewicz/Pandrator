@@ -150,6 +150,70 @@ class GenerationPlanReviewTests(unittest.TestCase):
         self.assertFalse(old["is_active_revision"])
         self.assertEqual(old["items"][0]["text"], self.initial_text)
 
+    def test_around_ordinal_context_preserves_revision_and_source_cue_timing(self):
+        for radius, ordinals, total in ((0, [1], 2), (1, [0, 1, 2], 3)):
+            with self.subTest(radius=radius):
+                response = self.client.get(
+                    f"/api/v1/sessions/{self.session_id}/generation-segments",
+                    query_string={"around_ordinal": 1, "radius": radius},
+                )
+                self.assertEqual(200, response.status_code, response.get_json())
+                payload = response.get_json()
+                self.assertEqual(self.revision_id, payload["plan_revision_id"])
+                self.assertEqual(ordinals, [item["ordinal"] for item in payload["items"]])
+                self.assertEqual(total, payload["total"])
+                if radius == 1:
+                    cues = payload["items"][0]["speech_block_provenance"]["source_cues"]
+                    self.assertEqual([1000, 2100], [cue["start_ms"] for cue in cues])
+                    self.assertEqual([2000, 4000], [cue["end_ms"] for cue in cues])
+                    self.assertEqual([[0, 12]], cues[0]["display_spans"])
+                    self.assertEqual([[0, 12]], cues[0]["speech_spans"])
+
+    def test_segment_inspection_rejects_invalid_conflicting_and_foreign_identifiers(self):
+        foreign_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Foreign inspection plan", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
+        foreign_plan = self.generation.create_plan(
+            foreign_id, source_revision_id=None, settings={}, segments=[{"text": "Foreign words."}]
+        )
+        with self.database.session() as session:
+            run = GenerationRun(session_id=self.session_id, plan_revision_id=self.revision_id, sequence_number=1)
+            foreign_run = GenerationRun(session_id=foreign_id, plan_revision_id=foreign_plan["active_revision_id"], sequence_number=1)
+            session.add_all([run, foreign_run])
+            session.flush()
+            run_id, foreign_run_id = run.id, foreign_run.id
+        result = self.split()
+        endpoint = f"/api/v1/sessions/{self.session_id}/generation-segments"
+        missing_session = self.client.get("/api/v1/sessions/missing-session/generation-segments")
+        self.assertEqual(404, missing_session.status_code, missing_session.get_json())
+        for query in (
+            {"generation_run_id": "missing-run"},
+            {"plan_revision_id": "missing-revision"},
+            {"generation_run_id": foreign_run_id},
+            {"plan_revision_id": foreign_plan["active_revision_id"]},
+        ):
+            with self.subTest(query=query):
+                response = self.client.get(endpoint, query_string=query)
+                self.assertEqual(404, response.status_code, response.get_json())
+        for query in (
+            {"generation_run_id": run_id, "plan_revision_id": result["plan_revision_id"]},
+            {"around_ordinal": 1, "source_cue_id": "1"},
+            {"around_ordinal": -1},
+            {"radius": -1},
+            {"radius": 26},
+            {"radius": "invalid"},
+            {"cursor": 2, "end_ordinal": 1},
+            {"source_cue_id": "unmatched"},
+        ):
+            with self.subTest(query=query):
+                response = self.client.get(endpoint, query_string=query)
+                self.assertEqual(422, response.status_code, response.get_json())
+        response = self.client.get(endpoint, query_string={"generation_run_id": run_id, "plan_revision_id": self.revision_id})
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual(self.revision_id, response.get_json()["plan_revision_id"])
+
     def test_revision_history_lists_automatic_and_manual_with_reusable_counts(self):
         result = self.split()
         response = self.client.get(f"/api/v1/sessions/{self.session_id}/generation-plan/revisions")
