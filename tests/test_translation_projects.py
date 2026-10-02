@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
+    AppSetting,
     Artifact,
     Job,
     OutcomePlan,
@@ -27,6 +28,7 @@ from pandrator.web.translation_projects import (
     get_project,
     get_session_project,
 )
+from pandrator.web.workspace_settings import WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -102,6 +104,73 @@ class TranslationProjectServiceTests(unittest.TestCase):
             for directory in directories:
                 shutil.rmtree(directory, ignore_errors=True)
             raise
+
+    def test_branches_follow_language_defaults_and_allow_custom_mode(self):
+        settings = WorkspaceSettingsService(self.database)
+        custom = {"language_defaults": False, "max_chars_per_line": 42,
+                  "max_cps": 20, "max_lines": 1, "min_duration_ms": 900}
+        settings.update(self.source.id, "subtitles", 0, custom)
+        aliases = {"subtitle_language_defaults": False,
+                   "subtitle_max_chars_per_line": 42, "subtitle_max_cps": 20}
+        with self.database.session() as db:
+            db.add(SessionSetting(session_id=self.source.id, section="stt", value_json=aliases))
+        project = self._create_project()["project"]
+        branches = self._create_branches(project["id"], project["revision"],
+                                        [{"target_language": lang} for lang in ("ja", "zh", "ko", "de")])["project"]["branches"]
+        self.assertEqual(custom, settings.get(self.source.id, "subtitles")["override"])
+        for branch, caps in zip(branches, ((16, 7), (16, 9), (16, 12), (60, 20)), strict=True):
+            sid = branch["session_id"]
+            payload = settings.get(sid, "subtitles")
+            limits = payload["subtitle_profiles"]["target"]["limits"]
+            self.assertTrue(payload["effective"]["language_defaults"])
+            self.assertEqual(caps, (limits["max_chars_per_line"]["effective"],
+                                    limits["max_chars_per_second"]["effective"]))
+            self.assertEqual(1, payload["effective"]["max_lines"])
+            self.assertEqual(900, payload["effective"]["min_duration_ms"])
+            with self.database.session() as db:
+                self.assertEqual(aliases, db.get(SessionSetting, (self.source.id, "stt")).value_json)
+                child_stt = db.get(SessionSetting, (sid, "stt")).value_json
+                self.assertTrue(set(aliases).isdisjoint(child_stt))
+        sid = branches[0]["session_id"]
+        payload = settings.get(sid, "subtitles")
+        settings.patch(sid, "subtitles", payload["revision"], {
+            "language_defaults": False, "max_chars_per_line": 13, "max_cps": 4})
+        translation = settings.get(sid, "translation")
+        settings.patch(sid, "translation", translation["revision"], {"target_language": "ko"})
+        payload = settings.get(sid, "subtitles")
+        limits = payload["subtitle_profiles"]["target"]["limits"]
+        self.assertEqual((13, 4), (limits["max_chars_per_line"]["effective"],
+                                  limits["max_chars_per_second"]["effective"]))
+        settings.patch(sid, "subtitles", payload["revision"], {"language_defaults": True})
+        limits = settings.get(sid, "subtitles")["subtitle_profiles"]["target"]["limits"]
+        self.assertEqual((16, 12), (limits["max_chars_per_line"]["effective"],
+                                   limits["max_chars_per_second"]["effective"]))
+
+    def test_explicit_carry_freezes_effective_global_custom_limits(self):
+        with self.database.session() as db:
+            db.add(AppSetting(key="defaults.subtitles", value_json={
+                "max_chars_per_line": 42, "max_cps": 15, "max_lines": 1}))
+        settings = WorkspaceSettingsService(self.database)
+        source_effective = settings.get(self.source.id, "subtitles")["effective"]
+        self.assertFalse(source_effective["language_defaults"])
+        project = self._create_project()["project"]
+        branches = self._create_branches(project["id"], project["revision"], [
+            {"target_language": "ja"},
+            {"target_language": "ko", "carry_source_subtitle_settings": True},
+        ])["project"]["branches"]
+        automatic = settings.get(branches[0]["session_id"], "subtitles")
+        self.assertTrue(automatic["effective"]["language_defaults"])
+        self.assertEqual(7, automatic["subtitle_profiles"]["target"]["limits"]["max_chars_per_second"]["effective"])
+        carried_sid = branches[1]["session_id"]
+        self.assertEqual(source_effective, settings.get(carried_sid, "subtitles")["override"])
+        with self.database.session() as db:
+            db.get(AppSetting, "defaults.subtitles").value_json = {
+                "max_chars_per_line": 38, "max_cps": 18}
+        carried = settings.get(carried_sid, "subtitles")
+        self.assertFalse(carried["effective"]["language_defaults"])
+        self.assertEqual(42, carried["effective"]["max_chars_per_line"])
+        self.assertEqual(15, carried["effective"]["max_cps"])
+        self.assertEqual(38, settings.get(self.source.id, "subtitles")["effective"]["max_chars_per_line"])
 
     def test_two_languages_pin_same_source_and_keep_settings_separate(self):
         project = self._create_project()["project"]

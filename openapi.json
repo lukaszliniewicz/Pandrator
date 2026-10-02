@@ -4401,6 +4401,11 @@
       "MultilingualSetup": {
         "additionalProperties": false,
         "properties": {
+          "carry_source_subtitle_settings": {
+            "default": false,
+            "title": "Carry Source Subtitle Settings",
+            "type": "boolean"
+          },
           "generate_voiceover": {
             "default": false,
             "title": "Generate Voiceover",
@@ -9369,6 +9374,11 @@
       "TranslationBranchTarget": {
         "additionalProperties": false,
         "properties": {
+          "carry_source_subtitle_settings": {
+            "default": false,
+            "title": "Carry Source Subtitle Settings",
+            "type": "boolean"
+          },
           "name": {
             "default": "",
             "maxLength": 255,

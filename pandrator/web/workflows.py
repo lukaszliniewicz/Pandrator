@@ -2072,6 +2072,31 @@ class WorkflowService:
             )):
                 payload["speech_plan_revision_id"] = generation_revision.id
         if stage_key == "export":
+            from .export_subtitles import subtitle_profile
+            from .workspace_settings import subtitle_settings_provenance
+
+            subtitle_snapshot = WorkspaceSettingsService(self.database).get_in_session(
+                session, session_id, "subtitles"
+            )
+            original_run = dict(settings or {})
+            structured_subtitles = original_run.get("subtitles")
+            provenance = subtitle_settings_provenance(
+                subtitle_snapshot,
+                structured=structured_subtitles if isinstance(structured_subtitles, dict) else {},
+                flat=original_run,
+            )
+            payload["subtitle_settings_provenance"] = provenance
+            payload["subtitle_profiles"] = {
+                "source": subtitle_profile(
+                    flattened, provenance, language=str(record.source_language or ""),
+                    language_origin="session_source_language",
+                ),
+                "target": subtitle_profile(
+                    flattened, provenance, language=str(record.target_language or ""),
+                    language_origin="session_target_language",
+                ) if record.target_language else None,
+            }
+            payload["subtitle_profile_scope"] = "source_target_alternatives"
             payload["display_subtitle_snapshot"] = capture_display_subtitle_snapshot(
                 session, session_id, flattened
             )

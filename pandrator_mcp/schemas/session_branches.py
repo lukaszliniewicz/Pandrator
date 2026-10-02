@@ -1,6 +1,6 @@
 """Revision-safe forks and independent multilingual translation branches."""
 
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from .common import ToolInput
 
@@ -33,6 +33,7 @@ class CreateTranslationProjectInput(ToolInput):
 class TranslationBranchTargetInput(ToolInput):
     target_language: str = Field(min_length=2, max_length=40)
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    carry_source_subtitle_settings: StrictBool = False
 
 
 class CreateTranslationBranchesInput(ToolInput):

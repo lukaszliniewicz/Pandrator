@@ -97,6 +97,7 @@ def test_create_validation_persists_deferred_plan_without_jobs(case):
             "target_languages": ["pl", "de-de"],
             "generate_voiceover": False,
             "keep_source_subtitles": True,
+            "carry_source_subtitle_settings": False,
         }
         assert db.scalars(select(Job).where(Job.session_id == created["id"])).all() == []
     state = client.get(f"/api/v1/sessions/{created['id']}/translation-project").get_json()
@@ -192,6 +193,35 @@ def test_standalone_fork_does_not_inherit_source_plan(case):
         assert db.get(SessionSetting, (sid, "multilingual_setup")) is None
     assert client.get(f"/api/v1/sessions/{sid}/translation-project").get_json()[
         "setup_state"] == "none"
+
+
+@pytest.mark.parametrize("carry", [False, True])
+def test_planned_branches_apply_saved_subtitle_mode(case, carry):
+    client, headers, services = case
+    source = _source(client, headers, setup={
+        "target_languages": ["ja"], "carry_source_subtitle_settings": carry,
+    }).get_json()
+    custom = {"language_defaults": False, "max_chars_per_line": 42,
+              "max_cps": 15, "max_lines": 1}
+    with services["database"].session() as db:
+        db.add(SessionSetting(session_id=source["id"], section="subtitles", value_json=custom))
+    checkpoint = _reviewed_correction(services, source["id"])
+    response = client.post(
+        f"/api/v1/sessions/{source['id']}/translation-project",
+        json={"checkpoint_artifact_id": checkpoint.id,
+              "expected_revision": source["revision"], "create_planned_branches": True},
+        headers={**headers, "Idempotency-Key": f"subtitle-mode-{carry}"},
+    )
+    assert response.status_code == 200, response.get_json()
+    sid = response.get_json()["project"]["branches"][0]["session_id"]
+    payload = client.get(f"/api/v1/sessions/{sid}/settings/subtitles").get_json()
+    assert payload["effective"]["language_defaults"] is (not carry)
+    limits = payload["subtitle_profiles"]["target"]["limits"]
+    assert limits["max_chars_per_line"]["effective"] == (42 if carry else 16)
+    assert limits["max_chars_per_second"]["effective"] == (15 if carry else 7)
+    assert payload["effective"]["max_lines"] == 1
+    with services["database"].session() as db:
+        assert db.get(SessionSetting, (source["id"], "subtitles")).value_json == custom
 
 
 def test_readiness_and_atomic_planned_branches(case):

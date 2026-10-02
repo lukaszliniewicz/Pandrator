@@ -8,7 +8,7 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-CRISPASR_VERSION = "0.8.36"
+CRISPASR_VERSION = "0.8.40"
 CRISPASR_RELEASE_BASE = (
     f"https://github.com/CrispStrobe/CrispASR/releases/download/v{CRISPASR_VERSION}"
 )
@@ -29,55 +29,55 @@ class CrispASRAsset:
 ASSETS: dict[tuple[str, str, ComputeVariant], CrispASRAsset] = {
     ("windows", "x86_64", ComputeVariant.CPU): CrispASRAsset(
         "crispasr-windows-x86_64-cpu.zip",
-        "1d8c853d102671f4036ccf4da8573a6d9ed3d45ae4530aa07573760a4bc93dc1",
+        "86b67ec6483aebf73cc79f4d3ee6dcf19ff1a3ce5d3097a1bce95b78fc24f8c2",
         ComputeVariant.CPU,
         ("cpu",),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): CrispASRAsset(
         "crispasr-windows-x86_64-cuda.zip",
-        "4d14ce34cbc089259e897bed369214f6f920efa31e3236845bb6c7464ed7fba0",
+        "5bca3b6095f6167b43d81491201d1365b93b8dccc772e4823e80c26bdd7f6ec8",
         ComputeVariant.CUDA,
         ("cuda", "cpu"),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): CrispASRAsset(
         "crispasr-windows-x86_64-vulkan.zip",
-        "659e6cc1d3d0c7d65e1ce2df61efd7295c5b017e8a95c4d340c20ba70793d9cc",
+        "d78135b46d7881aec909aa398def315427ad784a268979accd18fa569a3b5ce9",
         ComputeVariant.VULKAN,
         ("vulkan", "cpu"),
     ),
     ("linux", "x86_64", ComputeVariant.CPU): CrispASRAsset(
         "crispasr-linux-x86_64.tar.gz",
-        "8c0547c07e900f9587fc68a947e4e37938745e6a8ecf6aa9e876cf3a98d18e0f",
+        "dcb322648516fe3de9695e5d264b0ee79a43ee6b0d80f739eddbf6aff132aace",
         ComputeVariant.CPU,
         ("cpu",),
     ),
     ("linux", "x86_64", ComputeVariant.CUDA): CrispASRAsset(
         "crispasr-linux-x86_64-cuda.tar.gz",
-        "5a6e68f4e021a08ae49d265b002cc1eb0a80e2fa41bb0f12200f718d1d65537d",
+        "5eab290968dd2cd6dfbd3b3adba47fe9ec9ca24ee1fcef9f6e5069c96b6db182",
         ComputeVariant.CUDA,
         ("cuda", "cpu"),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): CrispASRAsset(
         "crispasr-linux-x86_64-vulkan.tar.gz",
-        "8eb99a0c7dde45aecf707a39aef84733df84af4d7f4531813cdaa898d0b5d59a",
+        "062273658d9dd8a38ffb355c4d18ae682e28a5090cf73fd911e6472283421483",
         ComputeVariant.VULKAN,
         ("vulkan", "cpu"),
     ),
     ("linux", "aarch64", ComputeVariant.CPU): CrispASRAsset(
         "crispasr-linux-arm64.tar.gz",
-        "f1900065e633c73a242e15df10e18fc53174e6ff95aabee60287995fb248df9e",
+        "8b555f1e2fff44848ebdcf2c17caef46d24888e0f744fea5245860f703471efa",
         ComputeVariant.CPU,
         ("cpu",),
     ),
     ("darwin", "aarch64", ComputeVariant.METAL): CrispASRAsset(
         "crispasr-macos.tar.gz",
-        "0a494b48759ce9756cb0e0fcf72c0beed4c00335f8ae081e571c93d480a500f9",
+        "dc1d656585efbe65c0026e735f44c9d32f32113b64f7c1d198ad85862feaf0e2",
         ComputeVariant.METAL,
         ("metal", "cpu"),
     ),
     ("darwin", "aarch64", ComputeVariant.CPU): CrispASRAsset(
         "crispasr-macos.tar.gz",
-        "0a494b48759ce9756cb0e0fcf72c0beed4c00335f8ae081e571c93d480a500f9",
+        "dc1d656585efbe65c0026e735f44c9d32f32113b64f7c1d198ad85862feaf0e2",
         ComputeVariant.METAL,
         ("metal", "cpu"),
     ),

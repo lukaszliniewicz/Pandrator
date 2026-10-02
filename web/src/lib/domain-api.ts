@@ -213,7 +213,11 @@ export const translationProjectApi = {
     projectId: string,
     body: {
       expected_revision: number;
-      targets: { target_language: string; name?: string }[];
+      targets: {
+        target_language: string;
+        name?: string;
+        carry_source_subtitle_settings?: boolean;
+      }[];
     },
     idempotencyKey: string
   ) =>

@@ -116,6 +116,8 @@ def register_session_branch_tools(
             "Create a multilingual project",
             "Pin an exact corrected source and edited timeline for a multilingual project. "
             "Set create_planned_branches to create the saved session language plan atomically. "
+            "Planned branches use automatic target-language subtitle profiles by default; "
+            "set carry_source_subtitle_settings in the saved setup to preserve current source settings. "
             "Does not translate or start synthesis.",
             write_action,
         ),
@@ -125,6 +127,8 @@ def register_session_branch_tools(
             "pandrator_create_translation_branches",
             "Create independent language branches",
             "Atomically create up to 20 language sessions from one pinned project checkpoint. "
+            "Each target uses automatic subtitle profiles by default; set its "
+            "carry_source_subtitle_settings to true to copy the source's current effective settings. "
             "Run translation, voice review and generation independently in each returned session; "
             "branch runs can proceed in parallel.",
             write_action,

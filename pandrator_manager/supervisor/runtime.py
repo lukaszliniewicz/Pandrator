@@ -46,6 +46,8 @@ class _RuntimeProcess:
     started_monotonic: float
     restart_count: int = 0
     health_failures: int = 0
+    last_persisted_service: ManagedService | None = None
+    last_persisted_monotonic: float | None = None
 
 
 @dataclass(slots=True)
@@ -63,11 +65,16 @@ class ProcessSupervisor:
         *,
         manager_instance_id: str,
         monitor_interval_seconds: float = 1.0,
+        persistence_interval_seconds: float = 300.0,
     ) -> None:
         self.context = context
         self.store = store
         self.manager_instance_id = manager_instance_id
         self.monitor_interval_seconds = max(0.1, float(monitor_interval_seconds))
+        self.persistence_interval_seconds = max(
+            self.monitor_interval_seconds,
+            float(persistence_interval_seconds),
+        )
         self._specs: dict[str, ManagedProcessSpec] = {}
         self._runtime: dict[str, _RuntimeProcess] = {}
         self._pending: dict[str, _PendingRestart] = {}
@@ -260,7 +267,11 @@ class ProcessSupervisor:
         )
         existing.process = adopted_identity
         existing.desired_running = True
-        self.store.save_service(existing)
+        self._save_runtime_service(
+            self._runtime[spec.service_id],
+            existing,
+            force=True,
+        )
 
     @staticmethod
     def _port_available(port: int) -> bool:
@@ -393,6 +404,40 @@ class ProcessSupervisor:
             restart_count=runtime.restart_count,
         )
 
+    @staticmethod
+    def _service_persistence_value(service: ManagedService) -> dict:
+        """Return every durable service field except the probe timestamp."""
+
+        return service.model_dump(
+            mode="python",
+            exclude={"health": {"checked_at"}},
+        )
+
+    def _save_runtime_service(
+        self,
+        runtime: _RuntimeProcess,
+        service: ManagedService,
+        *,
+        force: bool = False,
+    ) -> None:
+        previous = runtime.last_persisted_service
+        now = time.monotonic()
+        changed = previous is None or (
+            self._service_persistence_value(previous)
+            != self._service_persistence_value(service)
+        )
+        interval_elapsed = (
+            runtime.last_persisted_monotonic is None
+            or now - runtime.last_persisted_monotonic
+            >= self.persistence_interval_seconds
+        )
+        if not (force or changed or interval_elapsed):
+            return
+
+        self.store.save_service(service.model_copy(deep=True))
+        runtime.last_persisted_service = service.model_copy(deep=True)
+        runtime.last_persisted_monotonic = time.monotonic()
+
     def _start_one(
         self,
         spec: ManagedProcessSpec,
@@ -457,7 +502,7 @@ class ProcessSupervisor:
                 # executable that is actually serving traffic.
                 self._refresh_runtime_identity(runtime)
                 service = self._service_snapshot(runtime, health)
-                self.store.save_service(service)
+                self._save_runtime_service(runtime, service, force=True)
                 self.context.event_sink.emit(
                     "service.healthy",
                     {"service_id": spec.service_id, "pid": identity.pid},
@@ -900,7 +945,10 @@ class ProcessSupervisor:
                         >= runtime.spec.restart.stable_after_seconds
                     ):
                         runtime.restart_count = 0
-                    self.store.save_service(self._service_snapshot(runtime, health))
+                    self._save_runtime_service(
+                        runtime,
+                        self._service_snapshot(runtime, health),
+                    )
                     continue
                 runtime.health_failures += 1
                 if (
@@ -908,7 +956,11 @@ class ProcessSupervisor:
                     and runtime.health_failures
                     < runtime.spec.restart.health_failure_threshold
                 ):
-                    self.store.save_service(self._service_snapshot(runtime, health))
+                    self._save_runtime_service(
+                        runtime,
+                        self._service_snapshot(runtime, health),
+                        force=True,
+                    )
                     continue
                 if not exited:
                     self._terminate(runtime)

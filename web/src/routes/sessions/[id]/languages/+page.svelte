@@ -29,6 +29,8 @@
   let plannedLanguages = $state<string[]>([]);
   let plannedVoiceover = $state(false);
   let plannedSourceSubtitles = $state(true);
+  let plannedCarrySubtitleSettings = $state(false);
+  let carrySourceSubtitleSettings = $state(false);
   let loading = $state(true);
   let busy = $state(false);
   let error = $state('');
@@ -100,6 +102,8 @@
           plannedLanguages = [...(setup?.target_languages ?? [])];
           plannedVoiceover = setup?.generate_voiceover ?? false;
           plannedSourceSubtitles = setup?.keep_source_subtitles ?? true;
+          plannedCarrySubtitleSettings =
+            setup?.carry_source_subtitle_settings ?? false;
         }
         checkpointOptions =
           catalog?.items.filter(
@@ -120,6 +124,7 @@
     editingSetup = false;
     readyCheckpointId = '';
     languages = [];
+    carrySourceSubtitleSettings = false;
     checkpointOptions = [];
     chosenCheckpointId = '';
     name = '';
@@ -180,7 +185,10 @@
     const projectId = project.id;
     const body = {
       expected_revision: project.revision,
-      targets: languages.map((target_language) => ({ target_language }))
+      targets: languages.map((target_language) => ({
+        target_language,
+        carry_source_subtitle_settings: carrySourceSubtitleSettings
+      }))
     };
     try {
       const result = await translationProjectApi.addBranches(
@@ -210,7 +218,8 @@
       multilingual_setup: {
         target_languages: plannedLanguages,
         generate_voiceover: plannedVoiceover,
-        keep_source_subtitles: plannedSourceSubtitles
+        keep_source_subtitles: plannedSourceSubtitles,
+        carry_source_subtitle_settings: plannedCarrySubtitleSettings
       }
     };
     try {
@@ -343,6 +352,20 @@
           disabled={busy}
         />
       </div>
+      <label class="mt-4 flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          bind:checked={carrySourceSubtitleSettings}
+          disabled={busy}
+        />
+        <span
+          >Use source subtitle settings in new languages<span
+            class="muted mt-1 block text-xs"
+            >Otherwise, each new language starts with automatic line-length and
+            reading-speed limits for its own language.</span
+          ></span
+        >
+      </label>
       <button
         type="submit"
         disabled={busy || !branchesValid}
@@ -365,6 +388,8 @@
               plannedLanguages = [...setup!.target_languages];
               plannedVoiceover = setup!.generate_voiceover;
               plannedSourceSubtitles = setup!.keep_source_subtitles;
+              plannedCarrySubtitleSettings =
+                setup!.carry_source_subtitle_settings ?? false;
             }}
             class="text-sm font-semibold text-[var(--accent)]"
             >{editingSetup ? 'Cancel changes' : 'Edit language plan'}</button
@@ -391,6 +416,19 @@
                 disabled={busy}
               /><span>Keep source subtitles alongside translations</span></label
             >
+            <label class="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                bind:checked={plannedCarrySubtitleSettings}
+                disabled={busy}
+              />
+              <span
+                >Use source subtitle settings in new languages<span
+                  class="muted mt-1 block text-xs"
+                  >Otherwise, automatic limits follow each new language.</span
+                ></span
+              >
+            </label>
             <button
               type="submit"
               disabled={busy || !planValid}
@@ -408,6 +446,11 @@
               : 'Subtitles only'} · {setup.keep_source_subtitles
               ? 'Source subtitles included'
               : 'Translated subtitles only'}
+          </p>
+          <p class="muted mt-2 text-sm">
+            {setup.carry_source_subtitle_settings
+              ? 'New languages use source subtitle settings.'
+              : 'New languages use automatic subtitle limits for their own language.'}
           </p>
           <p class="mt-3 text-sm leading-6" role="status">
             {setupState === 'ready'

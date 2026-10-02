@@ -65,10 +65,10 @@ SENTENCE_SPLITTER_LANGUAGES = {
 # CONJUNCTIONS is the shared language-aware table from natural_boundaries.
 # It is re-exported here for backward compatibility.
 
-_FALLBACK_SENTENCE_RE = re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+")
+_FALLBACK_SENTENCE_RE = re.compile(r"(?<=[.!?\u3002\uff01\uff1f\u0964\u0965])\s+")
 _SPEAKER_PREFIX_RE = re.compile(r"^\[(?P<speaker>SPEAKER[^\]]*)\]:\s*", re.IGNORECASE)
 _TERMINAL_SENTENCE_RE = re.compile(
-    r"[.!?\u2026\u3002\uff01\uff1f][\"'\u201d\u2019)\]}]*$"
+    r"[.!?\u2026\u3002\uff01\uff1f\u0964\u0965][\"'\u201d\u2019)\]}]*$"
 )
 SAME_SPEAKER_OVERLAP_TOLERANCE_MS = 120
 
@@ -568,7 +568,7 @@ def _break_cost(
         return 30.0
     terminal = before.rstrip('\"\'»”’)]}')
     last = terminal[-1:] or before[-1]
-    complete = last in ".!?\u2026\u3002\uff01\uff1f"
+    complete = last in ".!?\u2026\u3002\uff01\uff1f\u0964\u0965"
     if last == "." and period_is_non_boundary(before, after):
         # A decimal point or abbreviation is not a finished thought.
         complete = False
@@ -790,7 +790,7 @@ def _partition_break_rule(
     if offset in conjunction_breaks:
         return "conjunction"
     before = str(text or "")[:offset].rstrip()
-    if before and before[-1] in ".!?\u2026\u3002\uff01\uff1f":
+    if before and before[-1] in ".!?\u2026\u3002\uff01\uff1f\u0964\u0965":
         return "sentence"
     if before and before[-1] in ",;:\u2014\u2013\uff0c\u3001\uff1b\uff1a":
         return "clause"

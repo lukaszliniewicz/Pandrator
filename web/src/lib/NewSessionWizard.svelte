@@ -80,6 +80,7 @@
         !targetLanguages.includes(sourceLanguage.toLowerCase()))
   );
   let keepSourceSubtitles = $state(true);
+  let carrySourceSubtitleSettings = $state(false);
   let targetLanguage = $state('en');
   let subtitleMode = $state<'none' | 'soft' | 'burned'>('soft');
   let subtitleExport = $state<'srt' | 'vtt' | 'text'>('srt');
@@ -264,7 +265,8 @@
               multilingual_setup: {
                 target_languages: targetLanguages,
                 generate_voiceover: multilingualVoiceover,
-                keep_source_subtitles: keepSourceSubtitles
+                keep_source_subtitles: keepSourceSubtitles,
+                carry_source_subtitle_settings: carrySourceSubtitleSettings
               }
             }
           : {}),
@@ -752,6 +754,20 @@
                   ></span
                 ></label
               >
+              <label class="option">
+                <input
+                  type="checkbox"
+                  bind:checked={carrySourceSubtitleSettings}
+                />
+                <span
+                  ><strong>Use source subtitle settings in new languages</strong
+                  ><small
+                    >By default, each new language uses automatic line-length
+                    and reading-speed limits for its own language. Enable this
+                    to carry the source’s custom limits.</small
+                  ></span
+                >
+              </label>
               <p class="muted text-sm leading-6">
                 Correct and review the source first. Your language choices are
                 saved now; create their independent workspaces from Languages

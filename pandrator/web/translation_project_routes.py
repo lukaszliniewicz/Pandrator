@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from flask import jsonify, request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -34,6 +34,7 @@ class TranslationBranchTarget(BaseModel):
 
     target_language: str = Field(min_length=2, max_length=40)
     name: str = Field(default="", max_length=255)
+    carry_source_subtitle_settings: StrictBool = False
 
 
 class TranslationBranchesCreateRequest(BaseModel):

@@ -13,7 +13,11 @@ from typing import Callable
 
 from .export_inputs import ExportInputs, MediaExportSelection
 from .export_publication import publish_video_export
-from .export_subtitles import subtitle_track_details
+from .export_subtitles import (
+    subtitle_file_diagnostics,
+    subtitle_track_details,
+    subtitle_track_language_origin,
+)
 from .export_video_commands import (
     VideoEncodingOptions,
     check_video_cancelled,
@@ -274,6 +278,7 @@ def render_video_export(
     cancel_event: threading.Event,
     job_id: str | None = None,
     lease_generation: int | None = None,
+    subtitle_settings_provenance: dict | None = None,
 ) -> Artifact:
     """Render one video and clean all transient files even if preparation fails."""
     from pandrator.logic.dubbing.bilingual_ass import write_bilingual_ass
@@ -401,6 +406,7 @@ def render_video_export(
             output_dir.parent / "intermediates" / "subtitles"
         )
         finalized_subtitle_paths: dict[str, Path] = {}
+        finalized_subtitle_diagnostics: dict[str, dict] = {}
         for item in selected_subtitles:
             track_name = track_details(item)[0]
             _subtitle_record, subtitle_path = context._resolve_input(
@@ -409,6 +415,11 @@ def render_video_export(
             scratch = _finalize_track_scratch(track_name)
             finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
             finalized_subtitle_paths[item.id] = scratch
+            finalized_subtitle_diagnostics[item.id] = subtitle_file_diagnostics(
+                subtitle_path, scratch, settings, subtitle_settings_provenance,
+                language=track_details(item)[1],
+                language_origin=subtitle_track_language_origin(item, record=record, settings=settings),
+            )
         if subtitle_mode == "soft" and selected_subtitles:
             tracks = []
             for index, item in enumerate(selected_subtitles, start=1):
@@ -449,6 +460,7 @@ def render_video_export(
                             "language": language,
                             "title": title,
                             "default": is_default,
+                            "subtitle_diagnostics": finalized_subtitle_diagnostics[item.id],
                         },
                     )
                 )
@@ -521,18 +533,19 @@ def render_video_export(
             )
         else:
             progress(0.9, "Rendered media output ready")
+        sidecar_ids = {
+            selected.id: sidecar.id
+            for selected, sidecar in zip(selected_subtitles, video_track_artifacts, strict=False)
+        }
         subtitle_track_metadata = [
             {
-                "artifact_id": item.id,
-                "language": str(
-                    (item.metadata_json or {}).get("language") or "und"
-                ),
-                "title": str(
-                    (item.metadata_json or {}).get("title") or "Subtitles"
-                ),
-                "default": bool((item.metadata_json or {}).get("default")),
+                "artifact_id": sidecar_ids.get(item.id, item.id),
+                "language": track_details(item)[1],
+                "title": track_details(item)[2],
+                "default": track_details(item)[3],
+                "subtitle_diagnostics": finalized_subtitle_diagnostics[item.id],
             }
-            for item in video_track_artifacts
+            for item in selected_subtitles
         ]
         return publish_video_export(
             context, render_destination, requested_destination,

@@ -21,6 +21,12 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
     fixture = fork_fixture.WebSessionForkTests()
     fixture.setUp()
     try:
+        source_settings = fixture.client.put(
+            f"/api/v1/sessions/{fixture.record['id']}/settings/subtitles",
+            json={"value": {"language_defaults": False, "max_chars_per_line": 42, "max_cps": 15}},
+            headers={**fixture.headers, "If-Match": "0"},
+        )
+        assert source_settings.status_code == 200, source_settings.get_json()
 
         def request_json(
             path,
@@ -100,13 +106,23 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
                 args = {
                     "project_id": project["id"],
                     "expected_revision": project["revision"],
-                    "targets": [{"target_language": "de"}, {"target_language": "ja"}],
+                    "targets": [{"target_language": "de"}, {"target_language": "ja",
+                                "carry_source_subtitle_settings": True}],
                     "idempotency_key": "mcp-branches-test-001",
                 }
                 project = (await call("pandrator_create_translation_branches", args))["project"]
                 branches = project["branches"]
                 assert len(branches) == 2
                 assert len({branch["session_id"] for branch in branches}) == 2
+                for branch in branches:
+                    settings = fixture.client.get(
+                        f"/api/v1/sessions/{branch['session_id']}/settings/subtitles"
+                    ).get_json()
+                    carry = branch["target_language"] == "ja"
+                    assert settings["effective"]["language_defaults"] is (not carry)
+                    limits = settings["subtitle_profiles"]["target"]["limits"]
+                    assert limits["max_chars_per_line"]["effective"] == (42 if carry else 60)
+                    assert limits["max_chars_per_second"]["effective"] == (15 if carry else 20)
                 # Both independent native passive runs remain claimable at once.
                 runs = []
                 for branch in branches:
@@ -230,6 +246,23 @@ def test_client_preserves_fork_revision_and_batch_idempotency():
         "/api/v1/translation-projects/project%2Fa/branches",
     )
     assert client._request_json.call_args.kwargs["idempotency_key"] == "branches-client-test"
+
+
+@pytest.mark.parametrize("value", ["true", 1, None])
+def test_carry_subtitle_settings_is_strict_across_api_and_mcp(value):
+    from pydantic import ValidationError
+
+    from pandrator.web.multilingual_setup import MultilingualSetup
+    from pandrator.web.translation_project_routes import TranslationBranchTarget
+    from pandrator_mcp.schemas.session_branches import TranslationBranchTargetInput
+
+    for model in (TranslationBranchTarget, TranslationBranchTargetInput):
+        assert model(target_language="ja").carry_source_subtitle_settings is False
+        assert model(target_language="ja", carry_source_subtitle_settings=True).carry_source_subtitle_settings is True
+        with pytest.raises(ValidationError):
+            model(target_language="ja", carry_source_subtitle_settings=value)
+    with pytest.raises(ValidationError):
+        MultilingualSetup(target_languages=["ja"], carry_source_subtitle_settings=value)
 
 
 def test_mcp_fork_requires_revision_and_bounded_targets():

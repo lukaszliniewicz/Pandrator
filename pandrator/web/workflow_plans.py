@@ -830,6 +830,12 @@ class WorkflowExecutionPlanService:
                     resolved.payload.get("resolved_settings_snapshot") or {}
                 ),
             },
+            **({"subtitle_review": {
+                "provenance": resolved.payload.get("subtitle_settings_provenance", {"status": "unknown/historical_snapshot"}),
+                "profiles": resolved.payload.get("subtitle_profiles", {}),
+                "profile_scope": resolved.payload.get("subtitle_profile_scope", "source_target_alternatives"),
+                "counts_status": "available_after_render",
+            }} if target_stage == "export" else {}),
             "ordered_steps": steps,
             "reuse_decisions": [
                 {

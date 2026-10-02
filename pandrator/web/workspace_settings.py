@@ -27,6 +27,7 @@ from .models import (
 )
 from .settings_policy import (
     BUILTIN_DEFAULTS,
+    RUNTIME_SETTING_ALIASES,
     SETTING_SECTIONS,
     RevisionConflict,
     _merge,
@@ -39,6 +40,58 @@ from .settings_policy import (
     validate_voiceover_repair_settings,
 )
 from .source_resolution import classify_source, resolve_media_source
+
+
+def subtitle_settings_provenance(
+    snapshot: dict[str, Any], *, structured: dict[str, Any] | None = None,
+    flat: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Trace only finalizer settings through the actual resolution layers."""
+    aliases = RUNTIME_SETTING_ALIASES["subtitles"]
+    allowed = set(aliases)
+    fields: dict[str, dict[str, Any]] = {}
+    for origin, values in (
+        ("builtin", snapshot.get("builtin")),
+        ("global", snapshot.get("global")),
+        ("session_context", snapshot.get("session_context")),
+        ("session_override", snapshot.get("override")),
+    ):
+        for key, value in (values or {}).items():
+            if key in allowed:
+                fields[key] = {"origin": origin, "supplied": value}
+    explicit = {**(snapshot.get("global") or {}), **(snapshot.get("override") or {})}
+    if "language_defaults" not in explicit:
+        causes = [
+            {"field": key, "origin": fields[key]["origin"]}
+            for key in ("max_chars_per_line", "max_cps")
+            if key in explicit and explicit[key] is not None
+            and explicit[key] != BUILTIN_DEFAULTS["subtitles"][key]
+        ]
+        if causes:
+            fields["language_defaults"] = {
+                "origin": "derived_from_custom_limits", "supplied": False,
+                "causes": causes,
+            }
+    for origin, values, runtime in (
+        ("structured_run_override", structured or {}, False),
+        ("flat_run_override", flat or {}, True),
+    ):
+        mapped = {key: aliases[key] if runtime else key for key in allowed}
+        for key, alias in mapped.items():
+            if alias in values:
+                fields[key] = {"origin": origin, "supplied": values[alias]}
+        flag = "subtitle_language_defaults" if runtime else "language_defaults"
+        causes = [
+            {"field": key, "origin": origin}
+            for key in ("max_chars_per_line", "max_cps")
+            if values.get((aliases[key] if runtime else key)) not in (None, "")
+        ]
+        if flag not in values and causes:
+            fields["language_defaults"] = {
+                "origin": "derived_from_custom_limits", "supplied": False,
+                "causes": causes,
+            }
+    return {"fields": fields}
 
 
 class WorkspaceSettingsService:
@@ -352,7 +405,7 @@ class WorkspaceSettingsService:
                 "flac",
             }:
                 effective["format"] = "wav"
-        return {
+        result = {
             "section": section,
             "builtin": deepcopy(BUILTIN_DEFAULTS[section]),
             "global": deepcopy(global_value),
@@ -363,6 +416,48 @@ class WorkspaceSettingsService:
             "revision": override.revision if override else 0,
             "global_revision": global_record.revision if global_record else 0,
         }
+        if section == "subtitles":
+            from .export_subtitles import subtitle_profile
+            from .settings_policy import adapt_runtime_settings
+
+            # Translation settings may change the requested language without
+            # renaming the session or its project branch. Preview the language
+            # the translation workflow will actually use.
+            translation = self.get_in_session(session, session_id, "translation")
+            if target_language or any(
+                translation[layer].get("target_language")
+                for layer in ("global", "override")
+            ):
+                target_language = str(translation["effective"].get("target_language") or "")
+            target_language_origin = "effective_translation_settings"
+            provenance = subtitle_settings_provenance(result)
+            runtime = adapt_runtime_settings("subtitles", effective)
+            result["subtitle_settings_provenance"] = provenance
+            result["subtitle_profiles"] = {
+                "source": subtitle_profile(
+                    runtime, provenance, language=source_language,
+                    language_origin="session_source_language",
+                ),
+                "target": subtitle_profile(
+                    runtime, provenance, language=target_language,
+                    language_origin=target_language_origin,
+                ) if target_language else None,
+            }
+            result["subtitle_profile_scope"] = "source_target_alternatives"
+            # Resolve previews using the same finalizer as export, even while
+            # the settings editor is switching an existing custom session to auto.
+            automatic_runtime = {**runtime, "subtitle_language_defaults": True}
+            result["subtitle_automatic_profiles"] = {
+                "source": subtitle_profile(
+                    automatic_runtime, provenance, language=source_language,
+                    language_origin="session_source_language",
+                ),
+                "target": subtitle_profile(
+                    automatic_runtime, provenance, language=target_language,
+                    language_origin=target_language_origin,
+                ) if target_language else None,
+            }
+        return result
 
     def update(
         self,

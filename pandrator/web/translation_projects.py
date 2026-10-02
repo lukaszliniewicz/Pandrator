@@ -307,7 +307,13 @@ def create_project_in_session(
             raise ValueError("Planned branch creation requires a fork service and cleanup list.")
         create_branches_in_session(
             db, project.id, project.revision,
-            [{"target_language": language} for language in setup.target_languages],
+            [
+                {
+                    "target_language": language,
+                    "carry_source_subtitle_settings": setup.carry_source_subtitle_settings,
+                }
+                for language in setup.target_languages
+            ],
             session_forks=session_forks, paths=paths,
             created_directories=created_directories,
         )
@@ -358,7 +364,7 @@ def create_branches_in_session(
             )
         ).all()
     )
-    normalized: list[tuple[str, str]] = []
+    normalized: list[tuple[str, str, bool]] = []
     requested: set[str] = set()
     for target in targets:
         language = canonical_language(target["target_language"])
@@ -368,10 +374,23 @@ def create_branches_in_session(
         title = str(target.get("name") or "").strip() or f"{source.name} — {language}"
         if len(title) > 255:
             raise ValueError("A branch name cannot exceed 255 characters.")
-        normalized.append((language, title))
+        carry_source_subtitle_settings = target.get(
+            "carry_source_subtitle_settings", False
+        )
+        if type(carry_source_subtitle_settings) is not bool:
+            raise ValueError("carry_source_subtitle_settings must be a boolean.")
+        normalized.append((language, title, carry_source_subtitle_settings))
+
+    source_subtitle_settings = None
+    if any(carry for _, _, carry in normalized):
+        # get_in_session uses the caller's SQLAlchemy session and does not open
+        # another transaction, so carried settings share the branch write.
+        source_subtitle_settings = WorkspaceSettingsService(
+            session_forks.database
+        ).get_in_session(db, source.id, "subtitles")["effective"]
     # The caller owns BEGIN IMMEDIATE and directory cleanup if any later fork or
     # commit fails. Each fork also removes its own partial directory on failure.
-    for language, title in normalized:
+    for language, title, carry_source_subtitle_settings in normalized:
         fork = session_forks.fork_in_session(
             db,
             source.id,
@@ -386,6 +405,49 @@ def create_branches_in_session(
         inherited_setup = db.get(SessionSetting, (record.id, SECTION))
         if inherited_setup is not None:
             db.delete(inherited_setup)
+        for copied_setting in db.scalars(
+            select(SessionSetting).where(SessionSetting.session_id == record.id)
+        ).all():
+            if copied_setting.section == "subtitles":
+                continue
+            child_value = copied_setting.value_json
+            if not isinstance(child_value, dict):
+                continue
+            child_value = dict(child_value)
+            for key in (
+                "subtitle_language_defaults",
+                "subtitle_max_chars_per_line",
+                "subtitle_max_cps",
+            ):
+                child_value.pop(key, None)
+            copied_setting.value_json = child_value
+        subtitle_setting = db.get(SessionSetting, (record.id, "subtitles"))
+        if subtitle_setting is None:
+            subtitle_setting = SessionSetting(
+                session_id=record.id, section="subtitles", value_json={}
+            )
+            db.add(subtitle_setting)
+        if carry_source_subtitle_settings:
+            subtitle_value = deepcopy(source_subtitle_settings or {})
+            for key in (
+                "subtitle_language_defaults",
+                "subtitle_max_chars_per_line",
+                "subtitle_max_cps",
+            ):
+                subtitle_value.pop(key, None)
+            subtitle_setting.value_json = subtitle_value
+        else:
+            subtitle_value = dict(subtitle_setting.value_json or {})
+            subtitle_value["language_defaults"] = True
+            for key in (
+                "subtitle_language_defaults",
+                "max_chars_per_line",
+                "max_cps",
+                "subtitle_max_chars_per_line",
+                "subtitle_max_cps",
+            ):
+                subtitle_value.pop(key, None)
+            subtitle_setting.value_json = subtitle_value
         record.workflow_kind = (
             "voiceover" if setup.generate_voiceover else "subtitles"
         ) if setup is not None else (

@@ -167,6 +167,7 @@ export type MultilingualSetup = {
   target_languages: string[];
   generate_voiceover: boolean;
   keep_source_subtitles: boolean;
+  carry_source_subtitle_settings?: boolean;
 };
 
 export type TranslationProjectPayload = {
@@ -690,6 +691,8 @@ export type SettingsPayload = {
   effective: Record<string, unknown>;
   override: Record<string, unknown>;
   global?: Record<string, unknown>;
+  subtitle_profiles?: Record<string, SubtitleLanguageProfile | null>;
+  subtitle_automatic_profiles?: Record<string, SubtitleLanguageProfile | null>;
   context?: {
     source_profile?: string;
     has_source_audio?: boolean;
@@ -698,6 +701,11 @@ export type SettingsPayload = {
     [key: string]: unknown;
   };
   [key: string]: unknown;
+};
+
+export type SubtitleLanguageProfile = {
+  language: string;
+  limits: Record<string, { effective: number }>;
 };
 
 export type GlobalDefaultsPayload = {

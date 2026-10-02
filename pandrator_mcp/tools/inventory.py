@@ -13,6 +13,69 @@ from ..schemas import (
 )
 
 
+def _safe_subtitle_diagnostics(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"status": "unavailable"}
+    count_keys = (
+        "cue_count", "line_length_violating_cues", "line_length_violating_lines",
+        "reading_speed_violating_cues", "max_lines_violating_cues",
+        "invalid_duration_cues", "observed_max_units_per_line", "observed_max_cps",
+    )
+    profile = value.get("profile")
+    profile = profile if isinstance(profile, dict) else {}
+    limits = profile.get("limits")
+    limits = limits if isinstance(limits, dict) else {}
+    defaults = profile.get("language_defaults")
+    defaults = defaults if isinstance(defaults, dict) else {}
+    warning = profile.get("warning")
+    warning = warning if isinstance(warning, dict) else {}
+    def safe_causes(raw: object) -> list[dict[str, str]]:
+        return [
+            {key: str(cause[key]) for key in ("field", "origin") if isinstance(cause.get(key), str)}
+            for cause in raw if isinstance(cause, dict)
+        ] if isinstance(raw, list) else []
+    safe_limits = {}
+    for key in (
+        "max_chars_per_line", "max_lines", "min_duration_ms", "max_duration_ms",
+        "max_chars_per_second", "min_gap_ms", "phrase_gap_ms", "hard_gap_ms",
+        "sentence_boundary_threshold",
+    ):
+        field = limits.get(key)
+        if isinstance(field, dict):
+            safe_limits[key] = {
+                name: field[name] for name in ("effective", "supplied", "origin", "effective_origin")
+                if name in field and isinstance(field[name], (str, int, float, bool, type(None)))
+            }
+    safe_profile = {
+        "language": profile.get("language") if isinstance(profile.get("language"), str) else "",
+        "language_origin": profile.get("language_origin") if isinstance(profile.get("language_origin"), str) else "unknown/historical_snapshot",
+        "language_defaults": {
+            "effective": defaults.get("effective") is True,
+            "supplied": defaults.get("supplied") if isinstance(defaults.get("supplied"), bool) else None,
+            "origin": str(defaults.get("origin") or "unknown/historical_snapshot"),
+            "causes": safe_causes(defaults.get("causes")),
+        },
+        "limits": safe_limits,
+        "warning": {
+            "code": str(warning.get("code") or ""),
+            "language": str(warning.get("language") or ""),
+            "origin": str(warning.get("origin") or "unknown/historical_snapshot"),
+            "causes": safe_causes(warning.get("causes")),
+        } if warning else None,
+    }
+    return {
+        "profile": safe_profile,
+        **{
+            phase: {
+                key: counts[key] for key in count_keys
+                if key in counts and isinstance(counts[key], (int, float))
+            } | {"semantics": "display units; strict greater-than limits; millisecond cue duration"}
+            for phase in ("input", "final")
+            if isinstance(counts := value.get(phase), dict)
+        },
+    }
+
+
 def describe_parameters(
     runtime: McpRuntime,
     arguments: DescribeParametersInput,
@@ -46,6 +109,10 @@ def list_artifacts(
                 continue
             if arguments.role and item.get("role") != arguments.role:
                 continue
+            metadata = item.get("metadata_json")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            diagnostic = metadata.get("subtitle_diagnostics")
+            tracks = metadata.get("subtitle_tracks")
             items.append(
                 {
                     "id": item.get("id"),
@@ -56,6 +123,17 @@ def list_artifacts(
                     "size_bytes": item.get("size_bytes"),
                     "state": item.get("state"),
                     "created_at": item.get("created_at"),
+                    "language": metadata.get("language") if isinstance(metadata.get("language"), str) else None,
+                    "subtitle_diagnostics": _safe_subtitle_diagnostics(diagnostic),
+                    "subtitle_tracks": [
+                        {
+                            "artifact_id": track.get("artifact_id"),
+                            "language": track.get("language"),
+                            "subtitle_diagnostics": _safe_subtitle_diagnostics(track.get("subtitle_diagnostics")),
+                        }
+                        for track in tracks if isinstance(track, dict)
+                    ] if isinstance(tracks, list) else [],
+                    **({"settings_hash": item["settings_hash"]} if item.get("settings_hash") else {}),
                 }
             )
             if len(items) >= arguments.limit:

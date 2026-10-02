@@ -606,6 +606,71 @@ def finalize_srt_content(content: str, settings: dict[str, Any] | None = None) -
     return compose_srt(finalize_segments(segments, config))
 
 
+def diagnose_srt_content(
+    content: str, settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Count delivery-limit observations without changing cue composition.
+
+    The parser normalizes nonpositive spans to 100 ms. Count these separately
+    from the original timing lines so they cannot be mistaken for valid CPS.
+    """
+    from .srt_utils import parse_srt_timestamp
+
+    cues = parse_srt(content)
+    config = SubtitleFinalizationConfig.from_settings(
+        settings, text=join_fragments(cue.text for cue in cues)
+    )
+    invalid_ordinals: set[int] = set()
+    accepted_ordinal = 0
+    for block in re.split(r"\n\s*\n+", content.replace("\r\n", "\n").replace("\r", "\n")):
+        # Parse each block with the same acceptance rules as the full parser.
+        # Cue position, rather than normalized timestamps, distinguishes two
+        # cues that collapse to the same span after duration repair.
+        if not parse_srt(block, infer_speakers=False):
+            continue
+        block_lines = [line.rstrip() for line in block.splitlines() if line.strip()]
+        timing = next(line for line in block_lines if "-->" in line)
+        start, end = timing.split("-->", 1)
+        try:
+            start_ms, end_ms = parse_srt_timestamp(start), parse_srt_timestamp(end)
+            if end_ms <= start_ms:
+                invalid_ordinals.add(accepted_ordinal)
+        except ValueError:
+            pass
+        accepted_ordinal += 1
+    invalid_durations = len(invalid_ordinals)
+    violating_lines = 0
+    line_cues = 0
+    speed_cues = 0
+    max_lines_cues = 0
+    maximum_line = 0.0
+    maximum_cps = 0.0
+    for ordinal, cue in enumerate(cues):
+        lines = cue.text.splitlines()
+        lengths = [config.character_count(line) for line in lines]
+        excess = sum(length > config.max_chars_per_line for length in lengths)
+        violating_lines += excess
+        line_cues += bool(excess)
+        max_lines_cues += len(lines) > config.max_lines
+        maximum_line = max(maximum_line, *lengths) if lengths else maximum_line
+        duration_ms = cue.end_ms - cue.start_ms
+        if ordinal not in invalid_ordinals and duration_ms > 0:
+            cps = config.character_count(cue.text) * 1000.0 / duration_ms
+            maximum_cps = max(maximum_cps, cps)
+            speed_cues += cps > config.max_chars_per_second
+    return {
+        "cue_count": len(cues),
+        "line_length_violating_cues": line_cues,
+        "line_length_violating_lines": violating_lines,
+        "reading_speed_violating_cues": speed_cues,
+        "max_lines_violating_cues": max_lines_cues,
+        "invalid_duration_cues": invalid_durations,
+        "observed_max_units_per_line": maximum_line,
+        "observed_max_cps": maximum_cps,
+        "semantics": "display units; strict greater-than limits; millisecond cue duration",
+    }
+
+
 def finalize_srt_file(
     source: str | Path,
     destination: str | Path,

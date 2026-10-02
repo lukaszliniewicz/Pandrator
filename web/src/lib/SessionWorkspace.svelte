@@ -92,6 +92,7 @@
   import type VoiceLibraryModal from './VoiceLibraryModal.svelte';
   import { modalFocus } from './modal-focus';
   import ParameterLabel from './ParameterLabel.svelte';
+  import SubtitleLimitsSummary from './SubtitleLimitsSummary.svelte';
   import type { StageArtifact } from './stage-artifacts';
   import {
     SOURCE_PASSAGE_CONTROLS,
@@ -395,6 +396,7 @@
   let vadMaxSpeech = $state(300);
   let vadSpeechPad = $state(30);
   let subtitleLanguageDefaults = $state(true);
+  let subtitleSettingsPayload = $state<SettingsPayload | null>(null);
   let subtitleChars = $state(60);
   let subtitleLines = $state(2);
   let subtitleMinDuration = $state(833);
@@ -1222,9 +1224,13 @@
     vadMaxSpeech = Number(saved.crispasr_vad_max_speech_seconds ?? 300);
     vadSpeechPad = Number(saved.crispasr_vad_speech_pad_ms ?? 30);
     let subtitleSettings: Record<string, unknown> = {};
+    subtitleSettingsPayload = null;
     try {
-      subtitleSettings = (await sessionApi.settings(session.id, 'subtitles'))
-        .effective;
+      subtitleSettingsPayload = await sessionApi.settings(
+        session.id,
+        'subtitles'
+      );
+      subtitleSettings = subtitleSettingsPayload.effective;
     } catch {
       /* Stage snapshots still work when the settings request fails. */
     }
@@ -4653,37 +4659,30 @@
               <p class="muted mt-1 text-xs">
                 Pandrator's deterministic word-timed composer uses these limits;
                 they are not sent to the correction model. It may regroup source
-                cues while preserving speakers, hard pauses, reading speed, and
-                the configured display capacity.
+                cues while preserving speakers and hard pauses, aiming for the
+                reading-speed target and configured display capacity.
               </p>
               <label class="mt-3 flex items-center gap-2 text-xs font-semibold">
                 <input
                   type="checkbox"
                   bind:checked={subtitleLanguageDefaults}
                 />
-                Automatic limits for each subtitle language
+                Automatic language limits
               </label>
-              {#if subtitleLanguageDefaults}
-                <p class="muted mt-2 text-xs">
-                  Japanese: 16 full-width units/line, 7/second. Chinese: 16 and
-                  9. Korean: 16 and 12. Other languages: 60 and 20. Half-width
-                  CJK characters count as half a unit. Source and translated
-                  tracks use their own language; speech-block limits are
-                  independent.
-                </p>
-              {:else}
-                <p class="muted mt-2 text-xs">
-                  Custom limits below apply to all selected tracks. Japanese 13
-                  units/line and 4/second are also supported.
-                </p>
-              {/if}
+              <SubtitleLimitsSummary
+                automatic={subtitleLanguageDefaults}
+                profiles={subtitleSettingsPayload?.subtitle_automatic_profiles}
+                chars={subtitleChars}
+                cps={subtitleCps}
+                lines={subtitleLines}
+              />
               <div class="mt-3 grid grid-cols-2 gap-3">
                 {#if !subtitleLanguageDefaults}<label
                     class="text-xs font-semibold"
                     ><ParameterLabel
                       section="subtitles"
                       name="max_chars_per_line"
-                      label="Characters / line"
+                      label="Display units / line"
                       compact
                     /><input
                       type="number"
@@ -4734,7 +4733,7 @@
                     ><ParameterLabel
                       section="subtitles"
                       name="max_cps"
-                      label="Characters / second"
+                      label="Reading-speed target (units/second)"
                       compact
                     /><input
                       type="number"
@@ -5971,29 +5970,22 @@
                   type="checkbox"
                   bind:checked={subtitleLanguageDefaults}
                 />
-                Automatic limits for each subtitle language
+                Automatic language limits
               </label>
-              {#if subtitleLanguageDefaults}
-                <p class="muted mt-2 text-xs">
-                  Japanese: 16 full-width units/line, 7/second. Chinese: 16 and
-                  9. Korean: 16 and 12. Other languages: 60 and 20. Half-width
-                  CJK characters count as half a unit. Source and translated
-                  tracks use their own language; speech-block limits are
-                  independent.
-                </p>
-              {:else}
-                <p class="muted mt-2 text-xs">
-                  Custom limits below apply to all selected tracks. Japanese 13
-                  units/line and 4/second are also supported.
-                </p>
-              {/if}
+              <SubtitleLimitsSummary
+                automatic={subtitleLanguageDefaults}
+                profiles={subtitleSettingsPayload?.subtitle_automatic_profiles}
+                chars={subtitleChars}
+                cps={subtitleCps}
+                lines={subtitleLines}
+              />
               <div class="mt-3 grid grid-cols-2 gap-3">
                 {#if !subtitleLanguageDefaults}<label
                     class="text-xs font-semibold"
                     ><ParameterLabel
                       section="subtitles"
                       name="max_chars_per_line"
-                      label="Characters / line"
+                      label="Display units / line"
                       compact
                     /><input
                       type="number"
@@ -6044,7 +6036,7 @@
                     ><ParameterLabel
                       section="subtitles"
                       name="max_cps"
-                      label="Characters / second"
+                      label="Reading-speed target (units/second)"
                       compact
                     /><input
                       type="number"

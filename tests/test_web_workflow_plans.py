@@ -417,6 +417,9 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
         )
 
         self.assertEqual(["export"], [item["stage"] for item in plan["ordered_steps"]])
+        self.assertEqual("available_after_render", plan["subtitle_review"]["counts_status"])
+        self.assertIn("max_chars_per_line", plan["subtitle_review"]["provenance"]["fields"])
+        self.assertIn("source", plan["subtitle_review"]["profiles"])
         with self.extension["database"].session() as db_session:
             stored = db_session.get(WorkflowExecutionPlan, plan["plan_id"])
             self.assertEqual("export.create", stored.plan_json["_execution"]["job_kind"])
@@ -781,13 +784,14 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             _artifact_id,
             _asset_id,
         ):
-            db_session.add(
-                SessionSetting(
-                    session_id=session_id,
-                    section="tts",
-                    value_json={"speed": 1.01},
-                )
-            )
+            setting = db_session.get(SessionSetting, (session_id, "tts"))
+            if setting is None:
+                db_session.add(SessionSetting(
+                    session_id=session_id, section="tts", value_json={"speed": 1.01},
+                ))
+            else:
+                setting.value_json = {**setting.value_json, "speed": 1.01}
+                setting.revision += 1
 
         for name, mutation in (
             ("session", session_change),

@@ -121,6 +121,40 @@ def test_decimal_and_abbreviation_periods_are_not_boundaries():
     assert all(kind != "sentence" for _, kind in candidates)
 
 
+@pytest.mark.parametrize(
+    "left,following",
+    [
+        ("पहला वाक्य पूरा हुआ।", " अगला वाक्य शुरू हुआ।"),
+        ("उसने कहा, “यह ठीक है।”", " फिर बात आगे बढ़ी।"),
+        ("यह वचन समाप्त हुआ ॥", " अगला वचन शुरू हुआ।"),
+    ],
+)
+def test_hindi_danda_marks_are_sentence_boundaries(left, following):
+    text = left + following
+    offset = len(left)
+    candidates = natural_split_candidates(text, "hi")
+
+    assert (offset, "sentence") in candidates
+    assert classify_boundary(left, following, language_code="hi") == 0
+    assert speech_blocks._sentence_is_complete(left)
+    assert speech_blocks._TERMINAL_SENTENCE_RE.search(left)
+    assert _break_cost(text, offset, set()) < 0
+
+
+@pytest.mark.parametrize(
+    "text,expected,max_chars",
+    [
+        ("आज का दिन बहुत सुंदर है। कल फिर मिलेंगे।", ["आज का दिन बहुत सुंदर है।", "कल फिर मिलेंगे।"], 30),
+        ("उन्होंने कहा, “यह बिल्कुल ठीक है।” फिर हम आगे चले।", ["उन्होंने कहा, “यह बिल्कुल ठीक है।”", "फिर हम आगे चले।"], 40),
+        ("पहला वचन पूरा हुआ ॥ दूसरा वचन अब शुरू हुआ।", ["पहला वचन पूरा हुआ ॥", "दूसरा वचन अब शुरू हुआ।"], 30),
+    ],
+)
+def test_hindi_fallback_splits_after_danda_marks(text, expected, max_chars, monkeypatch):
+    monkeypatch.setattr(speech_blocks, "SentenceSplitter", None)
+
+    assert speech_blocks._split_subtitle_text(text, "hi", 5, max_chars) == expected
+
+
 # -- speech blocks -------------------------------------------------------------
 
 

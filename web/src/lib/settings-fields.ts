@@ -391,6 +391,7 @@ const SETTING_ORDER: Record<string, string[]> = {
     'diarization_enabled'
   ],
   subtitles: [
+    'language_defaults',
     'max_lines',
     'max_chars_per_line',
     'max_cps',
@@ -708,6 +709,13 @@ export function settingApplies(
 
   if (
     section === 'subtitles' &&
+    ['max_chars_per_line', 'max_cps'].includes(key) &&
+    enabled('language_defaults', true)
+  )
+    return false;
+
+  if (
+    section === 'subtitles' &&
     ['boundary_correction_enabled', 'merge_threshold_ms'].includes(key)
   )
     return false;
@@ -939,6 +947,9 @@ const ACRONYMS: Record<string, string> = {
 
 export function settingLabel(key: string): string {
   const labels: Record<string, string> = {
+    language_defaults: 'Automatic language limits',
+    max_chars_per_line: 'Display units per line',
+    max_cps: 'Reading-speed target (units/second)',
     audio_verification_mode: 'Generated-audio verification',
     llm_tts_optimization: 'Optimize each segment with an LLM',
     llm_tts_document_optimization:

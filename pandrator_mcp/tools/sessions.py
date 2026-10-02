@@ -365,6 +365,12 @@ def get_session_settings(
         ),
         "revision": payload.get("revision"),
         "global_revision": payload.get("global_revision"),
+        **({
+            "subtitle_settings_provenance": payload.get("subtitle_settings_provenance"),
+            "subtitle_profiles": payload.get("subtitle_profiles"),
+            "subtitle_automatic_profiles": payload.get("subtitle_automatic_profiles"),
+            "subtitle_profile_scope": payload.get("subtitle_profile_scope"),
+        } if arguments.section == "subtitles" else {}),
     }
 
 

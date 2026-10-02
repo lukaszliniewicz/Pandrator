@@ -250,6 +250,7 @@ class VideoExportCleanupTests(unittest.TestCase):
         self.assertEqual(1040, exported.metadata_json["tail_extension_ms"])
         self.assertIn("output_settings", exported.metadata_json)
         self.assertEqual(1, len(exported.metadata_json["subtitle_tracks"]))
+        self.assertIn("final", exported.metadata_json["subtitle_tracks"][0]["subtitle_diagnostics"])
         sidecar_id = exported.metadata_json["subtitle_tracks"][0]["artifact_id"]
         _sidecar, sidecar_path = self.artifacts.resolve(sidecar_id)
         self.assertTrue(sidecar_path.read_text(encoding="utf-8").startswith("WEBVTT"))

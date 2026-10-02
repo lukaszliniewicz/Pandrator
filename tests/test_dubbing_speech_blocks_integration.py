@@ -422,6 +422,67 @@ This is a long sentence, but each clause remains meaningful; the generator keeps
             [str(index).zfill(4) for index in range(1, len(blocks) + 1)],
         )
 
+    def test_hindi_capacity_splits_preserve_text_and_utterance_turns(self):
+        first_text = (
+            "पहला हिंदी वाक्य पर्याप्त विवरण के साथ अपनी बात स्पष्ट रूप से बताता है। "
+            "दूसरा हिंदी वाक्य उसी विषय को आगे बढ़ाता है और पूरा अर्थ बनाए रखता है। "
+            "तीसरा हिंदी वाक्य इस विचार को स्वाभाविक रूप से समाप्त करता है। "
+            "चौथा वाक्य इसी बात को एक और उदाहरण से विस्तार देता है।"
+        )
+        second_text = (
+            "अगला हिंदी वाक्य पर्याप्त विवरण के साथ अपनी बात स्पष्ट रूप से बताता है। "
+            "इसके बाद का वाक्य उसी विषय को आगे बढ़ाता है और पूरा अर्थ बनाए रखता है। "
+            "अंतिम वाक्य इस विचार को स्वाभाविक रूप से समाप्त करता है। "
+            "एक और वाक्य इस प्रसंग को उपयोगी संदर्भ के साथ स्पष्ट करता है।"
+        )
+        content = f"""1
+00:00:00,000 --> 00:00:03,000
+{first_text}
+
+2
+00:00:03,100 --> 00:00:06,000
+{second_text}
+"""
+
+        blocks = speech_blocks.create_speech_blocks(
+            content,
+            target_language="hi",
+            min_chars=10,
+            max_chars=220,
+            merge_threshold=1000,
+            speaker_by_subtitle={1: "Narrator", 2: "Narrator"},
+            turn_by_subtitle={1: "turn-1", 2: "turn-2"},
+            generation_mode="legacy",
+        )
+
+        self.assertGreater(len(blocks), 2)
+        self.assertTrue(all(len(str(block["text"])) <= 220 for block in blocks))
+        self.assertEqual(
+            f"{first_text} {second_text}",
+            " ".join(str(block["text"]) for block in blocks),
+        )
+        texts_by_subtitle = {1: [], 2: []}
+        for block in blocks:
+            references = block["subtitles"]
+            self.assertEqual(1, len(references))
+            reference = references[0]
+            expected_turn = "turn-1" if reference == 1 else "turn-2"
+            self.assertEqual(expected_turn, block["provenance"]["turn_id"])
+            texts_by_subtitle[reference].append(str(block["text"]))
+            split_events = [
+                event
+                for event in block["provenance"]["formation_events"]
+                if event["reason_code"] == "capacity_split"
+            ]
+            self.assertTrue(split_events)
+            self.assertEqual(
+                "sentence",
+                split_events[-1]["measurements"]["display_break_rule"],
+            )
+
+        self.assertEqual(first_text, " ".join(texts_by_subtitle[1]))
+        self.assertEqual(second_text, " ".join(texts_by_subtitle[2]))
+
     def test_max_chars_remains_hard_when_minimum_is_misconfigured(self):
         srt_content = """1
 00:00:00,000 --> 00:00:05,000

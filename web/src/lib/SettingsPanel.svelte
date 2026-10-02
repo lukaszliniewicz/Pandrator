@@ -21,6 +21,7 @@
   import AudioCppModelDetails from './AudioCppModelDetails.svelte';
   import LocalModelPicker from './LocalModelPicker.svelte';
   import SettingField from './SettingField.svelte';
+  import SubtitleLimitsSummary from './SubtitleLimitsSummary.svelte';
   import TtsServiceSelect from './TtsServiceSelect.svelte';
   import { settingApplies } from './settings-fields';
 
@@ -91,6 +92,7 @@
       'diarization_enabled'
     ],
     subtitles: [
+      'language_defaults',
       'max_lines',
       'max_chars_per_line',
       'max_cps',
@@ -872,6 +874,22 @@
     </div>
   {/if}
   {#if payload}
+    {#if section === 'subtitles'}
+      <SubtitleLimitsSummary
+        automatic={Boolean(
+          value(
+            'language_defaults',
+            payload.effective.language_defaults ?? true
+          )
+        )}
+        profiles={payload.subtitle_automatic_profiles}
+        chars={Number(
+          value('max_chars_per_line', payload.effective.max_chars_per_line)
+        )}
+        cps={Number(value('max_cps', payload.effective.max_cps))}
+        lines={Number(value('max_lines', payload.effective.max_lines))}
+      />
+    {/if}
     {#if section === 'text'}
       <div class="mt-5 grid gap-5 xl:grid-cols-2">
         <details

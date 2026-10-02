@@ -15,7 +15,11 @@ from .export_inputs import (
     select_generated_audio,
     select_media_export,
 )
-from .export_subtitles import subtitle_track_details
+from .export_subtitles import (
+    subtitle_file_diagnostics,
+    subtitle_track_details,
+    subtitle_track_language_origin,
+)
 from .export_video import render_video_export
 from .generation_subtitles import (
     capture_display_subtitle_snapshot,
@@ -71,6 +75,23 @@ def export(
     export_name = secure_filename(record.name) or record.storage_key
     progress(0.1, "Preparing export")
     produced: list[Artifact] = []
+    subtitle_diagnostic_results: list[dict[str, Any]] = []
+    subtitle_provenance = payload.get("subtitle_settings_provenance")
+
+    def track_diagnostics(item: Artifact, source: Path, final: Path, language: str) -> dict[str, Any]:
+        return subtitle_file_diagnostics(
+            source, final, settings,
+            subtitle_provenance if isinstance(subtitle_provenance, dict) else None,
+            language=language,
+            language_origin=subtitle_track_language_origin(item, record=record, settings=settings),
+        )
+
+    def record_diagnostics(item: Artifact, diagnostics: dict[str, Any]) -> None:
+        subtitle_diagnostic_results.append({
+            "artifact_id": item.id,
+            "language": diagnostics["profile"]["language"],
+            "subtitle_diagnostics": diagnostics,
+        })
 
     if record.workflow_kind == "audiobook":
         audio = select_generated_audio(
@@ -200,6 +221,7 @@ def export(
                     scratch = _finalize_track_scratch(track_name)
                     try:
                         finalize_srt_file(subtitle_path, scratch, {**settings, "subtitle_language": track_details(item)[1]})
+                        diagnostics = track_diagnostics(item, subtitle_path, scratch, language)
                         if export_mode == "text":
                             destination = context.artifacts.next_available_path(
                                 subtitle_dir / f"{export_name}_{track_name}.txt"
@@ -224,8 +246,7 @@ def export(
                             )
                             kind = subtitle_format
                             role = f"export_subtitle_{track_name}"
-                        produced.append(
-                            context.artifacts.register(
+                        exported = context.artifacts.register(
                                 destination,
                                 kind=kind,
                                 role=role,
@@ -236,9 +257,11 @@ def export(
                                     "language": language,
                                     "title": title,
                                     "source_role": source_role,
+                                    "subtitle_diagnostics": diagnostics,
                                 },
                             )
-                        )
+                        produced.append(exported)
+                        record_diagnostics(exported, diagnostics)
                     finally:
                         scratch.unlink(missing_ok=True)
                 else:
@@ -248,10 +271,10 @@ def export(
                         subtitle_dir / f"{export_name}_{track_name}.srt"
                     )
                     finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
+                    diagnostics = track_diagnostics(item, subtitle_path, destination, language)
                     kind = subtitle_format
                     role = f"export_subtitle_{track_name}"
-                    produced.append(
-                        context.artifacts.register(
+                    exported = context.artifacts.register(
                             destination,
                             kind=kind,
                             role=role,
@@ -262,9 +285,11 @@ def export(
                                 "language": language,
                                 "title": title,
                                 "source_role": source_role,
+                                "subtitle_diagnostics": diagnostics,
                             },
                         )
-                    )
+                    produced.append(exported)
+                    record_diagnostics(exported, diagnostics)
                 progress(
                     0.35 + 0.55 * (index / len(selected_subtitles)),
                     f"Exported track {index} of {len(selected_subtitles)}",
@@ -294,6 +319,7 @@ def export(
                 context, inputs, media_selection, output_dir=output_dir,
                 export_name=export_name, progress=progress, cancel_event=cancel_event,
                 job_id=payload.get("_job_id"), lease_generation=payload.get("_lease_generation"),
+                subtitle_settings_provenance=subtitle_provenance,
             ))
         else:
             # Preserve the historical behavior for SRT/audio-only sessions:
@@ -312,8 +338,8 @@ def export(
                     subtitle_dir / f"{export_name}_{track_name}.srt"
                 )
                 finalize_srt_file(subtitle_path, destination, {**settings, "subtitle_language": language})
-                produced.append(
-                    context.artifacts.register(
+                diagnostics = track_diagnostics(item, subtitle_path, destination, language)
+                exported = context.artifacts.register(
                         destination,
                         kind="srt",
                         role=f"export_subtitle_{track_name}",
@@ -327,9 +353,11 @@ def export(
                                 "source_role"
                             )
                             or item.role,
+                            "subtitle_diagnostics": diagnostics,
                         },
                     )
-                )
+                produced.append(exported)
+                record_diagnostics(exported, diagnostics)
                 progress(
                     0.35 + 0.3 * (index / len(selected_subtitles)),
                     f"Exported standalone subtitle {index} of {len(selected_subtitles)}",
@@ -431,4 +459,12 @@ def export(
     return {
         "artifact_ids": [item.id for item in produced],
         "paths": [item.relative_path for item in produced],
+        "subtitle_diagnostics": subtitle_diagnostic_results + [
+            {
+                "artifact_id": item.id,
+                "subtitle_tracks": (item.metadata_json or {}).get("subtitle_tracks", []),
+            }
+            for item in produced
+            if (item.metadata_json or {}).get("subtitle_tracks")
+        ],
     }

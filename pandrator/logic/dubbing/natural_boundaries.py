@@ -6,7 +6,7 @@ speech-block sizing (``speech_blocks``) and early voiceover repair
 
 A natural boundary is, in preference order:
 
-1. a sentence terminal (``. ! ? …`` plus CJK equivalents),
+1. a sentence terminal (``. ! ? …`` plus CJK and Devanagari equivalents),
 2. a strong clause break (``; : — –`` plus CJK equivalents),
 3. a weak clause break (comma, including CJK ``，``/``、``),
 4. a conservative language-aware conjunction onset (``and``/``weil``/…).
@@ -314,7 +314,7 @@ CONJUNCTIONS: dict[str, list[str]] = {
     ],
 }
 
-SENTENCE_TERMINALS = frozenset(".!?…。！？")
+SENTENCE_TERMINALS = frozenset(".!?…。！？।॥")
 STRONG_CLAUSE_MARKS = frozenset(";:\u2014\u2013；：")
 WEAK_CLAUSE_MARKS = frozenset(",\u060c\uff0c\u3001")
 

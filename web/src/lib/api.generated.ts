@@ -5763,6 +5763,11 @@ export interface components {
         /** MultilingualSetup */
         MultilingualSetup: {
             /**
+             * Carry Source Subtitle Settings
+             * @default false
+             */
+            carry_source_subtitle_settings?: boolean;
+            /**
              * Generate Voiceover
              * @default false
              */
@@ -7773,6 +7778,11 @@ export interface components {
         };
         /** TranslationBranchTarget */
         TranslationBranchTarget: {
+            /**
+             * Carry Source Subtitle Settings
+             * @default false
+             */
+            carry_source_subtitle_settings?: boolean;
             /**
              * Name
              * @default

@@ -93,6 +93,33 @@ class SettingsApiTests(unittest.TestCase):
     def test_settings_patch_reply_matches_its_committed_revision(self):
         self._assert_settings_reply_matches_committed_revision("patch")
 
+    def test_automatic_subtitle_preview_keeps_custom_session_unchanged(self):
+        created = self.client.post(
+            "/api/v1/sessions", headers=self.headers,
+            json={"name": "Japanese profile preview", "workflow_kind": "subtitles",
+                  "source_language": "en", "target_language": "ja"},
+        ).get_json()
+        service = WorkspaceSettingsService(self.app.extensions["pandrator"]["database"])
+        service.update(created["id"], "subtitles", 0, {
+            "language_defaults": False, "max_chars_per_line": 42,
+            "max_cps": 20, "max_lines": 1,
+        })
+        value = service.get(created["id"], "subtitles")
+        self.assertFalse(value["effective"]["language_defaults"])
+        self.assertEqual(42, value["subtitle_profiles"]["target"]["limits"]["max_chars_per_line"]["effective"])
+        preview = value["subtitle_automatic_profiles"]["target"]["limits"]
+        self.assertEqual(16, preview["max_chars_per_line"]["effective"])
+        self.assertEqual(7, preview["max_chars_per_second"]["effective"])
+        self.assertEqual(1, preview["max_lines"]["effective"])
+        self.assertEqual(value["override"], service.get(created["id"], "subtitles")["override"])
+        service.update(created["id"], "translation", 0, {"target_language": "zh"})
+        changed = service.get(created["id"], "subtitles")
+        self.assertEqual("zh", changed["subtitle_profiles"]["target"]["language"])
+        self.assertEqual(42, changed["subtitle_profiles"]["target"]["limits"]["max_chars_per_line"]["effective"])
+        self.assertEqual(9, changed["subtitle_automatic_profiles"]["target"]["limits"]["max_chars_per_second"]["effective"])
+        service.patch(created["id"], "subtitles", 1, {"language_defaults": True})
+        self.assertEqual(9, service.get(created["id"], "subtitles")["subtitle_profiles"]["target"]["limits"]["max_chars_per_second"]["effective"])
+
     def test_competing_settings_replacements_cannot_both_accept_same_revision(self):
         session_id = self.client.post(
             "/api/v1/sessions", json={"name": "Competing settings"}, headers=self.headers,

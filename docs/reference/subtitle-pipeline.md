@@ -100,7 +100,8 @@ starts/ends, duration, and reading speed all influence the chosen boundaries.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `max_chars_per_line` | `48` | Preferred visual line width. Final wrapping uses linguistic and balanced-line heuristics. |
+| `language_defaults` | `true` | Use language profiles: Japanese 16 units/7 CPS, Chinese 16/9, Korean 16/12, other languages 60/20. |
+| `max_chars_per_line` | `60` | Preferred visual line width when automatic language defaults are disabled. Final wrapping uses linguistic and balanced-line heuristics. |
 | `max_lines` | `2` | Maximum display lines per cue. |
 | `max_cps` | `20.0` | Reading-speed target in visible characters per second. It is a cost/extension target, not permission to shred a fast phrase into tiny cues. |
 | `min_duration_ms` | `833` | Desired minimum display duration when the following cue leaves room. |
@@ -114,6 +115,21 @@ starts/ends, duration, and reading speed all influence the chosen boundaries.
 If word timing is unavailable, Pandrator finalizes the engine's timed segments
 instead. Display cue numbers are regenerated in timeline order; immutable
 revision lineage, not an SRT number alone, is the durable identity.
+
+### Language settings in multilingual projects
+
+New translation branches start with `language_defaults=true`, even when the
+source or application defaults use custom limits. Each source and translated
+subtitle track resolves its own language profile. Duration, gap, and maximum-line
+settings remain inherited; line-length and reading-speed settings use the profile.
+
+Set `carry_source_subtitle_settings=true` in the multilingual setup or an explicit
+branch target to carry the source’s effective subtitle settings instead. The UI
+exposes this as “Use source subtitle settings in new languages.” This choice affects
+only new branches. Existing sessions and ordinary forks keep their settings.
+Automatic sessions follow language changes; custom sessions retain their limits.
+The settings editor displays the resolved profile and calls reading speed a target,
+because dense speech and fixed timing can leave cues above that target.
 
 ## 3. Correction and translation
 
@@ -364,6 +380,26 @@ produce dubbing only. Export then chooses subtitle-only/text/media output,
 source/translation/dual subtitle selection, SRT/VTT, soft or burned subtitles,
 and audio/video codec settings. Subtitle export uses the finalized selected
 revision; speech blocks never replace display cues as the subtitle source.
+
+### Export diagnostics through MCP
+
+`pandrator_get_session_settings` for `subtitles` reports effective source/target
+profiles and per-setting origins. Origins follow builtin → global → session
+context → session override → structured run override → flat run override.
+Custom inherited line-length or CPS limits can disable automatic language
+defaults; CJK profiles explicitly report `cjk_language_defaults_disabled` and
+the settings responsible. Explicitly setting `language_defaults=true` restores
+the automatic profiles. Supplied and effective limits show finalizer clamping.
+
+Export plans freeze these origins with their settings snapshot and expose
+`subtitle_review`. Plan profiles are source/target alternatives; cue counts are
+available after rendering. Export results and `pandrator_list_artifacts` expose
+`subtitle_diagnostics` for subtitle files and each media subtitle track, including
+input/final cue counts, violating lines and cues, reading-speed violations,
+maximum observed width/CPS, and invalid durations. Counts use display units and
+strict greater-than limits. Invalid durations are counted separately from CPS.
+Old artifacts without diagnostics report `unavailable`; historical settings
+without frozen provenance report `unknown/historical_snapshot`.
 
 ## Quality-first operating defaults
 

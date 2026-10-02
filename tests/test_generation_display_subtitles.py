@@ -27,6 +27,7 @@ from pandrator.web.models import (
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService
+from pandrator.web.workspace_settings import WorkspaceSettingsService
 from tests.web_test_support import prepare_web_test_data_root
 
 SOURCE_SRT = (
@@ -269,6 +270,46 @@ class SnapshotAndExportTests(unittest.TestCase):
             resolved.payload["display_subtitle_snapshot"]["segments"][0]["text"],
             "Queued display",
         )
+        WorkspaceSettingsService(self.database).update(
+            self.record.id, "subtitles", 0, {"max_chars_per_line": 33}
+        )
+        self.assertEqual(
+            "builtin",
+            resolved.payload["subtitle_settings_provenance"]["fields"]["max_chars_per_line"]["origin"],
+        )
+        result = self.handlers.export(
+            resolved.payload, lambda *_: None, threading.Event()
+        )
+        exported, _path = self.artifacts.resolve(result["artifact_ids"][0])
+        diagnostics = exported.metadata_json["subtitle_diagnostics"]
+        self.assertEqual(
+            "builtin", diagnostics["profile"]["limits"]["max_chars_per_line"]["origin"]
+        )
+        self.assertEqual(
+            60, diagnostics["profile"]["limits"]["max_chars_per_line"]["effective"]
+        )
+        self.assertEqual(diagnostics, result["subtitle_diagnostics"][0]["subtitle_diagnostics"])
+
+    def test_export_snapshot_tracks_structured_then_flat_run_origins(self):
+        resolved = WorkflowService(self.database, JobQueue(self.database)).resolve_stage(
+            self.record.id, "export", {
+                "export_mode": "subtitles",
+                "subtitles": {"max_chars_per_line": 45},
+                "subtitle_max_cps": 12,
+            },
+        )
+        fields = resolved.payload["subtitle_settings_provenance"]["fields"]
+        self.assertEqual("structured_run_override", fields["max_chars_per_line"]["origin"])
+        self.assertEqual("flat_run_override", fields["max_cps"]["origin"])
+        self.assertEqual("derived_from_custom_limits", fields["language_defaults"]["origin"])
+        self.assertFalse(resolved.payload["settings"]["subtitle_language_defaults"])
+        result = self.handlers.export(
+            resolved.payload, lambda *_: None, threading.Event()
+        )
+        artifact, _path = self.artifacts.resolve(result["artifact_ids"][0])
+        limits = artifact.metadata_json["subtitle_diagnostics"]["profile"]["limits"]
+        self.assertEqual(45, limits["max_chars_per_line"]["effective"])
+        self.assertEqual(12, limits["max_chars_per_second"]["effective"])
 
     def test_heading_kind_with_timed_references_still_exports_display_edit(self):
         revision_id = self._revision("Edited heading")
@@ -416,6 +457,10 @@ class SnapshotAndExportTests(unittest.TestCase):
                 _artifact, path = self.artifacts.resolve(result["artifact_ids"][0])
                 self.assertIn("Reviewed display", path.read_text())
                 self.assertNotIn("Speech only", path.read_text())
+                self.assertEqual(
+                    len(parse_srt(SOURCE_SRT)),
+                    _artifact.metadata_json["subtitle_diagnostics"]["input"]["cue_count"],
+                )
 
 
 if __name__ == "__main__":

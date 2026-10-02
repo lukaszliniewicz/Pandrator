@@ -31,6 +31,7 @@ class MultilingualSetup(BaseModel):
     target_languages: list[str] = Field(min_length=1, max_length=20)
     generate_voiceover: StrictBool = False
     keep_source_subtitles: StrictBool = True
+    carry_source_subtitle_settings: StrictBool = False
 
     @field_validator("target_languages")
     @classmethod
