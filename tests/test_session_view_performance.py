@@ -15,6 +15,7 @@ import tempfile
 import unittest
 import uuid
 import wave
+from datetime import timedelta
 from unittest.mock import patch
 
 from sqlalchemy import event, func, select
@@ -26,7 +27,14 @@ from pandrator.web.generation_audio_identity import (
     AudioIdentityContext,
 )
 from pandrator.web.generation_review import revision_history
-from pandrator.web.models import Artifact, AudioTake, GenerationSegment
+from pandrator.web.models import (
+    Artifact,
+    AudioTake,
+    GenerationRun,
+    GenerationSegment,
+    Job,
+    utcnow,
+)
 
 
 class SessionViewPerformanceTests(unittest.TestCase):
@@ -153,6 +161,150 @@ class SessionViewPerformanceTests(unittest.TestCase):
             event.remove, self.database.engine, "before_cursor_execute", _record
         )
         return log
+
+    def _run_history_fixture(self, count, *, run_status, job_status):
+        session_id = self._create_session("Run-history perf")
+        plan = self._plan(session_id, 1)
+        run_ids = []
+        with self.database.session() as session:
+            for sequence in range(1, count + 1):
+                job = Job(
+                    session_id=session_id,
+                    kind="generation",
+                    status=job_status,
+                    payload_json={"segment_ids": [f"segment-{sequence}"]},
+                )
+                session.add(job)
+                session.flush()
+                run = GenerationRun(
+                    session_id=session_id,
+                    plan_revision_id=plan["active_revision_id"],
+                    job_id=job.id,
+                    sequence_number=sequence,
+                    status=run_status,
+                    settings_snapshot_json={"tts": {"voice": "history-voice"}},
+                )
+                session.add(run)
+                session.flush()
+                run_ids.append(run.id)
+        return session_id, run_ids
+
+    @staticmethod
+    def _history_selects(log):
+        selects = [item for item in log if item.lstrip().upper().startswith("SELECT")]
+        blockers = [
+            item for item in selects
+            if "FROM jobs" in item and "jobs.lease_expires_at >" in item
+        ]
+        return selects, blockers
+
+    def test_run_history_queries_are_constant_for_completed_and_queued_runs(self):
+        log = self._statement_log()
+        for run_status, job_status in (("completed", "succeeded"), ("queued", "queued")):
+            for count in (1, 10, 50):
+                with self.subTest(run_status=run_status, count=count):
+                    session_id, run_ids = self._run_history_fixture(
+                        count, run_status=run_status, job_status=job_status
+                    )
+                    log.clear()
+                    items = self.generation.list_runs(session_id)
+                    selects, blockers = self._history_selects(log)
+                    self.assertEqual(count, len(items))
+                    self.assertEqual(run_ids[-1], items[0]["id"])
+                    self.assertEqual(count, items[0]["sequence_number"])
+                    self.assertEqual(
+                        {"tts": {"voice": "history-voice"}},
+                        items[0]["settings_snapshot"],
+                    )
+                    self.assertLessEqual(
+                        len(selects), 8,
+                        f"{len(selects)} SELECTs ({len(blockers)} blockers) for {count} runs",
+                    )
+                    self.assertEqual(1 if job_status == "queued" else 0, len(blockers))
+
+                    for read in (
+                        lambda session_id=session_id: self.generation.list_runs(session_id, limit=1)[0],
+                        lambda session_id=session_id: self.generation.latest_run(session_id),
+                    ):
+                        log.clear()
+                        latest = read()
+                        selects, blockers = self._history_selects(log)
+                        self.assertEqual(run_ids[-1], latest["id"])
+                        self.assertEqual(count, latest["sequence_number"])
+                        self.assertLessEqual(len(selects), 8)
+                        self.assertLessEqual(len(blockers), 1)
+
+    def test_queued_run_selects_earliest_live_same_session_blocker(self):
+        session_id, run_ids = self._run_history_fixture(
+            1, run_status="queued", job_status="queued"
+        )
+        other_session_id = self._create_session("Other blocker session")
+        now = utcnow()
+        with self.database.session() as session:
+            candidates = []
+            for index, (owner, status, lease) in enumerate((
+                (other_session_id, "running", now + timedelta(hours=1)),
+                (session_id, "running", now - timedelta(seconds=1)),
+                (session_id, "running", None),
+                (session_id, "succeeded", now + timedelta(hours=1)),
+                (session_id, "running", now + timedelta(hours=1)),
+                (session_id, "running", now + timedelta(hours=1)),
+                (session_id, "running", now + timedelta(hours=1)),
+            )):
+                candidate = Job(
+                    session_id=owner,
+                    kind=f"blocker-{index}",
+                    status=status,
+                    lease_expires_at=lease,
+                    created_at=now + timedelta(seconds=index),
+                    progress_detail=f"detail-{index}",
+                )
+                session.add(candidate)
+                session.flush()
+                candidates.append(candidate.id)
+        log = self._statement_log()
+        item = self.generation.list_runs(session_id)[0]
+        self.assertEqual(
+            {"id": candidates[4], "kind": "blocker-4", "progress_detail": "detail-4"},
+            item["waiting_for_job"],
+        )
+        self.assertEqual(["segment-1"], item["queued_segment_ids"])
+        self.assertEqual(1, len(self._history_selects(log)[1]))
+        with self.database.session() as session:
+            context = self.generation._run_history_context(session, session_id)
+            self.assertEqual(
+                candidates[4:6], [job.id for job in context["blocking_jobs"]]
+            )
+            run = context["runs_by_id"][run_ids[0]]
+            # Simulate a queued Job becoming a running candidate between the
+            # batch job read and blocker query: identity still excludes itself.
+            own_job = context["jobs_by_id"][run.job_id]
+            context["blocking_jobs"] = [own_job, context["blocking_jobs"][0]]
+            log.clear()
+            projected = self.generation._run_payload(session, run, _context=context)
+            self.assertEqual(item["waiting_for_job"], projected["waiting_for_job"])
+            self.assertEqual([], self._history_selects(log)[0])
+            context["blocking_jobs"].reverse()
+            projected = self.generation._run_payload(session, run, _context=context)
+            self.assertEqual(item["waiting_for_job"], projected["waiting_for_job"])
+            self.assertEqual([], self._history_selects(log)[0])
+
+    def test_running_job_does_not_wait_for_itself_or_query_blockers(self):
+        session_id, run_ids = self._run_history_fixture(
+            1, run_status="running", job_status="running"
+        )
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_ids[0])
+            job = session.get(Job, run.job_id)
+            job.lease_expires_at = utcnow() + timedelta(hours=1)
+        log = self._statement_log()
+        item = self.generation.list_runs(session_id)[0]
+        self.assertIsNone(item["waiting_for_job"])
+        self.assertEqual([], item["queued_segment_ids"])
+        self.assertEqual([], self._history_selects(log)[1])
+        with self.database.session() as session:
+            context = self.generation._run_history_context(session, session_id)
+            self.assertEqual([], context["blocking_jobs"])
 
     @staticmethod
     def _override(**tts):

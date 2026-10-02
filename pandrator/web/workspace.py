@@ -3309,6 +3309,22 @@ class GenerationService:
             else []
         )
         job_by_id = {job.id: job for job in jobs}
+        blocking_jobs: list[Job] = (
+            list(
+                session.scalars(
+                    select(Job)
+                    .where(
+                        Job.session_id == session_id,
+                        Job.status == "running",
+                        Job.lease_expires_at > utcnow(),
+                    )
+                    .order_by(Job.created_at)
+                    .limit(2)
+                ).all()
+            )
+            if any(job.status == "queued" for job in jobs)
+            else []
+        )
 
         output_run_ids = {
             run.output_generation_run_id
@@ -3373,6 +3389,7 @@ class GenerationService:
             "histories": histories,
             "revisions_by_id": revision_by_id,
             "jobs_by_id": job_by_id,
+            "blocking_jobs": blocking_jobs,
             "assemblies_by_run_id": assembly_by_run_id,
             "take_counts": take_counts,
             "usage_by_run_id": usage_by_run_id,
@@ -3635,12 +3652,10 @@ class GenerationService:
         )
         payload["waiting_for_job"] = None
         if job is not None and job.status == "queued":
-            blocker = session.scalar(select(Job).where(
-                Job.session_id == run.session_id,
-                Job.id != job.id,
-                Job.status == "running",
-                Job.lease_expires_at > utcnow(),
-            ).order_by(Job.created_at).limit(1))
+            blocker = next(
+                (candidate for candidate in context["blocking_jobs"] if candidate.id != job.id),
+                None,
+            )
             if blocker is not None:
                 payload["waiting_for_job"] = {
                     "id": blocker.id,
