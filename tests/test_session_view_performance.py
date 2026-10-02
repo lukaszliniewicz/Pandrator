@@ -26,6 +26,7 @@ from pandrator.web.generation_audio_identity import (
     IDENTITY_KEY,
     AudioIdentityContext,
 )
+from pandrator.web.generation_history_reads import GenerationHistoryReader
 from pandrator.web.generation_review import revision_history
 from pandrator.web.models import (
     Artifact,
@@ -233,6 +234,37 @@ class SessionViewPerformanceTests(unittest.TestCase):
                         self.assertEqual(count, latest["sequence_number"])
                         self.assertLessEqual(len(selects), 8)
                         self.assertLessEqual(len(blockers), 1)
+
+    def test_database_only_history_reader_preserves_service_payloads(self):
+        session_id, _ = self._run_history_fixture(
+            2, run_status="completed", job_status="succeeded"
+        )
+        reader = GenerationHistoryReader(self.database)
+        self.assertEqual(
+            self.generation.list_runs(session_id), reader.list_runs(session_id)
+        )
+        self.assertEqual(
+            self.generation.latest_run(session_id), reader.latest_run(session_id)
+        )
+
+    def test_history_payload_reads_changes_in_caller_session(self):
+        session_id, run_ids = self._run_history_fixture(
+            1, run_status="completed", job_status="succeeded"
+        )
+        reader = GenerationHistoryReader(self.database)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, run_ids[0])
+            run.status = "paused"
+            run.settings_snapshot_json = {"tts": {"voice": "uncommitted-voice"}}
+            with patch.object(
+                self.database, "session", side_effect=AssertionError("nested transaction")
+            ):
+                projected = reader._run_payload(session, run)
+            self.assertEqual(session_id, projected["session_id"])
+            self.assertEqual("paused", projected["status"])
+            self.assertEqual(
+                {"tts": {"voice": "uncommitted-voice"}}, projected["settings_snapshot"]
+            )
 
     def test_queued_run_selects_earliest_live_same_session_blocker(self):
         session_id, run_ids = self._run_history_fixture(
