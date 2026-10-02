@@ -14,6 +14,6 @@ Includes **Pandrator 0.11.0**, **Manager 0.9.28**, and **MCP 0.6.0**. Managed au
 - **Collect finished exports.** Verified manifests and optional ZIPs use stable project/language/version filenames and artifact hashes. Subtitle exports do not require generated audio. Publication receipts recover completed copies after worker interruption; incomplete collections stay incomplete.
 - **Release repairs.** Settings saves, independent MCP startup, strict single-voice routing, canonical passage identity, unfinished-upload deletion and Python test collection are repaired. Language incompatibility and supplied speech-plan conflicts are checked before generation jobs start.
 
-Existing sessions and generation history are retained. Migration and final platform/package/local-runtime acceptance are recorded in the release acceptance report.
+Existing sessions and generation history are retained.
 
-Native acceptance covers representative English/German/Japanese routes. Qwen may emit point-like raw word timestamps even when composed display subtitles have valid spans; this release does not claim equal acoustic quality or word-timing precision for every language/model.
+Qwen may emit point-like raw word timestamps even when composed display subtitles have valid spans. Acoustic quality and word-timing precision vary by language and model.

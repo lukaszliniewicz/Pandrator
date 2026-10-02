@@ -84,14 +84,12 @@ Before GPU processing, Pandrator checks the managed audio.cpp server for residen
 
 Qwen recognition with word timing can itself require both recognition and alignment weights. Serializing jobs does not make their combined memory footprint disappear. CPU is available explicitly in Qwen's local processing settings; separation on CPU can be substantially slower than the recording's duration.
 
-## Verification scope
+## Quality and timing limitations
 
-Release 0.11.0 native checks cover English/German Parakeet, Japanese Qwen with
-alignment on CPU and Vulkan, bounded Tiny language detection, and Demucs
-separation on CPU/Vulkan. Qwen may emit point-like raw word timestamps even when
-composed display cues have valid spans. Five-minute Demucs Vulkan runs completed;
-the long CPU experiment reached its time/cancel bounds. These checks establish
-functional routes, cancellation and preservation of originals, with no general
-listening-quality or every-language accuracy claim.
+Qwen may emit point-like raw word timestamps even when composed display cues
+have valid spans. Recognition, alignment and separation quality vary by language,
+model and recording. Check a short representative sample before processing long
+recordings; successful processing does not establish transcription accuracy or
+listening quality.
 
 Primary references: [audio.cpp](https://github.com/0xShug0/audio.cpp), [Qwen3 model integration](https://github.com/0xShug0/audio.cpp/blob/main/docs/models/qwen3.md), [audio.cpp audio tools](https://github.com/0xShug0/audio.cpp/blob/main/docs/audio_tools.md), and [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR).

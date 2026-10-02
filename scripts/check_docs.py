@@ -20,12 +20,14 @@ _FORBIDDEN_PUBLIC_DOCUMENTS = frozenset(
     {
         "PASSIVE_DISPATCHER_FIELD_NOTES.md",
         "SUBTITLE_PIPELINE_REVIEW.md",
+        "release-acceptance.md",
     }
 )
 _REQUIRED_INDEX = Path("docs/README.md")
+_PRIVATE_ROOTS = frozenset({".local-notes", "review-notes", "reviews"})
 
 
-def _tracked_markdown(root: Path) -> tuple[Path, ...]:
+def _public_paths(root: Path) -> tuple[Path, ...]:
     result = subprocess.run(
         [
             "git",
@@ -34,9 +36,6 @@ def _tracked_markdown(root: Path) -> tuple[Path, ...]:
             "--others",
             "--exclude-standard",
             "-z",
-            "--",
-            "*.md",
-            "*.markdown",
         ],
         cwd=root,
         check=True,
@@ -48,6 +47,19 @@ def _tracked_markdown(root: Path) -> tuple[Path, ...]:
         if raw and (root / Path(raw.decode("utf-8"))).is_file()
     ]
     return tuple(sorted(paths))
+
+
+def _tracked_markdown(root: Path) -> tuple[Path, ...]:
+    return tuple(
+        path for path in _public_paths(root)
+        if path.suffix.casefold() in {".md", ".markdown"}
+    )
+
+
+def _private_path(relative: Path) -> bool:
+    return (
+        bool(relative.parts) and relative.parts[0].casefold() in _PRIVATE_ROOTS
+    ) or relative.name in _FORBIDDEN_PUBLIC_DOCUMENTS
 
 
 def _heading_slug(title: str) -> str:
@@ -110,6 +122,10 @@ def check_repository(root: Path) -> list[str]:
     if repository / _REQUIRED_INDEX not in resolved_documents:
         errors.append(f"missing required documentation index: {_REQUIRED_INDEX}")
 
+    for relative in _public_paths(repository):
+        if _private_path(relative):
+            errors.append(f"internal material must remain untracked: {relative}")
+
     for relative in documents:
         if relative.name in _FORBIDDEN_PUBLIC_DOCUMENTS or relative.name.startswith(
             "RELEASE_NOTES"
@@ -132,8 +148,17 @@ def check_repository(root: Path) -> list[str]:
             if target is None:
                 continue
             target_path, fragment = target
+            if _private_path(target_path.relative_to(repository)):
+                errors.append(f"{relative}: internal material is not a public link target {raw_target}")
+                continue
             if not target_path.exists():
                 errors.append(f"{relative}: missing local link target {raw_target}")
+                continue
+            if (
+                target_path.suffix.casefold() in {".md", ".markdown"}
+                and target_path not in resolved_documents
+            ):
+                errors.append(f"{relative}: Markdown link target is not public {raw_target}")
                 continue
             if relative == _REQUIRED_INDEX and target_path.suffix.casefold() in {
                 ".md",
@@ -151,7 +176,9 @@ def check_repository(root: Path) -> list[str]:
                 elif fragment.casefold() not in _anchors(heading_path):
                     errors.append(f"{relative}: missing heading fragment {raw_target}")
 
-    for page in sorted((repository / "docs").rglob("*.md")):
+    for page in sorted(
+        path for path in resolved_documents if path.is_relative_to(repository / "docs")
+    ):
         if page == repository / _REQUIRED_INDEX:
             continue
         if page not in indexed_pages:

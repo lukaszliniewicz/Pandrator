@@ -74,6 +74,9 @@ tts_voices/voice_library.json
 
 # Local planning, architecture, research, and qualification notes
 /.local-notes/
+/reviews/
+/review-notes/
+/release-acceptance.md
 
 # Local development and research scratch files
 /inspect_db.py

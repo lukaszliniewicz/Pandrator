@@ -36,11 +36,9 @@ Japanese/Chinese alignment uses source-preserving alignment-only units. This avo
 
 The adapter validates finite, monotonic sample timestamps within the clip, full lexical text conservation, and caption-boundary ownership. Missing, extra, changed or cross-cue units are rejected. A model's placeholder confidence field is not presented as acoustic certainty: the existing VAD/temporal quality assessment remains the confidence basis. A failed cue or MOSS turn retains its original caption/native-turn timing and a diagnostic.
 
-## Verification and limitations
+## Timing limitations
 
-Regression fixtures cover language routing, source-versus-target language, Unicode source mapping, invalid timestamps, size/hash-checked caching, cancellation, batched execution, per-request rejection, MOSS speaker/offset preservation, and MCP selectors.
-
-On the local Linux/RX 480 Vulkan installation, the Q8_0 model successfully aligned an upstream English speech sample and a newly synthesized Japanese sample. The Japanese caption workflow accepted 21 timed units and retained the original text. This is an end-to-end smoke test, not a benchmark of Japanese timestamp accuracy or pronunciation quality, and not Windows/CUDA runtime validation.
+Successful alignment means the output passes the adapter's structural checks; it does not measure acoustic timestamp accuracy or pronunciation quality. Review timing against the original audio before a large batch, especially around names, numbers and mixed scripts.
 
 Primary references:
 

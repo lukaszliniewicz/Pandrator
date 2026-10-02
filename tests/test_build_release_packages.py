@@ -90,6 +90,30 @@ class BuildReleasePackagesTests(unittest.TestCase):
                 ],
             )
 
+    def test_distribution_audit_rejects_private_notes_and_screenshots(self):
+        for private_path in (
+            "reviews/pre-release.md",
+            "review-notes/fixture.png",
+            ".local-notes/qualification.json",
+            "release-acceptance.md",
+        ):
+            with self.subTest(private_path=private_path):
+                with self.assertRaisesRegex(ValueError, "rejected archive members"):
+                    audit_python_distributions.validate_members(
+                        Path("pandrator-0.11.0.tar.gz"),
+                        [f"pandrator-0.11.0/{private_path}"],
+                    )
+
+    def test_distribution_audit_keeps_public_documentation(self):
+        audit_python_distributions.validate_members(
+            Path("pandrator-0.11.0.tar.gz"),
+            [
+                "pandrator-0.11.0/docs/development/cjk-pipeline.md",
+                "pandrator-0.11.0/docs/release-notes-0.11.0.md",
+                "pandrator-0.11.0/docs/reference/subtitle-pipeline.md",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

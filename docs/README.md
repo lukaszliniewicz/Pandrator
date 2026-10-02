@@ -72,7 +72,7 @@ site and should not be moved or copied into this directory.
 - [Run Pandrator from source](development/from-source.md)
 - [Contribute code or documentation](development/contributing.md)
 - [Lint, types, and code quality policy](development/code-quality.md)
-- [CJK speech and subtitle pipeline contracts](development/cjk-pipeline-review.md)
+- [CJK speech and subtitle pipeline contracts](development/cjk-pipeline.md)
 - [Frozen-tail video export paths](development/video-tail-export.md)
 
 ## Documentation boundaries
@@ -85,9 +85,10 @@ several almost-identical sources from drifting:
 - component READMEs own exact Manager and MCP operational contracts;
 - [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases)
   own downloads, checksums, versions, and release notes; and
-- experiments, qualification records, incident notes, and implementation
-  reviews belong in issues, pull requests, release records, or other internal
-  working material—not in the public documentation tree.
+- experiments, acceptance reports, incident notes, review screenshots, and
+  implementation reviews stay in ignored local notes or private maintainer
+  storage. They are not published in this repository, package archives, or
+  release attachments.
 
 Documentation should prefer stable names and the latest-release page over
 hard-coded version numbers and filenames. When behavior is version-specific,

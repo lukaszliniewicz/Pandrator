@@ -74,6 +74,7 @@ include = [
 [tool.hatch.build.targets.sdist]
 exclude = [
   "/tmp",
+  "/.local-notes",
   "/review-notes",
   "/reviews",
 ]

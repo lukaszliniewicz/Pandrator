@@ -48,9 +48,12 @@ in the relevant component README. Write for a user trying to complete a task:
 - explain data loss, external transfer, cost, and security implications;
 - prefer stable names and the latest-release page to version-pinned filenames;
 - link to one canonical detail instead of copying it;
-- distinguish shipped behavior from proposals; and
-- keep field evidence, qualification notes, and release notes out of the
-  public documentation tree.
+- distinguish shipped behavior from proposals;
+- keep field evidence, acceptance reports, and implementation reviews in
+  ignored local notes or private maintainer storage;
+- keep private notes and screenshots out of package archives and release
+  attachments; and
+- keep release notes focused on shipped behavior and upgrade guidance.
 
 Run `pixi run check-docs` after changing Markdown. The checker validates local
 paths and headings without making network requests.
