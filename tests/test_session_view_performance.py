@@ -187,11 +187,11 @@ class SessionViewPerformanceTests(unittest.TestCase):
                         session_id, limit=250, **options
                     )
                     selects = [sql for sql in log if sql.lstrip().upper().startswith("SELECT")]
-                    self.assertLessEqual(len(selects), 80)
+                    self.assertLessEqual(len(selects), 23)
                     counts_by_read.setdefault(name, []).append(len(selects))
                     self.assertEqual(1, sum("FROM audio_takes" in sql for sql in selects))
-                    # Full settings resolution also scans the voice inventory;
-                    # this guard isolates take-artifact retrieval by primary key.
+                    # Isolate page take-artifact retrieval by primary key from
+                    # any artifact reads used to resolve the settings context.
                     self.assertLessEqual(sum("FROM artifacts" in sql and "artifacts.id IN" in sql for sql in selects), 1)
                     expected_count = min(count, 3) if name == "source-cue" else count
                     self.assertEqual(expected_count, len(payload["items"]))

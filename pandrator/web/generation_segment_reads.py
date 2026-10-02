@@ -79,7 +79,7 @@ class GenerationSegmentReader:
 
         project_segments({"items": []}, view=view, fields=fields)
         requested_plan_revision_id = plan_revision_id
-        audio_snapshot, _ = self.settings.resolve(session_id)
+        audio_snapshot, _ = self.settings.resolve(session_id, sections=["tts", "audio"])
         if radius < 0 or radius > 25:
             raise ValueError("Inspection radius must be between 0 and 25 blocks.")
         if around_ordinal is not None and source_cue_id is not None:

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import wave
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from pandrator.web import models as m
+from pandrator.web.generation_audio_identity import IDENTITY_KEY, AudioIdentityContext
 from pandrator.web.generation_controls import (
     get_generation_controls,
     save_generation_controls,
 )
 from pandrator.web.speech_plan_preview import preview_speech_segment
+from pandrator.web.speech_plan_workspace import freeze_generation_performance_snapshot
 from tests.test_performance_plans import adopt, create, edit
 from tests.test_performance_plans import case as case
 
@@ -61,6 +65,162 @@ def _markup(case, text):
         segment.text = text
         segment.speech_plan_json = {"speech_xml": xml}
     return sid
+
+
+def _seed_segment_read_takes(case, snapshot, *, generation_run_id=None):
+    services = case["services"]
+    database = services["database"]
+    with database.session() as session:
+        rows = list(session.scalars(select(m.GenerationSegment).where(
+            m.GenerationSegment.plan_revision_id == case["revision_id"]
+        ).order_by(m.GenerationSegment.ordinal)))
+        context = AudioIdentityContext(session, snapshot)
+        identities = {row.id: context.for_segment(row) for row in rows}
+    for segment_id in case["segment_ids"]:
+        path = services["paths"].uploads / f"segment-read-{segment_id}.wav"
+        with wave.open(str(path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(16000)
+            output.writeframes(b"\x00\x00" * 1600)
+        artifact = services["artifacts"].register(
+            path, kind="audio", role="generation_take",
+            session_id=case["session_id"], metadata={IDENTITY_KEY: identities[segment_id]},
+        )
+        with database.session() as session:
+            session.get(m.GenerationSegment, segment_id).status = "completed"
+            session.add(m.AudioTake(
+                generation_segment_id=segment_id, generation_run_id=generation_run_id,
+                artifact_id=artifact.id, status="completed", is_active=True, duration_ms=100,
+            ))
+
+
+def _adopt_segment_read_markup(case):
+    plan = create(case, annotation_format="xml")
+    segment_id = case["segment_ids"][0]
+    with case["services"]["database"].session() as session:
+        markup = session.get(m.GenerationSegment, segment_id).speech_plan_json["speech_xml"]
+    adopted_xml = markup.replace(
+        '<speaker ref="c-scrooge">', '<speaker ref="c-scrooge"><em>dry</em>', 1
+    )
+    response = case["post"](
+        "/" + plan["id"],
+        {
+            "expected_version": plan["version"],
+            "items": [{"segment_id": segment_id, "speech_xml": adopted_xml}],
+        },
+        method="patch",
+    )
+    assert response.status_code == 200, response.get_json()
+    adopt(case, response.get_json())
+    return adopted_xml
+
+
+def _segment_read_scope_parity(
+    case, *, expected_markup, generation_run_id=None, expected_snapshot=None
+):
+    services = case["services"]
+    settings = services["workspace_settings"]
+    real_resolve = settings.resolve
+    statements = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(services["database"].engine, "before_cursor_execute", record_statement)
+    try:
+        with patch.object(settings, "resolve", side_effect=lambda sid, **kwargs: real_resolve(sid)):
+            full = services["generation"].list_segments(
+                case["session_id"], generation_run_id=generation_run_id
+            )
+        full_selects = len(statements)
+        statements.clear()
+        with patch.object(settings, "resolve", wraps=real_resolve) as scoped_resolve, patch(
+            "pandrator.web.generation_audio_identity.AudioIdentityContext",
+            wraps=AudioIdentityContext,
+        ) as identity_context:
+            scoped = services["generation"].list_segments(
+                case["session_id"], generation_run_id=generation_run_id
+            )
+            scoped_resolve.assert_called_once_with(case["session_id"], sections=["tts", "audio"])
+            if expected_snapshot is not None:
+                identity_context.assert_called_once()
+                assert identity_context.call_args.args[1] == expected_snapshot
+        scoped_selects = len(statements)
+    finally:
+        event.remove(services["database"].engine, "before_cursor_execute", record_statement)
+    assert full == scoped
+    assert [item["audio_reuse_reason"] for item in scoped["items"]] == ["reusable"] * 3
+    assert all(item["has_reusable_take"] for item in scoped["items"])
+    assert scoped["items"][0]["speech_annotation_xml"] == expected_markup
+    return full_selects, scoped_selects
+
+
+@pytest.mark.parametrize(
+    ("casting_enabled", "performance_enabled", "context_mode", "query_budget"),
+    [(False, False, "off", 23), (False, True, "both", 31), (True, False, "both", 32)],
+    ids=["strict-single", "directed-context", "named-cast-context"],
+)
+def test_segment_reader_scoped_settings_preserve_rich_payload(
+    case, record_property, casting_enabled, performance_enabled, context_mode, query_budget
+):
+    _markup(case, "Scrooge said: 👋 then Scrooge Scrooge.")
+    _cast(case)
+    adopted_xml = _adopt_segment_read_markup(case)
+    _set_tts(
+        case, service="gemini", model="gemini-2.5-flash-tts", voice="Kore",
+        voice_mode_version=1, casting_enabled=casting_enabled,
+        performance_enabled=performance_enabled, tts_context_mode=context_mode,
+    )
+    snapshot, _ = case["services"]["workspace_settings"].resolve(case["session_id"])
+    _seed_segment_read_takes(case, snapshot)
+    full_selects, scoped_selects = _segment_read_scope_parity(case, expected_markup=adopted_xml)
+    record_property("full_selects", full_selects)
+    record_property("scoped_selects", scoped_selects)
+    assert scoped_selects <= query_budget
+
+
+def test_segment_reader_scoped_current_settings_preserve_entire_frozen_run(case, record_property):
+    _markup(case, "Scrooge said: 👋 then Scrooge Scrooge.")
+    _cast(case)
+    adopted_xml = _adopt_segment_read_markup(case)
+    _set_tts(
+        case, service="gemini", model="gemini-2.5-flash-tts", voice="Kore",
+        voice_mode_version=1, casting_enabled=True,
+        performance_enabled=True, tts_context_mode="both",
+    )
+    services = case["services"]
+    snapshot, _ = services["workspace_settings"].resolve(case["session_id"])
+    with services["database"].session() as session:
+        assert freeze_generation_performance_snapshot(session, case["revision_id"], snapshot)
+        assert all(snapshot[key] for key in (
+            "performance_snapshot", "generation_control_snapshot", "semantic_context_snapshot"
+        ))
+        snapshot["selected_segment_override"] = {
+            "tts": {"voice": "Kore"}, "rvc": {"enabled": True, "model": "test-rvc"},
+        }
+        run = m.GenerationRun(
+            session_id=case["session_id"], plan_revision_id=case["revision_id"],
+            sequence_number=1, settings_snapshot_json=snapshot, status="completed",
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    _seed_segment_read_takes(case, snapshot, generation_run_id=run_id)
+    _set_tts(case, voice="Charon")
+    _cast(case, narrator="Charon", character="Charon")
+    full_selects, scoped_selects = _segment_read_scope_parity(
+        case, expected_markup=adopted_xml, generation_run_id=run_id, expected_snapshot=snapshot
+    )
+    record_property("full_selects", full_selects)
+    record_property("scoped_selects", scoped_selects)
+    with services["database"].session() as session:
+        frozen = session.get(m.GenerationRun, run_id).settings_snapshot_json
+        assert frozen == snapshot
+        assert frozen["selected_segment_override"] == {
+            "tts": {"voice": "Kore"}, "rvc": {"enabled": True, "model": "test-rvc"},
+        }
 
 
 def test_current_preview_resolves_named_cast_unicode_offsets_and_no_sidecar(case):
