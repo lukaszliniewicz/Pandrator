@@ -3809,6 +3809,88 @@ A single reviewed cue.
             self.assertTrue(take.is_active)
             self.assertTrue(self.artifacts.resolve(take.artifact_id)[1].is_file())
 
+    def _check_native_generation_finish_stop(self, action):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Keep this completed take."}], settings={}
+        )
+        with self.database.session() as db:
+            run = GenerationRun(
+                session_id=self.session.id, plan_revision_id=revision_id,
+                status="queued", settings_snapshot_json={"tts": {"service": "XTTS"}},
+            )
+            db.add(run)
+            db.flush()
+            run_id = run.id
+        job = self.handlers.jobs.enqueue(
+            "generation.run", {"generation_run_id": run_id}, session_id=self.session.id
+        )
+        with self.database.session() as db:
+            db.get(GenerationRun, run_id).job_id = job.id
+        claimed = self.handlers.jobs.claim("finish-stop-fixture")
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        observed = {}
+
+        def progress(_value, detail=None):
+            if detail == "Generated segment 1 of 1":
+                response = (service.request_pause(run_id) if action == "pause"
+                            else service.cancel(run_id))
+                observed["status"] = response["status"]
+                with self.database.session() as db:
+                    take = db.scalar(select(AudioTake).where(AudioTake.generation_run_id == run_id))
+                    observed["take_id"] = take.id
+                    observed["path"] = self.paths.managed_path(db.get(Artifact, take.artifact_id).relative_path)
+                    observed["bytes"] = observed["path"].read_bytes()
+
+        with mock.patch("pandrator.logic.tts_handler.text_to_audio",
+                        return_value=AudioSegment.silent(duration=25)) as synthesize:
+            result = self.handlers.run_generation(
+                {"generation_run_id": run_id}, progress, threading.Event()
+            )
+        self.assertEqual(1, synthesize.call_count)
+        expected = "paused" if action == "pause" else "cancel_requested"
+        self.assertEqual(expected, result["status"])
+        with self.database.session() as db:
+            self.assertEqual(expected, db.get(GenerationRun, run_id).status)
+            self.assertEqual("completed", db.get(GenerationSegment, segment_ids[0]).status)
+            self.assertTrue(db.get(AudioTake, observed["take_id"]).is_active)
+        self.assertEqual(observed["bytes"], observed["path"].read_bytes())
+        if action == "pause":
+            self.handlers.jobs.complete(job.id, "finish-stop-fixture", result,
+                                        lease_generation=claimed.lease_generation)
+            with self.database.session() as db:
+                self.assertEqual("paused", db.get(GenerationRun, run_id).status)
+            resumed = service.resume(run_id)
+            self.assertEqual("queued", resumed["status"])
+            resume_job = self.handlers.jobs.claim("finish-resume-fixture")
+            self.assertEqual(resumed["job_id"], resume_job.id)
+            with mock.patch("pandrator.logic.tts_handler.text_to_audio") as synthesize:
+                resumed_result = self.handlers.run_generation(
+                    resume_job.payload_json, self.progress, threading.Event()
+                )
+            synthesize.assert_not_called()
+            self.assertEqual(("completed", 0, 1), (
+                resumed_result["status"], resumed_result["generated"], resumed_result["skipped"]
+            ))
+            self.assertEqual(observed["bytes"], observed["path"].read_bytes())
+            self.handlers.jobs.complete(
+                resume_job.id, "finish-resume-fixture", resumed_result,
+                lease_generation=resume_job.lease_generation,
+            )
+        else:
+            self.assertTrue(self.handlers.jobs.cancel_owned(
+                job.id, "finish-stop-fixture", lease_generation=claimed.lease_generation
+            ))
+            with self.database.session() as db:
+                self.assertEqual("canceled", db.get(GenerationRun, run_id).status)
+
+    def test_native_pause_during_last_take_reporting_preserves_resume(self):
+        self._check_native_generation_finish_stop("pause")
+
+    def test_native_cancel_during_last_take_reporting_preserves_job_acknowledgement(self):
+        self._check_native_generation_finish_stop("cancel")
+
     def test_generation_postpasses_preserve_native_cancellation_and_job_acknowledgement(self):
         with self.database.immediate_session() as db:
             db.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
@@ -4138,6 +4220,9 @@ A single reviewed cue.
         ).glob("*.wav")))
 
     def test_generated_segment_database_writes_roll_back_as_one_unit(self):
+        key = tts_service_credential_key("elevenlabs")
+        with self.database.session() as session:
+            upsert_credential(session, key, "Synthetic rollback fixture", "synthetic-rollback-key")
         revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id,
             [{"text": "Atomic segment."}],
@@ -4150,12 +4235,25 @@ A single reviewed cue.
                 status="queued",
                 settings_snapshot_json={
                     "text": {"llm_tts_optimization": False},
-                    "tts": {"service": "XTTS"},
+                    "tts": {
+                        "service": "ElevenLabs", "model": "eleven_multilingual_v2",
+                        "voice": "fixture-voice", "language": "en",
+                        "tts_concurrent_requests": 1, "max_attempts": 1,
+                    },
                 },
             )
             session.add(run)
             session.flush()
             run_id = run.id
+
+        observed_usage = []
+
+        def fail_after_publication(session, _session_id, **_kwargs):
+            session.flush()
+            observed_usage.extend(session.scalars(select(UsageEvent).where(
+                UsageEvent.generation_run_id == run_id
+            )))
+            raise RuntimeError("forced unit-of-work rollback")
 
         with (
             mock.patch(
@@ -4164,7 +4262,7 @@ A single reviewed cue.
             ),
             mock.patch(
                 "pandrator.web.workspace.mark_output_assemblies_stale",
-                side_effect=RuntimeError("forced unit-of-work rollback"),
+                side_effect=fail_after_publication,
             ),
         ):
             with self.assertRaisesRegex(
@@ -4180,6 +4278,9 @@ A single reviewed cue.
                     threading.Event(),
                 )
 
+        self.assertEqual(1, len(observed_usage))
+        self.assertEqual("elevenlabs", observed_usage[0].provider_key)
+        self.assertIsNotNone(observed_usage[0].artifact_id)
         with self.database.session() as session:
             self.assertEqual(
                 0,

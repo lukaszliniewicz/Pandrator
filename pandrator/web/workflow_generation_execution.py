@@ -978,7 +978,7 @@ def run_generation(
         raise parallel_wave_error
 
     verification_warning_count = context._finalize_run_audio_verification(output_run_id)
-    with context.database.session() as session:
+    with context.database.immediate_session() as session:
         run = session.get(GenerationRun, run_id)
         if run is None:
             raise KeyError(run_id)
@@ -1020,9 +1020,17 @@ def run_generation(
                 or 0
             )
         final_status = "partial" if incomplete else "completed"
-        run.status = "running" if repair_requested and final_status == "completed" else final_status
-        run.updated_at = utcnow()
-        if output_run_id != run_id:
+        if run.cancel_requested or run.status in {"cancel_requested", "canceled"}:
+            final_status = run.status
+        elif run.pause_requested or run.status in {"pausing", "pause_requested", "paused"}:
+            final_status = "paused"
+            if run.status != "paused":
+                run.status = "paused"
+                run.updated_at = utcnow()
+        else:
+            run.status = "running" if repair_requested and final_status == "completed" else final_status
+            run.updated_at = utcnow()
+        if output_run_id != run_id and final_status in {"completed", "partial"}:
             output_run = session.get(GenerationRun, output_run_id)
             if output_run is not None and output_run.status in {
                 "completed",
@@ -1034,8 +1042,9 @@ def run_generation(
                 output_run.updated_at = utcnow()
     progress(
         1.0,
-        "Generation run complete"
-        if final_status == "completed"
+        "Generation paused" if final_status == "paused"
+        else "Generation canceled" if final_status in {"cancel_requested", "canceled"}
+        else "Generation run complete" if final_status == "completed"
         else f"Generation saved; {incomplete} segment(s) remain",
     )
     auto_resume_source_id = str(
@@ -1105,4 +1114,3 @@ def run_generation(
         else:
             completion_progress(1.0, f"Voiceover regroup checked; {result.get('regrouped_groups', 0)} group(s) regenerated")
     return result
-
