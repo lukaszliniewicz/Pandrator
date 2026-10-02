@@ -144,6 +144,119 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(model, llm_settings.default_model)
         self.assertEqual(600, llm_settings.request_timeout_seconds)
 
+    def test_clean_source_txt_cancellation_preserves_source_without_publication(self):
+        source_path = self.session_dir / "cancel-source.txt"
+        source_bytes = b"Original source.\n"
+        source_path.write_bytes(source_bytes)
+        source = self.artifacts.register(source_path, kind="source", role="upload", session_id=self.session.id)
+        cancel = threading.Event()
+        cancel.set()
+        result = self.handlers.clean_source(
+            {"session_id": self.session.id, "source_artifact_id": source.id}, self.progress, cancel
+        )
+        self.assertEqual({}, result)
+        self.assertEqual(source_bytes, source_path.read_bytes())
+        with self.database.session() as db:
+            self.assertEqual([source.id], list(db.scalars(select(Artifact.id))))
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationPlan)))
+        self.assertFalse((self.session_dir / "source_cleaning").exists())
+
+    def test_prepare_text_cancellation_after_preprocessing_preserves_active_plan(self):
+        source_path = self.session_dir / "cancel-preparation.txt"
+        source_path.write_text("Original narration.", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="text", role="clean_text", session_id=self.session.id)
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Existing narration."}], settings={}
+        )
+        cancel = threading.Event()
+        def preprocess(*_args, **_kwargs):
+            cancel.set()
+            return [{"text": "Replacement narration."}]
+        with mock.patch("pandrator.logic.text_preprocessor.preprocess_text", side_effect=preprocess):
+            result = self.handlers.prepare_text(
+                {"session_id": self.session.id, "source_artifact_id": source.id}, self.progress, cancel
+            )
+        self.assertEqual({}, result)
+        with self.database.session() as db:
+            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            self.assertEqual(revision_id, plan.active_revision_id)
+            self.assertEqual(segment_ids, list(db.scalars(select(GenerationSegment.id))))
+            self.assertEqual([source.id], list(db.scalars(select(Artifact.id))))
+        self.assertFalse(list(self.session_dir.rglob("prepared_narration.json")))
+
+    def test_standalone_source_context_cleans_txt_with_parent_edges(self):
+        from pandrator.web import workflow_handlers
+        from pandrator.web.workflow_source import SourceWorkflowContext, clean_source
+
+        source_path = self.session_dir / "standalone-source.txt"
+        source_bytes = b"Narration preserved.\n\nNext paragraph.\n"
+        source_path.write_bytes(source_bytes)
+        source = self.artifacts.register(source_path, kind="source", role="upload", session_id=self.session.id)
+        context = SourceWorkflowContext(
+            database=self.database, paths=self.paths, artifacts=self.artifacts,
+            _resolve_input=self.handlers._resolve_input, _session_dir=self.handlers._session_dir,
+            _operation_dir=self.handlers._operation_dir, _session_record=self.handlers._session_record,
+            _store_generation_plan=self.handlers._store_generation_plan,
+            _validate_download_url=self.handlers._validate_download_url,
+            _scaled_progress_callback=workflow_handlers._scaled_progress_callback,
+            _fraction_message_callback=workflow_handlers._fraction_message_callback,
+            _source_cleaning_progress_callback=workflow_handlers._source_cleaning_progress_callback,
+        )
+        result = clean_source(context, {"session_id": self.session.id, "source_artifact_id": source.id}, self.progress, threading.Event())
+        clean, clean_path = self.artifacts.resolve(result["artifact_id"])
+        self.assertEqual("clean_text", clean.role)
+        self.assertEqual(source_bytes, clean_path.read_bytes())
+        self.assertEqual(source_bytes, source_path.read_bytes())
+        with self.database.session() as db:
+            baseline = db.scalar(select(Artifact).where(Artifact.role == "extracted_text"))
+            edges = set(db.execute(select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id)).all())
+            self.assertEqual({(source.id, baseline.id), (source.id, clean.id), (baseline.id, clean.id)}, edges)
+        self.assertEqual(source_bytes, self.artifacts.resolve(baseline.id)[1].read_bytes())
+
+    def test_prepare_text_uses_overridden_store_and_captured_progress_callback(self):
+        source_path = self.session_dir / "callback-source.txt"
+        source_path.write_text("Narration.", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="text", role="clean_text", session_id=self.session.id)
+        callback = mock.Mock()
+        records = [{"text": "Narration."}]
+        with mock.patch("pandrator.web.workflow_handlers._scaled_progress_callback", return_value=callback) as scale, mock.patch(
+            "pandrator.logic.text_preprocessor.preprocess_text", return_value=records
+        ) as preprocess, mock.patch.object(self.handlers, "_store_generation_plan", return_value=("overridden-revision", [])) as store:
+            result = self.handlers.prepare_text(
+                {"session_id": self.session.id, "source_artifact_id": source.id}, self.progress, threading.Event()
+            )
+        scale.assert_called_once_with(self.progress, 0.1, 0.85)
+        self.assertIs(callback, preprocess.call_args.kwargs["progress_callback"])
+        self.assertIs(records, store.call_args.args[1])
+        self.assertEqual(self.session.id, store.call_args.args[0])
+        self.assertEqual(result["artifact_id"], store.call_args.kwargs["source_artifact_id"])
+        self.assertEqual("overridden-revision", result["generation_plan_revision_id"])
+
+    def test_clean_source_uses_captured_extraction_and_agentic_progress_factories(self):
+        from pandrator.logic.source_cleaning.models import PipelineResult
+        from pandrator.logic.source_cleaning.pdf_text_adapter import build_source_document_from_text
+
+        source_path = self.session_dir / "callback-source.pdf"
+        source_path.write_bytes(b"mocked extraction input")
+        source = self.artifacts.register(source_path, kind="source", role="upload", session_id=self.session.id)
+        document = build_source_document_from_text("Narration.", source_path=str(source_path), filename=source_path.name)
+        fraction_callback, phase_callback = mock.Mock(), mock.Mock()
+        with mock.patch("pandrator.web.workflow_handlers._fraction_message_callback", return_value=fraction_callback) as fraction, mock.patch(
+            "pandrator.web.workflow_handlers._source_cleaning_progress_callback", return_value=phase_callback
+        ) as phases, mock.patch("pandrator.logic.source_cleaning.build_source_document", return_value=document) as build, mock.patch(
+            "pandrator.web.provider_settings.build_llm_settings", return_value=(object(), "openai/test")
+        ), mock.patch("pandrator.logic.source_cleaning.run_cleaning_pipeline", return_value=PipelineResult()) as pipeline:
+            self.handlers.clean_source(
+                {"session_id": self.session.id, "source_artifact_id": source.id, "settings": {"agentic": True, "phase_names": ["metadata"]}},
+                self.progress, threading.Event(),
+            )
+        self.assertEqual([mock.call(self.progress, 0.05, 0.35), mock.call(self.progress, 0.4, 0.45)], fraction.call_args_list)
+        self.assertIs(fraction_callback, build.call_args_list[0].kwargs["progress_callback"])
+        phases.assert_called_once()
+        self.assertEqual((self.progress, 0.45, 0.9), phases.call_args.args)
+        self.assertEqual(["metadata"], phases.call_args.kwargs["phase_names"])
+        self.assertIs(phase_callback, pipeline.call_args.kwargs["progress_callback"])
+
     def test_prepare_text_fallbacks_match_canonical_text_defaults(self):
         source_path = self.session_dir / "cleaned.txt"
         source_path.write_text("LOUD HEADING\n\nNarration.", encoding="utf-8")

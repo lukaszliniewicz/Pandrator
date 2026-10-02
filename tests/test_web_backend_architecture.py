@@ -195,7 +195,7 @@ class BackendArchitectureTests(unittest.TestCase):
             return callback
         for name in (
             "transcribe_voice", "normalize_voice_recording", "publish_voice", "unpublish_voice",
-            "upload_rvc_model", "convert_with_rvc",
+            "upload_rvc_model", "convert_with_rvc", "train_xtts",
         ):
             with self.subTest(handler=name), patch.multiple(handlers, **fields), patch.object(
                 workflow_handlers, "_scaled_progress_callback", scale
@@ -228,9 +228,63 @@ class BackendArchitectureTests(unittest.TestCase):
             "voice.transcribe": "transcribe_voice", "voice.normalize_recording": "normalize_voice_recording",
             "voice.publish": "publish_voice", "voice.unpublish": "unpublish_voice",
             "rvc.model.upload": "upload_rvc_model", "rvc.convert": "convert_with_rvc",
+            "training.xtts": "train_xtts",
         }
         payload = {key: "test" for key in (
-            "voice_id", "sample_artifact_id", "source_artifact_id", "service_id", "pth_artifact_id", "index_artifact_id"
+            "voice_id", "sample_artifact_id", "source_artifact_id", "service_id", "pth_artifact_id", "index_artifact_id", "training_id"
+        )}
+        progress, cancel = lambda *_args: None, threading.Event()
+        for kind, name in registrations.items():
+            with self.subTest(kind=kind), patch.object(handlers, name) as replacement:
+                expected = {"late_bound": kind}
+                replacement.return_value = expected
+                self.assertIs(expected, handlers.handler_registry[kind](payload, progress, cancel))
+                replacement.assert_called_once_with(payload, progress, cancel)
+
+    def test_source_facades_capture_current_dependencies_and_forward_identity(self):
+        from pandrator.web import workflow_handlers
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        payload, progress, cancel = {"unchanged": []}, lambda *_args: None, threading.Event()
+        fields = {name: object() for name in ("database", "paths", "artifacts")}
+        fields.update({name: lambda *_args, **_kwargs: None for name in (
+            "_resolve_input", "_session_dir", "_operation_dir", "_session_record",
+            "_store_generation_plan", "_validate_download_url",
+        )})
+        callbacks = {name: lambda *_args, **_kwargs: None for name in (
+            "_scaled_progress_callback", "_fraction_message_callback", "_source_cleaning_progress_callback",
+        )}
+        for name in ("download_source_url", "reuse_source", "clean_source", "prepare_source_cleaning_dispatch", "prepare_text"):
+            with self.subTest(handler=name), patch.multiple(handlers, **fields), patch.multiple(
+                workflow_handlers, **callbacks
+            ), patch.object(workflow_handlers, f"_source_{name}") as owner:
+                expected = {"result": name}
+                owner.return_value = expected
+                self.assertIs(expected, getattr(handlers, name)(payload, progress, cancel))
+                owner.assert_called_once()
+                context, sent_payload, sent_progress, sent_cancel = owner.call_args.args
+                self.assertIs(payload, sent_payload)
+                self.assertIs(progress, sent_progress)
+                self.assertIs(cancel, sent_cancel)
+                for field, value in {**fields, **callbacks}.items():
+                    self.assertIs(value, getattr(context, field))
+                # A second call captures replacements rather than retaining a context.
+                changed_database = object()
+                with patch.object(handlers, "database", changed_database):
+                    getattr(handlers, name)(payload, progress, cancel)
+                latest = owner.call_args.args[0]
+                self.assertIsNot(context, latest)
+                self.assertIs(changed_database, latest.database)
+
+    def test_extracted_source_registry_handlers_remain_late_bound(self):
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        registrations = {
+            "source.download_url": "download_source_url", "source.reuse": "reuse_source",
+            "source.clean": "clean_source", "text.prepare": "prepare_text",
+            "source.cleaning_dispatch.prepare": "prepare_source_cleaning_dispatch",
+        }
+        payload = {key: "test" for key in (
+            "session_id", "url", "artifact_id", "source_artifact_id", "source_cleaning_dispatch_run_id",
         )}
         progress, cancel = lambda *_args: None, threading.Event()
         for kind, name in registrations.items():

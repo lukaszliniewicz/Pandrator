@@ -22,7 +22,7 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService, sha256_file
 from .credentials import hydrate_stt_settings, hydrate_tts_settings, redact_inline_secrets
 from .database import Database
-from .models import AppSetting, Artifact, Voice, VoiceSample, utcnow
+from .models import AppSetting, Artifact, TrainingRun, Voice, VoiceSample, utcnow
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
@@ -917,4 +917,162 @@ def convert_with_rvc(
         "model_name": settings["rvc_model"],
     }
 
+def train_xtts(
+    context: VoiceWorkflowContext,
+    payload: dict[str, Any],
+    progress: Callable[[float, str | None], None],
+    cancel_event: threading.Event,
+) -> dict[str, Any]:
+    from pandrator.logic import xtts_trainer_handler
 
+    training_id = str(payload.get("training_id") or "")
+    source_artifact, source_path = context._resolve_input(
+        str(payload.get("source_artifact_id") or "")
+    )
+    source_text_path = ""
+    source_text_id = str(payload.get("source_text_artifact_id") or "")
+    if source_text_id:
+        _text_artifact, text_path = context._resolve_input(source_text_id)
+        source_text_path = str(text_path)
+    settings = dict(payload.get("settings") or {})
+    model_name = str(
+        payload.get("model_name") or settings.get("model_name") or ""
+    ).strip()
+    if not model_name:
+        raise ValueError("An XTTS model name is required.")
+    with context.database.session() as session:
+        training = session.get(TrainingRun, training_id)
+        if training is None:
+            raise ValueError("Training record not found.")
+        training.status = "running"
+        training.updated_at = utcnow()
+    progress(0.02, "Validating XTTS trainer")
+    try:
+        total_epochs = max(1, int(settings.get("epochs") or 6))
+    except (TypeError, ValueError):
+        total_epochs = 6
+    last_training_fraction = 0.0
+    zero_based_epochs: bool | None = None
+
+    def training_output(line: str) -> None:
+        nonlocal last_training_fraction, zero_based_epochs
+        detail = str(line)[-500:]
+        epoch_match = re.search(
+            r"\bepoch\s*[:#-]?\s*(\d+)(?:\s*(?:/|of)\s*(\d+))?",
+            detail,
+            re.IGNORECASE,
+        )
+        percent_match = re.search(r"(\d+(?:\.\d+)?)\s*%", detail)
+        if epoch_match:
+            raw_epoch = max(0, int(epoch_match.group(1)))
+            if raw_epoch == 0:
+                zero_based_epochs = True
+            reported_total = max(
+                1,
+                int(epoch_match.group(2) or total_epochs),
+            )
+            # Training logs vary between zero- and one-based epoch labels.
+            completed_before = (
+                raw_epoch if zero_based_epochs else max(0, raw_epoch - 1)
+            )
+            within_epoch = (
+                max(0.0, min(100.0, float(percent_match.group(1)))) / 100
+                if percent_match
+                else 0.0
+            )
+            last_training_fraction = max(
+                last_training_fraction,
+                min(1.0, (completed_before + within_epoch) / reported_total),
+            )
+            display_epoch = min(
+                reported_total,
+                raw_epoch + 1 if zero_based_epochs else max(1, raw_epoch),
+            )
+            detail = (
+                f"Training epoch {display_epoch} of {reported_total} — {detail}"
+            )
+        elif percent_match and total_epochs == 1:
+            last_training_fraction = max(
+                last_training_fraction,
+                min(1.0, float(percent_match.group(1)) / 100),
+            )
+        progress(0.1 + 0.8 * last_training_fraction, detail)
+
+    def training_status(line: str) -> None:
+        detail = str(line)[-500:]
+        normalized = detail.casefold()
+        if "building" in normalized:
+            value = 0.05
+        elif "in progress" in normalized:
+            value = 0.1
+        elif "copying model" in normalized or "training finished" in normalized:
+            value = 0.92
+        elif "completed" in normalized:
+            value = 0.98
+        else:
+            value = 0.1
+        progress(value, detail)
+
+    try:
+        success, message = xtts_trainer_handler.start_training(
+            {
+                **settings,
+                "model_name": model_name,
+                "source_audio_path": str(source_path),
+                "source_text_path": source_text_path,
+            },
+            output_callback=training_output,
+            status_callback=training_status,
+            stop_event=cancel_event,
+        )
+        if cancel_event.is_set():
+            with context.database.session() as session:
+                training = session.get(TrainingRun, training_id)
+                if training is None:
+                    raise ValueError("Training record not found.")
+                training.status = "canceled"
+            return {}
+        if not success:
+            raise RuntimeError(message)
+        manifest_dir = context.paths.models / "xtts" / model_name
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest = manifest_dir / "pandrator-training.json"
+        manifest.write_text(
+            json.dumps(
+                {"kind": "xtts", "model_name": model_name, "message": message},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        artifact = context.artifacts.register(
+            manifest,
+            kind="model",
+            role="xtts_model",
+            parent_ids=[source_artifact.id]
+            + ([source_text_id] if source_text_id else []),
+            settings=settings,
+            metadata={"model_name": model_name},
+        )
+        with context.database.session() as session:
+            training = session.get(TrainingRun, training_id)
+            if training is None:
+                raise ValueError("Training record not found.")
+            training.status = "succeeded"
+            training.output_artifact_id = artifact.id
+            training.updated_at = utcnow()
+        progress(1.0, "XTTS model ready")
+        return {
+            "training_id": training_id,
+            "artifact_id": artifact.id,
+            "model_name": model_name,
+            "message": message,
+        }
+    except Exception as error:
+        with context.database.session() as session:
+            training = session.get(TrainingRun, training_id)
+            if training is not None:
+                training.status = "failed"
+                training.error_message = str(error)
+                training.updated_at = utcnow()
+        raise

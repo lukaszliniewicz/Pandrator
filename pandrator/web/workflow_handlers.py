@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -56,8 +55,6 @@ from .logical_passages import (
     stored_passages,
 )
 from .models import (
-    AgentRun,
-    AgentStep,
     Artifact,
     ArtifactEdge,
     AudioTake,
@@ -77,10 +74,8 @@ from .models import (
     SessionSetting,
     SessionSource,
     SourceAsset,
-    SourceRecord,
     SpeechPlanReview,
     TimedWord,
-    TrainingRun,
     UsageEvent,
     Voice,
     new_id,
@@ -93,6 +88,14 @@ from .workflow_output_assembly import (
     assemble_generation_output as _assemble_generation_output,
 )
 from .workflow_output_context import OutputWorkflowContext
+from .workflow_source import SourceWorkflowContext
+from .workflow_source import clean_source as _source_clean_source
+from .workflow_source import download_source_url as _source_download_source_url
+from .workflow_source import (
+    prepare_source_cleaning_dispatch as _source_prepare_source_cleaning_dispatch,
+)
+from .workflow_source import prepare_text as _source_prepare_text
+from .workflow_source import reuse_source as _source_reuse_source
 from .workflow_voice import VOICE_CLEANUP_INPUT_SAMPLE_RATE as VOICE_CLEANUP_INPUT_SAMPLE_RATE
 from .workflow_voice import (
     VOICE_NOISE_REDUCTION_DEEPFILTERNET2 as VOICE_NOISE_REDUCTION_DEEPFILTERNET2,
@@ -105,6 +108,7 @@ from .workflow_voice import _provider_endpoint_fingerprint as _provider_endpoint
 from .workflow_voice import convert_with_rvc as _voice_convert_with_rvc
 from .workflow_voice import normalize_voice_recording as _voice_normalize_voice_recording
 from .workflow_voice import publish_voice as _voice_publish_voice
+from .workflow_voice import train_xtts as _voice_train_xtts
 from .workflow_voice import transcribe_voice as _voice_transcribe_voice
 from .workflow_voice import unpublish_voice as _voice_unpublish_voice
 from .workflow_voice import upload_rvc_model as _voice_upload_rvc_model
@@ -972,162 +976,27 @@ class WorkflowHandlers:
                 raise ValueError("Source URL resolves to a non-public network address.")
         return parsed.geturl()
 
+    def _source_workflow_context(self) -> SourceWorkflowContext:
+        return SourceWorkflowContext(
+            database=self.database,
+            paths=self.paths,
+            artifacts=self.artifacts,
+            _resolve_input=self._resolve_input,
+            _session_dir=self._session_dir,
+            _operation_dir=self._operation_dir,
+            _session_record=self._session_record,
+            _store_generation_plan=self._store_generation_plan,
+            _validate_download_url=self._validate_download_url,
+            _scaled_progress_callback=_scaled_progress_callback,
+            _fraction_message_callback=_fraction_message_callback,
+            _source_cleaning_progress_callback=_source_cleaning_progress_callback,
+        )
+
     def download_source_url(self, payload, progress, cancel_event):
-        import yt_dlp
-
-        from .source_library import SourceLibraryService
-
-        session_id = str(payload.get("session_id") or "")
-        url = self._validate_download_url(str(payload.get("url") or ""))
-        destination_dir = self._session_dir(session_id) / "sources"
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        progress(0.03, "Inspecting source URL")
-        download_fraction = 0.0
-        last_reported_fraction = -1.0
-        last_reported_bytes = 0
-        last_reported_at = 0.0
-
-        def download_progress(status: dict[str, Any]) -> None:
-            nonlocal \
-                download_fraction, \
-                last_reported_fraction, \
-                last_reported_bytes, \
-                last_reported_at
-            if cancel_event.is_set():
-                raise yt_dlp.utils.DownloadError("Source download was canceled.")
-            state = str(status.get("status") or "")
-            if state == "downloading":
-                downloaded = max(0, int(status.get("downloaded_bytes") or 0))
-                total = max(
-                    0,
-                    int(
-                        status.get("total_bytes")
-                        or status.get("total_bytes_estimate")
-                        or 0
-                    ),
-                )
-                if total:
-                    download_fraction = max(
-                        download_fraction,
-                        min(1.0, downloaded / total),
-                    )
-                now = time.monotonic()
-                should_report = (
-                    last_reported_fraction < 0
-                    or (total and download_fraction - last_reported_fraction >= 0.005)
-                    or (
-                        not total
-                        and downloaded - last_reported_bytes >= 4 * 1024 * 1024
-                    )
-                    or now - last_reported_at >= 1.0
-                )
-                if not should_report:
-                    return
-                detail = (
-                    f"Downloading source — {round(download_fraction * 100)}%"
-                    if total
-                    else f"Downloading source — {downloaded / (1024 * 1024):.1f} MiB received"
-                )
-                progress(0.05 + download_fraction * 0.8, detail)
-                last_reported_fraction = download_fraction
-                last_reported_bytes = downloaded
-                last_reported_at = now
-            elif state == "finished":
-                download_fraction = 1.0
-                progress(0.88, "Source download complete; processing media")
-
-        options = {
-            "outtmpl": str(destination_dir / "%(title).160B-%(id)s.%(ext)s"),
-            "restrictfilenames": True,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "progress_hooks": [download_progress],
-        }
-        with yt_dlp.YoutubeDL(options) as downloader:
-            information = downloader.extract_info(url, download=True)
-            output = Path(downloader.prepare_filename(information)).resolve()
-        if cancel_event.is_set():
-            return {}
-        if destination_dir.resolve() not in output.parents or not output.is_file():
-            raise RuntimeError(
-                "Downloaded source was not created in the managed session directory."
-            )
-        progress(0.93, "Registering downloaded source")
-        source_metadata = {
-            "original_filename": output.name,
-            "source_url": url,
-            "downloader": "yt-dlp",
-        }
-        artifact = self.artifacts.register(
-            output,
-            kind="source",
-            role="upload",
-            session_id=session_id,
-            metadata=source_metadata,
-        )
-        with self.database.session() as session:
-            session.add(
-                SourceRecord(
-                    session_id=session_id,
-                    kind=output.suffix.lower().lstrip(".") or "url",
-                    display_name=output.name,
-                    artifact_id=artifact.id,
-                    content_hash=artifact.content_hash,
-                    metadata_json={"url": url, "downloader": "yt-dlp"},
-                )
-            )
-        library = SourceLibraryService(self.database, self.artifacts)
-        asset = library.ensure_for_artifact(
-            artifact.id,
-            display_name=output.name,
-            kind=output.suffix.lower().lstrip(".") or "url",
-        )
-        library.attach(session_id, asset.id)
-        progress(1.0, "Source download ready")
-        return {"artifact_id": artifact.id, "filename": output.name}
+        return _source_download_source_url(self._source_workflow_context(), payload, progress, cancel_event)
 
     def reuse_source(self, payload, progress, cancel_event):
-        from .source_library import SourceLibraryService
-
-        session_id = str(payload.get("session_id") or "")
-        source, source_path = self._resolve_input(str(payload.get("artifact_id") or ""))
-        destination_dir = self._session_dir(session_id) / "sources"
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        destination = destination_dir / f"{source.id}-{source_path.name}"
-        progress(0.2, "Copying reusable source")
-        shutil.copy2(source_path, destination)
-        if cancel_event.is_set():
-            destination.unlink(missing_ok=True)
-            return {}
-        artifact = self.artifacts.register(
-            destination,
-            kind="source",
-            role="upload",
-            session_id=session_id,
-            parent_ids=[source.id],
-            metadata={"original_filename": source_path.name, "reused_from": source.id},
-        )
-        with self.database.session() as session:
-            session.add(
-                SourceRecord(
-                    session_id=session_id,
-                    kind=destination.suffix.lower().lstrip(".") or "file",
-                    display_name=source_path.name,
-                    artifact_id=artifact.id,
-                    content_hash=artifact.content_hash,
-                    metadata_json={"reused_from": source.id},
-                )
-            )
-        library = SourceLibraryService(self.database, self.artifacts)
-        asset = library.ensure_for_artifact(
-            artifact.id,
-            display_name=source_path.name,
-            kind=destination.suffix.lower().lstrip(".") or "file",
-        )
-        library.attach(session_id, asset.id)
-        progress(1.0, "Reusable source ready")
-        return {"artifact_id": artifact.id, "filename": source_path.name}
+        return _source_reuse_source(self._source_workflow_context(), payload, progress, cancel_event)
 
     def _latest_stage_input(
         self, session_id: str, prerequisite_roles: tuple[str, ...]
@@ -6008,644 +5877,16 @@ class WorkflowHandlers:
         return _voice_convert_with_rvc(self._voice_workflow_context(), payload, progress, cancel_event)
 
     def train_xtts(self, payload, progress, cancel_event):
-        from pandrator.logic import xtts_trainer_handler
-
-        training_id = str(payload.get("training_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
-        source_text_path = ""
-        source_text_id = str(payload.get("source_text_artifact_id") or "")
-        if source_text_id:
-            _text_artifact, text_path = self._resolve_input(source_text_id)
-            source_text_path = str(text_path)
-        settings = dict(payload.get("settings") or {})
-        model_name = str(
-            payload.get("model_name") or settings.get("model_name") or ""
-        ).strip()
-        if not model_name:
-            raise ValueError("An XTTS model name is required.")
-        with self.database.session() as session:
-            training = session.get(TrainingRun, training_id)
-            if training is None:
-                raise ValueError("Training record not found.")
-            training.status = "running"
-            training.updated_at = utcnow()
-        progress(0.02, "Validating XTTS trainer")
-        try:
-            total_epochs = max(1, int(settings.get("epochs") or 6))
-        except (TypeError, ValueError):
-            total_epochs = 6
-        last_training_fraction = 0.0
-        zero_based_epochs: bool | None = None
-
-        def training_output(line: str) -> None:
-            nonlocal last_training_fraction, zero_based_epochs
-            detail = str(line)[-500:]
-            epoch_match = re.search(
-                r"\bepoch\s*[:#-]?\s*(\d+)(?:\s*(?:/|of)\s*(\d+))?",
-                detail,
-                re.IGNORECASE,
-            )
-            percent_match = re.search(r"(\d+(?:\.\d+)?)\s*%", detail)
-            if epoch_match:
-                raw_epoch = max(0, int(epoch_match.group(1)))
-                if raw_epoch == 0:
-                    zero_based_epochs = True
-                reported_total = max(
-                    1,
-                    int(epoch_match.group(2) or total_epochs),
-                )
-                # Training logs vary between zero- and one-based epoch labels.
-                completed_before = (
-                    raw_epoch if zero_based_epochs else max(0, raw_epoch - 1)
-                )
-                within_epoch = (
-                    max(0.0, min(100.0, float(percent_match.group(1)))) / 100
-                    if percent_match
-                    else 0.0
-                )
-                last_training_fraction = max(
-                    last_training_fraction,
-                    min(1.0, (completed_before + within_epoch) / reported_total),
-                )
-                display_epoch = min(
-                    reported_total,
-                    raw_epoch + 1 if zero_based_epochs else max(1, raw_epoch),
-                )
-                detail = (
-                    f"Training epoch {display_epoch} of {reported_total} — {detail}"
-                )
-            elif percent_match and total_epochs == 1:
-                last_training_fraction = max(
-                    last_training_fraction,
-                    min(1.0, float(percent_match.group(1)) / 100),
-                )
-            progress(0.1 + 0.8 * last_training_fraction, detail)
-
-        def training_status(line: str) -> None:
-            detail = str(line)[-500:]
-            normalized = detail.casefold()
-            if "building" in normalized:
-                value = 0.05
-            elif "in progress" in normalized:
-                value = 0.1
-            elif "copying model" in normalized or "training finished" in normalized:
-                value = 0.92
-            elif "completed" in normalized:
-                value = 0.98
-            else:
-                value = 0.1
-            progress(value, detail)
-
-        try:
-            success, message = xtts_trainer_handler.start_training(
-                {
-                    **settings,
-                    "model_name": model_name,
-                    "source_audio_path": str(source_path),
-                    "source_text_path": source_text_path,
-                },
-                output_callback=training_output,
-                status_callback=training_status,
-                stop_event=cancel_event,
-            )
-            if cancel_event.is_set():
-                with self.database.session() as session:
-                    training = session.get(TrainingRun, training_id)
-                    if training is None:
-                        raise ValueError("Training record not found.")
-                    training.status = "canceled"
-                return {}
-            if not success:
-                raise RuntimeError(message)
-            manifest_dir = self.paths.models / "xtts" / model_name
-            manifest_dir.mkdir(parents=True, exist_ok=True)
-            manifest = manifest_dir / "pandrator-training.json"
-            manifest.write_text(
-                json.dumps(
-                    {"kind": "xtts", "model_name": model_name, "message": message},
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            artifact = self.artifacts.register(
-                manifest,
-                kind="model",
-                role="xtts_model",
-                parent_ids=[source_artifact.id]
-                + ([source_text_id] if source_text_id else []),
-                settings=settings,
-                metadata={"model_name": model_name},
-            )
-            with self.database.session() as session:
-                training = session.get(TrainingRun, training_id)
-                if training is None:
-                    raise ValueError("Training record not found.")
-                training.status = "succeeded"
-                training.output_artifact_id = artifact.id
-                training.updated_at = utcnow()
-            progress(1.0, "XTTS model ready")
-            return {
-                "training_id": training_id,
-                "artifact_id": artifact.id,
-                "model_name": model_name,
-                "message": message,
-            }
-        except Exception as error:
-            with self.database.session() as session:
-                training = session.get(TrainingRun, training_id)
-                if training is not None:
-                    training.status = "failed"
-                    training.error_message = str(error)
-                    training.updated_at = utcnow()
-            raise
+        return _voice_train_xtts(self._voice_workflow_context(), payload, progress, cancel_event)
 
     def clean_source(self, payload, progress, cancel_event):
-        """Run deterministic extraction and the optional auditable agentic pipeline."""
-        from pandrator.logic import file_handler, source_cleaning
-
-        session_id = str(payload.get("session_id") or "")
-        agent_run_id = str(payload.get("agent_run_id") or "")
-        if agent_run_id:
-            with self.database.session() as session:
-                run = session.get(AgentRun, agent_run_id)
-                if run is not None:
-                    run.status = "running"
-                    run.updated_at = utcnow()
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
-        settings = dict(payload.get("settings") or {})
-        pdf_config = source_cleaning.PDFIngestionConfig(
-            ocr_mode=str(settings.get("pdf_ocr_mode") or "auto"),
-            ocr_language=str(settings.get("pdf_ocr_language") or "auto"),
-            ocr_dpi=int(settings.get("pdf_ocr_dpi") or 200),
-        )
-        deterministic_operations: list[dict[str, Any]] = []
-        baseline_text = ""
-        progress(0.05, "Extracting source text")
-        extension = source_path.suffix.lower()
-        if extension == ".txt":
-            cleaned_text = source_path.read_text(encoding="utf-8-sig")
-            baseline_text = cleaned_text
-        elif extension == ".epub":
-            cleaned_text = file_handler.extract_text_from_epub(
-                str(source_path),
-                remove_footnotes=bool(settings.get("remove_footnotes", False)),
-                filter_citations=bool(settings.get("filter_citations", True)),
-            )
-            baseline_text = cleaned_text
-        elif extension == ".pdf":
-            document = source_cleaning.build_source_document(
-                str(source_path),
-                pdf_config=pdf_config,
-                artifact_dir=str(self._session_dir(session_id) / "source_ingestion"),
-                progress_callback=_fraction_message_callback(
-                    progress,
-                    0.05,
-                    0.35,
-                ),
-            )
-            deterministic_operations = source_cleaning.propose_deterministic_operations(
-                document,
-                remove_footnotes=bool(settings.get("remove_footnotes", False)),
-                remove_toc=bool(settings.get("pdf_remove_toc", True)),
-                remove_repeated_marginals=bool(
-                    settings.get("pdf_remove_repeated_marginals", True)
-                ),
-            )
-            baseline_text = document.plain_text()
-            cleaned_text = source_cleaning.apply_cleaning_operations(
-                document, deterministic_operations
-            ).cleaned_text
-        elif extension in {".docx", ".mobi"}:
-            extracted = (
-                self._session_dir(session_id) / f"{source_path.stem}_extracted.txt"
-            )
-            if not file_handler.convert_doc_to_text(str(source_path), str(extracted)):
-                raise RuntimeError(f"Could not extract text from {source_path.name}.")
-            cleaned_text = extracted.read_text(encoding="utf-8-sig")
-            baseline_text = cleaned_text
-        else:
-            raise ValueError(f"Unsupported document type: {extension or 'unknown'}")
-        if cancel_event.is_set():
-            return {}
-        progress(0.38, "Source extraction complete")
-        extraction = "deterministic"
-        report: dict[str, Any] = {}
-        if bool(settings.get("agentic", False)):
-            from .provider_settings import build_llm_settings
-
-            progress(0.4, "Building source-cleaning index")
-            if extension == ".epub":
-                document = source_cleaning.build_cleaned_epub_source_document(
-                    str(source_path),
-                    cleaned_text,
-                )
-                deterministic_operations = (
-                    source_cleaning.propose_embedded_chapter_operations(document)
-                )
-            elif extension == ".pdf":
-                document = source_cleaning.build_source_document(
-                    str(source_path),
-                    pdf_config=pdf_config,
-                    artifact_dir=str(
-                        self._session_dir(session_id) / "source_ingestion"
-                    ),
-                    progress_callback=_fraction_message_callback(
-                        progress,
-                        0.4,
-                        0.45,
-                    ),
-                )
-            else:
-                from pandrator.logic.source_cleaning.pdf_text_adapter import (
-                    build_source_document_from_text,
-                )
-
-                document = build_source_document_from_text(
-                    cleaned_text,
-                    source_path=str(source_path),
-                    filename=source_path.name,
-                )
-            llm_settings, model_name = build_llm_settings(
-                self.database,
-                self.paths,
-                requested_model=str(
-                    settings.get("model_name") or settings.get("default_model") or ""
-                ),
-                request_timeout_seconds=int(
-                    settings.get("request_timeout_seconds") or 600
-                ),
-            )
-            total_iterations = max(1, int(settings.get("max_iterations") or 53))
-            phase_iterations = settings.get("phase_max_iterations")
-            requested_phase_names = (
-                settings.get("phase_names")
-                if isinstance(settings.get("phase_names"), list)
-                else None
-            )
-            phase_names = list(requested_phase_names or source_cleaning.PHASE_ORDER)
-            phase_budgets = source_cleaning.resolve_phase_max_iterations(
-                phase_iterations if isinstance(phase_iterations, dict) else None,
-                total=total_iterations,
-                phase_names=phase_names,
-            )
-            pipeline = source_cleaning.run_cleaning_pipeline(
-                document,
-                llm_settings=llm_settings,
-                config=source_cleaning.SourceCleaningPipelineConfig(
-                    model_name=model_name,
-                    remove_footnotes=bool(settings.get("remove_footnotes", False)),
-                    filter_citations=bool(settings.get("filter_citations", True)),
-                    total_max_iterations=total_iterations,
-                    phase_max_iterations=phase_iterations
-                    if isinstance(phase_iterations, dict)
-                    else None,
-                    phase_names=requested_phase_names,
-                    baseline_operations=deterministic_operations,
-                ),
-                progress_callback=_source_cleaning_progress_callback(
-                    progress,
-                    0.45,
-                    0.9,
-                    phase_names=phase_names,
-                    phase_budgets=phase_budgets,
-                ),
-                stop_event=cancel_event,
-            )
-            if cancel_event.is_set():
-                return {}
-            progress(0.9, "Source-cleaning analysis complete")
-            all_operations = [*deterministic_operations, *pipeline.all_operations]
-            cleaning_result = source_cleaning.apply_cleaning_operations(
-                document, all_operations
-            )
-            validation = source_cleaning.validate_cleaning_result(
-                document,
-                cleaning_result,
-                remove_footnotes=bool(settings.get("remove_footnotes", False)),
-            )
-            cleaned_text = cleaning_result.cleaned_text
-            report = {
-                **cleaning_result.report,
-                "pipeline": pipeline.to_dict(),
-                "validation": validation.to_dict(),
-                "warnings": pipeline.warnings
-                + validation.warnings
-                + cleaning_result.warnings,
-            }
-            audit_dir = self._session_dir(session_id) / "source_cleaning"
-            source_cleaning.write_cleaning_artifacts(
-                document,
-                all_operations,
-                cleaning_result,
-                str(audit_dir),
-            )
-            usage = pipeline.llm_usage
-            models = list(usage.get("models") or [])
-            details = (
-                usage.get("token_details")
-                if isinstance(usage.get("token_details"), dict)
-                else {}
-            )
-            with self.database.session() as session:
-                session.add(
-                    UsageEvent(
-                        session_id=session_id,
-                        stage="source_cleaning",
-                        provider_key=(
-                            models[0].split("/", 1)[0]
-                            if models
-                            else model_name.split("/", 1)[0]
-                        ),
-                        model_id=(models[0] if models else model_name),
-                        input_tokens=int(usage.get("prompt_tokens") or 0),
-                        cached_input_tokens=int(details.get("cached_tokens") or 0),
-                        output_tokens=int(usage.get("completion_tokens") or 0),
-                        cost_usd=float(usage["cost_usd"])
-                        if usage.get("cost_usd") is not None
-                        else None,
-                        cost_source=",".join(usage.get("cost_sources") or []) or None,
-                        raw_usage_json=usage,
-                    )
-                )
-            extraction = "agentic"
-        progress(0.93, "Saving source-cleaning artifacts")
-        comparison_dir = self._session_dir(session_id) / "source_cleaning"
-        comparison_dir.mkdir(parents=True, exist_ok=True)
-        baseline_path = comparison_dir / f"extracted-{new_id()}.txt"
-        baseline_path.write_text(baseline_text, encoding="utf-8", newline="\n")
-        baseline_artifact = self.artifacts.register(
-            baseline_path,
-            kind="text",
-            role="extracted_text",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            metadata={"comparison_source": True, "source_filename": source_path.name},
-        )
-        destination = (
-            self._operation_dir(session_id, "clean-source")
-            / f"{source_path.stem}_cleaned.txt"
-        )
-        destination.write_text(cleaned_text, encoding="utf-8", newline="\n")
-        artifact = self.artifacts.register(
-            destination,
-            kind="text",
-            role="clean_text",
-            session_id=session_id,
-            parent_ids=[source_artifact.id, baseline_artifact.id],
-            settings=settings,
-            metadata={"extraction": extraction, "report": report},
-        )
-        if agent_run_id:
-            pipeline_report = (
-                report.get("pipeline")
-                if isinstance(report.get("pipeline"), dict)
-                else {}
-            )
-            phases = (
-                pipeline_report.get("phases")
-                if isinstance(pipeline_report.get("phases"), list)
-                else []
-            )
-            with self.database.session() as session:
-                run = session.get(AgentRun, agent_run_id)
-                if run is not None:
-                    run.status = "completed"
-                    run.result_artifact_id = artifact.id
-                    run.updated_at = utcnow()
-                    for ordinal, phase in enumerate(phases):
-                        safe_phase = (
-                            phase if isinstance(phase, dict) else {"name": str(phase)}
-                        )
-                        operations = (
-                            safe_phase.get("operations")
-                            if isinstance(safe_phase.get("operations"), list)
-                            else []
-                        )
-                        warnings = (
-                            safe_phase.get("warnings")
-                            if isinstance(safe_phase.get("warnings"), list)
-                            else []
-                        )
-                        operation_types = sorted(
-                            {
-                                str(item.get("type") or item.get("operation") or "edit")
-                                for item in operations
-                                if isinstance(item, dict)
-                            }
-                        )
-                        session.add(
-                            AgentStep(
-                                agent_run_id=agent_run_id,
-                                ordinal=ordinal,
-                                phase=str(
-                                    safe_phase.get("name")
-                                    or safe_phase.get("phase")
-                                    or f"Phase {ordinal + 1}"
-                                ),
-                                status=str(safe_phase.get("status") or "completed"),
-                                summary=str(
-                                    safe_phase.get("summary")
-                                    or f"{len(operations)} proposed operation(s), {len(warnings)} warning(s)."
-                                ),
-                                input_json={"operation_count": len(operations)},
-                                output_json={
-                                    "warnings": warnings,
-                                    "operation_types": operation_types,
-                                },
-                            )
-                        )
-        progress(0.98, "Cleaned source artifacts registered")
-        progress(1.0, "Source text ready")
-        return {
-            "artifact_id": artifact.id,
-            "path": artifact.relative_path,
-            "characters": len(cleaned_text),
-            "report": report,
-        }
+        return _source_clean_source(self._source_workflow_context(), payload, progress, cancel_event)
 
     def prepare_source_cleaning_dispatch(self, payload, progress, cancel_event):
-        """Prepare durable PDF/EPUB evidence without invoking a model provider."""
-        from .source_cleaning_dispatch import prepare_source_cleaning_dispatch_job
-
-        return prepare_source_cleaning_dispatch_job(
-            self.database,
-            self.artifacts,
-            self._session_dir,
-            payload,
-            progress,
-            cancel_event,
-        )
+        return _source_prepare_source_cleaning_dispatch(self._source_workflow_context(), payload, progress, cancel_event)
 
     def prepare_text(self, payload, progress, cancel_event):
-        from pandrator.logic.audiobook_chunking import audiobook_chunk_budget
-        from pandrator.logic.text_preprocessor import preprocess_text
-
-        from .settings_policy import BUILTIN_DEFAULTS
-
-        session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
-        settings = dict(payload.get("settings") or {})
-        if source_path.suffix.lower() not in {".txt", ".md"}:
-            raise ValueError("Prepare narration requires a cleaned text artifact.")
-        text = source_path.read_text(encoding="utf-8-sig")
-        record = self._session_record(session_id)
-        source_language = str(record.source_language or "auto")
-        text_defaults = BUILTIN_DEFAULTS["text"]
-        captured_tts = settings.get("_audiobook_tts_settings")
-        if not isinstance(captured_tts, dict):
-            snapshot = payload.get("resolved_settings_snapshot")
-            captured_tts = (
-                snapshot.get("tts")
-                if isinstance(snapshot, dict) and isinstance(snapshot.get("tts"), dict)
-                else {"service": "XTTS"}
-            )
-        budget = audiobook_chunk_budget(settings, captured_tts, source_language)
-        progress(0.1, "Segmenting narration")
-        supplied_markup = (source_artifact.metadata_json or {}).get("speech_markup") or {}
-        if supplied_markup:
-            from pandrator.logic.speech_markup import parse_speech_markup
-
-            from .generation_controls import get_generation_controls
-            with self.database.session() as db:
-                characters = get_generation_controls(db, session_id)["characters"]
-            structures = [parse_speech_markup(xml, expected_segment_id=str(key), characters=characters)
-                          for key, xml in sorted(supplied_markup.items(), key=lambda item: int(item[0]))]
-            if " ".join(text.split()) != " ".join(" ".join(item.transcript for item in structures).split()):
-                raise ValueError("Annotated text changed. Reannotate it before preparing narration.")
-            prepared = [{"original_sentence": item.transcript, "speech_plan": {"speech_xml": item.xml},
-                         "paragraph_break_after": item.boundary_after in {"paragraph", "scene", "chapter"},
-                         "speech_boundary_after": item.boundary_after} for item in structures]
-        else:
-            prepared = preprocess_text(
-                text,
-                {
-                    "source_file": str(source_path),
-                    "language": source_language,
-                    # Segmentation is intentionally provider-independent.  This
-                    # selects the shared multilingual sentence tokenizer only.
-                    "tts_service": "XTTS",
-                    # XTTS remains the tokenizer choice for language-aware
-                    # splitting; the captured provider budget controls only
-                    # the target length.
-                    "max_sentence_length": budget["target_chars"],
-                    "enable_sentence_splitting": bool(
-                        settings.get(
-                            "enable_sentence_splitting",
-                            text_defaults["enable_sentence_splitting"],
-                        )
-                    ),
-                    "enable_sentence_appending": bool(
-                        settings.get(
-                            "enable_sentence_appending",
-                            text_defaults["enable_sentence_appending"],
-                        )
-                    ),
-                    "enable_nemo_normalization": bool(
-                        settings.get(
-                            "enable_nemo_normalization",
-                            text_defaults["enable_nemo_normalization"],
-                        )
-                    ),
-                    "remove_diacritics": bool(
-                        settings.get(
-                            "remove_diacritics", text_defaults["remove_diacritics"]
-                        )
-                    ),
-                    "remove_quotation_marks": bool(
-                        settings.get(
-                            "remove_quotation_marks",
-                            text_defaults["remove_quotation_marks"],
-                        )
-                    ),
-                    "normalize_all_caps": bool(
-                        settings.get(
-                            "normalize_all_caps", text_defaults["normalize_all_caps"]
-                        )
-                    ),
-                },
-                progress_callback=_scaled_progress_callback(progress, 0.1, 0.85),
-            )
-        if cancel_event.is_set():
-            return {}
-        segment_lengths = [
-            len(
-                str(
-                    item.get("text")
-                    or item.get("original_sentence")
-                    or item.get("tts_optimized_sentence")
-                    or ""
-                )
-            )
-            for item in prepared
-            if isinstance(item, dict)
-        ]
-        segment_summary = {
-            "count": len(segment_lengths),
-            "min_chars": min(segment_lengths) if segment_lengths else 0,
-            "max_chars": max(segment_lengths) if segment_lengths else 0,
-            "average_chars": round(sum(segment_lengths) / len(segment_lengths), 2)
-            if segment_lengths
-            else 0,
-            "over_target_count": sum(
-                length > int(budget["target_chars"]) for length in segment_lengths
-            ),
-        }
-        annotated_source = bool(supplied_markup)
-        segmentation = {
-            "budget": budget,
-            "segment_length_summary": segment_summary,
-            "policy_applied": not annotated_source,
-            "policy_explanation": (
-                "Annotated speech markup is immutable; the chunk policy was recorded "
-                "but did not repack its segments."
-                if annotated_source
-                else "The resolved audiobook chunk policy was applied during preparation."
-            ),
-        }
-        artifact_settings = dict(settings)
-        artifact_settings["_audiobook_chunk_budget"] = deepcopy(budget)
-        progress(0.9, "Saving narration segments")
-        destination = (
-            self._operation_dir(session_id, "prepare-text") / "prepared_narration.json"
-        )
-        destination.write_text(
-            json.dumps(prepared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        artifact = self.artifacts.register(
-            destination,
-            kind="json",
-            role="prepared_text",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=artifact_settings,
-            metadata={"segment_count": len(prepared), "segmentation": segmentation},
-        )
-        generation_revision_id, _segment_ids = self._store_generation_plan(
-            session_id,
-            prepared,
-            settings=artifact_settings,
-            source_revision_id=str(
-                (source_artifact.metadata_json or {}).get("revision_id") or ""
-            )
-            or None,
-            source_artifact_id=artifact.id,
-        )
-        progress(1.0, "Narration segments ready")
-        return {
-            "artifact_id": artifact.id,
-            "path": artifact.relative_path,
-            "segments": len(prepared),
-            "generation_plan_revision_id": generation_revision_id,
-            "segmentation": segmentation,
-            "segmentation_budget": budget,
-        }
+        return _source_prepare_text(self._source_workflow_context(), payload, progress, cancel_event)
 
     def _store_generation_plan(
         self,
