@@ -1,3 +1,4 @@
+import { LANGUAGE_OPTIONS } from './language-registry';
 export type SettingOption = { value: string | number; label: string };
 export type NumberPresentation = {
   min?: number;
@@ -12,59 +13,7 @@ const option = (value: string | number, label?: string): SettingOption => ({
   label: label ?? String(value)
 });
 
-export const LANGUAGE_OPTIONS: SettingOption[] = [
-  option('auto', 'Automatic detection'),
-  option('en', 'English'),
-  option('pl', 'Polish'),
-  option('de', 'German'),
-  option('fr', 'French'),
-  option('es', 'Spanish'),
-  option('it', 'Italian'),
-  option('pt', 'Portuguese'),
-  option('pt-BR', 'Portuguese (Brazil)'),
-  option('nl', 'Dutch'),
-  option('sv', 'Swedish'),
-  option('no', 'Norwegian'),
-  option('da', 'Danish'),
-  option('fi', 'Finnish'),
-  option('cs', 'Czech'),
-  option('sk', 'Slovak'),
-  option('uk', 'Ukrainian'),
-  option('ru', 'Russian'),
-  option('bg', 'Bulgarian'),
-  option('ro', 'Romanian'),
-  option('hu', 'Hungarian'),
-  option('el', 'Greek'),
-  option('tr', 'Turkish'),
-  option('ar', 'Arabic'),
-  option('he', 'Hebrew'),
-  option('fa', 'Persian'),
-  option('hi', 'Hindi'),
-  option('bn', 'Bengali'),
-  option('ur', 'Urdu'),
-  option('zh', 'Chinese'),
-  option('yue', 'Cantonese'),
-  option('fil', 'Filipino'),
-  option('mk', 'Macedonian'),
-  option('ja', 'Japanese'),
-  option('ko', 'Korean'),
-  option('vi', 'Vietnamese'),
-  option('th', 'Thai'),
-  option('id', 'Indonesian'),
-  option('ms', 'Malay'),
-  option('ca', 'Catalan'),
-  option('hr', 'Croatian'),
-  option('sr', 'Serbian'),
-  option('sl', 'Slovenian'),
-  option('et', 'Estonian'),
-  option('lv', 'Latvian'),
-  option('lt', 'Lithuanian'),
-  option('is', 'Icelandic'),
-  option('cy', 'Welsh'),
-  option('ga', 'Irish'),
-  option('eu', 'Basque'),
-  option('gl', 'Galician')
-];
+export { LANGUAGE_OPTIONS } from './language-registry';
 
 const CHOICES: Record<string, SettingOption[]> = {
   audio_verification_mode: [
@@ -72,6 +21,7 @@ const CHOICES: Record<string, SettingOption[]> = {
     option('signal', 'Flag suspicious raw audio')
   ],
   stt_engine: [
+    option('auto', 'Automatic · Parakeet, then Qwen, then Whisper'),
     option('whisper', 'Whisper large-v3'),
     option('parakeet', 'Parakeet 0.6B v3'),
     option('moss', 'MOSS Transcribe-Diarize 0.9B'),
@@ -84,6 +34,7 @@ const CHOICES: Record<string, SettingOption[]> = {
   ],
   transcription_vocal_isolation: [
     option('off', 'Off · original audio'),
+    option('htdemucs', 'HTDemucs · four stems · 62 MB first-use download'),
     option('bs_roformer', 'BS-RoFormer · 173 MB first-use download'),
     option('mel_band_roformer', 'Mel-RoFormer · 252 MB first-use download')
   ],

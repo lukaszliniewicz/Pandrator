@@ -1,12 +1,8 @@
 import type { TranslationProjectBranch } from './api-models';
-import { LANGUAGE_OPTIONS } from './settings-fields';
+import { languageLabel } from './language-registry';
 
 export function translationLanguageName(code: string) {
-  return (
-    LANGUAGE_OPTIONS.find(
-      (option) => String(option.value).toLowerCase() === code.toLowerCase()
-    )?.label ?? code
-  );
+  return languageLabel(code);
 }
 
 export function translationBranchStatus(branch: TranslationProjectBranch) {

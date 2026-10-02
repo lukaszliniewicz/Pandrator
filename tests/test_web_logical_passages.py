@@ -443,7 +443,46 @@ def test_fork_rebinds_passages_and_materializes_its_own_source(app_case):
     fork = response.get_json()
     with database.immediate_session() as session:
         copied = session.get(Artifact, fork["checkpoint_artifact_id"])
-        assert stored_passages(copied) == rows
+        copied_rows = stored_passages(copied)
+        assert copied_rows is not None
+        assert len(copied_rows) == len(rows)
+        source_cue_ids = {
+            cue_id for row in rows for cue_id in row.get("source_cue_ids", [])
+        }
+        copied_cue_ids = {
+            cue_id
+            for row in copied_rows
+            for cue_id in row.get("source_cue_ids", [])
+        }
+        assert [
+            {key: value for key, value in row.items() if key != "source_cue_ids"}
+            for row in copied_rows
+        ] == [
+            {key: value for key, value in row.items() if key != "source_cue_ids"}
+            for row in rows
+        ]
+        assert [row["id"] for row in copied_rows] == [row["id"] for row in rows]
+        assert [row.get("source_passage_ids") for row in copied_rows] == [
+            row.get("source_passage_ids") for row in rows
+        ]
+        assert [row.get("source_word_ids") for row in copied_rows] == [
+            row.get("source_word_ids") for row in rows
+        ]
+        assert [row.get("turn_id") for row in copied_rows] == [
+            row.get("turn_id") for row in rows
+        ]
+        assert [row.get("evidence_ids") for row in copied_rows] == [
+            row.get("evidence_ids") for row in rows
+        ]
+        copied_revision_id = copied.metadata_json["revision_id"]
+        fork_segment_ids = {
+            segment.id
+            for segment in session.scalars(
+                select(Segment).where(Segment.revision_id == copied_revision_id)
+            )
+        }
+        assert copied_cue_ids <= fork_segment_ids
+        assert copied_cue_ids.isdisjoint(source_cue_ids)
         assert (
             "speech_source_revision_id" not in copied.metadata_json["logical_passages"]
         )

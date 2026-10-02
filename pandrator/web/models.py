@@ -233,6 +233,29 @@ class TranslationProjectBranch(Base):
     )
 
 
+class TranslationProjectOperation(Base):
+    """Principal-bound captures and child receipts, not workflow/artifact state."""
+
+    __tablename__ = "translation_project_operations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("translation_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    principal_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_instance_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="preview")
+    preview_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    preview_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    children_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SessionSetting(Base):
     __tablename__ = "session_settings"
 

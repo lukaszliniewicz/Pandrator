@@ -43,6 +43,21 @@ SRT and WebVTT differ in syntax and player support. Open the final file in the
 target player or editor and check cue order, overlaps, line wrapping, encoding,
 and language metadata.
 
+## Collecting multilingual exports
+
+Open a project's **Languages** section, select languages, and preview translation,
+generation or export before submitting it. Each language keeps its own inputs,
+settings and completed outputs. Generation requires a reviewed current speech
+plan; translated SRT exports do not require generated audio. Passive language
+work still waits for its agent submission and review.
+
+**Collect outputs** verifies selected completed exports and offers their manifest.
+The manifest records stable project/language/version filenames and artifact
+hashes. Prepare a ZIP only when every selected export is verified; an incomplete
+collection stays incomplete. Changing inputs or output settings requires a fresh
+preview and export. Durable operation progress survives an application restart;
+eligible failed languages can be retried without rerunning completed children.
+
 ## Audio
 
 Use WAV or FLAC when preserving a lossless intermediate matters. MP3 and Opus

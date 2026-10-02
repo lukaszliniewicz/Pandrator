@@ -8,10 +8,11 @@ import ipaddress
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
 from .auth import Principal
 from .credentials import contains_inline_secret, is_sensitive_field
@@ -38,7 +39,11 @@ from .models import (
     utcnow,
 )
 from .work import WorkService
-from .workflows import ResolvedWorkflowStage, WorkflowService
+from .workflows import (
+    GenerationPreflightError,
+    ResolvedWorkflowStage,
+    WorkflowService,
+)
 
 PLAN_SCHEMA_VERSION = "1"
 LOCAL_PROVIDER_IDS = frozenset(
@@ -698,12 +703,19 @@ class WorkflowExecutionPlanService:
                 db_session,
                 session_id,
             )
-        resolved = self.workflows.resolve_stage(
-            session_id,
-            target_stage,
-            supplied,
-            continuation=continuation,
-        )
+        try:
+            resolved = self.workflows.resolve_stage(
+                session_id,
+                target_stage,
+                supplied,
+                continuation=continuation,
+            )
+        except GenerationPreflightError as error:
+            raise WorkflowPlanError(
+                "generation_preflight_required",
+                str(error),
+                409,
+            ) from error
         if _contains_url_credentials(resolved.payload):
             raise WorkflowPlanError(
                 "validation_error",
@@ -951,6 +963,7 @@ class WorkflowExecutionPlanService:
         supplied_digest: str,
         accepted_confirmations: list[str],
         idempotency_key: object,
+        execution_guard: Callable[[Session], None] | None = None,
     ) -> tuple[dict[str, Any], int, bool]:
         operation_payload = {
             "plan_id": plan_id,
@@ -1061,6 +1074,26 @@ class WorkflowExecutionPlanService:
                     "plan_invalid",
                     "The stored workflow execution input is invalid.",
                 )
+            if execution_guard is not None:
+                execution_guard(db_session)
+            if (
+                str(execution_payload.get("target_stage") or "")
+                == "generate_audio"
+                and execution_payload.get(
+                    "_tts_language_preflight_input_selected"
+                )
+            ):
+                try:
+                    with self.database.snapshot_session() as preflight_session:
+                        self.workflows.validate_generation_language_payload(
+                            preflight_session, execution_payload
+                        )
+                except GenerationPreflightError as error:
+                    raise WorkflowPlanError(
+                        "generation_preflight_required",
+                        str(error),
+                        409,
+                    ) from error
             job = self.jobs.enqueue_in_session(
                 db_session,
                 str(execution.get("job_kind") or "workflow.continue"),

@@ -121,7 +121,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         self.assertEqual("design", model["voice_mode"])
         self.assertEqual(300, model["recommended_chunk_characters"])
         self.assertEqual(
-            ["zh", "en", "ja", "ko", "de", "fr", "ru", "pt", "es", "it"],
+            ["de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh"],
             model["supported_languages"],
         )
         self.assertEqual("Apache-2.0", model["license"]["name"])

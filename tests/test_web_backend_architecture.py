@@ -47,9 +47,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(295, len(rules))
+        self.assertEqual(308, len(rules))
         self.assertEqual(
-            288,
+            301,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertTrue({
@@ -68,6 +68,10 @@ class BackendArchitectureTests(unittest.TestCase):
             "/api/v1/voice-collections",
             "/api/v1/voice-collections/<collection_id>",
             "/api/v1/voices/<voice_id>/samples/from-artifact",
+            "/api/v1/translation-project-operations/<operation_id>/exports/manifest",
+            "/api/v1/translation-project-operations/<operation_id>/exports/bundle",
+            "/api/v1/sessions/<session_id>/subtitles/<stage>/passage-review",
+            "/api/v1/artifacts/<artifact_id>/video-preview",
         }.issubset({rule.rule for rule in rules}))
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
         self.assertEqual("library", route_domain("/api/v1/voice-catalog"))
@@ -112,7 +116,7 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(36, len(registry))
+        self.assertEqual(38, len(registry))
         self.assertEqual(
             {
                 "delivery",

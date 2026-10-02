@@ -197,6 +197,67 @@ def test_permitted_commercial_filter_includes_attribution_permission():
     assert [row["id"] for row in page["items"]] == ["attributed-model"]
 
 
+def test_language_filter_matches_base_locale_but_keeps_no_distinct_from_nb():
+    rows = [
+        {
+            "id": "english",
+            "provider_id": "fixture",
+            "provider_name": "Fixture",
+            "provider_kind": "local",
+            "catalogue_id": "fixture:english",
+            "family": "fixture",
+            "family_label": "Fixture",
+            "label": "English",
+            "category": "tts",
+            "supported_languages": ["en"],
+            "capabilities": [],
+            "commercial_use": "unknown",
+            "recommended_for": "",
+        },
+        {
+            "id": "bokmal",
+            "provider_id": "fixture",
+            "provider_name": "Fixture",
+            "provider_kind": "local",
+            "catalogue_id": "fixture:bokmal",
+            "family": "fixture",
+            "family_label": "Fixture",
+            "label": "Norwegian Bokmål",
+            "category": "tts",
+            "supported_languages": ["nb"],
+            "capabilities": [],
+            "commercial_use": "unknown",
+            "recommended_for": "",
+        },
+        {
+            "id": "norwegian",
+            "provider_id": "fixture",
+            "provider_name": "Fixture",
+            "provider_kind": "local",
+            "catalogue_id": "fixture:norwegian",
+            "family": "fixture",
+            "family_label": "Fixture",
+            "label": "Norwegian",
+            "category": "tts",
+            "supported_languages": ["no"],
+            "capabilities": [],
+            "commercial_use": "unknown",
+            "recommended_for": "",
+        },
+    ]
+    with mock.patch(
+        "pandrator.logic.model_catalogue._catalogue_rows",
+        return_value=(rows, []),
+    ):
+        english = catalogue_page(language="en-GB", limit=100)
+        norwegian = catalogue_page(language="no", limit=100)
+        bokmal = catalogue_page(language="nb", limit=100)
+
+    assert [row["id"] for row in english["items"]] == ["english"]
+    assert [row["id"] for row in norwegian["items"]] == ["norwegian"]
+    assert [row["id"] for row in bokmal["items"]] == ["bokmal"]
+
+
 def test_pagination_is_deterministic_and_catalogue_ids_are_unique():
     first = catalogue_page(limit=9, offset=0)
     first_again = catalogue_page(limit=9, offset=0)

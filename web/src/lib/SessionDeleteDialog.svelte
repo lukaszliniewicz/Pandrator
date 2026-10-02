@@ -21,6 +21,11 @@
     owned_file_count: number;
     owned_bytes: number;
     retained_shared_count: number;
+    retained_project_exports?: {
+      bundle_count: number;
+      manifest_count: number;
+      artifact_ids: string[];
+    };
     scheduled_delete_at: string | null;
   };
   let preview = $state<Preview | null>(null);
@@ -109,6 +114,14 @@
     </p>
     {#if preview.retained_shared_count}<p class="muted mt-2 text-xs">
         {preview.retained_shared_count} shared files will be kept.
+      </p>{/if}
+    {#if preview.retained_project_exports?.bundle_count || preview.retained_project_exports?.manifest_count}<p
+        class="mt-3 text-sm"
+      >
+        Completed project exports retain a copy of this language's output:
+        {preview.retained_project_exports?.bundle_count ?? 0} ZIP bundle(s) and
+        {preview.retained_project_exports?.manifest_count ?? 0} manifest(s). Delete
+        those exports separately if you also want to remove these copies.
       </p>{/if}
     {#if preview.blockers.length}<ul
         class="mt-4 list-disc space-y-2 pl-5 text-sm text-amber-700"

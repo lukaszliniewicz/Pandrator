@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from pandrator.logic.audio_cpp_catalogue import (
@@ -22,6 +24,19 @@ PROJECTION_PATH = (
 
 def _projection() -> dict:
     return json.loads(PROJECTION_PATH.read_text(encoding="utf-8"))
+
+
+def test_catalogue_metadata_does_not_import_the_compiler_or_provider_handler():
+    script = """
+import sys
+from pandrator.logic.audio_cpp_catalogue import inventory, package_metadata
+
+model_id = inventory()["packages"][0]["id"]
+assert package_metadata(model_id)
+assert "pandrator.logic.speech_performance" not in sys.modules
+assert "pandrator.logic.tts_handler" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", script], cwd=REPOSITORY_ROOT, check=True)
 
 
 def test_generated_projection_matches_every_canonical_inventory_package():

@@ -1,6 +1,7 @@
 """Casting reaches the real generation runner without splitting logical takes."""
 
 import threading
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -15,7 +16,7 @@ from pandrator.web.generation_controls import (
     get_generation_controls,
     save_generation_controls,
 )
-from pandrator.web.tts_providers import TtsCapabilities
+from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 from tests.test_performance_plans import adopt, create, get
 from tests.test_performance_plans import case as case
 
@@ -147,6 +148,58 @@ def test_legacy_and_multivoice_segment_bindings_keep_existing_precedence():
     assert multi["voice"] == "BlockVoice"
 
 
+@pytest.mark.parametrize("session_identity_present", [False, True])
+@pytest.mark.parametrize("selected_tts", [None, {"language": "pl"}, {"voice": "Alternate"}])
+def test_strict_single_voice_restores_complete_session_identity(
+    session_identity_present, selected_tts
+):
+    from pandrator.web.generation_cast_runtime import apply_segment_voice
+
+    identity_keys = (
+        "voice", "speaker", "voice_id", "voice_description", "voice_name",
+        "elevenlabs_voice_id", "_cast_voice_id", "audio_cpp_voice_ref",
+        "audio_cpp_voice_ref_hash", "audio_cpp_reference_text",
+    )
+    base = {"voice_mode_version": 1, "casting_enabled": False}
+    if session_identity_present:
+        base.update({key: f"session-{key}" for key in identity_keys})
+        base["audio_cpp_voice_ref"] = {"artifact_id": "session-reference"}
+    snapshot = {
+        "tts": base,
+        "generation_control_snapshot": {
+            "segments": {"segment-1": {"voice_binding": {"voice": "Stored"}}},
+            "resolved_bindings": {},
+        },
+    }
+    if selected_tts is not None:
+        snapshot["selected_segment_override"] = {"tts": selected_tts}
+    before = deepcopy(snapshot)
+    unrelated = {
+        "service": "audio_cpp", "provider_id": "alternate-provider",
+        "model": "alternate-model", "language": "pl", "target_language": "pl",
+        "performance_enabled": True, "generation_prompt": "Read quietly.",
+    }
+    settings = {
+        **base, **unrelated,
+        **{key: f"stored-{key}" for key in identity_keys},
+    }
+
+    result = apply_segment_voice(settings, snapshot, "segment-1")
+
+    for key in identity_keys:
+        if session_identity_present:
+            assert result[key] == base[key]
+        else:
+            assert key not in result
+    assert {key: result[key] for key in unrelated} == unrelated
+    assert result["voice_mode_version"] == 1
+    assert result["casting_enabled"] is False
+    assert snapshot == before
+    if session_identity_present:
+        result["audio_cpp_voice_ref"]["artifact_id"] = "changed"
+        assert snapshot == before
+
+
 def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(case):
     """Starting an alternate take does not resolve a stored strict-mode cast."""
     from pandrator.web.generation_rendering import is_strict_single_voice
@@ -173,6 +226,8 @@ def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(c
             "voice": "BaseVoice",
             "speaker": "BaseVoice",
             "performance_enabled": False,
+            "service": "gemini",
+            "model": "gemini-2.5-flash-tts",
         },
     )
 
@@ -182,8 +237,14 @@ def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(c
         selected_segment_override={
             "tts": {
                 "voice": "AlternateVoice",
+                "speaker": "AlternateVoice",
+                "voice_id": inactive.id,
+                "elevenlabs_voice_id": "Alternate provider identity",
+                "audio_cpp_voice_ref": "Alternate reference",
+                "audio_cpp_reference_text": "Alternate reference text.",
                 "casting_enabled": True,
                 "language": "pl",
+                "model": "gemini-2.5-pro-tts",
             }
         },
     )
@@ -193,6 +254,7 @@ def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(c
         snapshot = run.settings_snapshot_json
         frozen = snapshot["generation_control_snapshot"]
         stored_segment = session.get(m.GenerationSegment, sid)
+        payload = deepcopy(session.get(m.Job, started["job_id"]).payload_json)
 
     assert stored_segment.voice_id == inactive.id
     assert snapshot["tts"]["voice_mode_version"] == 1
@@ -205,6 +267,35 @@ def test_strict_single_alternate_start_freezes_without_resolving_inactive_cast(c
     assert frozen["segments"][sid]["voice_binding"] == {"voice_id": inactive.id}
     assert frozen["resolved_bindings"] == {}
     assert is_strict_single_voice(snapshot["tts"])
+
+    handlers = case["services"]["workflow_handlers"]
+    requests = []
+
+    def synthesize(text, settings, **kwargs):
+        requests.append(deepcopy(settings))
+        return AudioSegment.silent(duration=20)
+
+    with patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize):
+        handlers.run_generation(
+            payload, lambda *_: None, threading.Event(),
+        )
+    assert len(requests) == 1
+    assert requests[0]["voice"] == requests[0]["speaker"] == "BaseVoice"
+    assert requests[0]["language"] == "pl"
+    assert requests[0]["service"] == "Google Gemini"
+    assert requests[0]["model"] == "gemini-2.5-pro-tts"
+    for key in (
+        "voice_id", "elevenlabs_voice_id", "audio_cpp_voice_ref",
+        "audio_cpp_reference_text",
+    ):
+        assert key not in requests[0]
+    with case["services"]["database"].session() as session:
+        # Only the selected block was requested from this three-block plan.
+        assert session.get(m.GenerationRun, started["id"]).status == "partial"
+        stored = session.get(m.GenerationSegment, sid)
+        assert stored.status == "completed"
+        assert stored.voice == "Stored block voice"
+        assert stored.voice_id == inactive.id
 
 
 @pytest.mark.parametrize(
@@ -366,6 +457,92 @@ def overrides(**extra):
             **extra,
         }
     }
+
+
+@pytest.mark.parametrize("batch_size", [1, 4])
+def test_strict_single_stored_voice_matches_requests_preview_and_identity(case, batch_size):
+    from pandrator.web.speech_plan_preview import preview_speech_segment
+
+    services = case["services"]
+    database = services["database"]
+    handlers = services["workflow_handlers"]
+    stored_id = case["segment_ids"][1]
+    with database.session() as session:
+        segment = session.get(m.GenerationSegment, stored_id)
+        segment.voice = "Puck"
+        segment.language = "pl"
+
+    requested = []
+    batch_sizes = []
+
+    def synthesize(text, settings, **kwargs):
+        requested.append(deepcopy(settings))
+        return AudioSegment.silent(duration=20)
+
+    def synthesize_batch(items, *, batch_size, **kwargs):
+        batch_sizes.append(batch_size)
+        for item in items:
+            yield TtsBatchResult(item.id, audio=synthesize(item.text, item.settings))
+
+    capabilities = TtsCapabilities(
+        batch_synthesis=True, streaming_batch=True, max_batch_size=4,
+    )
+    strict = overrides(
+        casting_enabled=False, voice_mode_version=1,
+        performance_enabled=False, tts_batch_size=batch_size,
+    )
+    with (
+        patch.object(handlers.tts_providers, "synthesis_capabilities", return_value=capabilities),
+        patch.object(handlers.tts_providers, "synthesize", side_effect=synthesize),
+        patch.object(handlers.tts_providers, "synthesize_batch", side_effect=synthesize_batch),
+    ):
+        started = services["generation"].start(
+            case["session_id"], speech_plan_revision_id=case["revision_id"],
+            run_override=strict,
+        )
+        handlers.run_generation(
+            {"generation_run_id": started["id"]}, lambda *_: None, threading.Event(),
+        )
+        assert [settings["voice"] for settings in requested] == ["Kore"] * 3
+        assert requested[1]["language"] == "pl"
+        assert batch_sizes == ([] if batch_size == 1 else [4])
+        with database.session() as session:
+            run = session.get(m.GenerationRun, started["id"])
+            assert run.status == "completed"
+            snapshot = deepcopy(run.settings_snapshot_json)
+            segment = session.get(m.GenerationSegment, stored_id)
+            assert segment.voice == "Puck"
+            context = AudioIdentityContext(session, snapshot)
+            assigned_identity = context.for_segment(segment)
+            segment.voice = None
+            assert context.for_segment(segment) == assigned_identity
+            segment.voice = "Puck"
+            assert snapshot["generation_audio_identities"][stored_id] == assigned_identity
+            # The fixture executes the handler directly rather than a queue worker.
+            session.get(m.Job, started["job_id"]).status = "completed"
+        preview = preview_speech_segment(
+            services, case["session_id"], revision_id=case["revision_id"],
+            segment_id=stored_id, generation_run_id=started["id"],
+        )
+        assert [part["voice"] for part in preview["parts"]] == ["Kore"]
+
+        requested.clear()
+        batch_sizes.clear()
+        resumed = services["generation"].start(
+            case["session_id"], speech_plan_revision_id=case["revision_id"],
+            run_override=overrides(
+                casting_enabled=True, voice_mode_version=1,
+                performance_enabled=False, tts_batch_size=batch_size,
+            ),
+        )
+        handlers.run_generation(
+            {"generation_run_id": resumed["id"]}, lambda *_: None, threading.Event(),
+        )
+        assert [settings["voice"] for settings in requested] == ["Kore", "Puck", "Kore"]
+        assert batch_sizes == []
+        with database.session() as session:
+            assert session.get(m.GenerationRun, resumed["id"]).status == "completed"
+            assert session.get(m.GenerationSegment, stored_id).voice == "Puck"
 
 
 @pytest.mark.parametrize(

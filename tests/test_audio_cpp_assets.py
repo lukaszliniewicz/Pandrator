@@ -77,10 +77,11 @@ def probe_spec(filename="probe.gguf", size=64, digest=None, **extra):
     return entry, payload
 
 
-def test_allowlist_pins_all_five_models_with_immutable_sources():
+def test_allowlist_pins_all_six_models_with_immutable_sources():
     assert sorted(MODELS) == [
         "bs_roformer",
         "deepfilternet2",
+        "htdemucs_q8_0",
         "mel_band_roformer",
         "qwen3_asr_0_6b",
         "qwen3_asr_1_7b",
@@ -94,6 +95,28 @@ def test_allowlist_pins_all_five_models_with_immutable_sources():
     assert MODELS["qwen3_asr_1_7b"]["sha256"].startswith("da4fc2ac")
     assert MODELS["bs_roformer"]["sha256"].startswith("9a55a8ca")
     assert MODELS["mel_band_roformer"]["sha256"].startswith("2dd898ce")
+    # Existing model pins are unchanged; HTDemucs has a separate immutable
+    # model revision from the verified 0.9.0 runtime revision.
+    assert MODELS["bs_roformer"]["revision"] == (
+        "406756ee8e3b16e902ce40112986c1010775f888"
+    )
+    htdemucs = model_info("htdemucs_q8_0")
+    assert htdemucs["id"] == "htdemucs_q8_0"
+    assert htdemucs["family"] == htdemucs["cli_family"] == "htdemucs"
+    assert htdemucs["cli_task"] == "sep"
+    assert htdemucs["repo"] == "audio-cpp/audio.cpp-gguf"
+    assert htdemucs["revision"] == (
+        "351dbab8d8534675ee29440bb402e348b09e55e2"
+    )
+    assert htdemucs["url"] == (
+        "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/"
+        "351dbab8d8534675ee29440bb402e348b09e55e2/"
+        "HTDemucs-GGUF/htdemucs-q8_0.gguf"
+    )
+    assert htdemucs["size_bytes"] == 61940768
+    assert htdemucs["sha256"] == (
+        "b0f532ac6e5f373aeb11fa0df73253251e133832d9c8b9942dc58f50bc5b4388"
+    )
     dfn2 = MODELS["deepfilternet2"]
     assert dfn2["sha256"] == (
         "544740171cd81e55dcc7c5d1d889ec79df5808a75eb840a669a681f0d34b0626"
@@ -138,8 +161,12 @@ def test_availability_is_readonly_and_reports_minimum_version(
 ):
     opener = Mock(side_effect=AssertionError("status must not download"))
     monkeypatch.setattr("pandrator.logic.audio_cpp_assets.urlopen", opener)
+    monkeypatch.setattr(
+        "pandrator.logic.audio_cpp_assets.resolve_executable",
+        lambda _settings: Path("/fake/audiocpp_cli"),
+    )
     result = availability(settings)
-    assert result["runtime"]["minimum_version"] == "0.8.1"
+    assert result["runtime"]["minimum_version"] == "0.9.0"
     assert result["runtime"]["observed_version"] is None
     assert result["runtime"]["version_verified"] is False
     assert set(result["models"]) == set(MODELS)
@@ -147,6 +174,9 @@ def test_availability_is_readonly_and_reports_minimum_version(
         assert row["download_bytes"] == MODELS[model_id]["size_bytes"]
         assert row["cached"] is False
         assert row["source_url"] == MODELS[model_id]["url"]
+        assert row["sha256_verified"] is False
+        assert row["download_on_demand"] is True
+    opener.assert_not_called()
     assert not (Path(settings["audio_cpp_cache_dir"])).exists()
     assert list(workspace.rglob("*")) == []
 

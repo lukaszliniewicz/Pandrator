@@ -1972,11 +1972,17 @@ class TTSHandlerTests(unittest.TestCase):
         ):
             tts_handler.text_to_audio(
                 "Visually wrapped\n  but spoken\tcontinuously.",
-                {"service": "Silero", "speaker": "en_0", "language": "en"},
+                {
+                    "service": "Silero",
+                    "silero_model": "v3_en",
+                    "speaker": "en_0",
+                    "language": "en",
+                },
                 silero_base_url="http://silero",
                 max_attempts=1,
             )
 
+        self.assertEqual("v3_en", post.call_args.kwargs["json"]["model"])
         self.assertEqual(
             post.call_args.kwargs["json"]["input"],
             "Visually wrapped but spoken continuously.",
@@ -2008,13 +2014,19 @@ class TTSHandlerTests(unittest.TestCase):
         ):
             result = tts_handler.text_to_audio(
                 "Retry me",
-                {"service": "Silero", "speaker": "en_0", "language": "en"},
+                {
+                    "service": "Silero",
+                    "silero_model": "v3_en",
+                    "speaker": "en_0",
+                    "language": "en",
+                },
                 max_attempts=3,
                 cancel_event=cancel_event,
             )
 
         self.assertIs(decoded, result)
         self.assertEqual(2, post.call_count)
+        self.assertEqual("v3_en", post.call_args.kwargs["json"]["model"])
         retry_delay = cancel_event.wait.call_args.args[0]
         self.assertGreaterEqual(retry_delay, 0.4)
         self.assertLessEqual(retry_delay, 0.6)
@@ -2031,11 +2043,17 @@ class TTSHandlerTests(unittest.TestCase):
         ):
             tts_handler.text_to_audio(
                 "Do not retry",
-                {"service": "Silero", "speaker": "missing", "language": "en"},
+                {
+                    "service": "Silero",
+                    "silero_model": "v3_en",
+                    "speaker": "missing",
+                    "language": "en",
+                },
                 max_attempts=5,
             )
 
         self.assertEqual(1, post.call_count)
+        self.assertEqual("v3_en", post.call_args.kwargs["json"]["model"])
 
     def test_vertex_rate_limit_uses_capacity_aware_backoff(self):
         limited = Mock(status_code=429, headers={}, text="resource exhausted")

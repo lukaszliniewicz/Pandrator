@@ -40,6 +40,7 @@ class _FakeQuickTranscriber:
         self.text = text
         self.block = block
         self.asr_calls = 0
+        self.last_require_word_timestamps = None
 
     def normalize(self, command, *, cancel_event, **_kwargs):
         output_path = Path(command[-1])
@@ -55,30 +56,39 @@ class _FakeQuickTranscriber:
             output.writeframes(b"\0\0" * 160)
         return SimpleNamespace(returncode=0)
 
-    def transcribe(self, scratch, _normalized, _settings, **_kwargs):
+    def transcribe(self, scratch, _normalized, _settings, **kwargs):
         self.asr_calls += 1
+        self.last_require_word_timestamps = kwargs.get("require_word_timestamps")
         logging.getLogger("fake_asr").warning(self.text)
         scratch = Path(scratch)
         word_timestamps = scratch / "fake-word-timestamps.json"
         word_timestamps.write_text(
             json.dumps(
                 {
-                    "schema": "pandrator.transcript.v1",
-                    "source_format": "fake-asr",
-                    "language": "en",
-                    "segments": [
+                    "crispasr": {"backend": "fake-asr", "language": "en"},
+                    "metadata": {
+                        "stt_routing": {
+                            "engine": "fake-asr",
+                            "require_word_timestamps": self.last_require_word_timestamps,
+                        }
+                    },
+                    "transcription": [
                         {
                             "id": "fake-1",
-                            "start_ms": 0,
-                            "end_ms": 1000,
+                            **(
+                                {"offsets": {"from": 0, "to": 1000}}
+                                if self.last_require_word_timestamps
+                                else {}
+                            ),
                             "text": self.text,
                             "words": [
                                 {
                                     "text": self.text,
-                                    "start_ms": 0,
-                                    "end_ms": 1000,
+                                    "offsets": {"from": 0, "to": 1000},
                                 }
-                            ],
+                            ]
+                            if self.last_require_word_timestamps
+                            else [],
                         }
                     ],
                 }
@@ -227,7 +237,9 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
 
     def test_metadata_chunks_start_worker_results_and_no_domain_records(self):
         content = b"audio bytes used by the fake normalizer"
-        record = self._create(content, language="en_US", key="quick-metadata-1")
+        record = self._create(
+            content, language="en_US", format="srt", key="quick-metadata-1"
+        )
         self.assertEqual("uploading", record["status"])
         self.assertEqual(0, record["uploaded_bytes"])
         self.assertEqual(0, record["next_chunk_index"])
@@ -247,7 +259,7 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         self.assertEqual(job_id, retry.get_json()["job_id"])
         replay = self.client.post(
             "/api/v1/transcriptions",
-            json=self._payload(content, language="en_US"),
+            json=self._payload(content, language="en_US", format="srt"),
             headers={**self.headers, "Idempotency-Key": "quick-metadata-1"},
         )
         self.assertEqual(201, replay.status_code, replay.get_json())
@@ -259,9 +271,13 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
             self.assertTrue(self._worker().run_once())
         self.assertEqual(1, fake.asr_calls)
 
-        status = self.client.get(f"/api/v1/transcriptions/{record['id']}")
+        status = self.client.get(
+            f"/api/v1/transcriptions/{record['id']}?format=txt"
+        )
         self.assertEqual(200, status.status_code, status.get_json())
         self.assertEqual("succeeded", status.get_json()["status"])
+        self.assertTrue(status.get_json()["result_available"])
+        self.assertEqual(["txt", "srt", "json"], status.get_json()["available_formats"])
         self.assertTrue(status.get_json()["inline_result"])
         self.assertEqual(
             "CONFIDENTIAL fake recognition",
@@ -298,6 +314,7 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
             ).get_json()["format"],
         )
         self.assertEqual(1, fake.asr_calls, "format selection must not rerun ASR")
+        self.assertIs(fake.last_require_word_timestamps, True)
 
         with self.extension["database"].session() as session:
             job = session.get(Job, job_id)
@@ -315,7 +332,51 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
                     model.__name__,
                 )
 
-        self.assertEqual(["service:stt"], job.resource_keys_json)
+        self.assertEqual(
+            sorted(stt_resource_keys(self._record(record["id"]).settings_json)),
+            job.resource_keys_json,
+        )
+
+    def test_txt_requests_recognizer_only_and_never_publishes_srt(self):
+        started = self._create_upload_start()
+        fake = _FakeQuickTranscriber(text="Filipino transcript without word timing")
+        with self._fake_backend(fake):
+            self.assertTrue(self._worker().run_once())
+
+        self.assertIs(fake.last_require_word_timestamps, False)
+        directory = self.extension["quick_transcriptions"]._directory(started["id"])
+        self.assertTrue((directory / "result.txt").is_file())
+        self.assertTrue((directory / "result.json").is_file())
+        self.assertFalse((directory / "result.srt").exists())
+
+        status = self.client.get(f"/api/v1/transcriptions/{started['id']}")
+        self.assertEqual(200, status.status_code, status.get_json())
+        body = status.get_json()
+        self.assertEqual(["txt", "json"], body["available_formats"])
+        self.assertTrue(body["result_available"])
+        self.assertEqual("Filipino transcript without word timing", body["result"]["content"])
+
+        canonical = self.client.get(
+            f"/api/v1/transcriptions/{started['id']}/result?format=json"
+        ).get_json()
+        self.assertEqual("pandrator.transcript.v1", canonical["schema"])
+        self.assertEqual(
+            "Filipino transcript without word timing", canonical["text"]
+        )
+        self.assertEqual(
+            "fake-asr", canonical["metadata"]["stt_routing"]["engine"]
+        )
+        self.assertEqual([], canonical["segments"])
+
+        for url in (
+            f"/api/v1/transcriptions/{started['id']}?format=srt",
+            f"/api/v1/transcriptions/{started['id']}/result?format=srt",
+        ):
+            unavailable = self.client.get(url)
+            self.assertEqual(409, unavailable.status_code, unavailable.get_json())
+            self.assertEqual(
+                "timing_not_requested", unavailable.get_json()["error"]["code"]
+            )
 
     def test_chunk_size_boundaries_and_out_of_order_or_hash_conflicts(self):
         first = b"a" * CHUNK_SIZE
@@ -339,7 +400,7 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         started = self._start(record["id"])
         self.assertEqual(202, started.status_code, started.get_json())
         self.assertEqual(
-            ["service:stt"],
+            sorted(stt_resource_keys(self._record(record["id"]).settings_json)),
             self.extension["jobs"].get(started.get_json()["job_id"]).resource_keys_json,
         )
 
@@ -634,18 +695,21 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         self.assertIn("gpu:cuda", job.resource_keys_json)
         self.assertIn("service:tts:audio_cpp", job.resource_keys_json)
 
-    def test_qwen_timestamp_preflight_rejects_before_records_or_jobs(self):
-        cases = tuple(
-            (language, transcript_format)
-            for transcript_format in ("txt", "srt", "json")
-            for language in ("auto", "Arabic")
+    def test_qwen_preflight_uses_format_timing_and_defers_auto_language(self):
+        accepted = (
+            ("auto", "txt"),
+            ("automatic", "srt"),
+            ("en", "json"),
+            ("fil", "txt"),
+            ("Arabic", "txt"),
+            ("auto", "srt"),
         )
-        for index, (language, transcript_format) in enumerate(cases):
+        for index, (language, transcript_format) in enumerate(accepted):
             with self.subTest(language=language, format=transcript_format):
                 response = self.client.post(
                     "/api/v1/transcriptions",
                     json=self._payload(
-                        b"invalid qwen source",
+                        b"qwen transcript-only source",
                         engine="qwen3",
                         language=language,
                         format=transcript_format,
@@ -653,24 +717,43 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
                     ),
                     headers={
                         **self.headers,
-                        "Idempotency-Key": f"quick-qwen-invalid-{index}",
+                        "Idempotency-Key": f"quick-qwen-accepted-{index}",
+                    },
+                )
+                self.assertEqual(201, response.status_code, response.get_json())
+
+        rejected = (
+            ("fil", "srt"),
+            ("fil", "json"),
+            ("Arabic", "srt"),
+            ("Arabic", "json"),
+        )
+        for index, (language, transcript_format) in enumerate(rejected):
+            with self.subTest(language=language, format=transcript_format):
+                response = self.client.post(
+                    "/api/v1/transcriptions",
+                    json=self._payload(
+                        b"qwen timed source",
+                        engine="qwen3",
+                        language=language,
+                        format=transcript_format,
+                    ),
+                    headers={
+                        **self.headers,
+                        "Idempotency-Key": f"quick-qwen-rejected-{index}",
                     },
                 )
                 self.assertEqual(400, response.status_code, response.get_json())
+                self.assertEqual(
+                    "unsupported_language", response.get_json()["error"]["code"]
+                )
 
         with self.extension["database"].session() as session:
             self.assertEqual(
-                0,
-                session.scalar(
-                    select(func.count()).select_from(QuickTranscription)
-                ),
+                len(accepted),
+                session.scalar(select(func.count()).select_from(QuickTranscription)),
             )
-            self.assertEqual(
-                0, session.scalar(select(func.count()).select_from(Job))
-            )
-        self.assertEqual(
-            [], list(self.extension["quick_transcriptions"].root.iterdir())
-        )
+            self.assertEqual(0, session.scalar(select(func.count()).select_from(Job)))
 
     def test_invalid_qwen_literals_are_rejected_by_schema(self):
         for index, override in enumerate(
@@ -776,7 +859,7 @@ class QuickTranscriptionRouteTests(unittest.TestCase):
         started = self._start(cuda["id"])
         self.assertEqual(202, started.status_code, started.get_json())
         self.assertEqual(
-            ["gpu:cuda", "service:stt"],
+            sorted(stt_resource_keys(self._record(cuda["id"]).settings_json)),
             self.extension["jobs"].get(started.get_json()["job_id"]).resource_keys_json,
         )
 

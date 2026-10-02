@@ -15,6 +15,7 @@
     Save,
     Scissors,
     Trash2,
+    Undo2,
     X
   } from '@lucide/svelte';
   import { artifactApi, jobApi, sessionApi } from './domain-api';
@@ -27,9 +28,20 @@
     SubtitleEvidenceCandidate,
     SubtitleEvidenceRecord,
     SubtitleSegment as Segment,
-    SubtitleSplitInspection
+    SubtitleSplitInspection,
+    SpokenPassage
   } from './api-models';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
+  import { beforeNavigate, goto } from '$app/navigation';
+  import {
+    cloneReview,
+    forgetReviewDraft,
+    readReviewDraft,
+    rememberReviewDraft,
+    reviewContent,
+    reviewDraftKey,
+    sameReviewSource
+  } from './subtitle-review-drafts';
   import GuidedTour from './GuidedTour.svelte';
   import AudioPlayer from './AudioPlayer.svelte';
   import SubtitleEvidencePanel from './SubtitleEvidencePanel.svelte';
@@ -64,6 +76,79 @@
   let comparisonChoice = $state('');
   let comparisonLoading = $state(false);
   let saving = $state(false);
+  let baseline = $state('');
+  let pristinePayload = $state<Payload | null>(null);
+  let undoHistory = $state<Payload[]>([]);
+  let pendingLeave = $state<(() => void) | null>(null);
+  let staleDraft = $state<Payload | null>(null);
+  let permitNavigation = false;
+  let pendingSave: { signature: string; key: string } | undefined;
+  const dirty = $derived(
+    Boolean(payload && baseline && reviewContent(payload) !== baseline)
+  );
+  const draftKey = $derived(
+    reviewDraftKey(sessionId, reviewPrimaryArtifactId || primaryArtifactId)
+  );
+
+  function checkpoint() {
+    if (!payload || loading || saving) return;
+    const snapshot = cloneReview(payload);
+    if (reviewContent(undoHistory.at(-1) ?? null) === reviewContent(snapshot))
+      return;
+    undoHistory = [...undoHistory.slice(-19), snapshot];
+  }
+
+  function undo() {
+    error = '';
+    const previous = undoHistory.at(-1);
+    if (!previous || saving) return;
+    payload = cloneReview(previous);
+    undoHistory = undoHistory.slice(0, -1);
+    splitSegment = null;
+    splitInspection = null;
+  }
+
+  function requestLeave(action = onclose) {
+    if (saving) return;
+    if (dirty) pendingLeave = action;
+    else action();
+  }
+
+  function discardAndLeave() {
+    const action = pendingLeave;
+    forgetReviewDraft(draftKey);
+    if (pristinePayload) payload = cloneReview(pristinePayload);
+    baseline = reviewContent(payload);
+    undoHistory = [];
+    pendingLeave = null;
+    action?.();
+  }
+
+  async function saveAndLeave() {
+    const action = pendingLeave;
+    if (await save()) {
+      pendingLeave = null;
+      action?.();
+    }
+  }
+
+  beforeNavigate((navigation) => {
+    if (!dirty || permitNavigation) return;
+    navigation.cancel();
+    if (!navigation.willUnload && navigation.to?.url) {
+      const target = navigation.to.url;
+      requestLeave(() => {
+        permitNavigation = true;
+        void goto(target);
+      });
+    }
+  });
+
+  $effect(() => {
+    if (!payload || loading || staleDraft) return;
+    if (dirty) rememberReviewDraft(draftKey, payload, baseline, editArtifactId);
+    else forgetReviewDraft(draftKey);
+  });
   let audioPreview = $state<HTMLAudioElement>();
   let videoPreview = $state<HTMLVideoElement>();
   let captionsUrl = $state('');
@@ -77,12 +162,17 @@
   let splitError = $state('');
   let reviewTime = $state(0);
   function playbackElement() {
-    return sourceIsVideo ? videoPreview : audioPreview;
+    return sourceIsVideo && previewMode !== 'audio'
+      ? videoPreview
+      : audioPreview;
   }
 
   let sourceAudioUrl = $state('');
+  let previewMode = $state<'original' | 'video' | 'audio'>('original');
+  let videoPlaybackError = $state('');
   let sourceAudioPreparing = $state(false);
   let sourceAudioError = $state('');
+  let sourcePreviewJobId = $state('');
   let cuePlaybackError = $state('');
   let sourceAudioController: AbortController | undefined;
   let cuePreviewFrame: number | null = null;
@@ -115,6 +205,23 @@
   const editColumn = $derived(
     columns.find((column) => column.artifact_id === editArtifactId)
   );
+  const editMode = $derived(payload?.edit_mode ?? 'display');
+  const passages = $derived(editColumn?.logical_passages ?? []);
+  const pagedPassages = $derived(
+    passages.slice(pageIndex * PAGE_SIZE, (pageIndex + 1) * PAGE_SIZE)
+  );
+  function changeEditMode(mode: 'display' | 'passages') {
+    if (!payload || editMode === mode) return;
+    requestLeave(() => {
+      if (payload) payload.edit_mode = mode;
+      pageIndex = 0;
+      diffView = false;
+    });
+  }
+  function setPassageDeleted(passage: SpokenPassage, deleted: boolean) {
+    checkpoint();
+    passage.deleted = deleted;
+  }
   const sourceIsVideo = $derived(
     editColumn?.source_media_mime_type?.startsWith('video/') ||
       ['mp4', 'webm', 'mkv', 'mov'].includes(
@@ -154,7 +261,13 @@
     editColumn?.segments.map((segment) => segment.text) ?? []
   );
   const pageCount = $derived(
-    Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE))
+    Math.max(
+      1,
+      Math.ceil(
+        (editMode === 'passages' ? passages.length : visibleRows.length) /
+          PAGE_SIZE
+      )
+    )
   );
   const pageStart = $derived(pageIndex * PAGE_SIZE);
   const pagedRows = $derived(
@@ -238,6 +351,13 @@
     candidate: SubtitleEvidenceCandidate,
     requestId: string
   ) {
+    if (!canEdit(segment, 'text')) {
+      error =
+        segment.edit_capabilities?.reason ||
+        'Edit the spoken passage before applying this evidence.';
+      return;
+    }
+    checkpoint();
     if (candidate.text?.trim()) segment.text = candidate.text.trim();
     segment.review_state = 'clear';
     segment.review_note = '';
@@ -252,6 +372,7 @@
     note: string,
     requestId?: string
   ) {
+    checkpoint();
     segment.review_state = 'uncertain';
     segment.review_note = note;
     if (requestId)
@@ -261,6 +382,7 @@
   }
 
   function clearSegmentUncertainty(segment: Segment) {
+    checkpoint();
     segment.review_state = 'clear';
     segment.review_note = '';
   }
@@ -311,7 +433,11 @@
 
   function sameSegment(left: Segment, right: Segment) {
     return (
-      left === right || Boolean(left.id && right.id && left.id === right.id)
+      left === right ||
+      Boolean(left.id && right.id && left.id === right.id) ||
+      Boolean(
+        left.draft_id && right.draft_id && left.draft_id === right.draft_id
+      )
     );
   }
 
@@ -345,10 +471,19 @@
     return records && index >= 0 ? records[index + 1] : undefined;
   }
 
+  function canEdit(
+    segment: Segment,
+    action: keyof NonNullable<Segment['edit_capabilities']>
+  ) {
+    return segment.edit_capabilities?.[action] === true;
+  }
+
   function canMergeNext(segment: Segment) {
     const next = nextSegment(segment);
     return (
       Boolean(next) &&
+      canEdit(segment, 'merge') &&
+      Boolean(next && canEdit(next, 'merge')) &&
       !segment.origin_segment_id &&
       !next?.origin_segment_id &&
       !next?.starts_new_turn &&
@@ -386,8 +521,10 @@
 
   async function load(
     artifactIds = [reviewPrimaryArtifactId],
-    refreshCatalog = false
+    refreshCatalog = false,
+    mode?: 'display' | 'passages'
   ) {
+    const remembered = payload ? undefined : readReviewDraft(draftKey);
     loading = true;
     splitSegment = null;
     splitInspection = null;
@@ -399,7 +536,17 @@
           ? sessionApi.subtitleCatalog(sessionId)
           : Promise.resolve(catalog)
       ]);
-      payload = nextPayload;
+      if (mode) nextPayload.edit_mode = mode;
+      pristinePayload = cloneReview(nextPayload);
+      baseline = reviewContent(nextPayload);
+      if (remembered && sameReviewSource(remembered.payload, nextPayload)) {
+        baseline = remembered.baseline;
+        payload = cloneReview(remembered.payload);
+        editArtifactId = remembered.editableArtifactId;
+      } else {
+        if (remembered) staleDraft = cloneReview(remembered.payload);
+        payload = cloneReview(nextPayload);
+      }
       catalog = nextCatalog;
       pageIndex = 0;
       if (
@@ -417,6 +564,10 @@
 
   async function addComparison() {
     if (!comparisonChoice || selectedArtifactIds.length >= 4) return;
+    if (dirty) {
+      requestLeave(() => void addComparison());
+      return;
+    }
     comparisonLoading = true;
     try {
       await load([...selectedArtifactIds, comparisonChoice]);
@@ -428,9 +579,20 @@
 
   async function removeComparison(artifactId: string) {
     if (artifactId === reviewPrimaryArtifactId) return;
+    if (dirty) {
+      requestLeave(() => void removeComparison(artifactId));
+      return;
+    }
     const remaining = selectedArtifactIds.filter((item) => item !== artifactId);
     if (editArtifactId === artifactId) editArtifactId = reviewPrimaryArtifactId;
     await load(remaining);
+  }
+
+  function changeEditableArtifact(artifactId: string) {
+    if (artifactId === editArtifactId) return;
+    requestLeave(() => {
+      editArtifactId = artifactId;
+    });
   }
 
   async function inspectSplit(segment: Segment, offset = 0) {
@@ -468,6 +630,12 @@
       (value) => value.id === selectedSplitBoundary
     );
     if (!anchor || !splitSegment) return;
+    if (Number.isInteger(anchor.text_offset_utf16)) {
+      const offset = anchor.text_offset_utf16 as number;
+      splitLeft = splitSegment.text.slice(0, offset).trim();
+      splitRight = splitSegment.text.slice(offset).trim();
+      return;
+    }
     const words = splitSegment.text.trim().split(/\s+/);
     splitLeft = words.slice(0, anchor.after_word).join(' ');
     splitRight = words.slice(anchor.after_word).join(' ');
@@ -489,6 +657,7 @@
       return;
     const index = stageIndex(segment);
     if (index < 0) return;
+    checkpoint();
     const shared = {
       ...segment,
       id: undefined,
@@ -497,11 +666,13 @@
     };
     const first = {
       ...shared,
+      draft_id: crypto.randomUUID(),
       text: splitLeft.trim(),
       end_ms: anchor.left_end_ms
     };
     const second = {
       ...shared,
+      draft_id: crypto.randomUUID(),
       text: splitRight.trim(),
       start_ms: anchor.right_start_ms,
       starts_new_turn: splitStartsTurn
@@ -519,9 +690,11 @@
     if (index < 0) return;
     const next = records[index + 1];
     if (next && canMergeNext(segment)) {
+      checkpoint();
       const merged = {
         ...segment,
         id: undefined,
+        draft_id: crypto.randomUUID(),
         end_ms: next.end_ms,
         text: `${segment.text} ${next.text}`.trim(),
         source_passage_ids: Array.from(
@@ -560,9 +733,11 @@
   }
 
   function removeSegment(segment: Segment) {
+    if (!canEdit(segment, 'delete')) return;
     const records = editColumn?.segments;
     const index = stageIndex(segment);
     if (records && index >= 0) {
+      checkpoint();
       records.splice(index, 1);
       replaceInRows(segment, []);
     }
@@ -574,8 +749,13 @@
   function applySearchReplacements(updates: TextReplacement[]) {
     const records = editColumn?.segments;
     if (!records) return;
+    checkpoint();
     for (const update of updates) {
-      if (records[update.index]) records[update.index].text = update.text;
+      if (records[update.index] && canEdit(records[update.index], 'text'))
+        records[update.index].text = update.text;
+      else
+        error =
+          'Some matching cues combine spoken passages. Edit those passages separately; their text was kept.';
     }
   }
 
@@ -642,68 +822,86 @@
 
   function waitForPreviewPoll(signal: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
-      const timer = window.setTimeout(resolve, 750);
-      signal.addEventListener(
-        'abort',
-        () => {
-          window.clearTimeout(timer);
-          reject(new DOMException('Aborted', 'AbortError'));
-        },
-        { once: true }
-      );
+      const aborted = () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener('abort', aborted);
+        resolve();
+      }, 750);
+      signal.addEventListener('abort', aborted, { once: true });
     });
   }
 
-  async function prepareSourceAudio(artifactId: string) {
+  async function cancelSourcePreview() {
+    if (!sourcePreviewJobId) return;
+    try {
+      await jobApi.cancel(sourcePreviewJobId);
+    } catch (caught) {
+      sourceAudioError = errorMessage(caught);
+    }
+  }
+
+  async function prepareSourceAudio(
+    artifactId: string,
+    mode: 'original' | 'video' | 'audio' = 'original'
+  ) {
     if (!artifactId) return;
     sourceAudioController?.abort();
     stopCuePreview(true);
     sourceAudioUrl = '';
-    if (sourceIsVideo) {
+    sourcePreviewJobId = '';
+    sourceAudioPreparing = false;
+    previewMode = mode;
+    videoPlaybackError = '';
+    sourceAudioError = '';
+    if (sourceIsVideo && mode === 'original') {
       sourceAudioUrl = `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
       return;
     }
+    previewMode = mode === 'video' ? 'video' : 'audio';
+    const requestPreview =
+      mode === 'video' ? artifactApi.videoPreview : artifactApi.audioPreview;
     const controller = new AbortController();
     sourceAudioController = controller;
     sourceAudioPreparing = true;
     sourceAudioError = '';
     cuePlaybackError = '';
     try {
-      let preparation = await artifactApi.audioPreview(
-        artifactId,
-        controller.signal
-      );
+      let preparation = await requestPreview(artifactId, controller.signal);
       if (controller.signal.aborted) return;
       if (preparation.status === 'ready' && preparation.content_url) {
         sourceAudioUrl = preparation.content_url;
         return;
       }
       const jobId = preparation.job_id;
-      if (!jobId) throw new Error('The source-audio preview was not queued.');
-      for (let attempt = 0; attempt < 800; attempt += 1) {
+      if (!jobId) throw new Error('The media preview was not queued.');
+      sourcePreviewJobId = jobId;
+      for (let attempt = 0; attempt < 2440; attempt += 1) {
         await waitForPreviewPoll(controller.signal);
         const job = await jobApi.get(jobId, controller.signal);
         if (controller.signal.aborted) return;
         if (job.status === 'succeeded') {
-          preparation = await artifactApi.audioPreview(
-            artifactId,
-            controller.signal
-          );
+          preparation = await requestPreview(artifactId, controller.signal);
           if (controller.signal.aborted) return;
           if (preparation.status === 'ready' && preparation.content_url) {
             sourceAudioUrl = preparation.content_url;
             return;
           }
-          throw new Error('The prepared source audio could not be found.');
+          throw new Error('The prepared media preview could not be found.');
         }
         if (['failed', 'interrupted', 'canceled'].includes(job.status)) {
           throw new Error(
-            job.error_message ||
-              'The source-audio preview could not be prepared.'
+            job.status === 'canceled'
+              ? 'Preview preparation canceled. You can retry.'
+              : job.error_message || 'The media preview could not be prepared.'
           );
         }
       }
-      throw new Error('The source-audio preview is still being prepared.');
+      throw new Error(
+        'The media preview is still being prepared. Retry to check its progress.'
+      );
     } catch (caught) {
       if (!controller.signal.aborted) sourceAudioError = errorMessage(caught);
     } finally {
@@ -721,35 +919,103 @@
 
   async function save() {
     const column = editColumn;
-    if (!column) return;
+    if (!column) return false;
+    const records =
+      editMode === 'passages'
+        ? (column.logical_passages ?? []).filter((item) => !item.deleted)
+        : column.segments;
+    if (!records.length) {
+      error =
+        'Keep at least one spoken passage or cue. Restore a deleted item or use Undo.';
+      return false;
+    }
+    for (const item of records) {
+      const label =
+        editMode === 'passages'
+          ? `Spoken passage ${item.id}`
+          : `Cue ${item.id || ('ordinal' in item ? item.ordinal + 1 : '')}`;
+      if (
+        !Number.isInteger(item.start_ms) ||
+        !Number.isInteger(item.end_ms) ||
+        item.start_ms < 0 ||
+        item.end_ms <= item.start_ms
+      ) {
+        error = `${label}: enter a nonnegative start and an end after the start. Your draft is retained.`;
+        return false;
+      }
+      if (!item.text.trim()) {
+        error = `${label}: enter text, or delete this item explicitly. Your draft is retained.`;
+        return false;
+      }
+    }
+    const signature = JSON.stringify([
+      sessionId,
+      column.stage,
+      editMode,
+      column.artifact_id,
+      column.revision,
+      column.source_content_hash,
+      column.composition_hash,
+      reviewContent(payload)
+    ]);
+    if (pendingSave?.signature !== signature)
+      pendingSave = { signature, key: crypto.randomUUID() };
+    const saveKey = pendingSave.key;
     saving = true;
     error = '';
     try {
-      const result = await sessionApi.saveSubtitleReview(
-        sessionId,
-        column.stage,
-        {
-          source_artifact_id: column.artifact_id,
-          expected_revision: column.revision,
-          expected_source_hash: column.source_content_hash,
-          segments: column.segments.map((item) => ({
-            id: item.id,
-            turn_id: item.turn_id,
-            source_passage_ids: item.source_passage_ids ?? [],
-            starts_new_turn: item.starts_new_turn ?? false,
-            origin_segment_id: item.origin_segment_id,
-            split_boundary_id: item.split_boundary_id,
-            start_ms: item.start_ms,
-            end_ms: item.end_ms,
-            text: item.text,
-            speaker: item.speaker,
-            review_state: item.review_state ?? 'clear',
-            review_note: item.review_note ?? '',
-            evidence_ids: item.evidence_ids ?? [],
-            uncertain_source_cue_ids: item.uncertain_source_cue_ids ?? []
-          }))
-        }
-      );
+      const mode = editMode;
+      const result =
+        mode === 'passages'
+          ? await sessionApi.saveSubtitlePassageReview(
+              sessionId,
+              column.stage,
+              {
+                source_artifact_id: column.artifact_id,
+                expected_source_hash: column.source_content_hash || '',
+                expected_revision: column.revision,
+                expected_composition_hash: column.composition_hash || '',
+                passages: (column.logical_passages ?? []).map((item) => ({
+                  id: item.id,
+                  text: item.text,
+                  speaker: item.speaker || '',
+                  start_ms: item.start_ms,
+                  end_ms: item.end_ms,
+                  starts_new_turn: item.starts_new_turn ?? false,
+                  deleted: item.deleted ?? false,
+                  review_state:
+                    item.review_state === 'uncertain' ? 'uncertain' : 'clear',
+                  review_note: item.review_note || ''
+                }))
+              },
+              saveKey
+            )
+          : await sessionApi.saveSubtitleReview(
+              sessionId,
+              column.stage,
+              {
+                source_artifact_id: column.artifact_id,
+                expected_revision: column.revision,
+                expected_source_hash: column.source_content_hash,
+                segments: column.segments.map((item) => ({
+                  id: item.id,
+                  turn_id: item.turn_id,
+                  source_passage_ids: item.source_passage_ids ?? [],
+                  starts_new_turn: item.starts_new_turn ?? false,
+                  origin_segment_id: item.origin_segment_id,
+                  split_boundary_id: item.split_boundary_id,
+                  start_ms: item.start_ms,
+                  end_ms: item.end_ms,
+                  text: item.text,
+                  speaker: item.speaker,
+                  review_state: item.review_state ?? 'clear',
+                  review_note: item.review_note ?? '',
+                  evidence_ids: item.evidence_ids ?? [],
+                  uncertain_source_cue_ids: item.uncertain_source_cue_ids ?? []
+                }))
+              },
+              saveKey
+            );
       const previousId = column.artifact_id;
       const nextIds = selectedArtifactIds.map((artifactId) =>
         artifactId === previousId ? result.artifact_id : artifactId
@@ -757,10 +1023,18 @@
       if (reviewPrimaryArtifactId === previousId)
         reviewPrimaryArtifactId = result.artifact_id;
       editArtifactId = result.artifact_id;
-      await load(nextIds, true);
+      forgetReviewDraft(reviewDraftKey(sessionId, previousId));
+      payload = null;
+      baseline = '';
+      undoHistory = [];
+      staleDraft = null;
+      await load(nextIds, true, mode);
+      pendingSave = undefined;
       onsaved();
+      return true;
     } catch (caught) {
       error = errorMessage(caught);
+      return false;
     } finally {
       saving = false;
     }
@@ -768,7 +1042,15 @@
   onMount(() => {
     reviewPrimaryArtifactId = primaryArtifactId;
     editArtifactId = primaryArtifactId;
-    void load([primaryArtifactId], true);
+    const remembered = readReviewDraft(
+      reviewDraftKey(sessionId, primaryArtifactId)
+    );
+    void load(
+      remembered?.payload.columns.map((column) => column.artifact_id) ?? [
+        primaryArtifactId
+      ],
+      true
+    );
   });
 
   $effect(() => {
@@ -795,7 +1077,10 @@
     return `${String(Math.floor(value / 3600000)).padStart(2, '0')}:${String(Math.floor(value / 60000) % 60).padStart(2, '0')}:${String(Math.floor(value / 1000) % 60).padStart(2, '0')}.${String(value % 1000).padStart(3, '0')}`;
   }
   $effect(() => {
-    const cues = editColumn?.segments ?? [];
+    const cues =
+      editMode === 'passages'
+        ? passages.filter((item) => !item.deleted)
+        : (editColumn?.segments ?? []);
     const vtt =
       'WEBVTT\n\n' +
       cues
@@ -816,7 +1101,7 @@
   role="presentation"
 >
   <div
-    use:modalFocus={{ onclose }}
+    use:modalFocus={{ onclose: () => requestLeave() }}
     class="surface mx-auto flex h-full max-w-[96rem] flex-col overflow-hidden rounded-[1.5rem]"
     role="dialog"
     aria-modal="true"
@@ -834,6 +1119,15 @@
         </h2>
       </div>
       <div class="flex min-w-0 flex-wrap items-center justify-end gap-2">
+        <span class="muted text-xs" role="status"
+          >{dirty ? 'Unsaved changes' : 'Saved revision'}</span
+        >
+        <button
+          onclick={undo}
+          disabled={!undoHistory.length || saving}
+          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2 text-sm disabled:opacity-40"
+          ><Undo2 size={16} /> Undo</button
+        >
         <button
           onclick={() => (tourOpen = true)}
           class="rounded-xl border border-[var(--line)] px-3 py-2 text-sm font-semibold"
@@ -851,7 +1145,7 @@
           ontoggle={() => (maximized = !maximized)}
         />
         <button
-          onclick={onclose}
+          onclick={() => requestLeave()}
           aria-label="Close subtitle review"
           class="rounded-xl border border-[var(--line)] p-2"
           ><X size={18} /></button
@@ -892,7 +1186,9 @@
           <label class="min-w-56 text-xs font-semibold">
             Editable revision
             <select
-              bind:value={editArtifactId}
+              value={editArtifactId}
+              onchange={(event) =>
+                changeEditableArtifact(event.currentTarget.value)}
               class="mt-1 w-full min-w-0 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal"
               aria-label="Subtitle artifact to edit"
               >{#each columns as column}<option value={column.artifact_id}
@@ -980,7 +1276,7 @@
             </span>
           {/each}
         </div>
-        {#if editColumn}<SearchReplaceBar
+        {#if editColumn && editMode === 'display'}<SearchReplaceBar
             texts={editableTexts}
             onreplace={applySearchReplacements}
             onnavigate={navigateSearchMatch}
@@ -988,16 +1284,82 @@
           />{/if}
       </div>
     </details>
+    {#if pendingLeave}<div
+        use:modalFocus={{ onclose: () => (pendingLeave = null) }}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="draft-leave-title"
+        class="mx-5 my-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 sm:mx-7"
+      >
+        <h3 id="draft-leave-title" class="font-semibold">Save your changes?</h3>
+        <p class="muted mt-1 text-sm">
+          Saving creates a new revision. A failed save keeps this draft open.
+        </p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button
+            onclick={saveAndLeave}
+            disabled={saving}
+            class="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-white"
+            >{saving ? 'Saving…' : 'Save'}</button
+          >
+          <button
+            onclick={discardAndLeave}
+            disabled={saving}
+            class="rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+            >Discard</button
+          >
+          <button
+            onclick={() => (pendingLeave = null)}
+            disabled={saving}
+            class="rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+            >Cancel</button
+          >
+        </div>
+      </div>{/if}
+    {#if staleDraft}<details
+        class="mx-5 my-3 rounded-xl border border-amber-500/40 p-4 sm:mx-7"
+      >
+        <summary class="font-semibold"
+          >The source changed. Your previous draft is retained.</summary
+        >
+        <p class="muted mt-2 text-sm">
+          Review the retained text below against the current revision before
+          copying changes. It has not been applied to the new source.
+        </p>
+        <pre
+          class="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{staleDraft.columns
+            .flatMap((column) => column.segments.map((segment) => segment.text))
+            .join('\n\n')}</pre>
+        <button
+          onclick={() => {
+            staleDraft = null;
+            forgetReviewDraft(draftKey);
+          }}
+          class="mt-2 rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
+          >Discard retained draft</button
+        >
+      </details>{/if}
     {#if sourceMediaArtifactId || sourceMediaError}<div
         class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
       >
         {#if sourceMediaError}<p class="text-xs text-red-500" role="alert">
             {sourceMediaError}
-          </p>{:else if sourceAudioUrl && sourceIsVideo}<div
+          </p>{:else if sourceAudioUrl && sourceIsVideo && previewMode !== 'audio'}<div
             class="mx-auto max-w-3xl"
           >
             <video
               bind:this={videoPreview}
+              onerror={() =>
+                (videoPlaybackError =
+                  'Your browser could not play this video.')}
+              onloadedmetadata={() => {
+                if (
+                  videoPreview &&
+                  (!videoPreview.videoWidth || !videoPreview.videoHeight)
+                )
+                  videoPlaybackError =
+                    'This file loaded audio but no playable video.';
+              }}
               src={sourceAudioUrl}
               controls
               preload="metadata"
@@ -1015,7 +1377,9 @@
               />
             </video>
             <p class="muted mt-1 text-xs">
-              Selected revision · captions include your current draft changes
+              {previewMode === 'video'
+                ? 'Compatible preview'
+                : 'Original media'} · captions include your current draft changes
             </p>
           </div>{:else if sourceAudioUrl}<AudioPlayer
             bind:element={audioPreview}
@@ -1025,19 +1389,53 @@
             class="muted flex items-center gap-2 text-xs"
             role="status"
           >
-            <LoaderCircle class="animate-spin" size={15} /> Preparing a browser-safe
-            source-audio preview…
+            <LoaderCircle class="animate-spin" size={15} /> Preparing a compatible
+            {previewMode === 'video' ? 'video' : 'audio'} preview…
+            {#if sourcePreviewJobId}<button
+                type="button"
+                class="font-semibold text-[var(--accent)]"
+                onclick={cancelSourcePreview}>Cancel preparation</button
+              >{/if}
           </div>{:else}<div class="flex flex-wrap items-center gap-2 text-xs">
             <span class="text-red-500" role="alert"
               >{sourceAudioError ||
                 'Source audio is not ready for playback.'}</span
             ><button
               type="button"
-              onclick={() => prepareSourceAudio(sourceMediaArtifactId)}
+              onclick={() =>
+                prepareSourceAudio(sourceMediaArtifactId, previewMode)}
               class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 font-semibold"
               ><RefreshCw size={13} /> Retry</button
             >
           </div>{/if}
+        {#if sourceIsVideo}
+          {#if videoPlaybackError}<p
+              class="mt-2 text-sm text-red-500"
+              role="alert"
+            >
+              {videoPlaybackError}
+            </p>{/if}
+          <div class="mt-2 flex flex-wrap gap-3 text-xs">
+            <button
+              type="button"
+              class="font-semibold text-[var(--accent)]"
+              disabled={sourceAudioPreparing}
+              onclick={() => prepareSourceAudio(sourceMediaArtifactId, 'video')}
+              >Prepare compatible video preview</button
+            >
+            <button
+              type="button"
+              class="font-semibold text-[var(--accent)]"
+              disabled={sourceAudioPreparing}
+              onclick={() => prepareSourceAudio(sourceMediaArtifactId, 'audio')}
+              >Use audio-only preview</button
+            >
+          </div>
+          <p class="muted mt-1 text-xs">
+            Preview files preserve the original. Compatible video can take time
+            to prepare.
+          </p>
+        {/if}
         {#if cuePlaybackError}<p class="mt-2 text-xs text-red-500" role="alert">
             {cuePlaybackError}
           </p>{/if}
@@ -1103,6 +1501,38 @@
             >Apply split</button
           >{/if}
       </div>{/if}
+    {#if editColumn}<div
+        class="mx-5 mt-4 flex flex-wrap items-center gap-3 sm:mx-7"
+      >
+        <div
+          class="flex gap-1 rounded-lg border border-[var(--line)] p-1"
+          aria-label="Subtitle edit view"
+        >
+          <button
+            type="button"
+            class="rounded-md px-3 py-1.5 text-sm"
+            class:bg-[var(--accent-soft)]={editMode === 'display'}
+            aria-pressed={editMode === 'display'}
+            disabled={saving}
+            onclick={() => changeEditMode('display')}>Display cues</button
+          >
+          <button
+            type="button"
+            class="rounded-md px-3 py-1.5 text-sm"
+            class:bg-[var(--accent-soft)]={editMode === 'passages'}
+            aria-pressed={editMode === 'passages'}
+            disabled={saving ||
+              !editColumn.composition_hash ||
+              !passages.length}
+            onclick={() => changeEditMode('passages')}>Spoken passages</button
+          >
+        </div>
+        <p class="muted text-xs">
+          {editMode === 'passages'
+            ? 'Edit spoken text, timing and speaker here. Saving rebuilds display cues inside each passage’s timing window using the current subtitle limits.'
+            : 'Display cues control subtitle presentation. Edit a combined cue’s spoken text and speaker in Spoken passages.'}
+        </p>
+      </div>{/if}
     {#if error}<div
         class="mx-5 mt-4 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm sm:mx-7"
       >
@@ -1114,11 +1544,107 @@
         Side-by-side diff is read-only. Turn off <strong>Diff view</strong> to edit
         cue text or timing.
       </div>{/if}
-    <div bind:this={rowsViewport} class="min-h-0 flex-1 overflow-auto">
+    <div
+      bind:this={rowsViewport}
+      inert={saving || Boolean(pendingLeave)}
+      class="min-h-0 flex-1 overflow-auto"
+    >
       {#if loading}<div class="grid h-full place-items-center">
           <div class="section-label animate-pulse">
             Aligning subtitle lineage…
           </div>
+        </div>
+      {:else if editMode === 'passages'}
+        <div class="grid gap-3 p-5 sm:p-7">
+          {#each pagedPassages as passage (passage.id)}
+            <section
+              class="rounded-xl border border-[var(--line)] p-4"
+              aria-label={`Spoken passage ${passage.id}`}
+            >
+              <div class="mb-3 flex items-center justify-between gap-3">
+                <strong class="text-sm">Spoken passage {passage.id}</strong>
+                <button
+                  type="button"
+                  class="text-xs font-semibold"
+                  onclick={() => setPassageDeleted(passage, !passage.deleted)}
+                  >{passage.deleted
+                    ? 'Restore passage'
+                    : 'Delete passage'}</button
+                >
+              </div>
+              {#if passage.deleted}<p class="muted text-sm">
+                  Deleted in this draft. Restore it here or use Undo.
+                </p>{:else}
+                <div class="mb-3 grid gap-3 sm:grid-cols-3">
+                  <label class="text-xs"
+                    >Spoken start (ms)<input
+                      type="number"
+                      min="0"
+                      bind:value={passage.start_ms}
+                      onfocus={checkpoint}
+                      onbeforeinput={checkpoint}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                    /></label
+                  >
+                  <label class="text-xs"
+                    >Spoken end (ms)<input
+                      type="number"
+                      min="1"
+                      bind:value={passage.end_ms}
+                      onfocus={checkpoint}
+                      onbeforeinput={checkpoint}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                    /></label
+                  >
+                  <label class="text-xs"
+                    >Speaker<input
+                      bind:value={passage.speaker}
+                      onfocus={checkpoint}
+                      onbeforeinput={checkpoint}
+                      class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                    /></label
+                  >
+                </div>
+                <label class="text-xs"
+                  >Spoken text<textarea
+                    rows="3"
+                    bind:value={passage.text}
+                    onfocus={checkpoint}
+                    onbeforeinput={checkpoint}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                  ></textarea></label
+                >
+                <label class="mt-2 flex items-center gap-2 text-xs"
+                  ><input
+                    type="checkbox"
+                    bind:checked={passage.starts_new_turn}
+                    onchange={checkpoint}
+                  /> Start a new utterance here</label
+                >
+                <label class="mt-3 block text-xs"
+                  >Review note<textarea
+                    rows="2"
+                    bind:value={passage.review_note}
+                    onfocus={checkpoint}
+                    onbeforeinput={checkpoint}
+                    class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent p-2"
+                  ></textarea></label
+                >
+                <label class="mt-2 flex items-center gap-2 text-xs"
+                  ><input
+                    type="checkbox"
+                    checked={passage.review_state === 'uncertain'}
+                    onchange={(event) => {
+                      checkpoint();
+                      passage.review_state = event.currentTarget.checked
+                        ? 'uncertain'
+                        : 'clear';
+                    }}
+                  /> Needs another check</label
+                >
+              {/if}
+            </section>
+          {/each}
         </div>
       {:else if !visibleRows.length}<div class="grid h-full place-items-center">
           <p class="muted">No comparable subtitle rows are available.</p>
@@ -1192,10 +1718,49 @@
                                 class="muted mb-2 flex items-center gap-2 text-xs"
                                 ><input
                                   type="checkbox"
+                                  onchange={checkpoint}
                                   bind:checked={item.starts_new_turn}
+                                  disabled={!canEdit(
+                                    item,
+                                    'start_new_utterance'
+                                  )}
                                 /> Start a new utterance here</label
                               >{/if}
-                            {#if speakerLabel(item.speaker)}<div class="mb-2">
+                            {#if column.artifact_id === editArtifactId && item.edit_capabilities?.reason}
+                              <p class="muted mb-2 text-xs" role="note">
+                                {item.edit_capabilities.reason}
+                              </p>
+                              <details class="muted mb-2 text-xs">
+                                <summary class="cursor-pointer"
+                                  >Spoken passage context</summary
+                                >
+                                {#each item.owned_passages ?? [] as passage (passage.id)}
+                                  <p class="mt-2 whitespace-pre-wrap">
+                                    <strong
+                                      >{speakerLabel(passage.speaker) ||
+                                        'Unassigned speaker'}</strong
+                                    >
+                                    · {passage.start_ms}–{passage.end_ms} ms<br
+                                    />{passage.text}
+                                  </p>
+                                {/each}
+                              </details>
+                            {/if}
+                            {#if column.artifact_id === editArtifactId && canEdit(item, 'speaker')}
+                              <label class="muted mb-2 block text-xs"
+                                >Speaker
+                                <input
+                                  type="text"
+                                  onfocus={checkpoint}
+                                  onbeforeinput={checkpoint}
+                                  bind:value={item.speaker}
+                                  placeholder="Unassigned"
+                                  class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
+                                />
+                              </label>
+                            {:else if speakerLabel(item.speaker)}<div
+                                class="mb-2"
+                              >
                                 <span
                                   class="inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.65rem] font-semibold text-[var(--muted)]"
                                   >{speakerLabel(item.speaker)}</span
@@ -1207,18 +1772,28 @@
                                 <label class="muted text-[.68rem]"
                                   >Start ms<input
                                     type="number"
+                                    onfocus={checkpoint}
+                                    onbeforeinput={checkpoint}
+                                    disabled={!canEdit(item, 'display_timing')}
                                     bind:value={item.start_ms}
                                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
                                   /></label
                                 ><label class="muted text-[.68rem]"
                                   >End ms<input
                                     type="number"
+                                    onfocus={checkpoint}
+                                    onbeforeinput={checkpoint}
+                                    disabled={!canEdit(item, 'display_timing')}
                                     bind:value={item.end_ms}
                                     class="mt-1 w-full rounded-lg border border-[var(--line)] bg-transparent px-2 py-1"
                                   /></label
                                 >
                               </div>
                               <textarea
+                                onfocus={checkpoint}
+                                onbeforeinput={checkpoint}
+                                readonly={!canEdit(item, 'text')}
+                                aria-label="Subtitle text"
                                 bind:value={item.text}
                                 data-subtitle-search-index={searchIndex(item)}
                                 rows="3"
@@ -1237,7 +1812,12 @@
                                   ><Play size={13} /> Play</button
                                 ><button
                                   onclick={() => inspectSplit(item)}
-                                  disabled={!item.id || splitLoading}
+                                  disabled={!item.id ||
+                                    splitLoading ||
+                                    !canEdit(item, 'split')}
+                                  title={canEdit(item, 'split')
+                                    ? 'Choose a verified word boundary'
+                                    : item.edit_capabilities?.reason}
                                   class="flex items-center gap-1 rounded-lg border border-[var(--line)] px-2 py-1 text-xs"
                                   ><Scissors size={13} /> Split</button
                                 ><button
@@ -1248,6 +1828,8 @@
                                   ><Merge size={13} /> Merge next</button
                                 ><button
                                   onclick={() => removeSegment(item)}
+                                  disabled={!canEdit(item, 'delete')}
+                                  title={item.edit_capabilities?.reason}
                                   class="flex items-center gap-1 rounded-lg border border-red-400/40 px-2 py-1 text-xs text-red-500"
                                   ><Trash2 size={13} /> Delete</button
                                 >
@@ -1298,15 +1880,16 @@
         </table>
       {/if}
     </div>
-    {#if !loading && visibleRows.length > PAGE_SIZE}<nav
+    {#if !loading && (editMode === 'passages' ? passages.length : visibleRows.length) > PAGE_SIZE}<nav
         class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs sm:px-7"
         aria-label="Subtitle review pages"
       >
         <span class="muted tabular-nums"
           >Showing {pageStart + 1}–{Math.min(
             pageStart + PAGE_SIZE,
-            visibleRows.length
-          )} of {visibleRows.length} rows</span
+            editMode === 'passages' ? passages.length : visibleRows.length
+          )} of {editMode === 'passages' ? passages.length : visibleRows.length}
+          {editMode === 'passages' ? 'passages' : 'rows'}</span
         >
         <div class="flex items-center gap-2">
           <button

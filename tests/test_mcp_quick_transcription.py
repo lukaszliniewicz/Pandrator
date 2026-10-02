@@ -203,6 +203,8 @@ class QuickTranscriptionToolTests(unittest.TestCase):
                     ),
                     idempotency_key="transcribe:local",
                     wait_seconds=7,
+                    qwen_asr_model="qwen3_asr_1_7b",
+                    transcription_vocal_isolation="htdemucs",
                 ),
             )
             inline_application = _Application(chunk_size=4)
@@ -215,6 +217,8 @@ class QuickTranscriptionToolTests(unittest.TestCase):
                     ),
                     idempotency_key="transcribe:inline",
                     wait_seconds=7,
+                    qwen_asr_model="qwen3_asr_1_7b",
+                    transcription_vocal_isolation="htdemucs",
                 ),
             )
 
@@ -229,6 +233,76 @@ class QuickTranscriptionToolTests(unittest.TestCase):
         )
         self.assertEqual("queued", local.result["status"])
         self.assertEqual("queued", inline.result["status"])
+        self.assertEqual(
+            ("qwen3_asr_1_7b", "htdemucs"),
+            (
+                local_application.calls[0][1]["qwen_asr_model"],
+                local_application.calls[0][1]["transcription_vocal_isolation"],
+            ),
+        )
+        self.assertEqual(
+            ("qwen3_asr_1_7b", "htdemucs"),
+            (
+                inline_application.calls[0][1]["qwen_asr_model"],
+                inline_application.calls[0][1]["transcription_vocal_isolation"],
+            ),
+        )
+
+    def test_transcription_options_are_bounded_and_canonical(self):
+        with self.assertRaises(ValidationError):
+            TranscribeInput(
+                source=Base64TranscriptionSource(
+                    data=base64.b64encode(b"audio").decode("ascii"),
+                    filename="clip.wav",
+                ),
+                qwen_asr_model="qwen3_asr_9_9b",
+                idempotency_key="transcribe:bad-model",
+            )
+
+        with self.assertRaises(ValidationError):
+            TranscribeInput(
+                source=Base64TranscriptionSource(
+                    data=base64.b64encode(b"audio").decode("ascii"),
+                    filename="clip.wav",
+                ),
+                transcription_vocal_isolation="demucs",
+                idempotency_key="transcribe:bad-isolation",
+            )
+
+    def test_application_client_forwards_options_and_omits_legacy_none(self):
+        with_options = _client_with_response(_Response(payload={}))
+        with_options.initialize_transcription(
+            filename="clip.wav",
+            size_bytes=5,
+            sha256="a" * 64,
+            format="txt",
+            language="auto",
+            engine="qwen3",
+            model_quantization=None,
+            compute_backend="cpu",
+            idempotency_key="transcribe:options",
+            qwen_asr_model="qwen3_asr_1_7b",
+            transcription_vocal_isolation="htdemucs",
+        )
+        body = json.loads(with_options.session.calls[0]["data"])
+        self.assertEqual("qwen3_asr_1_7b", body["qwen_asr_model"])
+        self.assertEqual("htdemucs", body["transcription_vocal_isolation"])
+
+        legacy = _client_with_response(_Response(payload={}))
+        legacy.initialize_transcription(
+            filename="clip.wav",
+            size_bytes=5,
+            sha256="a" * 64,
+            format="txt",
+            language="auto",
+            engine=None,
+            model_quantization=None,
+            compute_backend=None,
+            idempotency_key="transcribe:legacy",
+        )
+        legacy_body = json.loads(legacy.session.calls[0]["data"])
+        self.assertNotIn("qwen_asr_model", legacy_body)
+        self.assertNotIn("transcription_vocal_isolation", legacy_body)
 
     def test_resume_starts_at_backend_next_chunk_index(self):
         content = b"0123456789"

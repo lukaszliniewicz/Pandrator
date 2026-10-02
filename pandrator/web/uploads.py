@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import math
+import mimetypes
 import os
+import re
 import shutil
+import stat
 import threading
 import uuid
+from dataclasses import replace
 from datetime import UTC, timedelta
 from pathlib import Path
 from typing import BinaryIO
@@ -22,10 +26,41 @@ from .artifacts import ArtifactService
 from .database import Database
 from .models import SessionRecord, UploadSessionRecord, utcnow
 from .source_library import SourceLibraryService
+from .upload_activity import UploadBusy, upload_activity
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 MAX_CHUNK_SIZE = 16 * 1024 * 1024
 DEFAULT_MAX_UPLOAD_SIZE = 100 * 1024 * 1024 * 1024
+
+
+def managed_upload_directory(paths: DataPaths, upload_id: str, relative: str) -> Path:
+    """Accept only the upload's canonical directory, without following symlinks."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", upload_id):
+        raise ValueError("Upload ID is not a safe directory name.")
+    directory = paths.temporary / "uploads" / upload_id
+    expected = directory.relative_to(paths.root).as_posix()
+    if relative != expected:
+        raise ValueError("Upload temporary path is not its canonical directory.")
+    current = paths.root
+    for part in Path(relative).parts:
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(mode):
+            raise ValueError("Upload temporary path contains a symlink or non-directory.")
+    return directory
+
+
+def _regular_upload_file(path: Path) -> Path:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return path
+    if not stat.S_ISREG(mode):
+        raise ValueError("Upload contains a symlink or nonregular file.")
+    return path
 
 
 class ChunkUploadService:
@@ -53,7 +88,7 @@ class ChunkUploadService:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_size: int = DEFAULT_MAX_UPLOAD_SIZE,
     ) -> dict:
-        with self.database.session() as session:
+        with self._lock, self.database.immediate_session() as session:
             record = self.initialize_in_session(
                 session,
                 filename=filename,
@@ -93,10 +128,10 @@ class ChunkUploadService:
         ):
             raise ValueError("Expected SHA-256 is invalid.")
         upload_id = str(upload_id or uuid.uuid4())
-        relative = self.paths.relative_managed_path(
-            self.paths.temporary / "uploads" / upload_id
-        )
-        (self.paths.root / relative).mkdir(parents=True, exist_ok=False)
+        self._writable_owner(db_session, session_id)
+        relative = (self.paths.temporary / "uploads" / upload_id).relative_to(self.paths.root).as_posix()
+        directory = managed_upload_directory(self.paths, upload_id, relative)
+        directory.mkdir(parents=True, exist_ok=False)
         record = UploadSessionRecord(
             id=upload_id,
             session_id=session_id,
@@ -110,11 +145,32 @@ class ChunkUploadService:
             temporary_relative_path=relative,
             expires_at=utcnow() + timedelta(hours=24),
         )
-        if session_id and db_session.get(SessionRecord, session_id) is None:
-            shutil.rmtree(self.paths.root / relative, ignore_errors=True)
-            raise KeyError(session_id)
         db_session.add(record)
         db_session.flush()
+        return record
+
+    @staticmethod
+    def _writable_owner(session: Session, session_id: str | None) -> None:
+        if session_id is None:
+            return
+        owner = session.get(SessionRecord, session_id)
+        if owner is None:
+            raise KeyError(session_id)
+        if owner.trashed_at is not None or owner.status in {"trashed", "purging"}:
+            raise ValueError("Upload session is trashed or purging.")
+
+    def _current(self, session: Session, upload_id: str, *, replay: bool = False) -> UploadSessionRecord:
+        record = session.get(UploadSessionRecord, upload_id)
+        if record is None:
+            raise KeyError(upload_id)
+        self._writable_owner(session, record.session_id)
+        if replay and record.state == "completed":
+            return record
+        expires_at = record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if record.state != "open" or expires_at <= utcnow():
+            raise ValueError("Upload is not open.")
         return record
 
     def _record(self, upload_id: str) -> UploadSessionRecord:
@@ -145,6 +201,19 @@ class ChunkUploadService:
             "expires_at": record.expires_at.isoformat(),
         }
 
+    @staticmethod
+    def _same_owner(initial: UploadSessionRecord, current: UploadSessionRecord) -> None:
+        if (current.session_id != initial.session_id
+                or current.temporary_relative_path != initial.temporary_relative_path):
+            raise ValueError("Upload ownership or temporary path changed.")
+
+    def _locked_record(self, initial: UploadSessionRecord, *, replay: bool = False) -> UploadSessionRecord:
+        with self.database.session() as session:
+            current = self._current(session, initial.id, replay=replay)
+            self._same_owner(initial, current)
+            session.expunge(current)
+            return current
+
     def write_chunk(
         self,
         upload_id: str,
@@ -153,186 +222,181 @@ class ChunkUploadService:
         *,
         supplied_hash: str | None = None,
     ) -> dict:
-        with self._lock:
-            record = self._record(upload_id)
-            expires_at = record.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=UTC)
-            if record.state != "open" or expires_at <= utcnow():
-                raise ValueError("Upload is not open.")
+        initial = self._record(upload_id)
+        with upload_activity(self.paths, session_id=initial.session_id, upload_id=upload_id):
+            record = self._locked_record(initial)
             index = int(index)
             if index < 0 or index >= record.chunk_count:
                 raise ValueError("Chunk index is outside the upload.")
             expected_size = (
-                record.chunk_size
-                if index < record.chunk_count - 1
+                record.chunk_size if index < record.chunk_count - 1
                 else record.size_bytes - record.chunk_size * (record.chunk_count - 1)
             )
-            destination = (
-                self.paths.managed_path(record.temporary_relative_path)
-                / f"{index:08d}.part"
-            )
-            temporary = destination.with_suffix(".tmp")
+            directory = managed_upload_directory(self.paths, record.id, record.temporary_relative_path)
+            destination = _regular_upload_file(directory / f"{index:08d}.part")
+            temporary = directory / f"{index:08d}-{uuid.uuid4()}.tmp"
             digest = hashlib.sha256()
             written = 0
-            with temporary.open("wb") as output:
-                while True:
-                    chunk = stream.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    written += len(chunk)
-                    if written > expected_size:
-                        raise ValueError("Chunk is larger than expected.")
-                    output.write(chunk)
-                    digest.update(chunk)
-            if written != expected_size:
+            try:
+                # The potentially slow request stream never holds a SQLite writer.
+                with temporary.open("xb") as output:
+                    while chunk := stream.read(1024 * 1024):
+                        written += len(chunk)
+                        if written > expected_size:
+                            raise ValueError("Chunk is larger than expected.")
+                        output.write(chunk)
+                        digest.update(chunk)
+                if written != expected_size:
+                    raise ValueError(f"Chunk size mismatch: expected {expected_size}, received {written}.")
+                actual_hash = digest.hexdigest()
+                if supplied_hash and supplied_hash.lower() != actual_hash:
+                    raise ValueError("Chunk SHA-256 mismatch.")
+                with self.database.immediate_session() as session:
+                    current = self._current(session, upload_id)
+                    self._same_owner(record, current)
+                    managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
+                    _regular_upload_file(destination)
+                    os.replace(temporary, destination)
+                    received = dict(current.received_json or {})
+                    received[str(index)] = actual_hash
+                    current.received_json = received
+                    current.updated_at = utcnow()
+                return {"index": index, "size_bytes": written, "sha256": actual_hash}
+            finally:
                 temporary.unlink(missing_ok=True)
-                raise ValueError(
-                    f"Chunk size mismatch: expected {expected_size}, received {written}."
-                )
-            actual_hash = digest.hexdigest()
-            if supplied_hash and supplied_hash.lower() != actual_hash:
-                temporary.unlink(missing_ok=True)
-                raise ValueError("Chunk SHA-256 mismatch.")
-            os.replace(temporary, destination)
-            with self.database.session() as session:
-                current = session.get(UploadSessionRecord, upload_id)
-                received = dict(current.received_json or {})
-                received[str(index)] = actual_hash
-                current.received_json = received
-                current.updated_at = utcnow()
-            return {"index": index, "size_bytes": written, "sha256": actual_hash}
 
     def complete(self, upload_id: str) -> dict:
-        with self._lock:
-            record = self._record(upload_id)
+        initial = self._record(upload_id)
+        with upload_activity(self.paths, session_id=initial.session_id, upload_id=upload_id):
+            record = self._locked_record(initial, replay=True)
             if record.state == "completed":
                 if record.result_json:
                     return dict(record.result_json)
                 raise ValueError("The completed upload has no replayable result.")
             received = record.received_json or {}
-            missing = [
-                index
-                for index in range(record.chunk_count)
-                if str(index) not in received
-            ]
+            missing = [index for index in range(record.chunk_count) if str(index) not in received]
             if missing:
-                raise ValueError(
-                    f"Upload is incomplete; missing {len(missing)} chunk(s)."
-                )
-            directory = self.paths.managed_path(record.temporary_relative_path)
-            assembled = directory / "assembled.part"
-            assembled.unlink(missing_ok=True)
+                raise ValueError(f"Upload is incomplete; missing {len(missing)} chunk(s).")
+            directory = managed_upload_directory(self.paths, record.id, record.temporary_relative_path)
+            assembled = directory / f"assembled-{uuid.uuid4()}.part"
+            destination = self.paths.uploads / f"{uuid.uuid4()}-{record.filename}"
             digest = hashlib.sha256()
             size = 0
-            with assembled.open("xb") as output:
-                for index in range(record.chunk_count):
-                    part = directory / f"{index:08d}.part"
-                    with part.open("rb") as source:
-                        while chunk := source.read(1024 * 1024):
-                            output.write(chunk)
-                            digest.update(chunk)
-                            size += len(chunk)
-            actual_hash = digest.hexdigest()
-            if size != record.size_bytes:
-                assembled.unlink(missing_ok=True)
-                raise ValueError(
-                    "Assembled upload size does not match the declared size."
-                )
-            if record.expected_hash and record.expected_hash != actual_hash:
-                assembled.unlink(missing_ok=True)
-                raise ValueError("Assembled upload SHA-256 mismatch.")
-            destination = self.paths.uploads / f"{uuid.uuid4()}-{record.filename}"
-            os.replace(assembled, destination)
-            prepared = self.artifacts.prepare_registration(
-                destination,
-                calculate_hash=False,
-            )
             try:
+                with assembled.open("xb") as output:
+                    for index in range(record.chunk_count):
+                        part = _regular_upload_file(directory / f"{index:08d}.part")
+                        with part.open("rb") as source:
+                            while chunk := source.read(1024 * 1024):
+                                output.write(chunk)
+                                digest.update(chunk)
+                                size += len(chunk)
+                actual_hash = digest.hexdigest()
+                if size != record.size_bytes:
+                    raise ValueError("Assembled upload size does not match the declared size.")
+                if record.expected_hash and record.expected_hash != actual_hash:
+                    raise ValueError("Assembled upload SHA-256 mismatch.")
+                prepared = replace(
+                    self.artifacts.prepare_registration(assembled, calculate_hash=False),
+                    relative_path=destination.relative_to(self.paths.root).as_posix(),
+                    mime_type=mimetypes.guess_type(destination.name)[0],
+                )
                 with self.database.immediate_session() as session:
-                    current = session.get(UploadSessionRecord, upload_id)
-                    if current is None:
-                        raise KeyError(upload_id)
-                    if current.state == "completed" and current.result_json:
-                        destination.unlink(missing_ok=True)
-                        return dict(current.result_json)
+                    current = self._current(session, upload_id)
+                    self._same_owner(record, current)
+                    managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
+                    os.replace(assembled, destination)
                     artifact = self.artifacts.register_in_session(
-                        session,
-                        destination,
-                        kind="source",
-                        role="upload",
-                        session_id=record.session_id,
-                        calculate_hash=False,
-                        metadata={
-                            "original_filename": record.filename,
-                            "upload_id": record.id,
-                        },
+                        session, destination, kind="source", role="upload",
+                        session_id=current.session_id, calculate_hash=False,
+                        metadata={"original_filename": current.filename, "upload_id": current.id},
                         _prepared=prepared,
                     )
                     artifact.content_hash = actual_hash
                     asset = self.sources.ensure_for_artifact_in_session(
-                        session,
-                        artifact.id,
-                        display_name=record.filename,
-                        kind=(
-                            Path(record.filename).suffix.lower().lstrip(".") or "file"
-                        ),
+                        session, artifact.id, display_name=current.filename,
+                        kind=Path(current.filename).suffix.lower().lstrip(".") or "file",
                     )
                     attachment = (
-                        self.sources.attach(
-                            record.session_id,
-                            asset.id,
-                            db_session=session,
-                        )
-                        if record.session_id
-                        else None
+                        self.sources.attach(current.session_id, asset.id, db_session=session)
+                        if current.session_id else None
                     )
                     result = {
-                        "upload_id": upload_id,
-                        "artifact_id": artifact.id,
-                        "source_asset_id": asset.id,
-                        "attachment": attachment,
-                        "filename": record.filename,
-                        "size_bytes": size,
-                        "sha256": actual_hash,
+                        "upload_id": upload_id, "artifact_id": artifact.id,
+                        "source_asset_id": asset.id, "attachment": attachment,
+                        "filename": current.filename, "size_bytes": size, "sha256": actual_hash,
                     }
                     current.state = "completed"
                     current.result_json = result
                     current.updated_at = utcnow()
             except Exception:
+                # Both candidates belong to this attempt; original chunks survive.
+                assembled.unlink(missing_ok=True)
                 destination.unlink(missing_ok=True)
                 raise
+            # Registration has committed. Cleanup failures must preserve its artifact.
+            with self.database.session() as session:
+                current = session.get(UploadSessionRecord, upload_id)
+                if current is None or current.state != "completed":
+                    return result
+                self._same_owner(record, current)
+                try:
+                    self._writable_owner(session, current.session_id)
+                except (KeyError, ValueError):
+                    return result
+                directory = managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
             shutil.rmtree(directory, ignore_errors=True)
             return result
 
     def cancel(self, upload_id: str) -> None:
-        with self._lock:
-            record = self._record(upload_id)
-            with self.database.session() as session:
-                current = session.get(UploadSessionRecord, upload_id)
+        initial = self._record(upload_id)
+        with upload_activity(self.paths, session_id=initial.session_id, upload_id=upload_id):
+            record = self._locked_record(initial)
+            directory = managed_upload_directory(self.paths, record.id, record.temporary_relative_path)
+            if directory.exists():
+                shutil.rmtree(directory)
+            with self.database.immediate_session() as session:
+                current = self._current(session, upload_id)
+                self._same_owner(record, current)
                 current.state = "canceled"
                 current.updated_at = utcnow()
-            shutil.rmtree(
-                self.paths.managed_path(record.temporary_relative_path),
-                ignore_errors=True,
-            )
 
     def cleanup_expired(self) -> int:
         removed = 0
         with self.database.session() as session:
-            records = list(
-                session.scalars(
-                    select(UploadSessionRecord).where(
-                        UploadSessionRecord.expires_at <= utcnow(),
-                        UploadSessionRecord.state == "open",
-                    )
-                ).all()
-            )
-            paths = [record.temporary_relative_path for record in records]
-            for record in records:
-                record.state = "expired"
-                record.updated_at = utcnow()
-                removed += 1
-        for relative in paths:
-            shutil.rmtree(self.paths.managed_path(relative), ignore_errors=True)
+            identifiers = list(session.scalars(select(UploadSessionRecord.id).where(
+                UploadSessionRecord.expires_at <= utcnow(), UploadSessionRecord.state == "open",
+            )).all())
+        for identifier in identifiers:
+            try:
+                initial = self._record(identifier)
+                with upload_activity(self.paths, session_id=initial.session_id, upload_id=identifier):
+                    with self.database.session() as session:
+                        current = session.get(UploadSessionRecord, identifier)
+                        if current is None or current.state != "open":
+                            continue
+                        self._same_owner(initial, current)
+                        self._writable_owner(session, current.session_id)
+                        expires_at = current.expires_at
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(tzinfo=UTC)
+                        if expires_at > utcnow():
+                            continue
+                        directory = managed_upload_directory(self.paths, current.id, current.temporary_relative_path)
+                    if directory.exists():
+                        shutil.rmtree(directory)
+                    with self.database.immediate_session() as session:
+                        current = session.get(UploadSessionRecord, identifier)
+                        if current is None or current.state != "open":
+                            continue
+                        self._same_owner(initial, current)
+                        self._writable_owner(session, current.session_id)
+                        current.state = "expired"
+                        current.updated_at = utcnow()
+                    removed += 1
+            except (KeyError, UploadBusy):
+                continue
+            except ValueError:
+                # Trashed owners remain retryable through their purge journal.
+                continue
         return removed

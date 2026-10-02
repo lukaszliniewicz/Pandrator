@@ -11,6 +11,8 @@ from .generation_control_openapi import (
 )
 from .identity import ApplicationIdentityDocument
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
+from .project_export_bundle_routes import PROJECT_EXPORT_BUNDLE_SCHEMAS, project_export_bundle_paths
+from .project_operation_routes import PROJECT_OPERATION_SCHEMAS, project_operation_paths
 from .quick_transcription_openapi import transcription_paths
 from .quick_transcription_schemas import (
     TranscriptionCreate,
@@ -41,6 +43,8 @@ def build_openapi_document() -> dict:
         **WORKFLOW_IMPROVEMENT_SCHEMAS,
         **FLOW_SCHEMAS,
         **PROJECT_SCHEMAS,
+        **PROJECT_OPERATION_SCHEMAS,
+        **PROJECT_EXPORT_BUNDLE_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
         **AUDIOBOOK_SCHEMAS,
@@ -1154,6 +1158,18 @@ def build_openapi_document() -> dict:
                         "201": {"description": "Reviewed revision"},
                         "409": {"description": "Revision conflict"},
                     },
+                }
+            },
+            "/api/v1/sessions/{sessionId}/subtitles/{stage}/passage-review": {
+                "post": {
+                    "operationId": "saveSubtitlePassageReview",
+                    "requestBody": {"required": True, "content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/SubtitlePassageReviewRequest"}
+                    }}},
+                    "responses": {"201": {"description": "Canonical spoken passages saved and display cues recomposed"},
+                                  "409": {"description": "Source, composition settings or revision conflict"},
+                                  "422": {"description": "Invalid passage edit"}},
+                    "security": [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.write"]}],
                 }
             },
             "/api/v1/sessions/{sessionId}/subtitles/catalog": {
@@ -3016,6 +3032,15 @@ def build_openapi_document() -> dict:
                     },
                 }
             },
+            "/api/v1/artifacts/{artifactId}/video-preview": {
+                "get": {
+                    "operationId": "getArtifactVideoPreview",
+                    "responses": {"200": {"description": "Cached compatible video preview"},
+                                  "202": {"description": "Durable preview job queued or running"},
+                                  "422": {"description": "Source cannot produce a bounded video preview; audio fallback is available"}},
+                    "security": [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read"]}],
+                }
+            },
             "/api/v1/artifacts/{artifactId}/context": {
                 "get": operation(
                     "getArtifactContext",
@@ -3230,6 +3255,7 @@ def build_openapi_document() -> dict:
     # need one and every client benefits from safe retry semantics.
     for path, method in (
         ("/api/v1/sessions/{sessionId}/subtitles/{stage}/review", "post"),
+        ("/api/v1/sessions/{sessionId}/subtitles/{stage}/passage-review", "post"),
         ("/api/v1/sessions/{sessionId}/subtitle-evidence", "post"),
         (
             "/api/v1/sessions/{sessionId}/subtitle-evidence/{evidenceId}/resolve",
@@ -3555,6 +3581,8 @@ def build_openapi_document() -> dict:
     paths.update(repair_batch_paths())
     paths.update(session_flow_paths())
     paths.update(translation_project_paths())
+    paths.update(project_operation_paths())
+    paths.update(project_export_bundle_paths())
     paths.update(performance_paths())
     paths.update(session_purge_paths())
     paths.update(generation_control_paths())

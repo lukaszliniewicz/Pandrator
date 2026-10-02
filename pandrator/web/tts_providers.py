@@ -14,6 +14,7 @@ import requests
 from sqlalchemy import select
 
 from pandrator.logic import tts_handler
+from pandrator.logic.tts_language_support import tts_language_support
 from pandrator.logic.tts_provider_policy import (
     DEFAULT_TTS_SERVICE_ID,
     provider_policy,
@@ -168,16 +169,60 @@ class TtsCatalogueModelNotFoundError(ValueError):
         self.model_ids = missing
 
 
-# Lightweight per-model fields for the compact slim model_catalog entries.
-# Scalar or short language-list values only; never nested detail dicts.
+# Lightweight per-model fields for compact chooser rows. The language support
+# object is explicitly projected below; other nested detail remains excluded.
 SLIM_MODEL_CATALOG_FIELDS = (
     "id",
     "label",
     "family",
     "voice_mode",
     "supported_languages",
-    "languages",
+    "language_support",
 )
+
+SLIM_LANGUAGE_SUPPORT_FIELDS = (
+    "schema_version",
+    "catalogue_revision",
+    "provider_id",
+    "service_id",
+    "model_id",
+    "model_revision",
+    "operation",
+    "native_route",
+    "coverage",
+    "languages",
+    "request_aliases",
+    "runtime_requirement",
+    "discovery",
+    "note",
+    "source_key",
+    "source_revision",
+    "source_ids",
+)
+_SENSITIVE_SUPPORT_TEXT_MARKERS = (
+    "api_key",
+    "api key",
+    "base_url",
+    "credential",
+    "endpoint",
+    "password",
+    "secret",
+    "token",
+    "http://",
+    "https://",
+)
+
+_NATIVE_LANGUAGE_PROVIDER_BY_ADAPTER = {
+    "audio_cpp": "audio_cpp",
+    "silero": "silero",
+    "elevenlabs_native": "elevenlabs",
+    "azure_speech": "azure",
+}
+_LIVE_LANGUAGE_NATIVE_ROUTES = {
+    "silero": "silero_audio_speech",
+    "elevenlabs": "elevenlabs_text_to_speech",
+}
+_VERIFIED_LIVE_LANGUAGE_ROW = "_pandrator_verified_live_language_catalog"
 
 MAX_TTS_DETAIL_MODEL_IDS = 20
 
@@ -186,8 +231,8 @@ def _slim_model_catalog(service: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Build chooser-grade model entries covering every selectable model id.
 
     Same precedence as the full builder (configured/discovered record wins
-    over static builtins), restricted to scalar or short language-list
-    fields: the service's own model_catalog rows overlay the audio.cpp
+    over static builtins), restricted to chooser scalars, language lists, and
+    the portable language-support projection: service model rows overlay the audio.cpp
     builtin index, so custom labels, language options and voice modes can
     never silently differ from the full view. Non-audio.cpp and custom
     providers keep whatever scalar metadata their own records carry. The
@@ -247,13 +292,216 @@ def _slim_model_fields(item: Mapping[str, Any]) -> dict[str, Any]:
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             fields[key] = value.strip()
-    for key in ("supported_languages", "languages"):
+    for key in ("supported_languages",):
         value = item.get(key)
         if isinstance(value, list):
-            fields[key] = [entry for entry in value if str(entry).strip()]
+            fields[key] = [
+                entry
+                for entry in value
+                if isinstance(entry, str) and entry.strip()
+            ]
+    language_support = item.get("language_support")
+    if isinstance(language_support, Mapping):
+        slim_support: dict[str, Any] = {}
+        for key in SLIM_LANGUAGE_SUPPORT_FIELDS:
+            if key in {"languages", "request_aliases", "source_ids"}:
+                continue
+            value = language_support.get(key)
+            if value is None and key == "source_revision":
+                slim_support[key] = None
+            elif key == "schema_version" and isinstance(value, int) and not isinstance(
+                value, bool
+            ):
+                slim_support[key] = value
+            elif isinstance(value, str) and _safe_support_text(value):
+                slim_support[key] = value.strip()
+        languages = language_support.get("languages")
+        if isinstance(languages, list):
+            slim_support["languages"] = [
+                value for value in languages if _safe_support_text(value)
+            ]
+        aliases = language_support.get("request_aliases")
+        if isinstance(aliases, Mapping):
+            slim_support["request_aliases"] = {
+                key: value
+                for key, value in aliases.items()
+                if isinstance(key, str)
+                and key.strip()
+                and isinstance(value, str)
+                and value.strip()
+                and _safe_support_text(key)
+                and _safe_support_text(value)
+            }
+        source_ids = language_support.get("source_ids")
+        if isinstance(source_ids, list):
+            slim_support["source_ids"] = [
+                value for value in source_ids if _safe_support_text(value)
+            ]
+        fields["language_support"] = slim_support
+        fields["supported_languages"] = list(slim_support.get("languages", []))
     model_id = str(item.get("id") or "").strip()
     fields["id"] = model_id
     return fields
+
+
+def _safe_support_text(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and not any(
+            marker in value.casefold() for marker in _SENSITIVE_SUPPORT_TEXT_MARKERS
+        )
+    )
+
+
+def _language_provider_id(service: Mapping[str, Any]) -> tuple[str, str]:
+    """Return the model-evidence provider id and canonical service id.
+
+    Provider labels on arbitrary compatible profiles are descriptive, not
+    proof that their models use the named provider's native API. Only a
+    documented native adapter may bind a distinct provider id.
+    """
+    service_id = normalize_service_id(service.get("id") or service.get("name"))
+    adapter_id = normalize_service_id(service.get("adapter"))
+    provider_id = _NATIVE_LANGUAGE_PROVIDER_BY_ADAPTER.get(adapter_id)
+    declared_provider = normalize_service_id(service.get("provider"))
+    if provider_id and declared_provider == provider_id:
+        return provider_id, service_id
+    return service_id, service_id
+
+
+def _model_language_metadata(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep model evidence while excluding service/voice data from inference."""
+    return {
+        key: value
+        for key, value in item.items()
+        if key not in {"voice_metadata", "voice_catalogues", "voices"}
+    }
+
+
+def _decorate_model_language_support(service: dict[str, Any]) -> None:
+    """Attach model-specific language support to every selectable model row."""
+    provider_id, service_id = _language_provider_id(service)
+    adapter_id = normalize_service_id(service.get("adapter"))
+    audio_cpp_support = {
+        str(item.get("id") or "").strip(): item.get("language_support")
+        for item in AUDIO_CPP_MODEL_CATALOG
+        if str(item.get("id") or "").strip()
+    } if adapter_id == "audio_cpp" else {}
+    catalog = service.get("model_catalog")
+    rows = catalog if isinstance(catalog, list) else []
+    rows_by_id: dict[str, list[dict[str, Any]]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if model_id:
+            rows_by_id.setdefault(model_id, []).append(item)
+
+    model_values = service.get("models")
+    model_ids = _dedupe_catalogue_values(
+        [
+            *(model_values if isinstance(model_values, list) else []),
+            service.get("default_model"),
+            *rows_by_id,
+        ]
+    )
+    for model_id in model_ids:
+        model_rows = rows_by_id.get(model_id)
+        if not model_rows:
+            item: dict[str, Any] = {"id": model_id}
+            rows.append(item)
+            model_rows = [item]
+            rows_by_id[model_id] = model_rows
+        for item in model_rows:
+            verified_live_row = item.pop(_VERIFIED_LIVE_LANGUAGE_ROW, False) is True
+            existing_support = item.get("language_support")
+            if not isinstance(existing_support, Mapping) and adapter_id == "audio_cpp":
+                existing_support = audio_cpp_support.get(model_id)
+            if (
+                isinstance(existing_support, Mapping)
+                and existing_support.get("provider_id") == provider_id
+                and existing_support.get("model_id") == model_id
+            ):
+                support = dict(existing_support)
+                languages = support.get("languages")
+                supported_languages = (
+                    [value for value in languages if isinstance(value, str)]
+                    if isinstance(languages, list)
+                    else []
+                )
+            else:
+                metadata = _model_language_metadata(item)
+                # Raw configured catalogue metadata cannot assert provider-live
+                # authority. Only rows marked by the successful native fetch
+                # loops below can take the live path.
+                for key in ("discovery", "language_coverage", "native_route"):
+                    metadata.pop(key, None)
+                discovery = "provider_live" if verified_live_row else "static"
+                native_route = (
+                    _LIVE_LANGUAGE_NATIVE_ROUTES.get(provider_id, "")
+                    if verified_live_row
+                    else ""
+                )
+                if verified_live_row:
+                    metadata["language_coverage"] = "exact"
+                result = tts_language_support(
+                    provider_id,
+                    model_id,
+                    adapter=adapter_id,
+                    metadata=metadata,
+                    operation="tts",
+                    native_route=native_route,
+                    discovery=discovery,
+                )
+                support = dict(result)
+                languages = support.get("languages")
+                supported_languages = (
+                    [value for value in languages if isinstance(value, str)]
+                    if isinstance(languages, list)
+                    else []
+                )
+            if provider_id != service_id:
+                support["service_id"] = service_id
+            item["language_support"] = support
+            item["supported_languages"] = supported_languages
+
+    if catalog is not None or model_ids:
+        service["model_catalog"] = rows
+
+
+def _mark_live_language_catalog(
+    model_catalog: list[dict[str, Any]], *, provider_id: str, native_route: str
+) -> list[dict[str, Any]]:
+    """Mark model rows whose own live catalogue contains authoritative languages."""
+    for item in model_catalog:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            continue
+        raw_languages = item.get("supported_languages")
+        if not isinstance(raw_languages, list) or not raw_languages:
+            raw_languages = item.get("languages")
+        if isinstance(raw_languages, list) and raw_languages:
+            evidence = tts_language_support(
+                provider_id,
+                model_id,
+                metadata={**item, "language_coverage": "exact"},
+                operation="tts",
+                native_route=native_route,
+                discovery="provider_live",
+            )
+            if evidence["coverage"] == "exact" and evidence["languages"]:
+                item.update(
+                    {
+                        "language_coverage": "exact",
+                        "discovery": "provider_live",
+                        "native_route": native_route,
+                        _VERIFIED_LIVE_LANGUAGE_ROW: True,
+                    }
+                )
+    return model_catalog
 
 
 def _filter_service_models(
@@ -1190,7 +1438,11 @@ class SileroAdapter(LegacyTtsAdapter):
     ) -> dict[str, Any]:
         del api_key
         base_url = str(service.get("api_base") or tts_handler.SILERO_API_BASE_URL)
-        model_catalog = tts_handler.get_silero_model_catalog(base_url)
+        model_catalog = _mark_live_language_catalog(
+            tts_handler.get_silero_model_catalog(base_url),
+            provider_id="silero",
+            native_route="silero_audio_speech",
+        )
         installed_models = [
             str(item["id"])
             for item in model_catalog
@@ -1266,6 +1518,11 @@ class ElevenLabsAdapter(LegacyTtsAdapter):
                 base_url,
                 api_key=api_key,
                 strict=True,
+            )
+            model_entries = _mark_live_language_catalog(
+                model_entries,
+                provider_id="elevenlabs",
+                native_route="elevenlabs_text_to_speech",
             )
             voice_entries = tts_handler.get_elevenlabs_voice_catalog(
                 base_url,
@@ -2034,7 +2291,7 @@ class TtsCatalogueService:
         it skips the audio.cpp static model-catalogue merge, the provider
         profile deepcopy and the preview query, slims each service's
         ``model_catalog`` to chooser-grade entries (id/label/family/
-        voice_mode/supported_languages) while keeping ``voice_metadata``
+        voice_mode/supported_languages/language_support) while keeping ``voice_metadata``
         verbatim, and projects each service onto
         :data:`COMPACT_TTS_SERVICE_FIELDS`. The default ``"full"`` view is
         unchanged for legacy and MCP consumers. ``service_ids`` restricts
@@ -2283,6 +2540,7 @@ class TtsCatalogueService:
                     normalize_service_id(service.get("id") or service.get("name"))
                 )
             )
+            _decorate_model_language_support(service)
         if compact:
             # Slim after refresh so live discovered records feed the chooser
             # with the same record-over-builtin precedence as the full view.

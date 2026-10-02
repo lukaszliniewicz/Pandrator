@@ -290,7 +290,7 @@ by both modern and maintained legacy hosts.
 
 ## Install
 
-The current release is 0.5.0. Use Pandrator 0.10.0 for the complete tool set,
+The current release is 0.6.0. Use Pandrator 0.11.0 for the complete tool set,
 including model-capability discovery, Gemini context setup, ElevenLabs controls,
 voice collections, and guarded speech-selection preview/apply. Older applications
 retain their existing workflows but cannot serve the new routes. Restart or

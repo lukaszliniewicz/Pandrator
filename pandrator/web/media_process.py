@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import re
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable, Sequence
@@ -21,6 +23,10 @@ class MediaProcessCancelled(RuntimeError):
 
 class MediaProcessError(RuntimeError):
     """Raised when FFmpeg or FFprobe cannot complete a media operation."""
+
+
+class MediaProcessTimeout(MediaProcessError):
+    """Raised after a media process exceeds its finite watchdog deadline."""
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,7 @@ def run_media_process(
     cancel_event: threading.Event | None = None,
     capture_stdout: bool = False,
     progress_callback: Callable[[dict[str, str]], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> MediaProcessResult:
     """Run a hidden media process while polling for cooperative cancellation.
 
@@ -106,6 +113,10 @@ def run_media_process(
     stderr remains file-backed in either mode.
     """
 
+    if timeout_seconds is not None:
+        timeout_seconds = float(timeout_seconds)
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Media process timeout must be finite and positive.")
     if cancel_event is not None and cancel_event.is_set():
         raise MediaProcessCancelled("Media processing was canceled.")
     normalized = [os.fspath(value) for value in command]
@@ -143,6 +154,7 @@ def run_media_process(
                     ) from item
                 progress_callback(item)
 
+        deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
         try:
             if progress_callback is not None:
                 if process.stdout is None:
@@ -164,6 +176,10 @@ def run_media_process(
                 progress_reader = reader
             while process.poll() is None:
                 deliver_progress()
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise MediaProcessTimeout(
+                        f"Media processing exceeded its {timeout_seconds:g}-second timeout."
+                    )
                 if cancel_event is not None and cancel_event.wait(0.1):
                     _stop_process(process)
                     raise MediaProcessCancelled("Media processing was canceled.")

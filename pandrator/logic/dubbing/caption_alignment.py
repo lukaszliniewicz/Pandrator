@@ -15,6 +15,7 @@ import tempfile
 import threading
 import wave
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,8 @@ class AlignmentDiagnostics:
     fallback_engine: str = ""
     fallback_filled_cue_count: int = 0
     fallback_filled_token_count: int = 0
+    resolved_language: str = "auto"
+    language_resolution: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +132,8 @@ class AlignmentDiagnostics:
             "fallback_engine": self.fallback_engine,
             "fallback_filled_cue_count": self.fallback_filled_cue_count,
             "fallback_filled_token_count": self.fallback_filled_token_count,
+            "resolved_language": self.resolved_language,
+            "language_resolution": deepcopy(self.language_resolution),
         }
 
 
@@ -140,6 +145,14 @@ class CaptionAlignmentResult:
     normalized_wav_path: str
     vad_path: str | None = None
     diagnostics_path: str | None = None
+
+    @property
+    def resolved_language(self) -> str:
+        return self.diagnostics.resolved_language
+
+    @property
+    def language_resolution(self) -> dict[str, Any]:
+        return deepcopy(self.diagnostics.language_resolution)
 
     @property
     def metrics(self) -> dict[str, Any]:
@@ -689,6 +702,14 @@ def align_caption_cues(
 
     options = normalize_alignment_settings(settings)
     source_text = " ".join(cue.text for cue in cues)
+    declared_language = qwen_alignment.source_language(options, "")
+    resolved_language = qwen_alignment.source_language(options, source_text) or "auto"
+    language_resolution = {
+        "requested_language": str(options.get("original_language") or options.get("source_language") or options.get("stt_language") or options.get("whisper_language") or "auto"),
+        "resolved_language": resolved_language,
+        "source": "explicit" if declared_language else "caption_script_hint" if resolved_language != "auto" else "unresolved",
+        "is_detection_proof": False,
+    }
     qwen = qwen_alignment.uses_qwen(options, source_text)
     if qwen:
         # Freeze script inference once for this track, not independently for
@@ -710,6 +731,8 @@ def align_caption_cues(
         if cue.id not in planned_cue_ids
     )
     diagnostics = AlignmentDiagnostics(
+        resolved_language=resolved_language,
+        language_resolution=language_resolution,
         overlap_cluster_count=len(clusters),
         oversized_cluster_count=0,
         oversized_cue_count=len(oversized_cues),

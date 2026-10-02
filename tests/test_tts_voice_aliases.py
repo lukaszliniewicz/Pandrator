@@ -128,7 +128,9 @@ def test_session_saves_synchronize_aliases_and_preserve_reset(app_case):
     cleared = _put(app_case, url, {"voice": "", "speaker": "old"}, legacy["revision"])
     assert cleared["effective"]["voice"] == cleared["effective"]["speaker"] == ""
     reset = _put(app_case, url, {}, cleared["revision"])
-    assert reset["override"] == {}
+    assert reset["override"] == {"voice_mode_version": 1}
+    assert "voice" not in reset["override"]
+    assert "speaker" not in reset["override"]
 
 
 def test_global_defaults_save_both_aliases(app_case):
@@ -152,7 +154,10 @@ def test_old_saved_layers_are_repaired_on_read_without_rewriting_history(app_cas
             global_row = AppSetting(key="defaults.tts", value_json={})
             db.add(global_row)
         global_row.value_json = {"voice": "global-voice", "speaker": "stale-global"}
-        db.add(SessionSetting(session_id=sid, section="tts", value_json=deepcopy(override), revision=1))
+        historical_row = db.get(SessionSetting, (sid, "tts"))
+        assert historical_row is not None
+        historical_row.value_json = deepcopy(override)
+        historical_row.revision = 1
     response = app_case.client.get(f"/api/v1/sessions/{sid}/settings/tts")
     assert response.status_code == 200
     effective = response.get_json()["effective"]

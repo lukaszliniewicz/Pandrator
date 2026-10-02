@@ -1,0 +1,6752 @@
+{
+  "schema_version": 1,
+  "catalogue_revision": "2026-10-02",
+  "sources": [
+    {
+      "id": "dots_tts_readme",
+      "url": "https://raw.githubusercontent.com/studio-dots-ai/dots.tts/3cb6f94a571097b500038f1619959075282c5c98/README.md",
+      "revision": "3cb6f94a571097b500038f1619959075282c5c98",
+      "retrieved_on": "2026-10-02",
+      "sha256": "e6730c6b1f25112779ad7663c438a58355f13cf8aeecd1e5f070ab8bdd941758"
+    },
+    {
+      "id": "elevenlabs_models",
+      "url": "https://elevenlabs.io/docs/overview/models",
+      "revision": "etag: 7pxvp1ie2gxyr0; retrieved 2026-10-02",
+      "retrieved_on": "2026-10-02",
+      "sha256": "a58c95f2cca337875d7239df38ee734abc97d6d4d3410756a517e781a76316a4"
+    },
+    {
+      "id": "fish_s2_pro_readme",
+      "url": "https://huggingface.co/fishaudio/s2-pro/raw/1de9996b6be38b745688de084d87a5633f714e4e/README.md",
+      "revision": "1de9996b6be38b745688de084d87a5633f714e4e",
+      "retrieved_on": "2026-10-02",
+      "sha256": "3c2d78af0f3991ef6047272d4df18f204b4340e1e5fcc975d0e720d4312c4b29"
+    },
+    {
+      "id": "higgs_v3_tts_readme",
+      "url": "https://huggingface.co/bosonai/higgs-audio-v3-tts-4B/raw/239f63fb7b02b1aa085f98d9efae5e35cc5523e8/README.md",
+      "revision": "239f63fb7b02b1aa085f98d9efae5e35cc5523e8",
+      "retrieved_on": "2026-10-02",
+      "sha256": "021ff7995151f791efb7cd9f19f2b2dd599d20211db1689fc2c763e096b5c6fd"
+    },
+    {
+      "id": "omnivoice_langmap",
+      "url": "https://raw.githubusercontent.com/k2-fsa/OmniVoice/08be0b4ccbac3e13e374e86fbfead4b4cac343e2/docs/lang_id_name_map.tsv",
+      "revision": "08be0b4ccbac3e13e374e86fbfead4b4cac343e2",
+      "retrieved_on": "2026-10-02",
+      "sha256": "fb72b86ec953a7c546d44ea7f56425b25e2848c880d513b349b465866a57bfbd"
+    },
+    {
+      "id": "openai_tts_guide",
+      "url": "https://developers.openai.com/api/docs/guides/text-to-speech",
+      "revision": "last-modified: 2026-10-02T02:55:00Z; etag: 71f871eef15158e086780628f15decf5",
+      "retrieved_on": "2026-10-02",
+      "sha256": "64bbe04f8cf864a6ba9ca7e3c8930f0f5525a73ec422a3a209c65c1cf282133d"
+    },
+    {
+      "id": "pycountry_iso6393",
+      "url": "https://files.pythonhosted.org/packages/9c/42/7703bd45b62fecd44cd7d3495423097e2f7d28bc2e99e7c1af68892ab157/pycountry-26.2.16-py3-none-any.whl",
+      "revision": "pycountry-26.2.16",
+      "retrieved_on": "2026-10-02",
+      "sha256": "115c4baf7cceaa30f59a4694d79483c9167dbce7a9de4d3d571c5f3ea77c305a"
+    },
+    {
+      "id": "silero_fastapi_catalog",
+      "url": "https://raw.githubusercontent.com/lukaszliniewicz/silero-fastapi/cfbdc09453d08d9abde093d31fa2ca1907d86c76/src/silero_fastapi/catalog.py",
+      "revision": "source-checkpoint: cfbdc09453d08d9abde093d31fa2ca1907d86c76",
+      "retrieved_on": "2026-10-02",
+      "sha256": "4989b4c3edb4c86abdaaf66dac9cbb5f1802984fdcf510ee3e284401f5d77e4e"
+    },
+    {
+      "id": "silero_fastapi_readme",
+      "url": "https://raw.githubusercontent.com/lukaszliniewicz/silero-fastapi/cfbdc09453d08d9abde093d31fa2ca1907d86c76/README.md",
+      "revision": "source-checkpoint: cfbdc09453d08d9abde093d31fa2ca1907d86c76",
+      "retrieved_on": "2026-10-02",
+      "sha256": "144bac4d8e907808af52824760cc3b9953717a934706871d8734760def111f26"
+    },
+    {
+      "id": "silero_upstream_models",
+      "url": "https://raw.githubusercontent.com/snakers4/silero-models/d9355348e2781dc8fa25a135d1602c530afae24c/models.yml",
+      "revision": "upstream-checkpoint: d9355348e2781dc8fa25a135d1602c530afae24c",
+      "retrieved_on": "2026-10-02",
+      "sha256": "64ccc436c72fd8c538e1a37de00301cc164a82c3d8ef0356532fe4c662ed1aa7"
+    },
+    {
+      "id": "vertex_gemini_tts",
+      "url": "https://docs.cloud.google.com/text-to-speech/docs/gemini-tts",
+      "revision": "last-modified: 2026-10-01T16:31:22Z",
+      "retrieved_on": "2026-10-02",
+      "sha256": "102023abd68c15157cd8ddaa5cac99b64995009374230c73bd190d9d90392a8c"
+    }
+  ],
+  "languages": [
+    {
+      "tag": "aae",
+      "label": "Arbëreshë Albanian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aal",
+      "label": "Afade",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aao",
+      "label": "Algerian Saharan Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ab",
+      "label": "Abkhazian",
+      "aliases": [
+        "abk"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "abb",
+      "label": "Bankon",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "abn",
+      "label": "Abua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "abr",
+      "label": "Abron",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "abs",
+      "label": "Ambonese Malay",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "abv",
+      "label": "Baharna Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "acm",
+      "label": "Mesopotamian Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "acw",
+      "label": "Hijazi Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "acx",
+      "label": "Omani Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "adf",
+      "label": "Dhofari Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "adx",
+      "label": "Amdo Tibetan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ady",
+      "label": "Adyghe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aeb",
+      "label": "Tunisian Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aec",
+      "label": "Saidi Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "af",
+      "label": "Afrikaans",
+      "aliases": [
+        "afr"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "af-za",
+      "label": "Afrikaans (South Africa)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "afb",
+      "label": "Gulf Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "afo",
+      "label": "Eloyi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ahl",
+      "label": "Igo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ahs",
+      "label": "Ashe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ajg",
+      "label": "Aja (Benin)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aju",
+      "label": "Judeo-Moroccan Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ala",
+      "label": "Alago",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aln",
+      "label": "Gheg Albanian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "alo",
+      "label": "Larike-Wakasihu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "am",
+      "label": "Amharic",
+      "aliases": [
+        "amh"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "am-et",
+      "label": "Amharic (Ethiopia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "amu",
+      "label": "Guerrero Amuzgo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "an",
+      "label": "Aragonese",
+      "aliases": [
+        "arg"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "anc",
+      "label": "Ngas",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ank",
+      "label": "Goemai",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "anp",
+      "label": "Angika",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "anw",
+      "label": "Anaang",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "aom",
+      "label": "Ömie",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "apc",
+      "label": "Levantine Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "apd",
+      "label": "Sudanese Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ar",
+      "label": "Arabic",
+      "aliases": [
+        "ara"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ar-001",
+      "label": "Arabic (World)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ar-ae",
+      "label": "Arabic (UAE)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models"
+      ]
+    },
+    {
+      "tag": "ar-eg",
+      "label": "Arabic (Egypt)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ar-sa",
+      "label": "Arabic (Saudi Arabia)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models"
+      ]
+    },
+    {
+      "tag": "arb",
+      "label": "Standard Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "arq",
+      "label": "Algerian Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ars",
+      "label": "Najdi Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ary",
+      "label": "Moroccan Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "arz",
+      "label": "Egyptian Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "as",
+      "label": "Assamese",
+      "aliases": [
+        "asm"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ast",
+      "label": "Asturian",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "avl",
+      "label": "Eastern Egyptian Bedawi Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "awo",
+      "label": "Awak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ayl",
+      "label": "Libyan Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ayp",
+      "label": "North Mesopotamian Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "az",
+      "label": "Azerbaijani",
+      "aliases": [
+        "aze"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "az-az",
+      "label": "Azerbaijani (Azerbaijan)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ba",
+      "label": "Bashkir",
+      "aliases": [
+        "bak"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "bag",
+      "label": "Tuki",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bas",
+      "label": "Basa (Cameroon)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bax",
+      "label": "Bamun",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bba",
+      "label": "Baatonum",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bbj",
+      "label": "Ghomálá'",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bbl",
+      "label": "Bats",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bbu",
+      "label": "Kulung (Nigeria)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bce",
+      "label": "Bamenyam",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bci",
+      "label": "Baoulé",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bcs",
+      "label": "Kohumono",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bcy",
+      "label": "Bacama",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bda",
+      "label": "Bayot",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bde",
+      "label": "Bade",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bdm",
+      "label": "Buduma",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "be",
+      "label": "Belarusian",
+      "aliases": [
+        "bel"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "be-by",
+      "label": "Belarusian (Belarus)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "beb",
+      "label": "Bebele",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bew",
+      "label": "Betawi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bfd",
+      "label": "Bafut",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bft",
+      "label": "Balti",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bg",
+      "label": "Bulgarian",
+      "aliases": [
+        "bul"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "bg-bg",
+      "label": "Bulgarian (Bulgaria)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "bgp",
+      "label": "Eastern Balochi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bhb",
+      "label": "Bhili",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bhh",
+      "label": "Bukharic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bho",
+      "label": "Bhojpuri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bhp",
+      "label": "Bima",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bhr",
+      "label": "Bara Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bjj",
+      "label": "Kanauji",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bjk",
+      "label": "Barok",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bjn",
+      "label": "Banjar",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bjt",
+      "label": "Balanta-Ganja",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bkh",
+      "label": "Bakoko",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bkm",
+      "label": "Kom (Cameroon)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bky",
+      "label": "Bokyi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bmm",
+      "label": "Northern Betsimisaraka Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bmq",
+      "label": "Bomu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bn",
+      "label": "Bengali",
+      "aliases": [
+        "ben"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "bn-bd",
+      "label": "Bangla (Bangladesh)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "bnm",
+      "label": "Batanga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bnn",
+      "label": "Bunun",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bns",
+      "label": "Bundeli",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bo",
+      "label": "Tibetan",
+      "aliases": [
+        "bod"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bou",
+      "label": "Bondei",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bqg",
+      "label": "Bago-Kusuntu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "br",
+      "label": "Breton",
+      "aliases": [
+        "bre"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bra",
+      "label": "Braj",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "brh",
+      "label": "Brahui",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bri",
+      "label": "Mokpwe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "brx",
+      "label": "Bodo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bs",
+      "label": "Bosnian",
+      "aliases": [
+        "bos"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "bsh",
+      "label": "Kati",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bsj",
+      "label": "Bangwinji",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bsk",
+      "label": "Burushaski",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "btm",
+      "label": "Batak Mandailing",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "btv",
+      "label": "Bateri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bug",
+      "label": "Buginese",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bum",
+      "label": "Bulu (Cameroon)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "buo",
+      "label": "Terei",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bux",
+      "label": "Boghom",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bwr",
+      "label": "Bura-Pabir",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bxf",
+      "label": "Bilur",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "byc",
+      "label": "Ubaghara",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bys",
+      "label": "Burak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "byv",
+      "label": "Medumba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "byx",
+      "label": "Qaqet",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bzc",
+      "label": "Southern Betsimisaraka Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bzw",
+      "label": "Basa (Nigeria)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ca",
+      "label": "Catalan",
+      "aliases": [
+        "cat"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ca-es",
+      "label": "Catalan (Spain)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ccg",
+      "label": "Samba Daka",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ceb",
+      "label": "Cebuano",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ceb-ph",
+      "label": "Cebuano (Philippines)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "cen",
+      "label": "Cen",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cfa",
+      "label": "Dijim-Bwilim",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cgg",
+      "label": "Chiga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "chq",
+      "label": "Quiotepec Chinantec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cjk",
+      "label": "Chokwe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ckb",
+      "label": "Central Kurdish",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ckl",
+      "label": "Cibak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ckr",
+      "label": "Kairak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cky",
+      "label": "Cakfem-Mushere",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cmn-cn",
+      "label": "Chinese, Mandarin (China)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "cmn-tw",
+      "label": "Chinese, Mandarin (Taiwan)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "cnh",
+      "label": "Hakha Chin",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cpy",
+      "label": "South Ucayali Ashéninka",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cs",
+      "label": "Czech",
+      "aliases": [
+        "ces"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "cs-cz",
+      "label": "Czech (Czech Republic)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "cte",
+      "label": "Tepinapa Chinantec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ctl",
+      "label": "Tlacoatzintepec Chinantec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cut",
+      "label": "Teutila Cuicatec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cux",
+      "label": "Tepeuxila Cuicatec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "cv",
+      "label": "Chuvash",
+      "aliases": [
+        "chv"
+      ],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "cy",
+      "label": "Welsh",
+      "aliases": [
+        "cym"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "da",
+      "label": "Danish",
+      "aliases": [
+        "dan"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "da-dk",
+      "label": "Danish (Denmark)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "dag",
+      "label": "Dagbani",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dar",
+      "label": "Dargwa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dav",
+      "label": "Taita",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dbd",
+      "label": "Dadiya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dcc",
+      "label": "Deccan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "de",
+      "label": "German",
+      "aliases": [
+        "deu"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "de-de",
+      "label": "German (Germany)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "deg",
+      "label": "Degema",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dgh",
+      "label": "Dghwede",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dgo",
+      "label": "Dogri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dje",
+      "label": "Zarma",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dmk",
+      "label": "Domaaki",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dml",
+      "label": "Dameli",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dru",
+      "label": "Rukai",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dty",
+      "label": "Dotyali",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dua",
+      "label": "Duala",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dv",
+      "label": "Dhivehi",
+      "aliases": [
+        "div"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dyu",
+      "label": "Dyula",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dzg",
+      "label": "Dazaga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ebr",
+      "label": "Ebrié",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ebu",
+      "label": "Embu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ego",
+      "label": "Eggon",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "eiv",
+      "label": "Askopan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "eko",
+      "label": "Koti",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ekr",
+      "label": "Yace",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "el",
+      "label": "Greek",
+      "aliases": [
+        "ell"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "el-gr",
+      "label": "Greek (Greece)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "elm",
+      "label": "Eleme",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "en",
+      "label": "English",
+      "aliases": [
+        "eng"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "en-au",
+      "label": "English (Australia)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "en-ca",
+      "label": "English (Canada)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models"
+      ]
+    },
+    {
+      "tag": "en-gb",
+      "label": "English (UK)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "en-in",
+      "label": "English (India)",
+      "aliases": [],
+      "source_ids": [
+        "pycountry_iso6393",
+        "silero_fastapi_catalog",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "en-us",
+      "label": "English (USA)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "eo",
+      "label": "Esperanto",
+      "aliases": [
+        "epo"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "es",
+      "label": "Spanish",
+      "aliases": [
+        "spa"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "es-419",
+      "label": "Spanish (Latin America)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "es-es",
+      "label": "Spanish (Spain)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "es-mx",
+      "label": "Spanish (Mexico)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "esu",
+      "label": "Central Yupik",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "et",
+      "label": "Estonian",
+      "aliases": [
+        "est"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "et-ee",
+      "label": "Estonian (Estonia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "eto",
+      "label": "Eton (Cameroon)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ets",
+      "label": "Yekhee",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "etu",
+      "label": "Ejagham",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "eu",
+      "label": "Basque",
+      "aliases": [
+        "eus"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "eu-es",
+      "label": "Basque (Spain)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ewo",
+      "label": "Ewondo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ext",
+      "label": "Extremaduran",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "eyo",
+      "label": "Keiyo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fa",
+      "label": "Persian",
+      "aliases": [
+        "fas"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "fa-ir",
+      "label": "Persian (Iran)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "fan",
+      "label": "Fang (Equatorial Guinea)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fat",
+      "label": "Fanti",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ff",
+      "label": "Fulah",
+      "aliases": [
+        "ful"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ffm",
+      "label": "Maasina Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fi",
+      "label": "Finnish",
+      "aliases": [
+        "fin"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "fi-fi",
+      "label": "Finnish (Finland)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "fia",
+      "label": "Nobiin",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fil",
+      "label": "Filipino",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "fil-ph",
+      "label": "Filipino (Philippines)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "fip",
+      "label": "Fipa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fkk",
+      "label": "Kirya-Konzəl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fmp",
+      "label": "Fe'fe'",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fo",
+      "label": "Faroese",
+      "aliases": [
+        "fao"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme"
+      ]
+    },
+    {
+      "tag": "fr",
+      "label": "French",
+      "aliases": [
+        "fra"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "fr-ca",
+      "label": "French (Canada)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "fr-fr",
+      "label": "French (France)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "fub",
+      "label": "Adamawa Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fuc",
+      "label": "Pulaar",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fue",
+      "label": "Borgu Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fuf",
+      "label": "Pular",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fuh",
+      "label": "Western Niger Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fui",
+      "label": "Bagirmi Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fuq",
+      "label": "Central-Eastern Niger Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fuv",
+      "label": "Nigerian Fulfulde",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "fy",
+      "label": "Western Frisian",
+      "aliases": [
+        "fry"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ga",
+      "label": "Irish",
+      "aliases": [
+        "gle"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "gbm",
+      "label": "Garhwali",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gbr",
+      "label": "Gbagyi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gby",
+      "label": "Gbari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gcc",
+      "label": "Mali",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gdf",
+      "label": "Guduf-Gava",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gej",
+      "label": "Gen",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ges",
+      "label": "Geser-Gorom",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ggg",
+      "label": "Gurgula",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gid",
+      "label": "Gidar",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gig",
+      "label": "Goaria",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "giz",
+      "label": "South Giziga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gjk",
+      "label": "Kachi Koli",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gju",
+      "label": "Gujari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gl",
+      "label": "Galician",
+      "aliases": [
+        "glg"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "gl-es",
+      "label": "Galician (Spain)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "glw",
+      "label": "Glavda",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gn",
+      "label": "Guarani",
+      "aliases": [
+        "grn"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gol",
+      "label": "Gola",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gom",
+      "label": "Goan Konkani",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gsl",
+      "label": "Gusilay",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gu",
+      "label": "Gujarati",
+      "aliases": [
+        "guj"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "gu-in",
+      "label": "Gujarati (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "gui",
+      "label": "Eastern Bolivian Guaraní",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gur",
+      "label": "Farefare",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "guz",
+      "label": "Gusii",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gv",
+      "label": "Manx",
+      "aliases": [
+        "glv"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gwc",
+      "label": "Gawri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gwe",
+      "label": "Gweno",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gwt",
+      "label": "Gawar-Bati",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gya",
+      "label": "Northwest Gbaya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "gyz",
+      "label": "Geji",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ha",
+      "label": "Hausa",
+      "aliases": [
+        "hau"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "hah",
+      "label": "Hahon",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hao",
+      "label": "Hakö",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "haw",
+      "label": "Hawaiian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "haz",
+      "label": "Hazaragi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hbb",
+      "label": "Huba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "he",
+      "label": "Hebrew",
+      "aliases": [
+        "heb"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "he-il",
+      "label": "Hebrew (Israel)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "hem",
+      "label": "Hemba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hi",
+      "label": "Hindi",
+      "aliases": [
+        "hin"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "hi-in",
+      "label": "Hindi (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "hia",
+      "label": "Lamang",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hkk",
+      "label": "Hunjara-Kaina Ke",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hla",
+      "label": "Halia",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hno",
+      "label": "Northern Hindko",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hoj",
+      "label": "Hadothi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hr",
+      "label": "Croatian",
+      "aliases": [
+        "hrv"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "hr-hr",
+      "label": "Croatian (Croatia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "hsb",
+      "label": "Upper Sorbian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ht",
+      "label": "Haitian",
+      "aliases": [
+        "hat"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ht-ht",
+      "label": "Haitian Creole (Haiti)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "hu",
+      "label": "Hungarian",
+      "aliases": [
+        "hun"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "hu-hu",
+      "label": "Hungarian (Hungary)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "hue",
+      "label": "San Francisco Del Mar Huave",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hul",
+      "label": "Hula",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hux",
+      "label": "Nüpode Huitoto",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hwo",
+      "label": "Hwana",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "hy",
+      "label": "Armenian",
+      "aliases": [
+        "hye"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "hy-am",
+      "label": "Armenian (Armenia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "hz",
+      "label": "Herero",
+      "aliases": [
+        "her"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ia",
+      "label": "Interlingua (International Auxiliary Language Association)",
+      "aliases": [
+        "ina"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ibb",
+      "label": "Ibibio",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "id",
+      "label": "Indonesian",
+      "aliases": [
+        "ind"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "id-id",
+      "label": "Indonesian (Indonesia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ida",
+      "label": "Idakho-Isukha-Tiriki",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "idu",
+      "label": "Idoma",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ig",
+      "label": "Igbo",
+      "aliases": [
+        "ibo"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ijc",
+      "label": "Izon",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ijn",
+      "label": "Kalabari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ik",
+      "label": "Inupiaq",
+      "aliases": [
+        "ipk"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ikw",
+      "label": "Ikwere",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "is",
+      "label": "Icelandic",
+      "aliases": [
+        "isl"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "is-is",
+      "label": "Icelandic (Iceland)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ish",
+      "label": "Esan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "iso",
+      "label": "Isoko",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "it",
+      "label": "Italian",
+      "aliases": [
+        "ita"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "it-it",
+      "label": "Italian (Italy)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "its",
+      "label": "Isekiri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "itw",
+      "label": "Ito",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "itz",
+      "label": "Itzá",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ja",
+      "label": "Japanese",
+      "aliases": [
+        "jpn"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ja-jp",
+      "label": "Japanese (Japan)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "jal",
+      "label": "Yalahatan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "jax",
+      "label": "Jambi Malay",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "jgo",
+      "label": "Ngomba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "jmx",
+      "label": "Western Juxtlahuaca Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "jns",
+      "label": "Jaunsari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "jqr",
+      "label": "Jaqaru",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "juk",
+      "label": "Wapan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "juo",
+      "label": "Jiba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "jv",
+      "label": "Javanese",
+      "aliases": [
+        "jav",
+        "jw"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "jv-jv",
+      "label": "Javanese (Java)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ka",
+      "label": "Georgian",
+      "aliases": [
+        "kat"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "ka-ge",
+      "label": "Georgian (Georgia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "kab",
+      "label": "Kabyle",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "kai",
+      "label": "Karekare",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kaj",
+      "label": "Jju",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kam",
+      "label": "Kamba",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "kbd",
+      "label": "Kabardian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "kbl",
+      "label": "Kanembu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kbt",
+      "label": "Abadi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kcq",
+      "label": "Kamo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kdh",
+      "label": "Tem",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kea",
+      "label": "Kabuverdianu",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "keu",
+      "label": "Akebu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kfe",
+      "label": "Kota (India)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kfk",
+      "label": "Kinnauri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kfp",
+      "label": "Korwa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "khg",
+      "label": "Khams Tibetan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "khw",
+      "label": "Khowar",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kj",
+      "label": "Kuanyama",
+      "aliases": [
+        "kua"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kjc",
+      "label": "Coastal Konjo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kjh",
+      "label": "Khakas",
+      "aliases": [],
+      "source_ids": [
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "kjk",
+      "label": "Highland Konjo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kk",
+      "label": "Kazakh",
+      "aliases": [
+        "kaz"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "kln",
+      "label": "Kalenjin",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kls",
+      "label": "Kalasha",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "km",
+      "label": "Khmer",
+      "aliases": [
+        "khm"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kmr",
+      "label": "Northern Kurdish",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kmy",
+      "label": "Koma",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kn",
+      "label": "Kannada",
+      "aliases": [
+        "kan"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "kn-in",
+      "label": "Kannada (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "kna",
+      "label": "Dera (Nigeria)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "knn",
+      "label": "Konkani",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ko",
+      "label": "Korean",
+      "aliases": [
+        "kor"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ko-kr",
+      "label": "Korean (South Korea)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "kok-in",
+      "label": "Konkani (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "kol",
+      "label": "Kol (Papua New Guinea)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "koo",
+      "label": "Konzo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kpo",
+      "label": "Ikposo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kqo",
+      "label": "Eastern Krahn",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ks",
+      "label": "Kashmiri",
+      "aliases": [
+        "kas"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ksd",
+      "label": "Kuanua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ksf",
+      "label": "Bafia",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kto",
+      "label": "Kuot",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kuh",
+      "label": "Kushi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kvx",
+      "label": "Parkari Koli",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kw",
+      "label": "Cornish",
+      "aliases": [
+        "cor"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kwm",
+      "label": "Kwambi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "kxp",
+      "label": "Wadiyara Koli",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ky",
+      "label": "Kirghiz",
+      "aliases": [
+        "kir"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "kyx",
+      "label": "Rapoisi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "la",
+      "label": "Latin",
+      "aliases": [
+        "lat"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "la-va",
+      "label": "Latin (Vatican City)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "lag",
+      "label": "Rangi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lb",
+      "label": "Luxembourgish",
+      "aliases": [
+        "ltz"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "lb-lu",
+      "label": "Luxembourgish (Luxembourg)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "lcm",
+      "label": "Tungag",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ldb",
+      "label": "Dũya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lg",
+      "label": "Ganda",
+      "aliases": [
+        "lug"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "lij",
+      "label": "Ligurian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lir",
+      "label": "Liberian English",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lkb",
+      "label": "Kabras",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lla",
+      "label": "Lala-Roba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ln",
+      "label": "Lingala",
+      "aliases": [
+        "lin"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "lnu",
+      "label": "Longuda",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lo",
+      "label": "Lao",
+      "aliases": [
+        "lao"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lo-la",
+      "label": "Lao (Laos)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "loa",
+      "label": "Loloda",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lrk",
+      "label": "Loarki",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lss",
+      "label": "Lasi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lt",
+      "label": "Lithuanian",
+      "aliases": [
+        "lit"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "lt-lt",
+      "label": "Lithuanian (Lithuania)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ltg",
+      "label": "Latgalian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lto",
+      "label": "Tsotso",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lua",
+      "label": "Luba-Lulua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "luo",
+      "label": "Luo",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "lus",
+      "label": "Lushai",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "lv",
+      "label": "Latvian",
+      "aliases": [
+        "lav"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "lv-lv",
+      "label": "Latvian (Latvia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "lwg",
+      "label": "Wanga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mab",
+      "label": "Yutanduchi Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "maf",
+      "label": "Mafa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mai",
+      "label": "Maithili",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mai-in",
+      "label": "Maithili (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mau",
+      "label": "Huautla Mazatec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "max",
+      "label": "North Moluccan Malay",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mbo",
+      "label": "Mbo (Cameroon)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mcf",
+      "label": "Matsés",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mcn",
+      "label": "Masana",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mcx",
+      "label": "Mpiemo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mdd",
+      "label": "Mbum",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mde",
+      "label": "Maba (Chad)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mdf",
+      "label": "Moksha",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "mek",
+      "label": "Mekeo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mer",
+      "label": "Meru",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "meu",
+      "label": "Motu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mfm",
+      "label": "Marghi South",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mfn",
+      "label": "Cross River Mbembe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mfo",
+      "label": "Mbe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mfv",
+      "label": "Mandjak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mg-mg",
+      "label": "Malagasy (Madagascar)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mgg",
+      "label": "Mpumpong",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mgi",
+      "label": "Lijili",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mhk",
+      "label": "Mungaka",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mhr",
+      "label": "Eastern Mari",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "mi",
+      "label": "Maori",
+      "aliases": [
+        "mri"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "mig",
+      "label": "San Miguel El Grande Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "miu",
+      "label": "Cacaloxtepec Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mk",
+      "label": "Macedonian",
+      "aliases": [
+        "mkd"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "mk-mk",
+      "label": "Macedonian (North Macedonia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mkf",
+      "label": "Miya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mki",
+      "label": "Dhatki",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ml",
+      "label": "Malayalam",
+      "aliases": [
+        "mal"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "ml-in",
+      "label": "Malayalam (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mlq",
+      "label": "Western Maninkakan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mn",
+      "label": "Mongolian",
+      "aliases": [
+        "mon"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "mn-mn",
+      "label": "Mongolian (Mongolia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mne",
+      "label": "Naba",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mni",
+      "label": "Manipuri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "mqy",
+      "label": "Manggarai",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mr",
+      "label": "Marathi",
+      "aliases": [
+        "mar"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "mr-in",
+      "label": "Marathi (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mrj",
+      "label": "Western Mari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mrr",
+      "label": "Maria (India)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mrt",
+      "label": "Marghi Central",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ms",
+      "label": "Malay",
+      "aliases": [
+        "msa"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ms-my",
+      "label": "Malay (Malaysia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "mse",
+      "label": "Musey",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "msh",
+      "label": "Masikoro Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "msw",
+      "label": "Mansoanka",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mt",
+      "label": "Maltese",
+      "aliases": [
+        "mlt"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "mtr",
+      "label": "Mewari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mtu",
+      "label": "Tututepec Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mtx",
+      "label": "Tidaá Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mua",
+      "label": "Mundang",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mug",
+      "label": "Musgu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mui",
+      "label": "Musi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mve",
+      "label": "Marwari (Pakistan)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mvy",
+      "label": "Indus Kohistani",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mxs",
+      "label": "Huitepec Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mxu",
+      "label": "Mada (Cameroon)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mxy",
+      "label": "Southeastern Nochixtlán Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "my",
+      "label": "Burmese",
+      "aliases": [
+        "mya"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "my-mm",
+      "label": "Burmese (Myanmar)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "myv",
+      "label": "Erzya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "mzl",
+      "label": "Mazatlán Mixe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nal",
+      "label": "Nalik",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nan",
+      "label": "Min Nan Chinese",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nap",
+      "label": "Neapolitan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nb",
+      "label": "Norwegian Bokmål",
+      "aliases": [
+        "nob"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nb-no",
+      "label": "Norwegian, Bokmål (Norway)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "nbh",
+      "label": "Ngamo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ncf",
+      "label": "Notsi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nco",
+      "label": "Sibe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ncx",
+      "label": "Central Puebla Nahuatl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ndi",
+      "label": "Samba Leko",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ne",
+      "label": "Nepali",
+      "aliases": [
+        "nep"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ne-np",
+      "label": "Nepali (Nepal)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ng",
+      "label": "Ndonga",
+      "aliases": [
+        "ndo"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ngi",
+      "label": "Ngizim",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nhg",
+      "label": "Tetelcingo Nahuatl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nhi",
+      "label": "Zacatlán-Ahuacatlán-Tepetzintla Nahuatl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nhn",
+      "label": "Central Nahuatl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nhq",
+      "label": "Huaxcaleca Nahuatl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nja",
+      "label": "Nzanyi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nl",
+      "label": "Dutch",
+      "aliases": [
+        "nld"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "nl-nl",
+      "label": "Dutch (Netherlands)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "nla",
+      "label": "Ngombale",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nlv",
+      "label": "Orizaba Nahuatl",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nmg",
+      "label": "Kwasio",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nmz",
+      "label": "Nawdm",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nn",
+      "label": "Norwegian Nynorsk",
+      "aliases": [
+        "nno"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nn-no",
+      "label": "Norwegian, Nynorsk (Norway)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "nnh",
+      "label": "Ngiemboon",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "no",
+      "label": "Norwegian",
+      "aliases": [
+        "nor"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "noe",
+      "label": "Nimadi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "npi",
+      "label": "Nepali",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "nso",
+      "label": "Pedi",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ny",
+      "label": "Chichewa",
+      "aliases": [
+        "nya"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "nyu",
+      "label": "Nyungwe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "oc",
+      "label": "Occitan",
+      "aliases": [
+        "oci"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "odk",
+      "label": "Od",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "odu",
+      "label": "Odual",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ogo",
+      "label": "Khana",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "om",
+      "label": "Oromo",
+      "aliases": [
+        "orm"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "or-in",
+      "label": "Odia (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "orc",
+      "label": "Orma",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "oru",
+      "label": "Ormuri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ory",
+      "label": "Odia",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "os",
+      "label": "Iron Ossetic",
+      "aliases": [
+        "oss"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pa",
+      "label": "Panjabi",
+      "aliases": [
+        "pan"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "pa-in",
+      "label": "Punjabi (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "pbs",
+      "label": "Central Pame",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pbt",
+      "label": "Southern Pashto",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pbu",
+      "label": "Northern Pashto",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pcm",
+      "label": "Nigerian Pidgin",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pex",
+      "label": "Petats",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "phl",
+      "label": "Phalura",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "phr",
+      "label": "Pahari-Potwari",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pip",
+      "label": "Pero",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "piy",
+      "label": "Piya-Kwonci",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pko",
+      "label": "Pökoot",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pl",
+      "label": "Polish",
+      "aliases": [
+        "pol"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "pl-pl",
+      "label": "Polish (Poland)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "plk",
+      "label": "Kohistani Shina",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "plt",
+      "label": "Plateau Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pmq",
+      "label": "Northern Pame",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pms",
+      "label": "Piemontese",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pmy",
+      "label": "Papuan Malay",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pnb",
+      "label": "Western Panjabi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "poc",
+      "label": "Poqomam",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "poe",
+      "label": "San Juan Atzingo Popoloca",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pow",
+      "label": "San Felipe Otlaltepec Popoloca",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "prq",
+      "label": "Ashéninka Perené",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ps",
+      "label": "Pushto",
+      "aliases": [
+        "pus"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ps-af",
+      "label": "Pashto (Afghanistan)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "pst",
+      "label": "Central Pashto",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pt",
+      "label": "Portuguese",
+      "aliases": [
+        "por"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "pt-br",
+      "label": "Portuguese (Brazil)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "pt-pt",
+      "label": "Portuguese (Portugal)",
+      "aliases": [],
+      "source_ids": [
+        "elevenlabs_models",
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "pua",
+      "label": "Western Highland Purepecha",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "pwn",
+      "label": "Paiwan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qug",
+      "label": "Chimborazo Highland Quichua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qum",
+      "label": "Sipacapense",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qup",
+      "label": "Southern Pastaza Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qur",
+      "label": "Yanahuanca Pasco Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qus",
+      "label": "Santiago del Estero Quichua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "quv",
+      "label": "Sacapulteco",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qux",
+      "label": "Yauyos Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "quy",
+      "label": "Ayacucho Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qva",
+      "label": "Ambo-Pasco Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qvi",
+      "label": "Imbabura Highland Quichua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qvj",
+      "label": "Loja Highland Quichua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qvl",
+      "label": "Cajatambo North Lima Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qwa",
+      "label": "Corongo Ancash Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qws",
+      "label": "Sihuas Ancash Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qxa",
+      "label": "Chiquián Ancash Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qxp",
+      "label": "Puno Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qxt",
+      "label": "Santa Ana de Tusi Pasco Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qxu",
+      "label": "Arequipa-La Unión Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "qxw",
+      "label": "Jauja Wanca Quechua",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "rag",
+      "label": "Logooli",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "raj",
+      "label": "Rajasthani",
+      "aliases": [],
+      "source_ids": [
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "rm",
+      "label": "Romansh",
+      "aliases": [
+        "roh"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ro",
+      "label": "Romanian",
+      "aliases": [
+        "ron"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ro-ro",
+      "label": "Romanian (Romania)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "rob",
+      "label": "Tae'",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "rof",
+      "label": "Rombo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "roo",
+      "label": "Rotokas",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "rth",
+      "label": "Ratahan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ru",
+      "label": "Russian",
+      "aliases": [
+        "rus"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "ru-ru",
+      "label": "Russian (Russia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "rup",
+      "label": "Macedo-Romanian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "rw",
+      "label": "Kinyarwanda",
+      "aliases": [
+        "kin"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sa",
+      "label": "Sanskrit",
+      "aliases": [
+        "san"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sah",
+      "label": "Yakut",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "sat",
+      "label": "Santali",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sau",
+      "label": "Saleman",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "say",
+      "label": "Saya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sbn",
+      "label": "Sindhi Bhil",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sc",
+      "label": "Sardinian",
+      "aliases": [
+        "srd"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "scl",
+      "label": "Shina",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "scn",
+      "label": "Sicilian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sd",
+      "label": "Sindhi",
+      "aliases": [
+        "snd"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sd-in",
+      "label": "Sindhi (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "sei",
+      "label": "Seri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "shu",
+      "label": "Chadian Arabic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "si",
+      "label": "Sinhala",
+      "aliases": [
+        "sin"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "si-lk",
+      "label": "Sinhala (Sri Lanka)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "sip",
+      "label": "Sikkimese",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "siw",
+      "label": "Siwai",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sjr",
+      "label": "Siar-Lak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sk",
+      "label": "Slovak",
+      "aliases": [
+        "slk"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sk-sk",
+      "label": "Slovak (Slovakia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "skg",
+      "label": "Sakalava Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "skr",
+      "label": "Saraiki",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sl",
+      "label": "Slovenian",
+      "aliases": [
+        "slv"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sl-si",
+      "label": "Slovenian (Slovenia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "sn",
+      "label": "Shona",
+      "aliases": [
+        "sna"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "snc",
+      "label": "Sinaugoro",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "snk",
+      "label": "Soninke",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "so",
+      "label": "Somali",
+      "aliases": [
+        "som"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sol",
+      "label": "Solos",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sps",
+      "label": "Saposa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sq",
+      "label": "Albanian",
+      "aliases": [
+        "sqi"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sq-al",
+      "label": "Albanian (Albania)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "sr",
+      "label": "Serbian",
+      "aliases": [
+        "srp"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sr-rs",
+      "label": "Serbian (Serbia)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "src",
+      "label": "Logudorese Sardinian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sro",
+      "label": "Campidanese Sardinian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ssi",
+      "label": "Sansi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ste",
+      "label": "Liana-Seti",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sua",
+      "label": "Sulka",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sv",
+      "label": "Swedish",
+      "aliases": [
+        "swe"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sv-se",
+      "label": "Swedish (Sweden)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "sva",
+      "label": "Svan",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "sw",
+      "label": "Swahili",
+      "aliases": [
+        "swa"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "sw-ke",
+      "label": "Swahili (Kenya)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "szy",
+      "label": "Sakizaya",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ta",
+      "label": "Tamil",
+      "aliases": [
+        "tam"
+      ],
+      "source_ids": [
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "ta-in",
+      "label": "Tamil (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "tan",
+      "label": "Tangale",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tar",
+      "label": "Central Tarahumara",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tay",
+      "label": "Atayal",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tbf",
+      "label": "Mandara",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tcf",
+      "label": "Malinaltepec Me'phaa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tcy",
+      "label": "Tulu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tdn",
+      "label": "Tondano",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tdx",
+      "label": "Tandroy-Mahafaly Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "te",
+      "label": "Telugu",
+      "aliases": [
+        "tel"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "te-in",
+      "label": "Telugu (India)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "tg",
+      "label": "Tajik",
+      "aliases": [
+        "tgk"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "tgc",
+      "label": "Tigak",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "th",
+      "label": "Thai",
+      "aliases": [
+        "tha"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "th-th",
+      "label": "Thai (Thailand)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "the",
+      "label": "Chitwania Tharu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "thq",
+      "label": "Kochila Tharu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "thr",
+      "label": "Rana Tharu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "thv",
+      "label": "Tahaggart Tamahaq",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ti",
+      "label": "Tigrinya",
+      "aliases": [
+        "tir"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tig",
+      "label": "Tigre",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tio",
+      "label": "Teop",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tk",
+      "label": "Turkmen",
+      "aliases": [
+        "tuk"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tkg",
+      "label": "Tesaka Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tkt",
+      "label": "Kathoriya Tharu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tl",
+      "label": "Tagalog",
+      "aliases": [
+        "tgl"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "tli",
+      "label": "Tlingit",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tlp",
+      "label": "Filomena Mata-Coahuitlán Totonac",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tn",
+      "label": "Tswana",
+      "aliases": [
+        "tsn"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tok",
+      "label": "Toki Pona",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tpl",
+      "label": "Tlacoapa Me'phaa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tpz",
+      "label": "Tinputz",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tqp",
+      "label": "Tomoip",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tr",
+      "label": "Turkish",
+      "aliases": [
+        "tur"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "tr-tr",
+      "label": "Turkish (Turkey)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "trp",
+      "label": "Kok Borok",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "trq",
+      "label": "San Martín Itunyoso Triqui",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "trv",
+      "label": "Sediq",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "trw",
+      "label": "Torwali",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tt",
+      "label": "Tatar",
+      "aliases": [
+        "tat"
+      ],
+      "source_ids": [
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "ttj",
+      "label": "Tooro",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ttr",
+      "label": "Tera",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ttu",
+      "label": "Torau",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tui",
+      "label": "Tupuri",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tul",
+      "label": "Tula",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tuq",
+      "label": "Tedaga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tuv",
+      "label": "Turkana",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tuy",
+      "label": "Tugen",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tvo",
+      "label": "Tidore",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tvu",
+      "label": "Tunen",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "tw",
+      "label": "Twi",
+      "aliases": [
+        "twi"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "twu",
+      "label": "Termanu",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "txs",
+      "label": "Tonsea",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "txy",
+      "label": "Tanosy Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "udl",
+      "label": "Wuzlam",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "udm",
+      "label": "Udmurt",
+      "aliases": [],
+      "source_ids": [
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "ug",
+      "label": "Uighur",
+      "aliases": [
+        "uig"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "uk",
+      "label": "Ukrainian",
+      "aliases": [
+        "ukr"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "uk-ua",
+      "label": "Ukrainian (Ukraine)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "uki",
+      "label": "Kui (India)",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "umb",
+      "label": "Umbundu",
+      "aliases": [],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ur",
+      "label": "Urdu",
+      "aliases": [
+        "urd"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "ur-pk",
+      "label": "Urdu (Pakistan)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ush",
+      "label": "Ushojo",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "uz",
+      "label": "Uzbek",
+      "aliases": [
+        "uzb"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "uzn",
+      "label": "Northern Uzbek",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vai",
+      "label": "Vai",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "var",
+      "label": "Huarijio",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ver",
+      "label": "Mom Jango",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vi",
+      "label": "Vietnamese",
+      "aliases": [
+        "vie"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "vi-vn",
+      "label": "Vietnamese (Vietnam)",
+      "aliases": [],
+      "source_ids": [
+        "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "vmc",
+      "label": "Juxtlahuaca Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vmj",
+      "label": "Ixtayutla Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vmm",
+      "label": "Mitlatongo Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vmp",
+      "label": "Soyaltepec Mazatec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vmz",
+      "label": "Mazatlán Mazatec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vot",
+      "label": "Votic",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "vro",
+      "label": "Võro",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wbl",
+      "label": "Wakhi",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wci",
+      "label": "Waci Gbe",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "weo",
+      "label": "Wemale",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wes",
+      "label": "Cameroon Pidgin",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wja",
+      "label": "Waja",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wji",
+      "label": "Warji",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wo",
+      "label": "Wolof",
+      "aliases": [
+        "wol"
+      ],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "wof",
+      "label": "Gambian Wolof",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xal",
+      "label": "Kalmyk",
+      "aliases": [],
+      "source_ids": [
+        "pycountry_iso6393",
+        "silero_fastapi_catalog"
+      ]
+    },
+    {
+      "tag": "xh",
+      "label": "Xhosa",
+      "aliases": [
+        "xho"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "xhe",
+      "label": "Khetrani",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xka",
+      "label": "Kalkoti",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xmf",
+      "label": "Mingrelian",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xmv",
+      "label": "Antankarana Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xmw",
+      "label": "Tsimihety Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xpe",
+      "label": "Liberia Kpelle",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xti",
+      "label": "Sinicahua Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "xtu",
+      "label": "Cuyamecalco Mixtec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yaq",
+      "label": "Yaqui",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yav",
+      "label": "Yangben",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yay",
+      "label": "Agwagwune",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ydd",
+      "label": "Eastern Yiddish",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ydg",
+      "label": "Yidgha",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yer",
+      "label": "Tarok",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yes",
+      "label": "Nyankpa",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yi",
+      "label": "Yiddish",
+      "aliases": [
+        "yid"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yo",
+      "label": "Yoruba",
+      "aliases": [
+        "yor"
+      ],
+      "source_ids": [
+        "fish_s2_pro_readme",
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "yue",
+      "label": "Cantonese",
+      "aliases": [],
+      "source_ids": [
+        "dots_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "zga",
+      "label": "Kinga",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zgh",
+      "label": "Standard Moroccan Tamazight",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zh",
+      "label": "Chinese",
+      "aliases": [
+        "cmn",
+        "zho"
+      ],
+      "source_ids": [
+        "dots_tts_readme",
+        "elevenlabs_models",
+        "fish_s2_pro_readme",
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "openai_tts_guide",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "zoc",
+      "label": "Copainalá Zoque",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zoh",
+      "label": "Chimalapa Zoque",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zor",
+      "label": "Rayón Zoque",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zpv",
+      "label": "Chichicapan Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zpy",
+      "label": "Mazaltepec Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ztg",
+      "label": "Xanaguía Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ztn",
+      "label": "Santa Catarina Albarradas Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ztp",
+      "label": "Loxicha Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zts",
+      "label": "Tilquiapan Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ztu",
+      "label": "Güilá Zapotec",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "zu",
+      "label": "Zulu",
+      "aliases": [
+        "zul"
+      ],
+      "source_ids": [
+        "higgs_v3_tts_readme",
+        "omnivoice_langmap",
+        "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "zza",
+      "label": "Zaza",
+      "aliases": [],
+      "source_ids": [
+        "omnivoice_langmap"
+      ]
+    }
+  ]
+}

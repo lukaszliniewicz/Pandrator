@@ -12,16 +12,9 @@ from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any
 
-from ..constants import (
-    FISHS2_LANGUAGES,
-    KOKORO_LANGUAGES,
-    MAGPIE_LANGUAGES,
-    QWEN_LANGUAGES,
-    VOXTRAL_LANGUAGES,
-    XTTS_LANGUAGES,
-)
 from .audio_cpp_catalogue import inventory as audio_cpp_inventory
 from .audio_cpp_catalogue import package_metadata
+from .tts_language_support import tts_language_support
 
 _OPENAI_TTS_SOURCE = "https://developers.openai.com/api/docs/guides/text-to-speech"
 _GEMINI_TTS_SOURCE = "https://ai.google.dev/gemini-api/docs/speech-generation"
@@ -395,40 +388,6 @@ def _feature_capabilities(
     return sorted(capabilities), pandrator_features, upstream_features
 
 
-def _supported_languages(
-    model_metadata: Mapping[str, Any],
-    *,
-    provider_id: str,
-    allow_provider_defaults: bool,
-) -> list[str]:
-    explicit = _string_list(model_metadata.get("supported_languages"))
-    if explicit:
-        return explicit
-    voice_metadata = model_metadata.get("voice_metadata")
-    if isinstance(voice_metadata, dict):
-        locales = sorted(
-            {
-                str(value.get("locale")).strip()
-                for value in voice_metadata.values()
-                if isinstance(value, dict) and value.get("locale")
-            },
-            key=str.casefold,
-        )
-        if locales:
-            return locales
-    if not allow_provider_defaults:
-        return []
-    canonical_languages = {
-        "xtts": XTTS_LANGUAGES,
-        "fishs2": FISHS2_LANGUAGES,
-        "voxtral": VOXTRAL_LANGUAGES,
-        "kokoro": KOKORO_LANGUAGES,
-        "magpie": MAGPIE_LANGUAGES,
-        "kobold_qwen": QWEN_LANGUAGES,
-    }
-    return list(canonical_languages.get(provider_id, []))
-
-
 def _build_item(
     *,
     provider_id: str,
@@ -481,6 +440,15 @@ def _build_item(
     if provider_id == "azure" and effective_adapter == _AZURE_SPEECH_ADAPTER:
         sources = list(dict.fromkeys([_AZURE_TTS_SOURCE, *sources]))
 
+    discovery = model_metadata.get("discovery", "static")
+    language_support = tts_language_support(
+        provider_id,
+        model_id,
+        adapter=effective_adapter,
+        metadata=model_metadata,
+        operation="tts",
+        discovery=discovery if isinstance(discovery, str) else "static",
+    )
     result: dict[str, Any] = {
         "id": model_id,
         "provider_id": provider_id,
@@ -493,11 +461,8 @@ def _build_item(
         "category": str(model_metadata.get("category") or "tts"),
         "voice_mode": voice_mode,
         "capabilities": capabilities,
-        "supported_languages": _supported_languages(
-            model_metadata,
-            provider_id=provider_id,
-            allow_provider_defaults=allow_provider_defaults,
-        ),
+        "language_support": language_support,
+        "supported_languages": copy.deepcopy(language_support["languages"]),
         "pandrator_features": copy.deepcopy(pandrator_features),
         "package_availability": availability,
         "commercial_use": str(
@@ -727,14 +692,11 @@ def catalogue_page(
         if recommended_only and not row.get("recommended_for"):
             continue
         if language:
-            from .dubbing.languages import normalize_language_code
+            from .language_capabilities import language_matches
 
-            requested = normalize_language_code(language, default="") or language.casefold()
-            advertised = {str(value).casefold() for value in row["supported_languages"]}
             if not any(
-                value == requested.casefold()
-                or value.startswith(requested.casefold() + "-")
-                for value in advertised
+                language_matches(str(value), language)
+                for value in row["supported_languages"]
             ):
                 continue
         permission = row.get("commercial_use", "unknown")

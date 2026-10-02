@@ -148,6 +148,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/artifacts/{artifactId}/video-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getArtifactVideoPreview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/artifacts/{artifactId}/waveform": {
         parameters: {
             query?: never;
@@ -3000,6 +3016,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/subtitles/{stage}/passage-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveSubtitlePassageReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
         parameters: {
             query?: never;
@@ -3541,6 +3573,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/translation-project-operations/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Read redacted progress and results derived from existing jobs, generation runs and produced artifacts. Passive translation dispatch remains awaiting_agent with manual resume information. */
+        get: operations["getTranslationProjectOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-project-operations/{operationId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Durably block pending children and request cancellation of supported active queue work, including committed children not yet linked after a crash. Completed work and passive dispatch authority are preserved. */
+        post: operations["cancelTranslationProjectOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-project-operations/{operationId}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Submit eligible captured children sequentially through existing workflow or reviewed-generation authorities. Exact replay recovers committed children without duplicate jobs. */
+        post: operations["executeTranslationProjectOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-project-operations/{operationId}/exports/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Queue or recover a durable ZIP bundle only when every selected export is complete and still matches its recorded managed-file hash. */
+        post: operations["requestTranslationProjectExportBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-project-operations/{operationId}/exports/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Return a redacted, versioned manifest for every selected language, including incomplete states and verified artifact hashes. */
+        get: operations["getTranslationProjectExportManifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-project-operations/{operationId}/retry-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Create a new preview with fresh guards/settings for failed, blocked or canceled eligible children. Successful children are retained; active or partial passive translation work requires manual resume. */
+        post: operations["retryTranslationProjectOperationPreview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/translation-projects/{projectId}": {
         parameters: {
             query?: never;
@@ -3567,6 +3701,23 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["createTranslationProjectBranches"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/translation-projects/{projectId}/operations/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Create a job-free, principal-bound preview for selected language branches. Blocked branches are skipped; inputs, settings and required confirmations are captured for 30 minutes. */
+        post: operations["previewTranslationProjectOperation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4024,7 +4175,7 @@ export interface components {
             api_version?: string;
             /**
              * Application Version
-             * @default 0.10.1
+             * @default 0.11.0
              */
             application_version?: string;
             /** Canonical Origin */
@@ -5780,6 +5931,38 @@ export interface components {
             /** Target Languages */
             target_languages: string[];
         };
+        /** OperationCancelRequest */
+        OperationCancelRequest: Record<string, never>;
+        /** OperationExecuteRequest */
+        OperationExecuteRequest: {
+            /** Accepted Confirmations */
+            accepted_confirmations?: string[];
+            /** Preview Digest */
+            preview_digest: string;
+        };
+        /** OperationPreviewRequest */
+        OperationPreviewRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "translate" | "generate" | "export";
+            /** Expected Project Revision */
+            expected_project_revision: number;
+            /**
+             * Export Kind
+             * @default configured
+             * @enum {string}
+             */
+            export_kind?: "configured" | "subtitles";
+            /** Selected Branch Ids */
+            selected_branch_ids: string[];
+        };
+        /** OperationRetryPreviewRequest */
+        OperationRetryPreviewRequest: {
+            /** Expected Project Revision */
+            expected_project_revision: number;
+        };
         /** OptimizationReviewItem */
         OptimizationReviewItem: {
             /** Index */
@@ -6169,6 +6352,11 @@ export interface components {
             items: components["schemas"]["PerformanceItem"][];
             /** Lease Token */
             lease_token: string;
+        };
+        /** ProjectExportBundleRequest */
+        ProjectExportBundleRequest: {
+            /** Expected Manifest Digest */
+            expected_manifest_digest: string;
         };
         /** PronunciationCreate */
         PronunciationCreate: {
@@ -7516,6 +7704,56 @@ export interface components {
              */
             text?: string | null;
         };
+        /** SubtitlePassageInput */
+        SubtitlePassageInput: {
+            /**
+             * Deleted
+             * @default false
+             */
+            deleted?: boolean;
+            /** End Ms */
+            end_ms: number;
+            /** Id */
+            id: string;
+            /**
+             * Review Note
+             * @default
+             */
+            review_note?: string;
+            /**
+             * Review State
+             * @default clear
+             * @enum {string}
+             */
+            review_state?: "clear" | "uncertain";
+            /**
+             * Speaker
+             * @default null
+             */
+            speaker?: string | null;
+            /** Start Ms */
+            start_ms: number;
+            /**
+             * Starts New Turn
+             * @default false
+             */
+            starts_new_turn?: boolean;
+            /** Text */
+            text: string;
+        };
+        /** SubtitlePassageReviewRequest */
+        SubtitlePassageReviewRequest: {
+            /** Expected Composition Hash */
+            expected_composition_hash: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Expected Source Hash */
+            expected_source_hash: string;
+            /** Passages */
+            passages: components["schemas"]["SubtitlePassageInput"][];
+            /** Source Artifact Id */
+            source_artifact_id: string;
+        };
         /** SubtitleReviewRequest */
         SubtitleReviewRequest: {
             /** Expected Revision */
@@ -7691,7 +7929,7 @@ export interface components {
              * Transcription Vocal Isolation
              * @default null
              */
-            transcription_vocal_isolation?: ("off" | "bs_roformer" | "mel_band_roformer") | null;
+            transcription_vocal_isolation?: ("off" | "bs_roformer" | "mel_band_roformer" | "htdemucs") | null;
         };
         /** TranscriptionResult */
         TranscriptionResult: {
@@ -7727,6 +7965,8 @@ export interface components {
         };
         /** TranscriptionSnapshot */
         TranscriptionSnapshot: {
+            /** Available Formats */
+            available_formats?: ("txt" | "srt" | "json")[];
             /** Chunk Size */
             chunk_size: number;
             /**
@@ -8641,6 +8881,40 @@ export interface operations {
         responses: {
             /** @description PDF geometry */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getArtifactVideoPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cached compatible video preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Durable preview job queued or running */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source cannot produce a bounded video preview; audio fallback is available */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14949,6 +15223,48 @@ export interface operations {
             };
         };
     };
+    saveSubtitlePassageReview: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                sessionId: string;
+                stage: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubtitlePassageReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Canonical spoken passages saved and display cues recomposed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source, composition settings or revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid passage edit */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     saveSubtitleReview: {
         parameters: {
             query?: never;
@@ -16297,6 +16613,367 @@ export interface operations {
             };
         };
     };
+    getTranslationProjectOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted durable operation and live child states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Created operation preview; no jobs submitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Eligible child work submitted or recovered */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expired/stale preview, target mismatch, confirmation or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selection or request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelTranslationProjectOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Redacted durable operation and live child states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Created operation preview; no jobs submitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Eligible child work submitted or recovered */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expired/stale preview, target mismatch, confirmation or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selection or request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    executeTranslationProjectOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationExecuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Redacted durable operation and live child states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Created operation preview; no jobs submitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Eligible child work submitted or recovered */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expired/stale preview, target mismatch, confirmation or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selection or request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    requestTranslationProjectExportBundle: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectExportBundleRequest"];
+            };
+        };
+        responses: {
+            /** @description Matching cached bundle and manifest artifacts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bundle job queued, running or recovered */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Incomplete, stale or unavailable bundle inputs */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid bundle request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTranslationProjectExportManifest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Versioned project export manifest */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation target or export action is incompatible */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retryTranslationProjectOperationPreview: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationRetryPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Redacted durable operation and live child states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Created operation preview; no jobs submitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Eligible child work submitted or recovered */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expired/stale preview, target mismatch, confirmation or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selection or request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTranslationProject: {
         parameters: {
             query?: never;
@@ -16385,6 +17062,74 @@ export interface operations {
                 content?: never;
             };
             /** @description Invalid project request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewTranslationProjectOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Redacted durable operation and live child states */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Created operation preview; no jobs submitted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Eligible child work submitted or recovered */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid idempotency key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Operation not found or belongs to another principal */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Expired/stale preview, target mismatch, confirmation or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid selection or request */
             422: {
                 headers: {
                     [name: string]: unknown;

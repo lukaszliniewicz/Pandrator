@@ -1,4 +1,9 @@
 import type { RuntimeCapabilities } from './api-models';
+import {
+  canonicalLanguageTag,
+  languageLabel,
+  LANGUAGE_OPTIONS
+} from './language-registry';
 
 // Qwen's recognizer and forced aligner have different language coverage.
 // Source: QwenLM/Qwen3-ASR model table, verified 2026-09-22.
@@ -31,7 +36,7 @@ export function qwenTimingExplanation(
 ): string {
   const code = qwenLanguageCode(language);
   if (!code || code === 'auto')
-    return 'Choose the source language for timed transcription. This lets Pandrator choose a supported aligner before downloading models.';
+    return 'Automatic detection uses a short local sample, then chooses an aligner for the detected source language. Choose a source language explicitly if detection cannot resolve it.';
   if (QWEN_ALIGNMENT_LANGUAGES.has(code))
     return 'Word timestamps: Qwen3 Forced Aligner will align the recognized text to the recording.';
   const timed = capabilities?.stt?.models?.qwen3?.timed_supported_languages;
@@ -87,4 +92,36 @@ export function sttLanguageProblem(
   const base = aliases[normalized] || normalized;
   if (supported.includes(base) || supported.includes(code)) return '';
   return `${selected === 'parakeet' ? 'Parakeet' : selected === 'moss' ? 'MOSS' : selected === 'whisper' ? 'Whisper' : selected === 'qwen3' ? 'Qwen3 ASR' : selected} does not support ${code}. Choose another model or correct the source language.`;
+}
+
+export function sttLanguageOptions(
+  capabilities: RuntimeCapabilities | null | undefined,
+  engine: string,
+  requireTiming = true
+) {
+  const models = capabilities?.stt?.models;
+  const selected = engine || capabilities?.stt?.default_engine || 'auto';
+  const codes =
+    selected === 'auto'
+      ? [
+          ...new Set(
+            Object.entries(models ?? {}).flatMap(([key, model]) =>
+              key === 'auto'
+                ? []
+                : ((key === 'qwen3' && requireTiming
+                    ? model.timed_supported_languages
+                    : model.supported_languages) ?? [])
+            )
+          )
+        ]
+      : selected === 'qwen3' && requireTiming
+        ? models?.[selected]?.timed_supported_languages
+        : models?.[selected]?.supported_languages;
+  if (!Array.isArray(codes) || !codes.length) return LANGUAGE_OPTIONS;
+  return [
+    { value: 'auto', label: 'Automatic detection' },
+    ...[
+      ...new Set(codes.map((code) => canonicalLanguageTag(code) || code))
+    ].map((value) => ({ value, label: languageLabel(value) }))
+  ];
 }

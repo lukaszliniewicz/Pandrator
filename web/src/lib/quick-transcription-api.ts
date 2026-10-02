@@ -9,6 +9,7 @@ export type QuickTranscription = {
   progress_detail: string | null;
   expires_at: string;
   format: TranscriptFormat;
+  available_formats?: TranscriptFormat[];
   result_available: boolean;
   inline_result: boolean;
   result_url: string;

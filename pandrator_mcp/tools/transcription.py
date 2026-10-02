@@ -185,6 +185,8 @@ def _transcribe_handle(
         engine=arguments.engine,
         model_quantization=arguments.model_quantization,
         compute_backend=arguments.compute_backend,
+        qwen_asr_model=arguments.qwen_asr_model,
+        transcription_vocal_isolation=arguments.transcription_vocal_isolation,
         idempotency_key=arguments.idempotency_key,
     )
     if not isinstance(initial, dict):

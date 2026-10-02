@@ -3237,6 +3237,35 @@ class WorkflowHandlers:
 
         raw_srt_path = Path(transcription_result.srt_path)
         raw_words_path = Path(transcription_result.word_timestamps_path)
+        requested_language = str(submitted_settings.get("original_language") or submitted_settings.get("stt_language") or "auto")
+        resolved_language = str(getattr(transcription_result, "resolved_language", "") or "")
+        output_language = resolved_language if resolved_language.lower() not in {"", "auto", "und", "unknown"} else requested_language
+        routing = deepcopy(dict(getattr(transcription_result, "routing", {}) or {}))
+        isolation_metadata = None
+        raw_payload: dict[str, Any] = {}
+        try:
+            raw_payload = json.loads(raw_words_path.read_text(encoding="utf-8"))
+            supplied_isolation = (raw_payload.get("metadata") or {}).get("vocal_isolation")
+            if isinstance(supplied_isolation, dict):
+                isolation_metadata = {
+                    key: deepcopy(value) for key, value in supplied_isolation.items()
+                    if key in {"transcription_vocal_isolation", "vocal_isolation_model", "vocal_isolation_status", "original_audio_retained", "model_id", "family", "cli_family", "revision", "sha256", "size_bytes", "method", "status", "backend", "compute_backend", "requested_backend", "threads"}
+                }
+                if isolation_metadata.get("original_audio_retained"):
+                    isolation_metadata["original_audio_retained"] = Path(str(isolation_metadata["original_audio_retained"]).replace("\\", "/")).name
+        except (OSError, ValueError, TypeError, AttributeError):
+            # Evidence registration precedes the existing transcript parse gate.
+            pass
+        if raw_payload:
+            payload_metadata = raw_payload.get("metadata")
+            if not isinstance(payload_metadata, dict):
+                payload_metadata = {}
+                raw_payload["metadata"] = payload_metadata
+            payload_metadata["stt_routing"] = deepcopy(routing)
+            payload_metadata["requested_language"] = requested_language
+            if isolation_metadata is not None:
+                payload_metadata["vocal_isolation"] = deepcopy(isolation_metadata)
+            raw_words_path.write_text(json.dumps(raw_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         raw_metadata = {
             "engine": transcription_result.engine,
             "model": transcription_result.engine,
@@ -3244,14 +3273,16 @@ class WorkflowHandlers:
                 submitted_settings.get("stt_model_quantization") or "f16"
             ),
             "compute_backend": transcription_result.compute_backend,
-            "language": str(
-                submitted_settings.get("original_language")
-                or submitted_settings.get("stt_language")
-                or "auto"
-            ),
+            "language": output_language,
+            "resolved_language": output_language,
+            "requested_language": requested_language,
+            "requested_settings": redact_inline_secrets(submitted_settings),
+            "stt_routing": routing,
             "alignment_role": "evidence",
             "source_artifact_id": source_artifact.id,
         }
+        if isolation_metadata is not None:
+            raw_metadata["vocal_isolation"] = isolation_metadata
         raw_srt_artifact = self.artifacts.register(
             raw_srt_path,
             kind="srt",
@@ -3344,6 +3375,10 @@ class WorkflowHandlers:
             caption_to_srt(aligned_cues), encoding="utf-8"
         )
         alignment_metadata = {
+            "resolved_language": output_language,
+            "stt_routing": deepcopy(routing),
+            "requested_language": requested_language,
+            "requested_settings": redact_inline_secrets(submitted_settings),
             "alignment_method": "asr_lexical_projection",
             "authoritative_transcript_artifact_id": caption_artifact.id,
             "raw_asr_srt_artifact_id": raw_srt_artifact.id,
@@ -3355,13 +3390,11 @@ class WorkflowHandlers:
             "word_count": word_count,
             "source_artifact_id": source_artifact.id,
         }
+        if isolation_metadata is not None:
+            alignment_metadata["vocal_isolation"] = deepcopy(isolation_metadata)
         aligned_payload = media_cues_to_transcript(
             aligned_cues,
-            language=str(
-                submitted_settings.get("original_language")
-                or submitted_settings.get("stt_language")
-                or ""
-            ),
+            language=output_language,
             source_format="media_edit_alignment",
             metadata=alignment_metadata,
         )
@@ -3406,11 +3439,7 @@ class WorkflowHandlers:
             },
             metadata=artifact_metadata,
         )
-        language = str(
-            submitted_settings.get("original_language")
-            or submitted_settings.get("stt_language")
-            or ""
-        ) or None
+        language = output_language or None
         _document_id, revision_id = self._store_srt_document(
             session_id,
             aligned_srt_artifact,
@@ -3549,8 +3578,11 @@ class WorkflowHandlers:
                 "transcription_vocal_isolation": isolation_provenance.get("method"),
                 "vocal_isolation_model": isolation_provenance.get("model"),
                 "vocal_isolation_status": isolation_provenance.get("status"),
-                "original_audio_retained": str(normalized_path),
+                "original_audio_retained": normalized_path.name,
             }
+            for key in ("model_id", "family", "cli_family", "revision", "sha256", "size_bytes", "method", "status", "backend", "compute_backend", "requested_backend", "threads"):
+                if key in isolation_provenance:
+                    isolation_record[key] = deepcopy(isolation_provenance[key])
         _caption_record, caption_path = self.artifacts.resolve(caption_artifact.id)
         cues = parse_caption_text(caption_path.read_text(encoding="utf-8-sig"))
         # Caption alignment owns its VAD policy.  It must remain enabled (or
@@ -3640,6 +3672,10 @@ class WorkflowHandlers:
         diagnostics = alignment.diagnostics
         diagnostics.vad_model = str(options.get("crispasr_vad_model") or "silero")
         diagnostics.vad_options = vad_options
+        output_language = alignment.resolved_language
+        output_language_resolution = alignment.language_resolution
+        routing: dict[str, Any] = {}
+        requested_language = str(submitted_settings.get("original_language") or submitted_settings.get("stt_language") or "auto")
 
         raw_asr_srt_artifact = None
         raw_asr_words_artifact = None
@@ -3668,6 +3704,36 @@ class WorkflowHandlers:
             )
             if cancel_event.is_set():
                 raise ProcessCancelled("Caption alignment was canceled.")
+            fallback_language = str(getattr(fallback_result, "resolved_language", "") or "")
+            if fallback_language.lower() not in {"", "auto", "und", "unknown"}:
+                output_language = fallback_language
+            routing = deepcopy(dict(getattr(fallback_result, "routing", {}) or {}))
+            if fallback_language.lower() not in {"", "auto", "und", "unknown"}:
+                output_language_resolution = {
+                    "requested_language": requested_language,
+                    "resolved_language": output_language,
+                    "source": "asr",
+                    "language_source": routing.get("language_source", "unknown"),
+                    "is_detection_proof": routing.get("language_source") == "detected",
+                }
+            fallback_isolation = None
+            fallback_payload: dict[str, Any] = {}
+            fallback_words_path = Path(fallback_result.word_timestamps_path)
+            try:
+                fallback_payload = json.loads(fallback_words_path.read_text(encoding="utf-8"))
+                fallback_isolation = (fallback_payload.get("metadata") or {}).get("vocal_isolation")
+                if isinstance(fallback_isolation, dict) and fallback_isolation.get("original_audio_retained"):
+                    fallback_isolation["original_audio_retained"] = Path(str(fallback_isolation["original_audio_retained"]).replace("\\", "/")).name
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+            if fallback_payload:
+                payload_metadata = fallback_payload.get("metadata")
+                if not isinstance(payload_metadata, dict):
+                    payload_metadata = {}
+                    fallback_payload["metadata"] = payload_metadata
+                payload_metadata["stt_routing"] = deepcopy(routing)
+                payload_metadata["requested_language"] = requested_language
+                fallback_words_path.write_text(json.dumps(fallback_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             fallback_metadata = {
                 "alignment_role": "evidence",
                 "source_artifact_id": source_artifact.id,
@@ -3675,7 +3741,14 @@ class WorkflowHandlers:
                 "engine": fallback_result.engine,
                 "model": fallback_result.engine,
                 "compute_backend": fallback_result.compute_backend,
+                "language": output_language,
+                "resolved_language": output_language,
+                "requested_language": requested_language,
+                "requested_settings": deepcopy(persisted_settings),
+                "stt_routing": deepcopy(routing),
             }
+            if isolation_record is not None:
+                fallback_metadata["vocal_isolation"] = deepcopy(isolation_record)
             raw_asr_srt_artifact = self.artifacts.register(
                 Path(fallback_result.srt_path),
                 kind="srt",
@@ -3761,6 +3834,10 @@ class WorkflowHandlers:
         write_diagnostics(
             replace(alignment, cues=aligned_cues, diagnostics=diagnostics), diagnostics_path
         )
+        if isolation_record is not None:
+            diagnostic_payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            diagnostic_payload["vocal_isolation"] = deepcopy(isolation_record)
+            diagnostics_path.write_text(json.dumps(diagnostic_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         evidence_ids = [source_artifact.id, caption_artifact.id]
         vad_artifact = None
         if vad_path is not None:
@@ -3789,6 +3866,8 @@ class WorkflowHandlers:
             settings=persisted_settings,
             metadata={
                 **diagnostics.as_dict(),
+                "requested_language": requested_language,
+                "requested_settings": deepcopy(persisted_settings),
                 **(
                     {"vocal_isolation": isolation_record}
                     if isolation_record is not None
@@ -3812,6 +3891,12 @@ class WorkflowHandlers:
         aligned_srt_path.write_text(caption_to_srt(aligned_cues), encoding="utf-8")
         metadata = {
             **diagnostics.as_dict(),
+            "language": output_language,
+            "resolved_language": output_language,
+            "language_resolution": deepcopy(output_language_resolution),
+            "alignment_language_resolution": alignment.language_resolution,
+            "requested_language": requested_language,
+            "requested_settings": deepcopy(persisted_settings),
             "alignment_method": diagnostics.method,
             "authoritative_transcript_artifact_id": caption_artifact.id,
             "source_artifact_id": source_artifact.id,
@@ -3821,11 +3906,13 @@ class WorkflowHandlers:
             "raw_asr_word_timestamps_artifact_id": raw_asr_words_artifact.id if raw_asr_words_artifact else None,
             "evidence_artifact_ids": list(dict.fromkeys(evidence_ids)),
         }
+        if routing:
+            metadata["stt_routing"] = deepcopy(routing)
         if isolation_record is not None:
             metadata["vocal_isolation"] = isolation_record
         aligned_payload = media_cues_to_transcript(
             aligned_cues,
-            language=str(options.get("original_language") or options.get("stt_language") or ""),
+            language=output_language,
             source_format="media_edit_alignment",
             metadata=metadata,
         )
@@ -3858,7 +3945,7 @@ class WorkflowHandlers:
                 "aligned_word_timestamps_artifact_id": aligned_words_artifact.id,
             }
         )
-        language = str(options.get("original_language") or options.get("stt_language") or "") or None
+        language = output_language or None
         _document_id, revision_id = self._store_srt_document(
             session_id,
             aligned_srt_artifact,
@@ -3980,6 +4067,16 @@ class WorkflowHandlers:
             )
         output_path = Path(transcription_result.srt_path)
         progress(0.9, "Registering transcription")
+        requested_language = str(
+            submitted_settings.get("original_language")
+            or submitted_settings.get("stt_language") or "auto"
+        )
+        resolved_language = str(getattr(transcription_result, "resolved_language", "") or "")
+        output_language = (
+            resolved_language if resolved_language.lower() not in {"", "auto", "und", "unknown"}
+            else requested_language
+        )
+        routing = dict(getattr(transcription_result, "routing", {}) or {})
         artifact = self.artifacts.register(
             output_path,
             kind="srt",
@@ -3995,11 +4092,10 @@ class WorkflowHandlers:
                     or "f16"
                 ),
                 "compute_backend": transcription_result.compute_backend,
-                "language": str(
-                    (payload.get("settings") or {}).get("original_language")
-                    or (payload.get("settings") or {}).get("stt_language")
-                    or "auto"
-                ),
+                "language": output_language,
+                "requested_language": requested_language,
+                "stt_routing": routing,
+                "requested_settings": redact_inline_secrets(submitted_settings),
             },
         )
         timing_artifact = self.artifacts.register(
@@ -4013,17 +4109,17 @@ class WorkflowHandlers:
                 "stt_engine": transcription_result.engine,
                 "stt_compute_backend": transcription_result.compute_backend,
             },
+            metadata={
+                "language": output_language, "requested_language": requested_language,
+                "stt_routing": routing,
+                "requested_settings": redact_inline_secrets(submitted_settings),
+            },
         )
         _document_id, revision_id = self._store_srt_document(
             session_id,
             artifact,
             "transcription",
-            language=str(
-                (payload.get("settings") or {}).get("original_language")
-                or (payload.get("settings") or {}).get("stt_language")
-                or ""
-            )
-            or None,
+            language=output_language or None,
         )
         word_count = self._store_timed_words(
             revision_id, Path(transcription_result.word_timestamps_path)
@@ -5927,19 +6023,36 @@ class WorkflowHandlers:
         if cancel_event.is_set():
             return {}
         progress(0.9, "Registering reference transcription")
+        requested_settings = dict(payload.get("settings") or {})
+        requested_language = str(requested_settings.get("stt_language") or "auto")
+        resolved_language = str(getattr(transcription_result, "resolved_language", "") or "")
+        output_language = (
+            resolved_language if resolved_language.lower() not in {"", "auto", "und", "unknown"}
+            else requested_language
+        )
+        transcription_metadata = {
+            "engine": transcription_result.engine,
+            "compute_backend": transcription_result.compute_backend,
+            "language": output_language,
+            "requested_language": requested_language,
+            "stt_routing": dict(getattr(transcription_result, "routing", {}) or {}),
+            "requested_settings": redact_inline_secrets(requested_settings),
+        }
         artifact = self.artifacts.register(
             output_path,
             kind="srt",
             role="voice_transcription",
             parent_ids=[sample_artifact.id],
-            settings=dict(payload.get("settings") or {}),
+            settings=requested_settings,
+            metadata=transcription_metadata,
         )
         timing_artifact = self.artifacts.register(
             Path(transcription_result.word_timestamps_path),
             kind="json",
             role="voice_word_timestamps",
             parent_ids=[sample_artifact.id, artifact.id],
-            settings=dict(payload.get("settings") or {}),
+            settings=requested_settings,
+            metadata=transcription_metadata,
         )
         # Read the canonical transcript so voice-reference text stays
         # independent from subtitle layout and structured speaker metadata.
@@ -8923,15 +9036,58 @@ class WorkflowHandlers:
         settings = dict(payload.get("settings") or {})
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
-        expected_revision_id = str(payload.get("speech_plan_revision_id") or settings.get("speech_plan_revision_id") or "")
+        top_level_revision_id = str(
+            payload.get("speech_plan_revision_id") or ""
+        ).strip()
+        settings_revision_id = str(
+            settings.get("speech_plan_revision_id") or ""
+        ).strip()
+        from .settings_policy import RevisionConflict
+
+        if (
+            top_level_revision_id
+            and settings_revision_id
+            and top_level_revision_id != settings_revision_id
+        ):
+            raise RevisionConflict(
+                "The requested speech plan revision conflicts with the selected revision."
+            )
+        expected_revision_id = top_level_revision_id or settings_revision_id
+
+        def assert_current_revision(session, revision_id: str):
+            plan = session.scalar(
+                select(GenerationPlan).where(
+                    GenerationPlan.session_id == session_id
+                )
+            )
+            revision = session.get(GenerationPlanRevision, revision_id)
+            if (
+                plan is None
+                or revision is None
+                or revision.plan_id != plan.id
+                or plan.active_revision_id != revision_id
+            ):
+                raise RevisionConflict(
+                    "The selected speech plan revision is no longer available in this session."
+                )
+            revision_settings = (
+                revision.settings_json
+                if isinstance(revision.settings_json, dict)
+                else {}
+            )
+            planned_source_id = str(
+                revision_settings.get("_source_artifact_id") or ""
+            )
+            if planned_source_id and planned_source_id != source_artifact.id:
+                raise RevisionConflict(
+                    "The selected speech plan revision belongs to a different generation input."
+                )
+            return revision
+
         if expected_revision_id:
             settings["speech_plan_revision_id"] = expected_revision_id
             with self.database.session() as session:
-                current_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
-                if current_plan is None or current_plan.active_revision_id != expected_revision_id:
-                    from .settings_policy import RevisionConflict
-
-                    raise RevisionConflict("The selected speech plan is no longer current.")
+                assert_current_revision(session, expected_revision_id)
         progress(0.0, "Preparing generation segments")
 
         plan_revision_id: str | None = None
@@ -8953,8 +9109,20 @@ class WorkflowHandlers:
                         GenerationPlan.session_id == session_id
                     )
                 )
-                if plan is not None and (source_artifact.role == "prepared_text" or expected_revision_id):
-                    plan_revision_id = plan.active_revision_id
+                if plan is not None and (
+                    source_artifact.role == "prepared_text" or expected_revision_id
+                ):
+                    active_revision_id = str(plan.active_revision_id or "")
+                    if active_revision_id:
+                        assert_current_revision(session, active_revision_id)
+                        if (
+                            expected_revision_id
+                            and active_revision_id != expected_revision_id
+                        ):
+                            raise RevisionConflict(
+                                "The selected speech plan revision changed before JSON narration reuse."
+                            )
+                        plan_revision_id = active_revision_id
             if not plan_revision_id:
                 records = json.loads(source_path.read_text(encoding="utf-8-sig"))
                 if not isinstance(records, list) or not records:
@@ -9009,11 +9177,11 @@ class WorkflowHandlers:
             ).encode("utf-8")
         ).hexdigest()
         with self.database.immediate_session() as session:
-            current_plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
-            if current_plan is None or current_plan.active_revision_id != plan_revision_id:
-                from .settings_policy import RevisionConflict
-
-                raise RevisionConflict("The speech plan changed before workflow generation could start.")
+            assert_current_revision(session, plan_revision_id)
+            if expected_revision_id and expected_revision_id != plan_revision_id:
+                raise RevisionConflict(
+                    "The selected speech plan revision changed before workflow generation could start."
+                )
             from .speech_plan_workspace import freeze_speech_snapshot
 
             freeze_speech_snapshot(session, plan_revision_id, snapshot, explicit=bool(expected_revision_id))
@@ -10189,6 +10357,25 @@ class WorkflowHandlers:
             "start_ms": waveform.start_ms,
             "end_ms": waveform.end_ms,
         }
+
+    def generate_project_export_bundle(self, payload, progress, cancel_event):
+        """Publish frozen export receipts without constructing request services."""
+        from types import SimpleNamespace
+
+        from .project_export_bundles import ProjectExportBundleService
+
+        worker_services = SimpleNamespace(
+            database=self.database, paths=self.paths, artifacts=self.artifacts
+        )
+        return ProjectExportBundleService(worker_services).generate(payload, progress, cancel_event)
+
+    def generate_video_preview(self, payload, progress, cancel_event):
+        """Generate a bounded compatible derivative without changing its source."""
+        from .video_previews import VideoPreviewService
+
+        return VideoPreviewService(self.database, self.paths, self.artifacts, self.jobs).generate(
+            payload, progress, cancel_event
+        )
 
     def generate_audio_preview(self, payload, progress, cancel_event):
         """Transcode the first source audio stream to a browser-safe MP3."""

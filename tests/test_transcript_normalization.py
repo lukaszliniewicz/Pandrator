@@ -16,6 +16,27 @@ from pandrator.logic.dubbing.transcript_normalization import (
 
 
 class TranscriptNormalizationTests(unittest.TestCase):
+    def test_crispasr_preserves_only_whitelisted_provenance_with_detached_copies(self):
+        payload = {
+            "crispasr": {"backend": "whisper", "language": "pl"},
+            "transcription": [],
+            "metadata": {
+                "stt_routing": {"resolved_language": "pl", "requirements": ["runtime"]},
+                "vocal_isolation": {"revision": "pin", "sha256": "hash"},
+                "requested_language": "auto", "unrelated": "private", "engine": "override",
+            },
+        }
+        normalized = normalize_transcript(payload)
+        self.assertEqual("whisper", normalized.metadata["engine"])
+        self.assertNotIn("unrelated", normalized.metadata)
+        self.assertEqual("auto", normalized.metadata["requested_language"])
+        payload["metadata"]["stt_routing"]["requirements"].append("changed")
+        payload["metadata"]["vocal_isolation"]["revision"] = "changed"
+        self.assertEqual(["runtime"], normalized.metadata["stt_routing"]["requirements"])
+        self.assertEqual("pin", normalized.metadata["vocal_isolation"]["revision"])
+        canonical = normalize_transcript(normalized.to_dict())
+        self.assertEqual(normalized.metadata, canonical.metadata)
+
     def test_qwen_zero_duration_words_survive_native_and_canonical_metadata(self):
         examples = (
             ("en", "Hello for world.", [("Hello", 100, 400), ("for", 410, 410), ("world.", 450, 950)]),

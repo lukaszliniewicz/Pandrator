@@ -121,6 +121,88 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             self.assertEqual(path, existing)
             opener.assert_not_called()
 
+    def test_linux_prefetch_reuses_cached_parakeet_and_vad_paths(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            model_path = Path(cache_dir) / "parakeet-tdt-0.6b-v3-q4_k.gguf"
+            vad_model_path = Path(cache_dir) / "ggml-silero-v6.2.0.bin"
+            model_path.write_bytes(b"cached-parakeet")
+            vad_model_path.write_bytes(b"cached-vad")
+            settings = {
+                "stt_engine": "parakeet",
+                "stt_model_quantization": "q4_k",
+                "stt_language": "en",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+                "crispasr_cache_dir": cache_dir,
+            }
+            opener = Mock(
+                side_effect=AssertionError("Linux cache hit must not download")
+            )
+            with patch.object(crispasr.platform, "system", return_value="Linux"):
+                resolved_model = crispasr._prefetch_windows_model(
+                    settings, opener=opener
+                )
+                resolved_vad = crispasr._prefetch_windows_vad_model(
+                    settings, opener=opener
+                )
+
+            command = crispasr.build_command(
+                "audio.wav",
+                "output",
+                settings,
+                executable="crispasr-test",
+                model_path=resolved_model,
+                vad_model_path=resolved_vad,
+            )
+
+        self.assertEqual(resolved_model, model_path)
+        self.assertEqual(resolved_vad, vad_model_path)
+        self.assertEqual(command[command.index("-m") + 1], str(model_path))
+        self.assertEqual(
+            command[command.index("--vad-model") + 1], str(vad_model_path)
+        )
+        self.assertNotIn("--hf-repo", command)
+        opener.assert_not_called()
+
+    def test_linux_prefetch_misses_ignore_absent_and_empty_cache_files(self):
+        with tempfile.TemporaryDirectory() as cache_dir:
+            (Path(cache_dir) / "parakeet-tdt-0.6b-v3-q4_k.gguf").touch()
+            (Path(cache_dir) / "ggml-silero-v6.2.0.bin").touch()
+            settings = {
+                "stt_engine": "parakeet",
+                "stt_model_quantization": "q4_k",
+                "stt_language": "en",
+                "crispasr_vad_enabled": True,
+                "crispasr_vad_model": "silero",
+                "crispasr_cache_dir": cache_dir,
+            }
+            opener = Mock(
+                side_effect=AssertionError("Linux cache miss must not download")
+            )
+            with patch.object(crispasr.platform, "system", return_value="Linux"):
+                model_path = crispasr._prefetch_windows_model(
+                    settings, opener=opener
+                )
+                vad_model_path = crispasr._prefetch_windows_vad_model(
+                    settings, opener=opener
+                )
+
+            command = crispasr.build_command(
+                "audio.wav",
+                "output",
+                settings,
+                executable="crispasr-test",
+                model_path=model_path,
+                vad_model_path=vad_model_path,
+            )
+
+        self.assertIsNone(model_path)
+        self.assertIsNone(vad_model_path)
+        self.assertIn("--hf-repo", command)
+        self.assertIn("parakeet-tdt-0.6b-v3-q4_k.gguf", command)
+        self.assertNotIn("--vad-model", command)
+        opener.assert_not_called()
+
     def test_windows_prefetch_downloads_the_vad_companion(self):
         class Download(io.BytesIO):
             headers: ClassVar[dict[str, str]] = {"Content-Length": "9"}
@@ -642,6 +724,132 @@ class CrispASRTranscriptionTests(unittest.TestCase):
             )
             self.assertEqual(segments[0].text, "Hello friend.")
             self.assertGreaterEqual(segments[0].end_ms - segments[0].start_ms, 833)
+
+    def test_untimed_qwen_preserves_native_srt_and_records_routing_and_isolation(self):
+        from pandrator.logic.dubbing import qwen_asr
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "filipino.wav"
+            with wave.open(str(source), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(16000)
+                audio.writeframes(b"\0\0" * 16000)
+            words_path = Path(temp_dir) / "filipino_words.json"
+            words_path.write_text(
+                json.dumps(
+                    {
+                        "crispasr": {"backend": "qwen3", "language": "fil"},
+                        "transcription": [{"text": "Kumusta ka.", "words": []}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            native_srt = Path(temp_dir) / "filipino.srt"
+            native_srt.write_text("recognizer-owned subtitle\n", encoding="utf-8")
+            qwen_result = crispasr.CrispASRTranscriptionResult(
+                srt_path=str(native_srt),
+                word_timestamps_path=str(words_path),
+                engine="qwen3",
+                compute_backend="cpu",
+            )
+            isolation = {
+                "method": "bs_roformer",
+                "model": "test-model",
+                "status": "completed",
+                "model_id": "bs_roformer_viperx_1297",
+                "family": "bs_roformer",
+                "cli_family": "audio_cpp",
+                "revision": "abc123",
+                "sha256": "f" * 64,
+                "size_bytes": 123456,
+                "backend": "cuda",
+                "requested_backend": "cuda",
+                "threads": 6,
+            }
+            with (
+                patch.object(
+                    transcription,
+                    "apply_vocal_isolation",
+                    return_value=(str(source), isolation),
+                ),
+                patch.object(qwen_asr, "transcribe", return_value=qwen_result) as qwen,
+                patch.object(
+                    transcription,
+                    "compose_from_transcript_json",
+                    side_effect=AssertionError("untimed output must not compose SRT"),
+                ),
+                patch.object(
+                    transcription,
+                    "postprocess_transcribed_srt",
+                    side_effect=AssertionError("untimed output must not postprocess SRT"),
+                ),
+            ):
+                result = transcription.transcribe_source_file_with_metadata(
+                    temp_dir,
+                    source,
+                    {
+                        "stt_engine": "qwen3",
+                        "stt_language": "fil",
+                        "transcription_vocal_isolation": "bs_roformer",
+                    },
+                    source_is_normalized=True,
+                    require_word_timestamps=False,
+                )
+
+            qwen.assert_called_once()
+            self.assertIs(qwen.call_args.kwargs["require_word_timestamps"], False)
+            self.assertEqual(str(native_srt), result.srt_path)
+            self.assertEqual("recognizer-owned subtitle\n", native_srt.read_text())
+            self.assertFalse(result.routing["require_word_timestamps"])
+            self.assertEqual(
+                ["transcript_json"], result.routing["metadata_requirements"]
+            )
+            metadata = json.loads(words_path.read_text(encoding="utf-8"))["metadata"]
+            self.assertEqual("qwen3", metadata["stt_routing"]["engine"])
+            self.assertFalse(metadata["stt_routing"]["require_word_timestamps"])
+            self.assertEqual("bs_roformer", metadata["vocal_isolation"]["transcription_vocal_isolation"])
+            isolation_metadata = metadata["vocal_isolation"]
+            for key in (
+                "model_id",
+                "family",
+                "cli_family",
+                "revision",
+                "sha256",
+                "size_bytes",
+                "backend",
+                "requested_backend",
+                "threads",
+            ):
+                self.assertEqual(isolation[key], isolation_metadata[key])
+            self.assertEqual(str(source), isolation_metadata["original_audio_retained"])
+
+    def test_timed_qwen_auto_detects_before_validating_alignment_coverage(self):
+        from pandrator.logic.dubbing import qwen_asr
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "automatic.wav"
+            with wave.open(str(source), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(16000)
+                audio.writeframes(b"\0\0" * 16000)
+            detector = Mock(return_value=SimpleNamespace(language="fil", confidence=0.99))
+            dispatch = Mock(side_effect=AssertionError("unsupported timing must stop dispatch"))
+            with patch.object(qwen_asr, "transcribe", dispatch):
+                with self.assertRaisesRegex(
+                    qwen_asr.QwenASRError, "unsupported_qwen_timestamps:fil"
+                ):
+                    transcription.transcribe_source_file_with_metadata(
+                        temp_dir,
+                        source,
+                        {"stt_engine": "qwen3", "stt_language": "automatic"},
+                        source_is_normalized=True,
+                        language_detector=detector,
+                    )
+
+            detector.assert_called_once()
+            dispatch.assert_not_called()
 
     def test_transcribe_source_dispatches_cloud_after_ffmpeg_normalization(self):
         calls = []

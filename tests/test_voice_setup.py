@@ -89,7 +89,7 @@ class _GuardsStub:
         return jsonify({"error": {"code": code, "message": message}}), status
 
 
-class VoiceSetupTests:
+class TestVoiceSetup:
     @pytest.fixture(autouse=True)
     def setup_database(self, tmp_path):
         paths = prepare_web_test_data_root(tmp_path)

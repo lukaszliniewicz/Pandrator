@@ -200,3 +200,78 @@ class CapabilityCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SttRoutingCapabilityTests(unittest.TestCase):
+    def _stt(self, *, installed=True, version="0.8.40", ffmpeg=True):
+        from pandrator.logic import audio_cpp_assets
+        from pandrator.logic.dubbing import qwen_alignment, qwen_asr
+        from pandrator.logic.dubbing.stt_backends import CrispASRRuntimeStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            paths = prepare_web_test_data_root(directory)
+            runtime = CrispASRRuntimeStatus(installed, "fake-crispasr" if installed else "", version, ("cpu",), "fixture")
+            with (
+                mock.patch.object(capabilities, "probe_crispasr_runtime", return_value=runtime),
+                mock.patch.object(capabilities, "probe_gpu", return_value={"devices": []}),
+                mock.patch.object(capabilities, "probe_burn_video_encoders", return_value=[]),
+                mock.patch.object(capabilities.shutil, "which", return_value="fake-ffmpeg" if ffmpeg else None),
+                mock.patch.object(capabilities, "_crispasr_model_cached", return_value=False),
+                mock.patch.object(capabilities, "crispasr_install_preferences", return_value={"configured": True, "engine": "parakeet", "quantization": "q4_k"}),
+                mock.patch.object(qwen_asr, "capabilities", return_value={"cached_assets": {}, "word_timing": "native_or_canary"}),
+                mock.patch.object(qwen_alignment, "capabilities", return_value={"id": "qwen3-forced-aligner", "available": False}),
+                mock.patch.object(audio_cpp_assets, "availability", return_value={"models": {"htdemucs": {"available": True}}}),
+            ):
+                return capabilities.probe_stable_capabilities(paths)["stt"]
+
+    def test_auto_is_policy_and_runtime_availability_does_not_claim_weights(self):
+        stt = self._stt()
+        self.assertEqual("auto", stt["default_engine"])
+        self.assertEqual("parakeet", stt["installer_preferences"]["engine"])
+        self.assertNotIn("auto", stt["models"])
+        policy = stt["policies"]["auto"]
+        self.assertEqual("policy", policy["kind"])
+        self.assertTrue(policy["available"])
+        self.assertEqual(["parakeet", "qwen3", "whisper"], policy["strategy"])
+        self.assertNotIn("installed", policy)
+        self.assertFalse(policy["recognition_failure_fallback"])
+        self.assertTrue(all(not model["installed"] for model in stt["models"].values()))
+        self.assertIn("htdemucs", stt["audio_cpp_tools"]["models"])
+        self.assertFalse(self._stt(installed=False)["policies"]["auto"]["available"])
+
+    def test_recognizer_and_aligner_support_are_distinct_operations(self):
+        stt = self._stt()
+        qwen = stt["models"]["qwen3"]
+        recognition = qwen["language_support"]
+        alignment = stt["forced_aligners"][0]["language_support"]
+        self.assertEqual("asr", recognition["operation"])
+        self.assertEqual("crispasr:qwen3", recognition["native_route"])
+        self.assertEqual(30, len(recognition["languages"]))
+        self.assertIn("ar", recognition["languages"])
+        self.assertEqual("alignment", alignment["operation"])
+        self.assertEqual(11, len(alignment["languages"]))
+        self.assertNotIn("ar", alignment["languages"])
+        self.assertEqual("unknown", stt["models"]["moss"]["language_support"]["coverage"])
+        self.assertEqual(100, len(stt["models"]["whisper"]["language_support"]["languages"]))
+        self.assertEqual(25, len(stt["models"]["parakeet"]["language_support"]["languages"]))
+        self.assertFalse(qwen["requires_explicit_language_for_timestamps"])
+        self.assertTrue(qwen["requires_resolved_language_for_timestamps"])
+
+    def test_detector_requirements_are_honest_and_do_not_raise_whisper_minimum(self):
+        detector = self._stt()["language_detector"]
+        self.assertTrue(detector["available"])
+        self.assertEqual(15000, detector["max_sample_ms"])
+        self.assertEqual(120, detector["timeout_seconds"])
+        self.assertEqual("cpu", detector["compute_backend"])
+        self.assertEqual(0.70, detector["confidence_threshold"])
+        self.assertTrue(detector["confidence_threshold_provisional"])
+        self.assertEqual("ggml-tiny.bin", detector["model"]["filename"])
+        self.assertEqual(77691713, detector["model"]["size"])
+        self.assertEqual(64, len(detector["model"]["sha256"]))
+        old = self._stt(version="0.8.35")
+        self.assertFalse(old["language_detector"]["available"])
+        self.assertTrue(old["models"]["whisper"]["language_detection"])
+        self.assertFalse(old["models"]["parakeet"]["language_detection"])
+        self.assertFalse(old["models"]["qwen3"]["language_detection"])
+        self.assertFalse(old["models"]["qwen3"]["available"])
+        self.assertFalse(self._stt(ffmpeg=False)["language_detector"]["available"])

@@ -133,3 +133,34 @@ def test_real_synthetic_ffmpeg_progress_timestamps_are_monotonic(tmp_path):
     assert timestamps
     assert timestamps == sorted(timestamps)
     assert records[-1]["progress"] == "end"
+
+
+def test_watchdog_stops_process_and_progress_reader(tmp_path):
+    from pandrator.web.media_process import MediaProcessTimeout
+
+    marker = tmp_path / "finished"
+    command = _python_command(
+        "import pathlib, time\n"
+        "print('out_time_us=1000', flush=True)\n"
+        "print('progress=continue', flush=True)\n"
+        "time.sleep(10)\n"
+        f"pathlib.Path({str(marker)!r}).write_text('finished')\n"
+    )
+    started = time.monotonic()
+    with pytest.raises(MediaProcessTimeout, match="timeout"):
+        run_media_process(command, timeout_seconds=0.2, progress_callback=lambda _record: None)
+    assert time.monotonic() - started < 3
+    assert not marker.exists()
+    assert not any(thread.name == "pandrator-media-progress-reader" and thread.is_alive()
+                   for thread in threading.enumerate())
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_watchdog_requires_positive_finite_timeout(timeout):
+    with pytest.raises(ValueError, match="finite and positive"):
+        run_media_process(_python_command("pass"), timeout_seconds=timeout)
+
+
+def test_watchdog_default_and_explicit_deadline_allow_success():
+    assert run_media_process(_python_command("pass")).returncode == 0
+    assert run_media_process(_python_command("pass"), timeout_seconds=2).returncode == 0

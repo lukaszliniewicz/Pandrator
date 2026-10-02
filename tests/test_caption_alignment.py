@@ -420,3 +420,22 @@ def test_parse_vad_export_rejects_unwrapped_schema():
         pass
     else:
         raise AssertionError("unwrapped VAD payload must not be accepted")
+
+
+@pytest.mark.parametrize("language,text,resolved,source", [
+    ("pl", "Polski tekst", "pl", "explicit"),
+    ("ja", "日本語字幕", "ja", "explicit"),
+    ("auto", "Polski tekst", "auto", "unresolved"),
+    ("auto", "日本語の字幕です", "ja", "caption_script_hint"),
+    ("auto", "日本語字幕", "zh", "caption_script_hint"),
+])
+def test_alignment_language_resolution_is_explicit_hint_or_unresolved(tmp_path, language, text, resolved, source):
+    normalized = _normalized_wav(tmp_path / "normalized.wav", duration_seconds=2)
+    result = align_caption_cues(normalized, (_cue("target", 100, 500, text),), {"stt_engine": "auto", "stt_language": language}, ctc_runner=lambda *_args: [])
+    assert result.resolved_language == resolved
+    assert result.language_resolution["source"] == source
+    assert result.language_resolution["is_detection_proof"] is False
+    metrics = result.metrics
+    assert metrics["resolved_language"] == resolved
+    metrics["language_resolution"]["source"] = "changed"
+    assert result.language_resolution["source"] == source

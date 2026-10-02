@@ -12,8 +12,6 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
-from pandrator.web.multilingual_setup import MultilingualSetup
-
 from . import __version__
 from .context import McpRuntime
 from .errors import FailureCode, PandratorMcpError, ToolFailure
@@ -81,6 +79,7 @@ from .schemas import (
     MediaEditDispatchResultInput,
     MediaEditKeepRange,
     MediaEditSourceReference,
+    MultilingualSetup,
     PatchSessionSettingsInput,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,

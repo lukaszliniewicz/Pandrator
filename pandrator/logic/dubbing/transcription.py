@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -349,6 +350,12 @@ def _record_isolation_provenance(
         "vocal_isolation_status": provenance.get("status"),
         "original_audio_retained": str(original_audio),
     }
+    for key in (
+        "model_id", "family", "cli_family", "revision", "sha256", "size_bytes",
+        "method", "status", "backend", "compute_backend", "requested_backend", "threads",
+    ):
+        if key in provenance:
+            entry[key] = provenance[key]
     try:
         if isinstance(payload, dict) and isinstance(
             payload.get("metadata"), dict
@@ -378,18 +385,35 @@ def transcribe_source_file_with_metadata(
     cloud_request_func: Callable[..., Any] | None = None,
     cloud_session: Any | None = None,
     source_is_normalized: bool = False,
+    require_word_timestamps: bool = True,
+    runtime_statuses: dict[str, Any] | None = None,
+    language_detector: Callable[..., Any] | None = None,
     **_legacy_kwargs,
 ) -> CrispASRTranscriptionResult:
-    from .stt_backends import normalize_stt_backend
+    from .stt_backends import detect_stt_backend_statuses, normalize_stt_backend
+    from .stt_language_detection import detect_source_language
+    from .stt_languages import normalize_stt_language
+    from .stt_routing import resolve_stt_route
 
     configured_engine = normalize_stt_backend(
         settings.get("stt_engine") or settings.get("stt_backend") or ""
     )
+    requested_language = normalize_stt_language(
+        settings.get("stt_language") or settings.get("whisper_language")
+    )
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("Transcription was canceled.")
     if configured_engine == "qwen3":
         from . import qwen_asr
 
+        requested_language = qwen_asr.normalize_qwen_asr_language(
+            settings.get("stt_language") or settings.get("whisper_language")
+        )
         qwen_asr.validate_transcription_settings(
-            settings, require_word_timestamps=True
+            settings,
+            require_word_timestamps=(
+                require_word_timestamps and requested_language != "auto"
+            ),
         )
 
     session_path = Path(session_dir)
@@ -427,6 +451,52 @@ def transcribe_source_file_with_metadata(
         ffmpeg_executable=ffmpeg_executable,
         run_func=run_func,
     )
+    language = requested_language
+    language_source = "native" if language == "auto" else "declared"
+    confidence = None
+    detection_reason = ""
+    if language == "auto" and configured_engine in {"auto", "parakeet", "qwen3"}:
+        try:
+            detected = (language_detector or detect_source_language)(
+                transcribe_path, settings=settings, cancel_event=cancel_event,
+                excerpt_func=extract_audio_excerpt,
+                ffmpeg_executable=ffmpeg_executable,
+                crispasr_executable=crispasr_executable, run_func=run_func,
+            )
+            language, confidence = detected.language, detected.confidence
+            language_source = "detected"
+        except ProcessCancelled:
+            raise
+        except Exception as error:
+            detection_reason = f"language_detection_failed:{type(error).__name__}:{error}"[:600]
+            language_source = "unresolved"
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProcessCancelled("Transcription was canceled.")
+    active_statuses = runtime_statuses
+    if configured_engine == "auto" and active_statuses is None:
+        active_statuses = detect_stt_backend_statuses(run_func=run_func)
+    route = resolve_stt_route(
+        settings, resolved_language=language, language_source=language_source,
+        confidence=confidence, detection_reason=detection_reason,
+        require_word_timestamps=require_word_timestamps,
+        runtime_statuses=active_statuses,
+    )
+    configured_engine = route.engine
+    resolved_settings = {
+        **settings, "stt_engine": route.engine,
+        "stt_language": route.resolved_language,
+        "whisper_language": route.resolved_language,
+    }
+    if cloud_stt.is_cloud_stt_engine(configured_engine):
+        # Cloud providers accept locale tags such as en-US; their adapter
+        # continues receiving the original tag rather than a local base code.
+        resolved_settings = dict(settings)
+    if configured_engine == "qwen3":
+        from . import qwen_asr
+
+        qwen_asr.validate_transcription_settings(
+            resolved_settings, require_word_timestamps=require_word_timestamps
+        )
     if progress_callback is not None:
         progress_callback(0.22, "Running speech recognition")
     if cancel_event is not None and cancel_event.is_set():
@@ -440,7 +510,7 @@ def transcribe_source_file_with_metadata(
             transcribe_path,
             session_dir=session_path,
             output_name=source_name,
-            settings=settings,
+            settings=resolved_settings,
             request_func=cloud_request_func,
             session=cloud_session,
         )
@@ -448,7 +518,7 @@ def transcribe_source_file_with_metadata(
         # qwen_asr.transcribe owns STT/alignment only; isolation already ran
         # above, so pass it off to avoid double-processing.
         qwen_options = {
-            **settings,
+            **resolved_settings,
             "transcription_vocal_isolation": "off",
         }
         result = qwen_asr.transcribe(
@@ -456,6 +526,7 @@ def transcribe_source_file_with_metadata(
             session_dir=session_path,
             output_name=source_name,
             settings=qwen_options,
+            require_word_timestamps=require_word_timestamps,
             run_func=run_func,
             cancel_event=cancel_event,
             progress_callback=(
@@ -469,31 +540,67 @@ def transcribe_source_file_with_metadata(
             transcribe_path,
             session_dir=session_path,
             output_name=source_name,
-            settings=settings,
+            settings=resolved_settings,
             executable=crispasr_executable,
             run_func=run_func,
             cancel_event=cancel_event,
+            require_word_timestamps=require_word_timestamps,
         )
+    # Freeze the route before language-aware subtitle composition. Native
+    # Whisper can report its language when preflight detection was unnecessary.
+    routing = route.as_dict()
+    words_path = Path(result.word_timestamps_path)
+    payload = json.loads(words_path.read_text(encoding="utf-8"))
+    effective_language = route.resolved_language
+    if effective_language == "auto":
+        header = payload.get("crispasr") or {}
+        effective_language = normalize_stt_language(
+            result.resolved_language or payload.get("language")
+            or header.get("language_detected") or header.get("language")
+        )
+        routing["resolved_language"] = effective_language
+        if effective_language != "auto":
+            routing["language_source"] = "native"
+    if not isinstance(payload.get("metadata"), dict):
+        payload["metadata"] = {}
+    payload["metadata"]["stt_routing"] = routing
+    payload["language"] = effective_language
+    if isinstance(payload.get("crispasr"), dict):
+        payload["crispasr"]["language"] = effective_language
+        if "language_detected" in payload["crispasr"]:
+            payload["crispasr"]["language_detected"] = effective_language
+    words_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    resolved_settings = {**resolved_settings, "stt_language": effective_language}
     if isolation_provenance is not None:
         _record_isolation_provenance(
             result.word_timestamps_path, isolation_provenance, audio_path
         )
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("Transcription was canceled.")
-    if progress_callback is not None:
-        progress_callback(0.82, "Speech recognition complete; composing subtitles")
-    Path(result.srt_path).write_text(
-        compose_from_transcript_json(result.word_timestamps_path, settings),
-        encoding="utf-8",
-    )
-    processed = postprocess_transcribed_srt(result.srt_path)
-    if progress_callback is not None:
-        progress_callback(1.0, "Subtitle timing and word metadata ready")
+    if require_word_timestamps:
+        if progress_callback is not None:
+            progress_callback(0.82, "Speech recognition complete; composing subtitles")
+        Path(result.srt_path).write_text(
+            compose_from_transcript_json(result.word_timestamps_path, resolved_settings),
+            encoding="utf-8",
+        )
+        result_srt_path = postprocess_transcribed_srt(result.srt_path)
+        if progress_callback is not None:
+            progress_callback(1.0, "Subtitle timing and word metadata ready")
+    else:
+        # Recognition-only output can carry native segment timing, but it does
+        # not promise word alignment. Preserve any recognizer SRT unchanged and
+        # leave its publication decision to the caller.
+        result_srt_path = result.srt_path
+        if progress_callback is not None:
+            progress_callback(1.0, "Transcript and routing metadata ready")
     return CrispASRTranscriptionResult(
-        srt_path=processed,
+        srt_path=result_srt_path,
         word_timestamps_path=result.word_timestamps_path,
         engine=result.engine,
         compute_backend=result.compute_backend,
+        resolved_language=effective_language,
+        routing=routing,
     )
 
 

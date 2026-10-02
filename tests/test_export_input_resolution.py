@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import wave
+from copy import deepcopy
 from unittest import mock
 
 from sqlalchemy import func, select
@@ -19,11 +20,77 @@ from pandrator.web.models import (
     GenerationRun,
     OutputAssembly,
 )
+from pandrator.web.output_settings_snapshot import build_output_settings_snapshot
 from pandrator.web.sessions import SessionService
+from pandrator.web.settings_policy import stable_hash
 from pandrator.web.source_resolution import resolve_media_source
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workspace import SourceLibraryService
 from tests.web_test_support import prepare_web_test_data_root
+
+
+class OutputSettingsSnapshotTests(unittest.TestCase):
+    def test_flat_runtime_overrides_update_resolved_output_snapshot(self):
+        settings = {
+            "export_mode": "subtitles",
+            "subtitle_mode": "translation",
+            "subtitle_format": "vtt",
+            "silence_between_sentences": 500,
+            "sentence_silence_ms": 100,
+            "subtitle_max_lines": 3,
+            "max_lines": 1,
+            "subtitle_max_chars_per_line": 42,
+            "max_chars_per_line": 60,
+            "api_key": "must-not-be-captured",
+            "xtts_model": "unrelated-tts-setting",
+        }
+        resolved_snapshot = {
+            "output": {
+                "export_mode": "media",
+                "subtitle_mode": "none",
+                "subtitle_format": "srt",
+                "video_transcode": True,
+                "resolved_marker": {"kept": True},
+            },
+            "audio": {
+                "sentence_silence_ms": 250,
+                "paragraph_silence_ms": 800,
+                "resolved_marker": {"kept": True},
+            },
+            "subtitles": {
+                "max_lines": 2,
+                "max_chars_per_line": 56,
+                "language_defaults": False,
+                "resolved_marker": {"kept": True},
+            },
+        }
+        original_settings = deepcopy(settings)
+        original_resolved_snapshot = deepcopy(resolved_snapshot)
+
+        snapshot = build_output_settings_snapshot(settings, resolved_snapshot)
+        sections = snapshot["sections"]
+
+        self.assertEqual("subtitles", sections["output"]["export_mode"])
+        self.assertEqual("translation", sections["output"]["subtitle_mode"])
+        self.assertEqual("vtt", sections["output"]["subtitle_format"])
+        self.assertTrue(sections["output"]["video_transcode"])
+        self.assertEqual({"kept": True}, sections["output"]["resolved_marker"])
+        self.assertEqual(500, sections["audio"]["sentence_silence_ms"])
+        self.assertEqual(800, sections["audio"]["paragraph_silence_ms"])
+        self.assertEqual({"kept": True}, sections["audio"]["resolved_marker"])
+        self.assertEqual(3, sections["subtitles"]["max_lines"])
+        self.assertEqual(42, sections["subtitles"]["max_chars_per_line"])
+        self.assertFalse(sections["subtitles"]["language_defaults"])
+        self.assertEqual({"kept": True}, sections["subtitles"]["resolved_marker"])
+        self.assertNotIn("api_key", str(sections))
+        self.assertNotIn("xtts_model", str(sections))
+        self.assertEqual(stable_hash(sections), snapshot["settings_hash"])
+        self.assertNotEqual(
+            build_output_settings_snapshot({}, resolved_snapshot)["settings_hash"],
+            snapshot["settings_hash"],
+        )
+        self.assertEqual(original_settings, settings)
+        self.assertEqual(original_resolved_snapshot, resolved_snapshot)
 
 
 class ExportInputResolutionTests(unittest.TestCase):

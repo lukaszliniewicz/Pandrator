@@ -1,6 +1,8 @@
 """Revision-safe forks and independent multilingual translation branches."""
 
-from pydantic import Field, StrictBool
+from typing import Annotated, Literal
+
+from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from .common import ToolInput
 
@@ -43,9 +45,75 @@ class CreateTranslationBranchesInput(ToolInput):
     idempotency_key: str = Field(pattern=_KEY)
 
 
+class PreviewTranslationProjectOperationInput(ToolInput):
+    project_id: StrictStr = Field(min_length=1, max_length=80)
+    selected_branch_ids: list[Annotated[StrictStr, Field(min_length=1, max_length=80)]] = Field(
+        min_length=1,
+        max_length=20,
+    )
+    expected_project_revision: StrictInt = Field(ge=1)
+    action: Literal["translate", "generate", "export"]
+    export_kind: Literal["configured", "subtitles"] = "configured"
+    idempotency_key: StrictStr = Field(min_length=8, max_length=200, pattern=_KEY)
+
+    @field_validator("selected_branch_ids")
+    @classmethod
+    def selected_branches_are_unique(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("selected_branch_ids must contain unique branch IDs")
+        return values
+
+
+class GetTranslationProjectOperationInput(ToolInput):
+    operation_id: StrictStr = Field(min_length=1, max_length=80)
+
+
+class ExecuteTranslationProjectOperationInput(ToolInput):
+    operation_id: StrictStr = Field(min_length=1, max_length=80)
+    preview_digest: StrictStr = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    accepted_confirmations: list[StrictStr] = Field(default_factory=list, max_length=20)
+    idempotency_key: StrictStr = Field(min_length=8, max_length=200, pattern=_KEY)
+
+
+class CancelTranslationProjectOperationInput(ToolInput):
+    operation_id: StrictStr = Field(min_length=1, max_length=80)
+    idempotency_key: StrictStr = Field(min_length=8, max_length=200, pattern=_KEY)
+
+
+class RetryTranslationProjectOperationPreviewInput(ToolInput):
+    operation_id: StrictStr = Field(min_length=1, max_length=80)
+    expected_project_revision: StrictInt = Field(ge=1)
+    idempotency_key: StrictStr = Field(min_length=8, max_length=200, pattern=_KEY)
+
+
+class GetTranslationProjectExportManifestInput(ToolInput):
+    operation_id: StrictStr = Field(min_length=1, max_length=80)
+
+
+class RequestTranslationProjectExportBundleInput(ToolInput):
+    operation_id: StrictStr = Field(min_length=1, max_length=80)
+    expected_manifest_digest: StrictStr = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    idempotency_key: StrictStr = Field(min_length=8, max_length=200, pattern=_KEY)
+
+
 SESSION_BRANCH_INPUT_MODELS = (
     ForkSessionInput,
     GetTranslationProjectInput,
     CreateTranslationProjectInput,
     CreateTranslationBranchesInput,
+    PreviewTranslationProjectOperationInput,
+    GetTranslationProjectOperationInput,
+    ExecuteTranslationProjectOperationInput,
+    CancelTranslationProjectOperationInput,
+    RetryTranslationProjectOperationPreviewInput,
+    GetTranslationProjectExportManifestInput,
+    RequestTranslationProjectExportBundleInput,
 )

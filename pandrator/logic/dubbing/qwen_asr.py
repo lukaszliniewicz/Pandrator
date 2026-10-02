@@ -82,7 +82,7 @@ QWEN3_ASR_LANGUAGE_LABELS = {
 }
 
 QWEN3_CHUNK_MODES = ("auto", "fixed", "vad", "none")
-VOCAL_ISOLATION_CHOICES = ("off", "bs_roformer", "mel_band_roformer")
+VOCAL_ISOLATION_CHOICES = ("off", "bs_roformer", "mel_band_roformer", "htdemucs")
 
 # Timing pipeline constraint (distinct from recognizer coverage above).
 # Precise word timing is available either natively (validated source
@@ -196,6 +196,8 @@ def normalize_vocal_isolation(raw_value: str | None) -> str:
         "mel_roformer",
     }:
         return "mel_band_roformer"
+    if normalized in {"htdemucs", "demucs", "htdemucs_q8_0"}:
+        return "htdemucs"
     raise QwenASRError(
         f"Unknown transcription_vocal_isolation {raw_value!r}; use one of "
         f"{', '.join(VOCAL_ISOLATION_CHOICES)}."

@@ -90,6 +90,12 @@ project pins that exact correction and edited timeline. Each language has its
 own translation, voice setup, speech review, generation and exports. Adding
 languages does not start translation or synthesis.
 
+The project shows the pinned correction, timeline and independent readiness for
+translation, review, voice, generation and export. Select languages to preview
+an action, inspect its captured inputs and blocked reasons, then submit eligible
+jobs. Completed children are preserved when retrying failures. Collect verified
+exports as a manifest or a complete ZIP; subtitle-only exports do not need audio.
+
 You can also choose **Multilingual project** in the new-session wizard for
 subtitles, voiceovers or recording edits. Select target languages with the
 searchable checkboxes and choose subtitles only or subtitles with voiceovers.

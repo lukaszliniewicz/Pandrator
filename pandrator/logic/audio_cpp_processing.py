@@ -3,13 +3,14 @@
 Two narrow adapters, both preserving the source file byte-for-byte and never
 shifting the timeline:
 
-- :func:`isolate_vocals` runs ``--task sep`` with the BS-RoFormer or
-  Mel-Band RoFormer GGUF selected by ``settings["transcription_vocal_isolation"]``.
+- :func:`isolate_vocals` runs ``--task sep`` with the BS-RoFormer,
+  Mel-Band RoFormer, or four-stem HTDemucs GGUF selected by
+  ``settings["transcription_vocal_isolation"]``.
 - :func:`clean_voice_sample` runs ``--task s2s`` with the DeepFilterNet2
   weights through the ``builtin_audio_utils`` family
   (``--load-option utility=deepfilternet2``).
 
-CLI shapes follow audio.cpp 0.8.1 ``docs/audio_tools.md``. The DFN2 route
+CLI shapes follow audio.cpp 0.9.0 ``docs/audio_tools.md``. The DFN2 route
 (``--task s2s --family builtin_audio_utils --model <dir>
 --load-option utility=deepfilternet2 --audio <48k.wav> --out <wav>``) was
 additionally verified against a native 0.8.1 CPU run on synthetic audio
@@ -50,10 +51,11 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str, int, int], None]
 
-SUPPORTED_ISOLATION_MODES = ("off", "bs_roformer", "mel_band_roformer")
+SUPPORTED_ISOLATION_MODES = ("off", "bs_roformer", "mel_band_roformer", "htdemucs")
 ISOLATION_MODEL = {
     "bs_roformer": "bs_roformer",
     "mel_band_roformer": "mel_band_roformer",
+    "htdemucs": "htdemucs_q8_0",
 }
 SEPARATION_INPUT_HZ = 44100
 DFN2_INPUT_HZ = 48000
@@ -71,9 +73,17 @@ def check_cancelled(event: threading.Event | None) -> None:
 
 
 def isolation_mode(settings: dict) -> str:
-    mode = str(settings.get("transcription_vocal_isolation") or "off").strip().lower()
+    mode = (
+        str(settings.get("transcription_vocal_isolation") or "off")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
     if mode in {"none", "false", "disabled"}:
         return "off"
+    if mode in {"demucs", "htdemucs_q8_0"}:
+        mode = "htdemucs"
     if mode not in SUPPORTED_ISOLATION_MODES:
         raise AudioProcessingError(
             "Unknown transcription_vocal_isolation "
@@ -385,7 +395,7 @@ def isolate_vocals(
     progress: ProgressCallback | None = None,
     run_func: Callable | None = None,
 ) -> dict:
-    """Separate vocals with BS/Mel-Band RoFormer; ``off`` skips without side effects."""
+    """Separate vocals with an allowlisted model; ``off`` skips without side effects."""
     mode = isolation_mode(settings)
     values = dict(settings)
     if mode == "off":
@@ -401,6 +411,7 @@ def isolate_vocals(
         raise AudioProcessingError(f"Isolation source not found: {origin}")
     _reject_same_path(origin, target, "Vocal isolation")
     model_id = ISOLATION_MODEL[mode]
+    model_spec = assets.model_info(model_id)
     model = assets.ensure_model(
         model_id, values, cancel_event=cancel_event, progress=progress
     )
@@ -427,7 +438,7 @@ def isolate_vocals(
             "--task",
             "sep",
             "--family",
-            model_id,
+            model_spec["cli_family"],
             "--model",
             str(model),
             "--backend",
@@ -450,9 +461,6 @@ def isolate_vocals(
         _run_child(command, isolation_settings, cancel_event, run_func, purpose="vocal isolation")
         check_cancelled(cancel_event)
         vocals = out_dir / "vocals.wav"
-        if not vocals.is_file():
-            candidates = sorted(out_dir.glob("*vocal*.wav"))
-            vocals = candidates[0] if candidates else vocals
         output_info = _validate_output_wav(
             vocals, model_input["duration_s"], "vocal isolation"
         )
@@ -465,7 +473,16 @@ def isolate_vocals(
     return {
         "status": "isolated",
         "model": model_id,
-        "family": model_id,
+        "model_id": model_id,
+        "asset_id": model_id,
+        "family": model_spec["family"],
+        "cli_family": model_spec["cli_family"],
+        "revision": model_spec["revision"],
+        "sha256": model_spec["sha256"],
+        "size_bytes": model_spec["size_bytes"],
+        "requested_backend": _backend(values),
+        **({"backend": _backend(values)} if _backend(values) != "best" else {}),
+        "threads": _int_setting(values, "audio_cpp_threads", 4, 1),
         "source_duration_s": model_input["duration_s"],
         "output_duration_s": output_info["duration_s"],
         "output_sample_rate_hz": output_info["rate"],

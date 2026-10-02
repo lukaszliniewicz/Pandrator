@@ -1,5 +1,7 @@
 <script lang="ts">
   import GenerationRunHistory from './GenerationRunHistory.svelte';
+  import LanguageSelect from './LanguageSelect.svelte';
+  import { languageSupportProblem } from './language-registry';
   import {
     generationHistoryVersion,
     generationHistoryStatus,
@@ -748,12 +750,25 @@
       ? discovered
       : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto');
   });
+  const alternateLanguageSupport = $derived(
+    alternateService?.model_catalog?.find(
+      (item) =>
+        item.id === String(alternateTts.model ?? alternateTts.xtts_model ?? '')
+    )?.language_support
+  );
+  const alternateLanguageIssue = $derived(
+    languageSupportProblem(
+      alternateLanguageSupport,
+      String(alternateTts.language ?? '')
+    )
+  );
   const alternateIsChatterbox = $derived(
     normalizeId(alternateService?.id) === 'chatterbox'
   );
   const alternateCanStart = $derived(
     alternateSegmentIds.length > 0 &&
       Boolean(alternateService) &&
+      !alternateLanguageIssue &&
       alternateService?.online !== false &&
       (alternateModels.length === 0 ||
         Boolean(String(alternateTts.model ?? ''))) &&
@@ -3418,14 +3433,14 @@
             provider.</span
           >
         </label>
-        <label class="text-sm font-semibold"
-          >Language
-          <select
-            class="field mt-1 w-full"
+        <div>
+          <LanguageSelect
+            label="Speech language"
             value={String(alternateTts.language ?? '')}
+            options={alternateLanguages}
+            allowCustom={alternateLanguageSupport?.coverage !== 'exact'}
             disabled={!alternateService || alternateService.online === false}
-            onchange={(event) => {
-              const language = event.currentTarget.value;
+            onchange={(language) => {
               const voice = alternateService
                 ? setAlternateVoiceFor(
                     alternateService,
@@ -3442,12 +3457,24 @@
                 speaker: voice
               };
             }}
-          >
-            {#each alternateLanguages as language}<option value={language.value}
-                >{language.label}</option
-              >{/each}
-          </select>
-        </label>
+          />
+          {#if alternateLanguageIssue}<p
+              class="mt-2 text-sm text-red-600"
+              role="alert"
+            >
+              {alternateLanguageIssue}
+            </p>{:else if alternateLanguageSupport?.coverage !== 'exact'}<p
+              class="muted mt-2 text-xs"
+            >
+              Language coverage is {alternateLanguageSupport?.coverage ===
+              'subset'
+                ? 'a documented subset'
+                : alternateLanguageSupport?.coverage === 'claim'
+                  ? 'a documented claim'
+                  : 'unverified'} for this model. Try a short sample before generating
+              all selected passages.
+            </p>{/if}
+        </div>
       </div>
 
       <label class="mt-4 block text-sm font-semibold"

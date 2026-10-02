@@ -13,7 +13,7 @@ import tempfile
 import threading
 import unicodedata
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import URLError
@@ -197,6 +197,8 @@ class CrispASRTranscriptionResult:
     word_timestamps_path: str
     engine: str
     compute_backend: str
+    resolved_language: str = ""
+    routing: dict[str, Any] = field(default_factory=dict)
 
 
 class CrispASRError(RuntimeError):
@@ -270,7 +272,11 @@ def _prefetch_windows_artifact(
     *,
     opener: Callable[..., Any] = urlopen,
 ) -> Path | None:
-    """Atomically cache an artifact before CrispASR reaches its cmd.exe fallback."""
+    """Reuse a cached artifact everywhere; download atomically on Windows only."""
+    cached = _cached_artifact_path(settings, artifact)
+    if cached is not None:
+        return cached
+
     if platform.system() != "Windows":
         return None
 

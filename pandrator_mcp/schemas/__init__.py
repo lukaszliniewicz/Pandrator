@@ -120,7 +120,9 @@ from .session_branches import (
     CreateTranslationBranchesInput,
     CreateTranslationProjectInput,
     ForkSessionInput,
+    GetTranslationProjectExportManifestInput,
     GetTranslationProjectInput,
+    RequestTranslationProjectExportBundleInput,
 )
 from .session_purge import (
     SESSION_PURGE_INPUT_MODELS,
@@ -140,6 +142,7 @@ from .sessions import (
     ImportSubtitlesInput,
     ListSessionsInput,
     ListSourcesInput,
+    MultilingualSetup,
     PatchSessionSettingsInput,
     PatchSubtitleCuesInput,
     PreviewSubtitlesInput,
@@ -372,8 +375,10 @@ TOOL_INPUT_MODELS = (
 __all__ = [
     "ForkSessionInput",
     "GetTranslationProjectInput",
+    "GetTranslationProjectExportManifestInput",
     "CreateTranslationProjectInput",
     "CreateTranslationBranchesInput",
+    "RequestTranslationProjectExportBundleInput",
     "SESSION_BRANCH_INPUT_MODELS",
     "GetSubtitleEvidenceRoutesInput",
     "TerminateDispatchRunInput",
@@ -435,6 +440,7 @@ __all__ = [
     "InspectMediaEditBoundaryArguments",
     "RefineMediaEditBoundaryArguments",
     "MediaEditSourceReference",
+    "MultilingualSetup",
     "PlanMediaEditWorkflowInput",
     "GetSubtitleEvidenceInput",
     "GetDispatchRunInput",

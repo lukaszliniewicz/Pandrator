@@ -67,7 +67,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "third_prompt": DEFAULT_THIRD_PROMPT,
     },
     "stt": {
-        "stt_engine": "whisper",
+        "stt_engine": "auto",
         "stt_model_quantization": "f16",
         "stt_compute_backend": "auto",
         "stt_language": "auto",
@@ -597,6 +597,42 @@ def normalize_stt_engine_aliases(
     normalized.pop("engine", None)
     normalized.pop("stt_backend", None)
     return normalized
+
+
+def split_legacy_stt_settings(
+    value: dict[str, Any], *, reject_conflicts: bool = True
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate old flat STT snapshots without discarding unknown stored fields."""
+    normalized = normalize_stt_engine_aliases(value, reject_conflicts=reject_conflicts)
+    legacy_language = normalized.pop("original_language", None)
+    if "stt_language" not in normalized and legacy_language is not None:
+        normalized["stt_language"] = legacy_language
+    elif legacy_language is not None and reject_conflicts:
+        canonical = normalized["stt_language"]
+        if not isinstance(canonical, str) or not isinstance(legacy_language, str):
+            raise ValueError("stt_language and original_language must be language codes.")
+        if canonical.strip().lower().replace("_", "-") != legacy_language.strip().lower().replace("_", "-"):
+            raise ValueError("Conflicting source languages: stt_language and original_language must agree.")
+    subtitles = {
+        key: normalized.pop(alias)
+        for key, alias in RUNTIME_SETTING_ALIASES["subtitles"].items()
+        if alias in normalized
+    }
+    if "language_defaults" not in subtitles and any(
+        key in subtitles and subtitles[key] is not None
+        and subtitles[key] != BUILTIN_DEFAULTS["subtitles"][key]
+        for key in ("max_chars_per_line", "max_cps")
+    ):
+        subtitles["language_defaults"] = False
+    return normalized, subtitles
+
+
+def validate_stt_replacement(value: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Keep unchanged legacy data while rejecting newly introduced unknown keys."""
+    validate_stt_settings({
+        key: item for key, item in value.items()
+        if key in STT_SETTING_KEYS or key not in existing or existing[key] != item
+    })
 
 
 SECRET_KEYS = {

@@ -23,6 +23,7 @@ from pandrator.logic.dubbing.crispasr import (
 )
 from pandrator.logic.dubbing.stt_backends import probe_crispasr_runtime, qwen_runtime_problem
 from pandrator.logic.dubbing.stt_languages import supported_stt_languages
+from pandrator.logic.language_capabilities import support_record
 from pandrator.runtime import DataPaths
 
 from .database import Database
@@ -516,17 +517,44 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         burn_ffmpeg = ffmpeg
     crispasr = probe_crispasr_runtime()
     preferences = crispasr_install_preferences(paths)
-    default_engine = str(preferences["engine"])
+    installer_engine = str(preferences["engine"])
+    default_engine = "auto"
     default_quantization = str(preferences["quantization"])
+    from pandrator.logic.dubbing import crispasr_qwen_assets
+    from pandrator.logic.dubbing.stt_language_detection import (
+        DETECTOR_ASSET_KEY,
+        DETECTOR_MAX_SAMPLE_MS,
+        DETECTOR_MIN_RUNTIME_VERSION,
+        DETECTOR_TIMEOUT_SECONDS,
+    )
+    from pandrator.logic.dubbing.stt_routing import LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD
+
+    runtime_version = re.match(r"v?(\d+)\.(\d+)\.(\d+)", crispasr.version)
+    detector_available = bool(
+        crispasr.installed and ffmpeg and runtime_version
+        and tuple(map(int, runtime_version.groups())) >= DETECTOR_MIN_RUNTIME_VERSION
+    )
+    detector_asset = crispasr_qwen_assets.ASSETS[DETECTOR_ASSET_KEY]
+    sources = {
+        "whisper": ["https://github.com/openai/whisper/blob/main/whisper/tokenizer.py"],
+        "parakeet": ["https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3"],
+        "moss": [],
+        "qwen3": [
+            "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+            "https://huggingface.co/Qwen/Qwen3-ASR-1.7B",
+            "https://github.com/QwenLM/Qwen3-ASR",
+        ],
+    }
     model_capabilities: dict[str, Any] = {}
     for engine, model in MODELS.items():
-        preferred_quantization = default_quantization if engine == default_engine else model.default_quantization
+        preferred_quantization = default_quantization if engine == installer_engine else model.default_quantization
         cached = _crispasr_model_cached(paths, engine, preferred_quantization)
         model_capabilities[engine] = {
             "available": crispasr.installed,
             "installed": cached,
             "download_on_demand": crispasr.installed and not cached,
-            "default": engine == default_engine,
+            "default": False,
+            "installer_preferred": engine == installer_engine,
             "model": {
                 "whisper": "large-v3",
                 "parakeet": "tdt-0.6b-v3",
@@ -540,7 +568,16 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
                 if supported_stt_languages(engine) is not None
                 else None
             ),
-            "language_detection": True,
+            "language_detection": crispasr.installed if engine == "whisper" else detector_available if engine in {"parakeet", "qwen3"} else False,
+            "language_support": support_record(
+                provider_id="crispasr", model_id=model.filename_for(preferred_quantization),
+                model_revision=f"legacy-model-enum:{model.filename_for(preferred_quantization)}",
+                operation="asr", native_route=f"crispasr:{engine}",
+                languages=supported_stt_languages(engine),
+                coverage="exact" if supported_stt_languages(engine) is not None else "unknown",
+                source_urls=sources[engine], runtime_requirement="CrispASR runtime",
+                note="Legacy model selection does not pin a model repository revision.",
+            ),
         }
     from pandrator.logic.dubbing import qwen_alignment
     from pandrator.logic.dubbing import qwen_asr as qwen_recognizer
@@ -552,7 +589,7 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
     except Exception as error:
         audio_cpp_tools = {
             "runtime": {
-                "minimum_version": "0.8.1",
+                "minimum_version": "0.9.0",
                 "observed_version": None,
                 "version_verified": False,
                 "executable": None,
@@ -576,6 +613,7 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         "compute_backends": list(crispasr.compute_backends),
         "runtime": "crispasr",
         "default": False,
+        "installer_preferred": installer_engine == "qwen3",
         "models": list(qwen_recognizer.QWEN3_ASR_MODELS),
         "default_model": qwen_recognizer.DEFAULT_QWEN3_ASR_MODEL,
         "word_timing": qwen_caps.get("word_timing"),
@@ -589,10 +627,29 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         "transcript_only_languages": list(
             qwen_recognizer.transcript_only_languages()
         ),
-        "requires_explicit_language_for_timestamps": True,
+        "requires_explicit_language_for_timestamps": False,
+        "requires_resolved_language_for_timestamps": True,
         "timing_fallback": qwen_recognizer.TIMING_FALLBACK,
-        "language_detection": True,
+        "language_detection": detector_available,
         "reason": qwen_problem or str(qwen_caps.get("reason") or ""),
+        "language_support": support_record(
+            provider_id="crispasr", model_id=qwen_recognizer.DEFAULT_QWEN3_ASR_MODEL,
+            model_revision=crispasr_qwen_assets.ASSETS[qwen_recognizer.DEFAULT_QWEN3_ASR_MODEL].revision,
+            operation="asr", native_route="crispasr:qwen3",
+            languages=qwen_recognizer.QWEN3_ASR_LANGUAGE_CODES, coverage="exact",
+            source_urls=sources["qwen3"], runtime_requirement="CrispASR >=0.8.36",
+        ),
+    }
+    aligner_capabilities = {
+        **qwen_alignment.capabilities(), "kind": "forced_aligner",
+        "language_support": support_record(
+            provider_id="audio_cpp", model_id=qwen_alignment.MODEL_ID,
+            model_revision=qwen_alignment.MODEL_REVISION, operation="alignment",
+            native_route="audio_cpp:qwen3_forced_aligner",
+            languages=tuple(qwen_alignment.LANGUAGES), coverage="exact",
+            source_urls=["https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B", qwen_alignment.MODEL_URL],
+            runtime_requirement="audio.cpp forced-alignment runtime",
+        ),
     }
     stt = {
         "crispasr": crispasr.installed,
@@ -601,10 +658,32 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
         "compute_backends": list(crispasr.compute_backends),
         "default_engine": default_engine,
         "default_model_quantization": default_quantization,
+        "installer_preferences": preferences,
         "models": model_capabilities,
-        "forced_aligners": [
-            {**qwen_alignment.capabilities(), "kind": "forced_aligner"}
-        ],
+        "policies": {
+            "auto": {
+                "id": "auto", "kind": "policy", "default": True,
+                "available": any(value["available"] for value in model_capabilities.values()),
+                "strategy": ["parakeet", "qwen3", "whisper"],
+                "requires_supported_language": True,
+                "qwen_requires_supported_timing": True,
+                "explicit_engine_overrides": True,
+                "recognition_failure_fallback": False,
+                "unresolved_language_fallback": "whisper_when_usable",
+            },
+        },
+        "language_detector": {
+            "id": DETECTOR_ASSET_KEY, "available": detector_available,
+            "runtime_requirement": "CrispASR >=0.8.40",
+            "max_sample_ms": DETECTOR_MAX_SAMPLE_MS,
+            "timeout_seconds": DETECTOR_TIMEOUT_SECONDS,
+            "compute_backend": "cpu", "detector_only": True,
+            "confidence_threshold": LANGUAGE_DETECTION_CONFIDENCE_THRESHOLD,
+            "confidence_threshold_provisional": True,
+            "model": dict(detector_asset.__dict__),
+            "download_on_demand": detector_available,
+        },
+        "forced_aligners": [aligner_capabilities],
         "audio_cpp_tools": audio_cpp_tools,
     }
     services = {

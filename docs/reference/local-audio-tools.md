@@ -1,6 +1,6 @@
 # Local model navigation and audio preprocessing
 
-Pandrator can use the installed audio.cpp runtime for model inference without installing a separate Python machine-learning environment. These integrations target audio.cpp 0.8.1 or later.
+Pandrator can use the installed audio.cpp runtime for model inference without installing a separate Python machine-learning environment. The managed catalogue targets audio.cpp 0.9.0.
 
 ## Finding a speech model
 
@@ -18,7 +18,19 @@ Chatterbox and Chatterbox Turbo share a family, as do the FireRed variants. Loca
 
 The canonical audio.cpp metadata lives in `pandrator/logic/audio_cpp_catalogue.py` and its pinned inventory. `scripts/generate_audio_cpp_model_metadata.py` produces the Manager's standalone projection; CI checks it for drift. The provider-neutral catalogue in `pandrator/logic/model_catalogue.py` composes that metadata with canonical service defaults and provider profiles. New profiles can supply exact model metadata; unknown capabilities remain unverified. Catalogue browsing does not contact providers, load models, install packages or expose credentials.
 
+Language coverage belongs to the exact provider, model, revision and operation.
+TTS, recognition, alignment and voice design can support different languages;
+Silero speech packs also have their own coverage. Regional tags and provider
+aliases are retained. A searchable language entry is not a promise that every
+model supports it, and undocumented coverage stays unverified.
+
 ## Qwen3 recognition and word alignment
+
+The new automatic recognition default prefers Parakeet for its supported source
+languages, then Qwen when recognition and the requested timing are supported,
+then Whisper. Existing explicit selections remain overrides. Automatic source
+language detection uses a pinned CPU Tiny model and at most 15 seconds of source
+audio; an uncertain result asks for an explicit language.
 
 Choose **Qwen3 ASR** in a transcription stage's Recognition model control or in Quick Transcribe's Transcription service control. Select 0.6B for the smaller recognizer or 1.7B for the larger recognizer. Their pinned Q8 downloads are approximately 1.15 GB and 2.47 GB respectively.
 
@@ -28,11 +40,14 @@ For timestamped transcription, select the **source** language explicitly:
 
 - Qwen alignment: Chinese, English, Cantonese, French, German, Italian, Japanese, Korean, Portuguese, Russian and Spanish.
 - Canary CTC fallback after Qwen recognition: Czech, Danish, Dutch, Finnish, Greek, Hungarian, Polish, Romanian and Swedish. This path uses the Manager-installed CrispASR runtime; its alignment model downloads on demand.
-- The remaining Qwen recognition languages do not currently have a validated timing path in this integration. Use another timed recognizer such as Whisper for subtitles in those languages. The recognizer's lower-level transcript-only API retains the broader recognition coverage.
+- The remaining Qwen recognition languages do not currently have a validated timing path in this integration. Use another timed recognizer such as Whisper for subtitles in those languages, or use transcript-only TXT output in Quick Transcribe.
 
 The translation target is not used to choose a word aligner. Unsupported timing combinations fail before normalization, vocal isolation, model downloads or inference. The existing Qwen Forced Aligner is also selectable for aligning supplied captions. Low-level transcript-only requests do not load the forced aligner.
 
-Quick Transcribe prepares a timed result that can be downloaded as text, subtitles or structured JSON from the same job. Its Qwen requests therefore require an explicit source language and a supported timing path even when the initial download format is plain text.
+Quick Transcribe can produce an untimed TXT result using Qwen's recognition
+coverage without loading an aligner. Converting that result to timed subtitles
+requires a separate, supported timed request; changing the download format does
+not invent timestamps or silently rerun recognition.
 
 Long recordings are processed in bounded chunks with original offsets retained. The automatic Qwen chunk setting resolves to a non-VAD native mode for these bounded chunks, avoiding an implicit dependency on an uninstalled Silero model. Explicit VAD mode remains an advanced choice and requires its runtime assets. Token-budget, output, timestamp-bound and cancellation checks reject incomplete results rather than inventing word timing. Original transcript punctuation is restored onto safely matched word surfaces before subtitle composition.
 
@@ -42,6 +57,8 @@ Open **Audio preprocessing** in the transcription settings or Quick Transcribe. 
 
 - **BS-RoFormer**, approximately 173 MB.
 - **Mel-RoFormer**, approximately 252 MB.
+- **HTDemucs four-stem Q8**, approximately 62 MB. Transcription retains the
+  vocals stem; the original recording remains unchanged.
 
 Isolation reduces music around vocals. It does not reliably select one speaker from other voices, and it can damage useful speech details. Leave it off for clean recordings.
 
@@ -69,6 +86,12 @@ Qwen recognition with word timing can itself require both recognition and alignm
 
 ## Verification scope
 
-Native CPU verification uses audio.cpp 0.8.1 with short synthetic recordings for Qwen 0.6B recognition/alignment, BS-RoFormer, Mel-RoFormer and DeepFilterNet2. English recognition matched the reference and produced word timings. Polish recognition followed by CrispASR Canary alignment completed, with a final word ending 34 ms beyond the recording (within the 50 ms validation tolerance), but the synthetic Polish sample had recognition errors. These checks establish functional integration and preservation of originals, not listening quality or language-by-language accuracy. Qwen 1.7B and GPU stability were not retested in this crash-recovery verification.
+Release 0.11.0 native checks cover English/German Parakeet, Japanese Qwen with
+alignment on CPU and Vulkan, bounded Tiny language detection, and Demucs
+separation on CPU/Vulkan. Qwen may emit point-like raw word timestamps even when
+composed display cues have valid spans. Five-minute Demucs Vulkan runs completed;
+the long CPU experiment reached its time/cancel bounds. These checks establish
+functional routes, cancellation and preservation of originals, with no general
+listening-quality or every-language accuracy claim.
 
 Primary references: [audio.cpp](https://github.com/0xShug0/audio.cpp), [Qwen3 model integration](https://github.com/0xShug0/audio.cpp/blob/main/docs/models/qwen3.md), [audio.cpp audio tools](https://github.com/0xShug0/audio.cpp/blob/main/docs/audio_tools.md), and [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR).

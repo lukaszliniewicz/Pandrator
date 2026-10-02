@@ -14,28 +14,27 @@ Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.1/PandratorManager-0.9.26-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.10.1/PandratorManager-0.9.26-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.11.0/PandratorManager-0.9.28-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.11.0/PandratorManager-0.9.28-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.10.1 / Manager 0.9.26
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.11.0 / Manager 0.9.28
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.10.1
+## New in 0.11.0
 
-- **Qwen3 ASR now runs through CrispASR 0.8.36.** Recognition, VAD-aware
-  chunking, and word alignment use the local CrispASR pipeline, with verified
-  Qwen model downloads on demand.
-- **Export works reliably after generation.** One-click export now assembles the
-  selected completed audio run when needed and rejects stale or ambiguous audio
-  instead of silently choosing the wrong artifact.
-- **Transcription is more robust.** Source-language settings are preserved more
-  consistently, vocal-isolation jobs get realistic time budgets, and Qwen
-  timing output is validated before it is accepted.
+- **Language choices follow the model.** Search 745 language entries with
+  separate TTS, recognition, alignment and voice-design coverage.
+- **Automatic transcription prefers Parakeet**, then supported Qwen and Whisper
+  routes. Optional Demucs isolation uses a smaller, approximately 62 MB model.
+- **Subtitle review protects edits.** Edit spoken passages separately from
+  display cues, undo changes, and prepare compatible video or audio previews.
+- **Collect multilingual exports.** Preview selected-language operations, resume
+  durable progress, and download verified manifests or complete ZIP collections.
 
-See the [0.10.1 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.10.1).
+See the [0.11.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.11.0).
 
 ## Try your first workflow
 

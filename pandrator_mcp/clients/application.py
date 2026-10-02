@@ -2063,6 +2063,97 @@ class ApplicationClient:
             idempotency_key=idempotency_key,
         )
 
+    def preview_translation_project_operation(
+        self,
+        project_id: str,
+        *,
+        selected_branch_ids: list[str],
+        expected_project_revision: int,
+        action: str,
+        export_kind: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-projects/{quote(project_id, safe='')}/operations/preview",
+            method="POST",
+            body={
+                "selected_branch_ids": selected_branch_ids,
+                "expected_project_revision": expected_project_revision,
+                "action": action,
+                "export_kind": export_kind,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def get_translation_project_operation(self, operation_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-project-operations/{quote(operation_id, safe='')}"
+        )
+
+    def execute_translation_project_operation(
+        self,
+        operation_id: str,
+        *,
+        preview_digest: str,
+        accepted_confirmations: list[str],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-project-operations/{quote(operation_id, safe='')}/execute",
+            method="POST",
+            body={
+                "preview_digest": preview_digest,
+                "accepted_confirmations": accepted_confirmations,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def cancel_translation_project_operation(
+        self,
+        operation_id: str,
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-project-operations/{quote(operation_id, safe='')}/cancel",
+            method="POST",
+            body={},
+            idempotency_key=idempotency_key,
+        )
+
+    def retry_translation_project_operation_preview(
+        self,
+        operation_id: str,
+        *,
+        expected_project_revision: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-project-operations/{quote(operation_id, safe='')}/retry-preview",
+            method="POST",
+            body={"expected_project_revision": expected_project_revision},
+            idempotency_key=idempotency_key,
+        )
+
+    def get_translation_project_export_manifest(self, operation_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-project-operations/{quote(operation_id, safe='')}/exports/manifest"
+        )
+
+    def request_translation_project_export_bundle(
+        self,
+        operation_id: str,
+        *,
+        expected_manifest_digest: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/translation-project-operations/{quote(operation_id, safe='')}/exports/bundle",
+            method="POST",
+            body={"expected_manifest_digest": expected_manifest_digest},
+            idempotency_key=idempotency_key,
+        )
+
     def review_subtitles(
         self,
         session_id: str,
@@ -2356,6 +2447,8 @@ class ApplicationClient:
         model_quantization: str | None,
         compute_backend: str | None,
         idempotency_key: str,
+        qwen_asr_model: str | None = None,
+        transcription_vocal_isolation: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "filename": filename,
@@ -2368,6 +2461,8 @@ class ApplicationClient:
             "engine": engine,
             "model_quantization": model_quantization,
             "compute_backend": compute_backend,
+            "qwen_asr_model": qwen_asr_model,
+            "transcription_vocal_isolation": transcription_vocal_isolation,
         }
         body.update({key: value for key, value in optional.items() if value is not None})
         return self._request_json(

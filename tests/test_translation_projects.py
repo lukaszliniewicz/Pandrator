@@ -85,6 +85,17 @@ class TranslationProjectServiceTests(unittest.TestCase):
                 paths=self.paths,
             )
 
+    def test_session_list_projects_preserves_independent_navigation(self):
+        project = self._create_project()["project"]
+        self._create_branches(project["id"], project["revision"], [{"target_language": "ja"}, {"target_language": "de"}])
+        response = self.client.get("/api/v1/sessions").get_json()
+        grouped = [item for item in response["items"] if item.get("translation_project")]
+        self.assertEqual(len(grouped), 3)
+        self.assertEqual({item["translation_project"]["id"] for item in grouped}, {project["id"]})
+        self.assertEqual({item["translation_project"]["role"] for item in grouped}, {"source", "branch"})
+        for item in grouped:
+            self.assertEqual(self.client.get(f"/api/v1/sessions/{item['id']}").status_code, 200)
+
     def _create_branches(self, project_id, revision, targets):
         directories = []
         try:

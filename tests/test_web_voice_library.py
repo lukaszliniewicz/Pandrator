@@ -1044,7 +1044,25 @@ class VoiceNormalizationTests(unittest.TestCase):
 
 
 class InstallerAsrPreferenceTests(unittest.TestCase):
-    def test_single_installed_asr_model_becomes_default_and_other_is_on_demand(self):
+    def test_existing_explicit_stt_default_survives_installer_preferences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
+            Path(directory, "config.json").write_text(json.dumps({"crispasr_engine": "parakeet-tdt-0.6b-v3", "crispasr_model_quantization": "q4_k"}), encoding="utf-8")
+            existing = {"stt_engine": "whisper", "stt_model_quantization": "q5_0"}
+            first_app = create_app(data_root=directory, testing=True)
+            database = first_app.extensions["pandrator"]["database"]
+            with database.session() as session:
+                session.get(AppSetting, "defaults.stt").value_json = existing
+            database.dispose()
+            app = create_app(data_root=directory, testing=True)
+            database = app.extensions["pandrator"]["database"]
+            try:
+                with database.session() as session:
+                    self.assertEqual(existing, session.get(AppSetting, "defaults.stt").value_json)
+            finally:
+                database.dispose()
+
+    def test_installer_preference_is_reported_separately_from_auto_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "config.json").write_text(
                 json.dumps(
@@ -1065,7 +1083,7 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
             try:
                 with database.session() as session:
                     defaults = session.get(AppSetting, "defaults.stt")
-                    self.assertEqual(defaults.value_json["stt_engine"], "parakeet")
+                    self.assertEqual(defaults.value_json["stt_engine"], "auto")
                     self.assertEqual(
                         defaults.value_json["stt_model_quantization"], "q4_k"
                     )
@@ -1083,8 +1101,10 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
                     return_value=runtime,
                 ):
                     capabilities = client.get("/api/v1/capabilities").get_json()["stt"]
-                self.assertEqual(capabilities["default_engine"], "parakeet")
-                self.assertTrue(capabilities["models"]["parakeet"]["default"])
+                self.assertEqual(capabilities["default_engine"], "auto")
+                self.assertEqual(capabilities["installer_preferences"]["engine"], "parakeet")
+                self.assertFalse(capabilities["models"]["parakeet"]["default"])
+                self.assertTrue(capabilities["models"]["parakeet"]["installer_preferred"])
                 self.assertFalse(capabilities["models"]["whisper"]["default"])
                 self.assertTrue(capabilities["models"]["whisper"]["download_on_demand"])
             finally:
@@ -1106,7 +1126,7 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
             try:
                 with database.session() as session:
                     defaults = session.get(AppSetting, "defaults.stt")
-                    self.assertEqual(defaults.value_json["stt_engine"], "moss")
+                    self.assertEqual(defaults.value_json["stt_engine"], "auto")
                     self.assertEqual(
                         defaults.value_json["stt_model_quantization"], "q8_0"
                     )
@@ -1124,7 +1144,8 @@ class InstallerAsrPreferenceTests(unittest.TestCase):
                     return_value=runtime,
                 ):
                     capabilities = client.get("/api/v1/capabilities").get_json()["stt"]
-                self.assertEqual(capabilities["default_engine"], "moss")
+                self.assertEqual(capabilities["default_engine"], "auto")
+                self.assertEqual(capabilities["installer_preferences"]["engine"], "moss")
                 self.assertEqual(capabilities["default_model_quantization"], "q8_0")
                 self.assertEqual(
                     capabilities["models"]["moss"]["diarization"], "native"

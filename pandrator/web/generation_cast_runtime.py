@@ -217,23 +217,11 @@ def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict
         # strict single-voice run uses the session's selected voice. Keep the
         # alternate's unrelated settings, such as language and performance.
         result = dict(settings)
-        selected = (snapshot.get("selected_segment_override") or {}).get("tts") or {}
-        if isinstance(selected, dict) and any(
-            key in selected for key in ("voice", "speaker")
-        ):
-            for key in ("voice", "speaker"):
-                if key in base_tts:
-                    result[key] = deepcopy(base_tts[key])
-                else:
-                    result.pop(key, None)
-        if isinstance(selected, dict):
-            for key in _VOICE_IDENTITY_KEYS:
-                if key not in selected:
-                    continue
-                if key in base_tts:
-                    result[key] = deepcopy(base_tts[key])
-                else:
-                    result.pop(key, None)
+        for key in ("voice", "speaker", *_VOICE_IDENTITY_KEYS):
+            if key in base_tts:
+                result[key] = deepcopy(base_tts[key])
+            else:
+                result.pop(key, None)
         for key in ("casting_enabled", "voice_mode_version"):
             if key in base_tts:
                 result[key] = deepcopy(base_tts[key])

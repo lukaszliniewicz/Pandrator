@@ -1,20 +1,29 @@
 <script lang="ts">
   import type { RuntimeCapabilities } from './api-models';
-  import { LANGUAGE_OPTIONS } from './settings-fields';
-  import { qwenTimingExplanation } from './stt-language-policy';
+  import {
+    qwenTimingExplanation,
+    sttLanguageOptions
+  } from './stt-language-policy';
+  import LanguageSelect from './LanguageSelect.svelte';
 
   let {
     model = $bindable('qwen3_asr_0_6b'),
     language = $bindable('auto'),
     backend = $bindable('auto'),
-    capabilities
+    capabilities,
+    requireWordTimestamps = true
   }: {
     model?: string;
     language?: string;
     backend?: string;
     capabilities: RuntimeCapabilities | null;
+    requireWordTimestamps?: boolean;
   } = $props();
-  const timing = $derived(qwenTimingExplanation(capabilities, language));
+  const timing = $derived(
+    requireWordTimestamps
+      ? qwenTimingExplanation(capabilities, language)
+      : 'Plain text uses recognition only. No forced aligner is downloaded and no subtitle timestamps are produced.'
+  );
   const info = $derived(capabilities?.stt?.models?.qwen3);
   const availableBackends = $derived(
     Array.isArray(info?.compute_backends) && info.compute_backends.length
@@ -52,17 +61,13 @@
           >{/if}
       </select>
     </label>
-    <label class="text-sm font-semibold"
-      >Source language
-      <select
-        bind:value={language}
-        class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
-      >
-        {#each LANGUAGE_OPTIONS as item}<option value={item.value}
-            >{item.label}</option
-          >{/each}
-      </select>
-    </label>
+    <LanguageSelect
+      bind:value={language}
+      options={sttLanguageOptions(capabilities, 'qwen3', requireWordTimestamps)}
+      label="Source language"
+      allowAuto
+      allowCustom
+    />
   </div>
   <p class="text-sm" data-testid="qwen-timing-explanation">{timing}</p>
   <p class="muted text-xs">

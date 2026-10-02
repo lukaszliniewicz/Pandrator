@@ -114,7 +114,7 @@ class ApplicationServices:
                         AppSetting(
                             key="defaults.stt",
                             value_json={
-                                "stt_engine": stt_preferences["engine"],
+                                "stt_engine": "auto",
                                 "stt_model_quantization": stt_preferences[
                                     "quantization"
                                 ],

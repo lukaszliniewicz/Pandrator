@@ -7,9 +7,11 @@ explicitly chosen use downloads only the selected model into the workspace
 cache, which is separate from Manager-installed TTS assets (existing Manager
 files are detected read-only and reused through a verified hardlink/copy).
 
-Verified against audio.cpp 0.8.1 (0xShug0/audio.cpp, docs pinned at v0.8.1).
-GGUF pins come from the Hugging Face Hub metadata for audio-cpp/audio.cpp-gguf
-(LFS oid == file SHA-256, corroborated by the in-repo inventory manifest).
+CLI compatibility was verified against audio.cpp 0.9.0 (0xShug0/audio.cpp,
+docs pinned at v0.9.0). Existing GGUF assets retain their previously pinned
+weights revision. The HTDemucs asset uses its own immutable Hub revision.
+GGUF pins come from Hugging Face Hub metadata for audio-cpp/audio.cpp-gguf
+(LFS oid == file SHA-256, corroborated by the upstream inventory manifest).
 DeepFilterNet2 weights are not published in that Hub repo; they ship in the
 upstream git tree (assets/framework/audio_utilities/deepfilternet2), pinned
 to an immutable commit with an independently verified file SHA-256 digest
@@ -36,9 +38,10 @@ from .cancellable_process import ProcessCancelled
 
 logger = logging.getLogger(__name__)
 
-AUDIO_CPP_VERSION = "0.8.1"
+AUDIO_CPP_VERSION = "0.9.0"
 HF_REPO = "audio-cpp/audio.cpp-gguf"
 HF_REVISION = "406756ee8e3b16e902ce40112986c1010775f888"
+HTDEMUCS_REVISION = "351dbab8d8534675ee29440bb402e348b09e55e2"
 DFN2_GIT_BLOB = "d2a4fe4e5dbb1a51f9ec41162460ce82ca4667a6"
 _RESERVED_DISK_BYTES = 64 * 1024 * 1024
 _USER_AGENT = "Pandrator-AudioCpp-Assets"
@@ -50,9 +53,11 @@ class AudioAssetsError(RuntimeError):
     """A pinned model asset cannot safely be provided."""
 
 
-def _hf_url(directory: str, filename: str) -> str:
+def _hf_url(
+    directory: str, filename: str, revision: str = HF_REVISION
+) -> str:
     return (
-        f"https://huggingface.co/{HF_REPO}/resolve/{HF_REVISION}/{directory}/{filename}"
+        f"https://huggingface.co/{HF_REPO}/resolve/{revision}/{directory}/{filename}"
     )
 
 
@@ -124,6 +129,28 @@ MODELS: dict[str, dict] = {
         "sha256": "2dd898ceb0e3812c18d6125dcd60174d35d3da22c94add76b029fbb21fc238fd",
         "utility": None,
         "notes": "Vocal separation of 44.1 kHz mixtures; named stems output.",
+    },
+    "htdemucs_q8_0": {
+        "id": "htdemucs_q8_0",
+        "label": "HTDemucs four-stem Q8_0 GGUF",
+        "family": "htdemucs",
+        "cli_task": "sep",
+        "cli_family": "htdemucs",
+        "directory": "HTDemucs-GGUF",
+        "filename": "htdemucs-q8_0.gguf",
+        "kind": "gguf",
+        "repo": HF_REPO,
+        "revision": HTDEMUCS_REVISION,
+        "url": _hf_url(
+            "HTDemucs-GGUF", "htdemucs-q8_0.gguf", revision=HTDEMUCS_REVISION
+        ),
+        "size_bytes": 61940768,
+        "sha256": "b0f532ac6e5f373aeb11fa0df73253251e133832d9c8b9942dc58f50bc5b4388",
+        "utility": None,
+        "notes": (
+            "Four-stem vocal separation of 44.1 kHz stereo mixtures; "
+            "writes vocals.wav."
+        ),
     },
     "deepfilternet2": {
         "id": "deepfilternet2",

@@ -32,6 +32,13 @@ class PinnedAsset:
 
 
 ASSETS = {
+    "whisper_tiny_language_detector": PinnedAsset(
+        "ggerganov/whisper.cpp",
+        "5359861c739e955e79d9a303bcbc70fb988958b1",
+        "ggml-tiny.bin",
+        77691713,
+        "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+    ),
     "qwen3_asr_0_6b": PinnedAsset(
         "cstr/qwen3-asr-0.6b-GGUF",
         "f5814fb07a955e84b4474133002cd2bbc747c4b9",

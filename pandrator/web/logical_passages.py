@@ -26,6 +26,7 @@ from pandrator.logic.dubbing.source_passage_settings import (
 )
 from pandrator.logic.dubbing.srt_utils import compose_srt
 
+from .document_roles import document_stage_for_artifact_role
 from .models import (
     Artifact,
     ArtifactEdge,
@@ -97,7 +98,8 @@ def load_timing_reference(
             if (
                 document is not None
                 and document.session_id == source.session_id
-                and document.stage == artifact.role
+                and document.stage
+                == document_stage_for_artifact_role(artifact.role)
             ):
                 words = list(
                     session.scalars(
@@ -248,11 +250,13 @@ def source_passages(
     revision_id = str((artifact.metadata_json or {}).get("revision_id") or "")
     revision = session.get(DocumentRevision, revision_id) if revision_id else None
     document = session.get(Document, revision.document_id) if revision else None
+    expected_stage = document_stage_for_artifact_role(artifact.role)
     if (
         artifact.state == "deleted"
+        or expected_stage is None
         or document is None
         or document.session_id != artifact.session_id
-        or document.stage != artifact.role
+        or document.stage != expected_stage
     ):
         return []
     passages = stored_passages(artifact) if reuse_stored else None
@@ -488,10 +492,12 @@ def materialize_speech_source(
         if display_revision
         else None
     )
+    expected_stage = document_stage_for_artifact_role(artifact.role)
     if (
-        document is None
+        expected_stage is None
+        or document is None
         or document.session_id != artifact.session_id
-        or document.stage != artifact.role
+        or document.stage != expected_stage
     ):
         return None
     packet = dict(metadata["logical_passages"])
@@ -641,10 +647,12 @@ def _source_document_revision(
     if revision is None:
         raise PassageIneligibleSource("The source revision was not found.")
     document = session.get(Document, revision.document_id)
+    expected_stage = document_stage_for_artifact_role(artifact.role)
     if (
         document is None
+        or expected_stage is None
         or document.session_id != artifact.session_id
-        or document.stage != artifact.role
+        or document.stage != expected_stage
     ):
         raise PassageIneligibleSource(
             "The source artifact and revision stages do not match."

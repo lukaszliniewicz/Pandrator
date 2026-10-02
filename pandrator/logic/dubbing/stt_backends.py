@@ -41,6 +41,7 @@ STT_BACKEND_PARAKEET_ONNX = STT_ENGINE_PARAKEET
 
 # Qwen3 uses CrispASR with language and timing policy owned by qwen_asr.py.
 STT_ENGINE_QWEN3 = "qwen3"
+STT_ENGINE_AUTO = "auto"
 STT_ENGINE_QWEN3_ALIASES = frozenset(
     {"qwen3", "qwen", "qwen3_asr", "qwen3-asr", "qwen_3", "qwen_3_asr"}
 )
@@ -58,6 +59,8 @@ def normalize_stt_backend(raw_value: str | None) -> str:
     normalized = (
         str(raw_value or "").strip().lower().replace("-", "_").replace(" ", "_")
     )
+    if normalized in {"auto", "automatic", "parakeet_preferred"}:
+        return STT_ENGINE_AUTO
     if normalized in CLOUD_STT_ENGINE_IDS:
         return normalized
     if normalized in STT_ENGINE_QWEN3_ALIASES:

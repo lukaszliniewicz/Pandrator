@@ -1,6 +1,10 @@
 <script lang="ts">
   import { Search, X } from '@lucide/svelte';
-  import { LANGUAGE_OPTIONS } from './settings-fields';
+  import {
+    REGISTRY_LANGUAGE_OPTIONS,
+    canonicalLanguageTag,
+    languageSearchMatches
+  } from './language-registry';
   import { translationLanguageName } from './translation-project-display';
 
   let {
@@ -17,26 +21,51 @@
     limit?: number;
   } = $props();
   let search = $state('');
+  let showAll = $state(false);
   const unavailable = $derived(
-    new Set(excluded.map((code) => code.toLowerCase()))
+    new Set(
+      excluded.map((code) => canonicalLanguageTag(code) || code.toLowerCase())
+    )
   );
   const options = $derived(
-    LANGUAGE_OPTIONS.filter(
+    REGISTRY_LANGUAGE_OPTIONS.filter(
       (option) =>
         option.value !== 'auto' &&
-        !unavailable.has(String(option.value).toLowerCase()) &&
-        `${option.label} ${option.value}`
-          .toLowerCase()
-          .includes(search.trim().toLowerCase())
+        !unavailable.has(option.value) &&
+        languageSearchMatches(option.value, search)
     )
   );
   const invalid = $derived(
-    value.filter((code) => unavailable.has(code.toLowerCase()))
+    value.filter((code) =>
+      unavailable.has(canonicalLanguageTag(code) || code.toLowerCase())
+    )
   );
+  const visibleOptions = $derived(
+    showAll || search.trim() ? options : options.slice(0, 60)
+  );
+  const customCode = $derived(canonicalLanguageTag(search));
+  const canAddCustom = $derived(
+    Boolean(
+      customCode &&
+      !unavailable.has(customCode) &&
+      !REGISTRY_LANGUAGE_OPTIONS.some((option) => option.value === customCode)
+    )
+  );
+  function selected(code: string) {
+    return value.some(
+      (item) => (canonicalLanguageTag(item) || item.toLowerCase()) === code
+    );
+  }
   function toggle(code: string) {
-    value = value.includes(code)
-      ? value.filter((item) => item !== code)
-      : [...value, code];
+    const canonical = canonicalLanguageTag(code) || code;
+    value = selected(canonical)
+      ? value.filter(
+          (item) =>
+            (canonicalLanguageTag(item) || item.toLowerCase()) !== canonical
+        )
+      : value.length < limit
+        ? [...value, canonical]
+        : value;
   }
 </script>
 
@@ -73,16 +102,15 @@
   <div
     class="mt-3 grid max-h-48 grid-cols-1 gap-1 overflow-y-auto rounded-xl border border-[var(--line)] p-2 sm:grid-cols-2"
   >
-    {#each options as option (option.value)}
+    {#each visibleOptions as option (option.value)}
       {@const code = String(option.value).toLowerCase()}
       <label
         class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-[var(--accent-soft)]"
       >
         <input
           type="checkbox"
-          checked={value.includes(code)}
-          disabled={disabled ||
-            (!value.includes(code) && value.length >= limit)}
+          checked={selected(code)}
+          disabled={disabled || (!selected(code) && value.length >= limit)}
           onchange={() => toggle(code)}
         />
         <span>{option.label}</span>
@@ -91,6 +119,27 @@
         No matching languages.
       </p>{/each}
   </div>
+  {#if !search.trim() && !showAll && options.length > visibleOptions.length}
+    <button
+      type="button"
+      onclick={() => (showAll = true)}
+      class="mt-2 text-xs font-semibold text-[var(--accent)]"
+      >Show all {options.length} languages</button
+    >
+  {/if}
+  {#if canAddCustom}
+    <button
+      type="button"
+      disabled={disabled || value.length >= limit || selected(customCode)}
+      onclick={() => toggle(customCode)}
+      class="mt-2 text-xs font-semibold text-[var(--accent)]"
+      >Add language code {customCode}</button
+    >
+    <p class="muted mt-1 text-xs">
+      This code is outside the reviewed registry. Check the selected model’s
+      coverage before generating speech.
+    </p>
+  {/if}
   <p class="muted mt-2 text-xs" role="status">
     {value.length} of {limit} languages selected.
   </p>

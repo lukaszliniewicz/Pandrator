@@ -191,7 +191,7 @@ _SUPPORTED_LANGUAGES: dict[str, tuple[str, ...] | None] = {
 }
 _LANGUAGE_ALIASES = {"nb": "no", "iw": "he", "jv": "jw"}
 _COMPACT_REGION_ALIASES = {"ptbr": "pt", "zhcn": "zh"}
-_KNOWN_LANGUAGE_CODES = frozenset(WHISPER_LARGE_V3_LANGUAGE_CODES)
+_KNOWN_LANGUAGE_CODES = frozenset((*WHISPER_LARGE_V3_LANGUAGE_CODES, *QWEN3_ASR_LANGUAGE_CODES))
 
 
 def supported_stt_languages(canonical_engine: str) -> tuple[str, ...] | None:

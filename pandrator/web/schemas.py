@@ -381,6 +381,26 @@ class SubtitleReviewRequest(StrictModel):
     segments: list[SubtitleSegmentInput] = Field(min_length=1)
 
 
+class SubtitlePassageInput(StrictModel):
+    id: str = Field(min_length=1, max_length=120)
+    text: str = Field(min_length=1)
+    speaker: str | None = None
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(gt=0)
+    starts_new_turn: bool = Field(default=False, strict=True)
+    review_state: Literal["clear", "uncertain"] = "clear"
+    review_note: str = Field(default="", max_length=4000)
+    deleted: bool = Field(default=False, strict=True)
+
+
+class SubtitlePassageReviewRequest(StrictModel):
+    source_artifact_id: str = Field(min_length=1, max_length=80)
+    expected_source_hash: str = Field(min_length=1, max_length=128)
+    expected_revision: int = Field(ge=0)
+    expected_composition_hash: str = Field(min_length=1, max_length=128)
+    passages: list[SubtitlePassageInput] = Field(min_length=1)
+
+
 class SubtitleEvidenceCreateRequest(StrictModel):
     source_artifact_id: str = Field(min_length=1, max_length=80)
     cue_id: int = Field(ge=1)
@@ -1828,6 +1848,8 @@ SCHEMA_MODELS = {
         PdfEditRequest,
         SubtitleSegmentInput,
         SubtitleReviewRequest,
+        SubtitlePassageInput,
+        SubtitlePassageReviewRequest,
         SubtitleEvidenceCreateRequest,
         SubtitleEvidenceResolveRequest,
         VoiceCreate,

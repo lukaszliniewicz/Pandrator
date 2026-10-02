@@ -1,3 +1,10 @@
+import {
+  canonicalLanguageTag,
+  languageLabel,
+  languageMatches,
+  type LanguageSupport
+} from './language-registry';
+
 export type VoiceDescriptor = {
   id: string;
   name: string;
@@ -8,6 +15,7 @@ export type VoiceDescriptor = {
 
 export type ModelLanguageMetadata = {
   family?: string;
+  language_support?: LanguageSupport;
   supported_languages?: readonly string[];
   id?: string;
   languages?: readonly (
@@ -81,30 +89,6 @@ const KOKORO_PREFIX_LANGUAGES: Record<string, string> = {
   z: 'zh-cn'
 };
 
-const KOKORO_LANGUAGES = [
-  'en',
-  'en-gb',
-  'de',
-  'es',
-  'fr',
-  'hi',
-  'it',
-  'ja',
-  'pt',
-  'zh-cn'
-];
-const QWEN_LANGUAGES = [
-  'zh-cn',
-  'en',
-  'ja',
-  'ko',
-  'de',
-  'fr',
-  'ru',
-  'pt',
-  'es',
-  'it'
-];
 const QWEN_PRESET_VOICES: Record<
   string,
   { name: string; language: string; gender: string }
@@ -151,25 +135,7 @@ const QWEN_PRESET_VOICES: Record<
     gender: 'Female'
   }
 };
-const XTTS_LANGUAGES = [
-  'en',
-  'es',
-  'fr',
-  'de',
-  'it',
-  'pt',
-  'pl',
-  'tr',
-  'ru',
-  'nl',
-  'cs',
-  'ar',
-  'zh-cn',
-  'ja',
-  'hu',
-  'ko',
-  'hi'
-];
+
 const VOXTRAL_LANGUAGES = [
   'ar',
   'en',
@@ -368,7 +334,7 @@ export function describeVoice(
     return {
       id: voiceId,
       name: String(metadata?.display_name ?? metadata?.name ?? name),
-      languageCode: locale.toLowerCase().split('-')[0],
+      languageCode: canonicalLanguageTag(locale) || locale.toLowerCase(),
       language: String(metadata?.language ?? locale),
       gender: String(metadata?.gender ?? '')
     };
@@ -386,96 +352,41 @@ export function voiceSupportsLanguage(
   voice: VoiceDescriptor,
   language: string
 ) {
-  if (!voice.languageCode || !language) return true;
-  const requested = language.toLowerCase();
-  const supported = voice.languageCode.toLowerCase();
   return (
-    supported === requested ||
-    (!supported.includes('-') && supported === requested.split('-')[0])
+    !voice.languageCode ||
+    !language ||
+    languageMatches(voice.languageCode, language)
   );
 }
 
 export function languagesForService(
-  serviceId: string,
-  descriptors: VoiceDescriptor[],
+  _serviceId: string,
+  _descriptors: VoiceDescriptor[],
   options: {
     modelId?: string;
     modelCatalog?: readonly ModelLanguageMetadata[];
   } = {}
 ) {
-  const service = serviceId.toLowerCase().replaceAll('-', '_');
   const model = (options.modelCatalog ?? []).find(
     (item) =>
       String(item.id ?? '').trim() === String(options.modelId ?? '').trim()
   );
-  const modelLanguages = (model?.languages ?? model?.supported_languages ?? [])
-    .map((language) =>
-      typeof language === 'string'
-        ? language
-        : String(
-            language.language_id ?? language.code ?? language.id ?? ''
-          ).trim()
+  // Voice accents and provider names cannot establish a model's coverage.
+  const languages =
+    model?.language_support?.languages ??
+    model?.supported_languages ??
+    model?.languages ??
+    [];
+  const codes = languages
+    .map((entry) =>
+      typeof entry === 'string'
+        ? entry
+        : String(entry.language_id ?? entry.code ?? entry.id ?? '')
     )
+    .map((code) => canonicalLanguageTag(code))
     .filter(Boolean);
-  const audioCpp = service === 'audio_cpp' || service === 'audio.cpp';
-  const modelId = String(options.modelId ?? '').toLowerCase();
-  const audioCppLanguages = !audioCpp
-    ? []
-    : modelId.startsWith('qwen3_')
-      ? QWEN_LANGUAGES
-      : modelId.startsWith('pocket_tts_english')
-        ? ['en']
-        : modelId.startsWith('magpie_')
-          ? Object.values(MAGPIE_LOCALES)
-          : modelId.startsWith('fireredtts3_')
-            ? [
-                ...QWEN_LANGUAGES,
-                'yue',
-                'ar',
-                'tr',
-                'id',
-                'nl',
-                'vi',
-                'uk',
-                'th',
-                'pl',
-                'ro',
-                'el',
-                'cs',
-                'fi',
-                'hi'
-              ]
-            : [];
-  const fallbackCodes = audioCppLanguages.length
-    ? audioCppLanguages
-    : service === 'kokoro'
-      ? KOKORO_LANGUAGES
-      : service === 'kobold_qwen' || service.includes('qwen')
-        ? QWEN_LANGUAGES
-        : ['xtts', 'fishs2'].includes(service)
-          ? XTTS_LANGUAGES
-          : service === 'voxtral'
-            ? VOXTRAL_LANGUAGES
-            : service === 'silero'
-              ? Array.from(
-                  new Set(
-                    descriptors
-                      .map((voice) => voice.languageCode)
-                      .filter(Boolean)
-                  )
-                )
-              : service === 'magpie'
-                ? Object.values(MAGPIE_LOCALES)
-                : Array.from(
-                    new Set(
-                      descriptors
-                        .map((voice) => voice.languageCode)
-                        .filter(Boolean)
-                    )
-                  );
-  const codes = modelLanguages.length ? modelLanguages : fallbackCodes;
-  return Array.from(new Set(codes)).map((code) => ({
-    value: code,
-    label: LANGUAGE_LABELS[code] ?? code
+  return [...new Set(codes)].map((value) => ({
+    value,
+    label: languageLabel(value)
   }));
 }

@@ -270,5 +270,538 @@
       "recommended_for": "Lightweight multilingual preset voices",
       "description": "Small preset-voice synthesis with language-specific voice choices. No cloning or natural-language voice design."
     }
+  },
+  "language_support": {
+    "families": {
+      "voxcpm2": {
+        "operation": "tts",
+        "coverage": "subset",
+        "languages": [
+          "ar",
+          "my",
+          "zh",
+          "da",
+          "nl",
+          "en",
+          "fi",
+          "fr",
+          "de",
+          "el",
+          "he",
+          "hi",
+          "id",
+          "it",
+          "ja",
+          "km",
+          "ko",
+          "lo",
+          "ms",
+          "no",
+          "pl",
+          "pt",
+          "ru",
+          "es",
+          "sw",
+          "sv",
+          "tl",
+          "th",
+          "tr",
+          "vi"
+        ],
+        "native_language_codes": [
+          "ar",
+          "my",
+          "zh",
+          "da",
+          "nl",
+          "en",
+          "fi",
+          "fr",
+          "de",
+          "el",
+          "he",
+          "hi",
+          "id",
+          "it",
+          "ja",
+          "km",
+          "ko",
+          "lo",
+          "ms",
+          "no",
+          "pl",
+          "pt",
+          "ru",
+          "es",
+          "sw",
+          "sv",
+          "tl",
+          "th",
+          "tr",
+          "vi"
+        ],
+        "unmapped_languages": [
+          "zh dialects"
+        ],
+        "note": "The pinned family declaration also names Chinese dialects without individual locale identifiers; these are retained as unmapped evidence, not synthesized as tags."
+      }
+    },
+    "models": {
+      "dots_tts_edit_bf16": {
+        "operation": "audio_edit",
+        "coverage": "unknown",
+        "languages": [],
+        "native_language_codes": [],
+        "note": "The package is an audio-editing variant; the multilingual TTS list does not establish its editing-language coverage."
+      },
+      "dots_tts_edit_q8_0": {
+        "operation": "audio_edit",
+        "coverage": "unknown",
+        "languages": [],
+        "native_language_codes": [],
+        "note": "The package is an audio-editing variant; the multilingual TTS list does not establish its editing-language coverage."
+      },
+      "dots_tts_mf_bf16": {
+        "source_key": "dots_tts24",
+        "operation": "tts"
+      },
+      "dots_tts_mf_q8_0": {
+        "source_key": "dots_tts24",
+        "operation": "tts"
+      },
+      "dots_tts_soar_bf16": {
+        "source_key": "dots_tts24",
+        "operation": "tts"
+      },
+      "dots_tts_soar_q8_0": {
+        "source_key": "dots_tts24",
+        "operation": "tts"
+      },
+      "fish_audio_s2_pro_bf16": {
+        "source_key": "fish_s2_pro83",
+        "operation": "tts"
+      },
+      "fish_audio_s2_pro_q8_0": {
+        "source_key": "fish_s2_pro83",
+        "operation": "tts"
+      },
+      "higgs_audio_tts_4b_bf16": {
+        "source_key": "higgs_v3_tts4b102",
+        "operation": "tts"
+      },
+      "higgs_audio_tts_4b_q8_0": {
+        "source_key": "higgs_v3_tts4b102",
+        "operation": "tts"
+      },
+      "index_tts2_5_f16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en",
+          "ja",
+          "es",
+          "ar"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en",
+          "ja",
+          "es",
+          "ar"
+        ]
+      },
+      "index_tts2_5_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en",
+          "ja",
+          "es",
+          "ar"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en",
+          "ja",
+          "es",
+          "ar"
+        ]
+      },
+      "index_tts2_5_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en",
+          "ja",
+          "es",
+          "ar"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en",
+          "ja",
+          "es",
+          "ar"
+        ]
+      },
+      "index_tts2_f16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en"
+        ]
+      },
+      "index_tts2_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en"
+        ]
+      },
+      "index_tts2_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en"
+        ]
+      },
+      "index_tts2_safetensors": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "zh",
+          "en"
+        ],
+        "native_language_codes": [
+          "zh",
+          "en"
+        ]
+      },
+      "omnivoice_bf16": {
+        "source_key": "omnivoice646",
+        "operation": "tts"
+      },
+      "omnivoice_f16": {
+        "source_key": "omnivoice646",
+        "operation": "tts"
+      },
+      "omnivoice_q8_0": {
+        "source_key": "omnivoice646",
+        "operation": "tts"
+      },
+      "omnivoice_safetensors": {
+        "source_key": "omnivoice646",
+        "operation": "tts"
+      },
+      "pocket_tts_english_bf16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "pocket_tts_english_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "pocket_tts_english_safetensors": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "pocket_tts_german_bf16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "de"
+        ],
+        "native_language_codes": [
+          "de"
+        ]
+      },
+      "pocket_tts_german_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "de"
+        ],
+        "native_language_codes": [
+          "de"
+        ]
+      },
+      "pocket_tts_italian_bf16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "it"
+        ],
+        "native_language_codes": [
+          "it"
+        ]
+      },
+      "pocket_tts_italian_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "it"
+        ],
+        "native_language_codes": [
+          "it"
+        ]
+      },
+      "pocket_tts_portuguese_bf16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "pt"
+        ],
+        "native_language_codes": [
+          "pt"
+        ]
+      },
+      "pocket_tts_portuguese_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "pt"
+        ],
+        "native_language_codes": [
+          "pt"
+        ]
+      },
+      "pocket_tts_spanish_bf16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "es"
+        ],
+        "native_language_codes": [
+          "es"
+        ]
+      },
+      "pocket_tts_spanish_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "es"
+        ],
+        "native_language_codes": [
+          "es"
+        ]
+      },
+      "sanotts_amy_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "sanotts_cs_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "cs"
+        ],
+        "native_language_codes": [
+          "cs"
+        ]
+      },
+      "sanotts_de_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "de"
+        ],
+        "native_language_codes": [
+          "de"
+        ]
+      },
+      "sanotts_es_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "es"
+        ],
+        "native_language_codes": [
+          "es"
+        ]
+      },
+      "sanotts_fr_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "fr"
+        ],
+        "native_language_codes": [
+          "fr"
+        ]
+      },
+      "sanotts_heart_nano_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "sanotts_heart_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "sanotts_hfc_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "sanotts_hi_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "hi"
+        ],
+        "native_language_codes": [
+          "hi"
+        ]
+      },
+      "sanotts_id_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "id"
+        ],
+        "native_language_codes": [
+          "id"
+        ]
+      },
+      "sanotts_it_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "it"
+        ],
+        "native_language_codes": [
+          "it"
+        ]
+      },
+      "sanotts_kristin_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "native_language_codes": [
+          "en"
+        ]
+      },
+      "sanotts_ne_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ne"
+        ],
+        "native_language_codes": [
+          "ne"
+        ]
+      },
+      "sanotts_pt_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "pt"
+        ],
+        "native_language_codes": [
+          "pt"
+        ]
+      },
+      "sanotts_ro_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ro"
+        ],
+        "native_language_codes": [
+          "ro"
+        ]
+      },
+      "sanotts_ru_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ru"
+        ],
+        "native_language_codes": [
+          "ru"
+        ]
+      },
+      "sanotts_tr_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "tr"
+        ],
+        "native_language_codes": [
+          "tr"
+        ]
+      },
+      "sanotts_vi_orig": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "vi"
+        ],
+        "native_language_codes": [
+          "vi"
+        ]
+      }
+    },
+    "verified_on": "2026-10-02"
   }
 }

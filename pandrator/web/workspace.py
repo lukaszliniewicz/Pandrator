@@ -2685,7 +2685,13 @@ class GenerationService:
             prepared["snapshot_input_hash"] = stable_hash(snapshot)
             prepared["snapshot_guard"] = snapshot_guard(session, session_id, revision_id)
             snapshot["speech_plan_revision_id"] = revision_id
-            freeze_speech_snapshot(session, revision_id, snapshot, explicit=bool(speech_plan_revision_id))
+            freeze_speech_snapshot(
+                session,
+                revision_id,
+                snapshot,
+                explicit=bool(speech_plan_revision_id),
+                segment_ids=requested_segment_ids or None,
+            )
             snapshot["generation_audio_identities"] = plan_audio_identities(session, revision_id, snapshot)
             prepared["frozen_snapshot"] = snapshot
         return prepared
@@ -3191,25 +3197,29 @@ class GenerationService:
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         with self.database.immediate_session() as session:
-            run = session.get(GenerationRun, run_id)
-            if run is None:
-                raise KeyError(run_id)
-            run.cancel_requested = True
-            run.status = "cancel_requested"
-            run.updated_at = utcnow()
-            job_id = run.job_id
-            if job_id:
-                try:
-                    self.jobs.request_cancel_in_session(session, job_id)
-                except KeyError:
-                    run.status = "canceled"
-                    run.cancel_requested = False
-                    run.updated_at = utcnow()
-            else:
+            return self.cancel_in_session(session, run_id)
+
+    def cancel_in_session(self, session: Session, run_id: str) -> dict[str, Any]:
+        """Request cancellation inside a caller's existing write transaction."""
+        run = session.get(GenerationRun, run_id)
+        if run is None:
+            raise KeyError(run_id)
+        run.cancel_requested = True
+        run.status = "cancel_requested"
+        run.updated_at = utcnow()
+        job_id = run.job_id
+        if job_id:
+            try:
+                self.jobs.request_cancel_in_session(session, job_id)
+            except KeyError:
                 run.status = "canceled"
                 run.cancel_requested = False
                 run.updated_at = utcnow()
-            return {"id": run.id, "job_id": job_id, "status": run.status}
+        else:
+            run.status = "canceled"
+            run.cancel_requested = False
+            run.updated_at = utcnow()
+        return {"id": run.id, "job_id": job_id, "status": run.status}
 
     @staticmethod
     def _run_label(

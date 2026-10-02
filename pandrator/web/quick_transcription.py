@@ -52,6 +52,26 @@ def _aware(value):
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
+def _native_transcript_text(payload: Any) -> str:
+    """Read recognizer text even when its segments have no native timing."""
+
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("segments", "transcription"):
+        entries = payload.get(key)
+        if not isinstance(entries, list):
+            continue
+        texts = [
+            str(entry.get("text") or "").replace("\n", " ").strip()
+            for entry in entries
+            if isinstance(entry, dict) and str(entry.get("text") or "").strip()
+        ]
+        if texts:
+            return "\n".join(texts)
+    text = payload.get("text")
+    return str(text).strip() if isinstance(text, str) else ""
+
+
 class QuickTranscriptionService:
     def __init__(self, database: Database, paths: DataPaths, jobs: JobQueue):
         self.database = database
@@ -153,12 +173,20 @@ class QuickTranscriptionService:
                     settings["qwen_asr_backend"] = payload.compute_backend
                 from pandrator.logic.dubbing.qwen_asr import (
                     QwenASRError,
+                    normalize_qwen_asr_language,
                     validate_transcription_settings,
                 )
 
                 try:
+                    requested_language = normalize_qwen_asr_language(
+                        settings.get("stt_language")
+                        or settings.get("whisper_language")
+                    )
                     validated = validate_transcription_settings(
-                        settings, require_word_timestamps=True
+                        settings,
+                        require_word_timestamps=(
+                            payload.format != "txt" and requested_language != "auto"
+                        ),
                     )
                 except QwenASRError as error:
                     raise TranscriptionError(
@@ -294,6 +322,13 @@ class QuickTranscriptionService:
         selected = format or record.format
         if selected not in MIME_TYPES:
             raise TranscriptionError("invalid_format", "Choose txt, srt, or json.")
+        available_formats = self._available_formats(record.format)
+        if selected not in available_formats:
+            raise TranscriptionError(
+                "timing_not_requested",
+                "Word timings were not requested, so an SRT result is unavailable.",
+                409,
+            )
         status = job.status if job else record.state
         if record.state in {"deleted", "expired", "deleting"}:
             status = record.state
@@ -305,21 +340,19 @@ class QuickTranscriptionService:
             "progress_detail": job.progress_detail if job else None,
             "expires_at": _aware(record.expires_at).isoformat(),
             "format": selected,
+            "available_formats": available_formats,
             "chunk_size": CHUNK_SIZE,
             "next_chunk_index": record.next_chunk_index,
             "uploaded_bytes": record.uploaded_bytes,
             "size_bytes": record.size_bytes,
-            "result_available": status == "succeeded",
+            "result_available": status == "succeeded"
+            and (self._directory(record.id) / f"result.{selected}").is_file(),
             "inline_result": False,
             "result_url": f"/api/v1/transcriptions/{record.id}/result?format={selected}",
         }
-        if status == "succeeded":
+        if result["result_available"]:
             path = self._directory(record.id) / f"result.{selected}"
-            if (
-                path.is_file()
-                and include_result
-                and path.stat().st_size <= INLINE_BYTES
-            ):
+            if include_result and path.stat().st_size <= INLINE_BYTES:
                 content = path.read_text(encoding="utf-8")
                 result["result"] = {
                     "format": selected,
@@ -356,6 +389,12 @@ class QuickTranscriptionService:
         # Read under the same short lock used by deletion to avoid a read/delete race.
         with self.database.immediate_session() as session:
             record = self._owned(session, identifier, subject)
+            if format not in self._available_formats(record.format):
+                raise TranscriptionError(
+                    "timing_not_requested",
+                    "Word timings were not requested, so an SRT result is unavailable.",
+                    409,
+                )
             job = session.get(Job, record.job_id) if record.job_id else None
             if not job or job.status != "succeeded":
                 raise TranscriptionError(
@@ -369,6 +408,12 @@ class QuickTranscriptionService:
                     410,
                 )
             return path.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _available_formats(transcript_format: str) -> list[str]:
+        # ``format`` is frozen with the uploaded request and therefore also
+        # freezes whether precise word timing and SRT publication were asked for.
+        return ["txt", "json"] if transcript_format == "txt" else ["txt", "srt", "json"]
 
     def cancel(self, identifier: str, subject: str, *, delete=False):
         with self.database.immediate_session() as session:
@@ -476,6 +521,8 @@ class QuickTranscriptionService:
                 raise ProcessCancelled("This transcription is no longer active.")
             settings = copy.deepcopy(record.settings_json)
             source_suffix = record.source_suffix
+            transcript_format = record.format
+            require_word_timestamps = transcript_format != "txt"
         directory = self._directory(identifier)
         # Each worker lease writes separately; a stale lease cannot overwrite a replacement's output.
         scratch = directory / f"attempt-{payload.get('_lease_generation', 0)}"
@@ -527,22 +574,38 @@ class QuickTranscriptionService:
                 normalized,
                 settings,
                 source_is_normalized=True,
+                require_word_timestamps=require_word_timestamps,
                 cancel_event=cancel_event,
                 progress_callback=report,
+            )
+            native_payload = json.loads(
+                Path(output.word_timestamps_path).read_text(encoding="utf-8-sig")
             )
             transcript = load_transcript(output.word_timestamps_path)
             canonical = transcript.to_dict()
             canonical["engine"] = output.engine
             canonical["compute_backend"] = output.compute_backend
-            canonical["text"] = "\n".join(
+            transcript_text = "\n".join(
                 segment.text.replace("\n", " ").strip()
                 for segment in transcript.segments
             )
+            if not require_word_timestamps:
+                transcript_text = _native_transcript_text(native_payload) or transcript_text
+            canonical["text"] = transcript_text
+            source_metadata = (
+                native_payload.get("metadata")
+                if isinstance(native_payload, dict)
+                else None
+            )
+            if isinstance(source_metadata, dict):
+                canonical.setdefault("metadata", {}).update(source_metadata)
             (scratch / "result.json").write_text(
                 json.dumps(canonical, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             (scratch / "result.txt").write_text(canonical["text"], encoding="utf-8")
-            shutil.copyfile(output.srt_path, scratch / "result.srt")
+            available_formats = self._available_formats(transcript_format)
+            if require_word_timestamps:
+                shutil.copyfile(output.srt_path, scratch / "result.srt")
             with self.database.immediate_session() as session:
                 record = session.get(QuickTranscription, identifier)
                 job = session.get(Job, payload["_job_id"])
@@ -555,7 +618,7 @@ class QuickTranscriptionService:
                     or job.lease_generation != payload.get("_lease_generation")
                 ):
                     raise ProcessCancelled("Transcription was canceled.")
-                for format in MIME_TYPES:
+                for format in available_formats:
                     (scratch / f"result.{format}").replace(
                         directory / f"result.{format}"
                     )

@@ -106,6 +106,8 @@ from .models import (
     SourceRecord,
     TimedWord,
     TrainingRun,
+    TranslationProject,
+    TranslationProjectBranch,
     UsageEvent,
     Voice,
     new_id,
@@ -157,6 +159,7 @@ from .schemas import (
     StageSelectionUpdate,
     SubtitleEvidenceCreateRequest,
     SubtitleEvidenceResolveRequest,
+    SubtitlePassageReviewRequest,
     SubtitleReviewRequest,
     TokenCreateRequest,
     TrainingCreateRequest,
@@ -173,6 +176,7 @@ from .source_resolution import resolve_media_source
 from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
+from .video_previews import VideoPreviewService, VideoPreviewUnsupported
 from .voice_routes import register_voice_routes
 from .workflow_improvements_routes import register_workflow_improvements_routes
 from .workflow_plan_routes import register_workflow_plan_routes
@@ -1779,21 +1783,32 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def session_list():
         query = request.args.get("q") or request.args.get("query")
-        return jsonify(
-            {
-                "items": [
-                    _session_payload(item)
-                    for item in sessions.list(
-                        include_trashed=request.args.get("include_trashed") == "true",
-                        query=query,
-                    )
-                ]
-            }
-        )
+        items = [_session_payload(item) for item in sessions.list(
+            include_trashed=request.args.get("include_trashed") == "true", query=query,
+        )]
+        ids = [item["id"] for item in items]
+        memberships = {}
+        with database.session() as db_session:
+            for project in db_session.scalars(select(TranslationProject).where(
+                TranslationProject.source_session_id.in_(ids)
+            )):
+                memberships[project.source_session_id] = {"id": project.id, "name": project.name,
+                    "source_session_id": project.source_session_id, "role": "source"}
+            for branch, project in db_session.execute(select(TranslationProjectBranch, TranslationProject)
+                .join(TranslationProject, TranslationProject.id == TranslationProjectBranch.project_id)
+                .where(TranslationProjectBranch.session_id.in_(ids))):
+                memberships[branch.session_id] = {"id": project.id, "name": project.name,
+                    "source_session_id": project.source_session_id, "role": "branch",
+                    "target_language": branch.target_language}
+        for item in items:
+            item["translation_project"] = memberships.get(item["id"])
+        return jsonify({"items": items})
 
     @app.get("/api/v1/defaults/<section>")
     @require_auth
     def global_default_get(section: str):
+        from .settings_policy import split_legacy_stt_settings
+
         if section not in SETTING_SECTIONS:
             return error_response("not_found", "Settings section not found.", 404)
         with database.session() as db_session:
@@ -1804,6 +1819,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 else {}
             )
             revision = record.revision if record else 0
+            if section == "stt":
+                value, _ = split_legacy_stt_settings(value, reject_conflicts=False)
+            elif section == "subtitles":
+                legacy = db_session.get(AppSetting, "defaults.stt")
+                _, legacy_subtitles = split_legacy_stt_settings(
+                    dict(legacy.value_json or {}) if legacy else {}, reject_conflicts=False,
+                )
+                value = {**legacy_subtitles, **value}
         response = jsonify(
             redact_inline_secrets(
                 {
@@ -1844,7 +1867,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = SettingUpdate.model_validate(request.get_json(silent=True) or {})
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
-            with database.session() as db_session:
+            with database.immediate_session() as db_session:
                 record = db_session.get(AppSetting, setting_key)
                 if record is None:
                     if raw_etag not in {"", "0", "*"}:
@@ -1887,6 +1910,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     if setting_key == "services.stt"
                     else payload.value
                 )
+                if setting_key == "defaults.stt":
+                    from .settings_policy import split_legacy_stt_settings, validate_stt_replacement
+                    from .workspace_settings import migrate_legacy_subtitle_settings
+
+                    prepared_value, incoming_subtitles = split_legacy_stt_settings(prepared_value)
+                    previous_stt, previous_subtitles = split_legacy_stt_settings(
+                        dict(record.value_json or {}) if record else {}, reject_conflicts=False,
+                    )
+                    validate_stt_replacement(prepared_value, previous_stt)
+                    migrate_legacy_subtitle_settings(db_session, {**previous_subtitles, **incoming_subtitles})
                 if setting_key == "defaults.tts":
                     from .settings_policy import validate_voiceover_repair_settings
 
@@ -2995,6 +3028,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     register_translation_project_routes(
         app, services, require_auth, error_response, context.guards.principal
     )
+    from .project_operation_routes import register_project_operation_routes
+
+    register_project_operation_routes(app, context)
+    from .project_export_bundle_routes import register_project_export_bundle_routes
+
+    register_project_export_bundle_routes(app, context)
 
     @app.post("/api/v1/sessions/<session_id>/sources/adopt-subtitles")
     @require_auth
@@ -4733,6 +4772,98 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("validation_error", str(error), 422)
         return jsonify(result), 201
 
+    @app.post(
+        "/api/v1/sessions/<session_id>/subtitles/<stage>/passage-review"
+    )
+    @require_auth
+    def subtitle_save_passage_review(session_id: str, stage: str):
+        payload = SubtitlePassageReviewRequest.model_validate(
+            request.get_json(silent=True) or {}
+        )
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        if idempotency_key is not None:
+            published_paths: list[Path] = []
+
+            def cleanup_published() -> None:
+                for published_path in published_paths:
+                    try:
+                        published_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            try:
+                with database.immediate_session() as db_session:
+                    reservation = services.idempotency.begin(
+                        db_session,
+                        principal=context.guards.principal(),
+                        operation_id="saveSubtitlePassageReview",
+                        idempotency_key=idempotency_key,
+                        payload={
+                            "session_id": session_id,
+                            "stage": stage,
+                            **payload.model_dump(mode="json"),
+                        },
+                    )
+                    if reservation.response is not None:
+                        result, status_code = reservation.response
+                        response = jsonify(result)
+                        response.status_code = status_code
+                        response.headers["Idempotency-Replayed"] = "true"
+                        return response
+                    result = subtitle_review.save_passage_review_in_session(
+                        db_session,
+                        session_id,
+                        stage,
+                        payload.expected_revision,
+                        [item.model_dump() for item in payload.passages],
+                        source_artifact_id=payload.source_artifact_id,
+                        expected_source_hash=payload.expected_source_hash,
+                        expected_composition_hash=payload.expected_composition_hash,
+                        published_paths=published_paths,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=201,
+                        resource_kind="subtitle_document",
+                        resource_id=str(result["document_id"]),
+                    )
+            except (IdempotencyConflict, IdempotencyInProgress) as error:
+                return idempotency_failure(error)
+            except KeyError:
+                cleanup_published()
+                return error_response("not_found", "Subtitle document not found.", 404)
+            except RuntimeError as error:
+                cleanup_published()
+                return error_response("revision_conflict", str(error), 409)
+            except ValueError as error:
+                cleanup_published()
+                return error_response("validation_error", str(error), 422)
+            except Exception:
+                cleanup_published()
+                raise
+            return jsonify(result), 201
+        try:
+            result = subtitle_review.save_passage_review(
+                session_id,
+                stage,
+                payload.expected_revision,
+                [item.model_dump() for item in payload.passages],
+                source_artifact_id=payload.source_artifact_id,
+                expected_source_hash=payload.expected_source_hash,
+                expected_composition_hash=payload.expected_composition_hash,
+            )
+        except KeyError:
+            return error_response("not_found", "Subtitle document not found.", 404)
+        except RuntimeError as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result), 201
+
     @app.post("/api/v1/sessions/<session_id>/subtitle-evidence")
     @require_auth
     def subtitle_evidence_create(session_id: str):
@@ -4823,9 +4954,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 result = subtitle_evidence.resolve(session_id, evidence_id, values)
             else:
                 with database.immediate_session() as db_session:
+                    principal = context.guards.principal()
+                    assert principal is not None
                     reservation = services.idempotency.begin(
                         db_session,
-                        principal=context.guards.principal(),
+                        principal=principal,
                         operation_id="resolveSubtitleEvidence",
                         idempotency_key=idempotency_key,
                         payload={
@@ -5237,6 +5370,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             chunk_uploads.cancel(upload_id)
         except KeyError:
             return error_response("not_found", "Upload not found.", 404)
+        except ValueError as error:
+            return error_response("upload_conflict", str(error), 409)
         return "", 204
 
     @app.post("/api/v1/sessions/<session_id>/sources/url")
@@ -5557,6 +5692,21 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             conditional=True,
             etag=artifact.content_hash,
         )
+
+    @app.get("/api/v1/artifacts/<artifact_id>/video-preview")
+    @require_auth
+    def artifact_video_preview(artifact_id: str):
+        try:
+            result, status = VideoPreviewService(database, paths, artifacts, jobs).request(artifact_id)
+            return jsonify(result), status
+        except KeyError:
+            return error_response("not_found", "Artifact not found.", 404)
+        except FileNotFoundError:
+            return error_response("artifact_missing", "The artifact file is missing.", 410)
+        except VideoPreviewUnsupported as error:
+            return error_response("video_preview_unsupported", str(error), 422)
+        except ValueError as error:
+            return error_response("video_preview_conflict", str(error), 409)
 
     @app.get("/api/v1/artifacts/<artifact_id>/audio-preview")
     @require_auth

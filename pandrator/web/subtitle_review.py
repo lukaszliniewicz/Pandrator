@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
@@ -16,9 +17,14 @@ from sqlalchemy import func, select
 from pandrator.logic.dubbing.correction_splits import split_boundaries
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.srt_utils import compose_srt, split_speaker_label
+from pandrator.logic.dubbing.subtitle_finalization import (
+    SubtitleFinalizationConfig,
+    finalize_segments,
+)
 
 from .artifacts import ArtifactService
 from .database import Database
+from .document_roles import ARTIFACT_ROLE_TO_STAGE
 from .logical_passages import (
     attach_passages,
     load_timing_reference,
@@ -36,15 +42,11 @@ from .models import (
     SessionRecord,
     SubtitleEvidence,
 )
+from .settings_policy import adapt_runtime_settings
 from .subtitle_media import resolve_subtitle_media
+from .workspace_settings import WorkspaceSettingsService
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
-ARTIFACT_ROLE_TO_STAGE = {
-    "transcription": "transcription",
-    "correction": "correction",
-    "translation": "translation",
-    "tts_optimized": "tts_optimization",
-}
 MAX_REVIEW_ARTIFACTS = 4
 
 
@@ -64,6 +66,7 @@ class ReviewedSubtitleSegment(TypedDict):
     evidence_ids: list[str]
     uncertain_source_cue_ids: list[int]
     _source_word_ids: NotRequired[list[str]]
+    _canonical_passage_id: NotRequired[str]
 
 
 def _speaker_and_text(segment: Segment) -> tuple[str, str]:
@@ -99,6 +102,63 @@ def _segments_hash(segments: Sequence[Mapping[str, Any]]) -> str:
 
 def _overlaps(start: int, end: int, row: Mapping[str, Any]) -> bool:
     return min(end, int(row["end_ms"])) > max(start, int(row["start_ms"]))
+
+
+def _require_unchanged_combined_speaker(
+    segment: Segment,
+    cue: ReviewedSubtitleSegment,
+    owned: list[dict[str, Any]],
+) -> None:
+    source_speaker = _speaker_and_text(segment)[0]
+    reviewed_speaker = str(cue.get("speaker") or "").strip()
+    if reviewed_speaker.casefold() != source_speaker.casefold():
+        passages = ", ".join(str(row["id"]) for row in owned)
+        raise ValueError(
+            f"Display cue contains logical passages [{passages}]; align speakers or edit each passage separately."
+        )
+
+
+def _merge_prepared_canonical_rows(
+    source_rows: list[dict[str, Any]],
+    prepared_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Apply only passage-edit fields to the freshly guarded source ledger."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in prepared_rows:
+        row_id = str(row.get("id") or "")
+        if not row_id or row_id in by_id:
+            raise ValueError("Canonical passage identities must be unique.")
+        by_id[row_id] = row
+    source_ids = [str(row["id"]) for row in source_rows]
+    if set(by_id) != set(source_ids) or len(by_id) != len(source_ids):
+        raise ValueError(
+            "Canonical passage review must include every selected source passage exactly once."
+        )
+    output: list[dict[str, Any]] = []
+    for source in source_rows:
+        prepared = by_id[str(source["id"])]
+        if prepared.get("_deleted") is True:
+            continue
+        row = deepcopy(source)
+        for key in (
+            "text",
+            "speaker",
+            "start_ms",
+            "end_ms",
+            "review_state",
+            "review_note",
+        ):
+            if key in prepared:
+                row[key] = prepared[key]
+        turn_id = str(prepared.get("turn_id") or "").strip()
+        if turn_id:
+            row["turn_id"] = turn_id
+        else:
+            row.pop("turn_id", None)
+        output.append(row)
+    if not output:
+        raise ValueError("A reviewed subtitle document cannot be empty.")
+    return output
 
 
 def _review_passage_rows(
@@ -197,8 +257,12 @@ def _review_passage_rows(
                 raise ValueError("A display reflow cannot be split without one logical source passage.")
             if cue.get("id") != segment.id or supplied != [row["id"] for row in owned]:
                 raise ValueError("Display fragment requires its exact source segment and logical references.")
-            if len(owned) > 1 and _speaker_and_text(segment)[1] != cue["text"]:
-                raise ValueError("Display cue contains multiple logical passages; edit their source passages separately.")
+            if len(owned) > 1:
+                _require_unchanged_combined_speaker(segment, cue, owned)
+                if _speaker_and_text(segment)[1] != cue["text"]:
+                    raise ValueError(
+                        "Display cue contains multiple logical passages; edit their source passages separately."
+                    )
             # Keep each canonical row once even when display cues split or
             # combine it. Fragment text is reconstructed only after complete
             # source ownership has been verified below.
@@ -206,6 +270,7 @@ def _review_passage_rows(
                 row_id = row["id"]
                 if row_id not in carried:
                     carried[row_id] = dict(row)
+                    carried[row_id]["source_passage_ids"] = [row_id]
                     output.append(carried[row_id])
                     used.add(row_id)
                 carried_reviews.setdefault(row_id, []).append(cue)
@@ -236,10 +301,14 @@ def _review_passage_rows(
             raise ValueError("Cannot merge across a preserved utterance turn boundary.")
         if len(owned) > 1 and segment is not None and len(owned) != len(candidates):
             raise ValueError("Reviewed merge omits overlapping logical source passages.")
-        if len(owned) > 1 and segment is not None and _speaker_and_text(segment)[1] != cue["text"]:
-            # Multiple logical rows in one display cue cannot be edited as a
-            # single text value without an explicit passage-level edit.
-            raise ValueError("Display cue contains multiple logical passages; edit their source passages separately.")
+        if len(owned) > 1 and segment is not None:
+            _require_unchanged_combined_speaker(segment, cue, owned)
+            if _speaker_and_text(segment)[1] != cue["text"]:
+                # Multiple logical rows in one display cue cannot be edited as
+                # a single text value without an explicit passage-level edit.
+                raise ValueError(
+                    "Display cue contains multiple logical passages; edit their source passages separately."
+                )
         source_ids = [row["id"] for row in owned]
         source_words = list(dict.fromkeys(
             word_id for row in owned for word_id in row.get("source_word_ids") or []
@@ -301,6 +370,29 @@ def _review_passage_rows(
         ordered = sorted(actual, key=lambda pair: (pair[0].start_ms, pair[0].end_ms, pair[0].ordinal))
         if any(_speaker_and_text(segment)[1] != cue["text"] for segment, cue in ordered):
             stored["text"] = " ".join(cue["text"] for _segment, cue in ordered)
+        fragment_speakers = [
+            str(cue.get("speaker") or "").strip()
+            for _segment, cue in ordered
+        ]
+        original_fragment_speakers = [
+            _speaker_and_text(segment)[0].strip() for segment, _cue in ordered
+        ]
+        speaker_changed = any(
+            submitted.casefold() != original.casefold()
+            for submitted, original in zip(
+                fragment_speakers, original_fragment_speakers, strict=True
+            )
+        )
+        if speaker_changed:
+            if len({speaker.casefold() for speaker in fragment_speakers}) > 1:
+                source_row_ids = ", ".join(segment.id for segment, _cue in ordered)
+                raise ValueError(
+                    f"Logical passage {row_id!r} has conflicting speakers across source rows "
+                    f"[{source_row_ids}]; align speakers or use a passage edit."
+                )
+            stored["speaker"] = fragment_speakers[0]
+    for index, row in enumerate(output, start=1):
+        row["id"] = f"p{index:06d}"
     return output
 
 
@@ -433,10 +525,19 @@ class SubtitleReviewService:
         cls, segment: Segment, passages: list[dict[str, Any]]
     ) -> dict[str, Any]:
         payload = cls._payload(segment)
-        owned = [
-            row for row in passages
-            if segment.id in row.get("source_cue_ids", [])
-        ]
+        segment_metadata = dict(segment.metadata_json or {})
+        canonical_ids = segment_metadata.get("source_passage_ids") or []
+        passage_by_id = {str(row["id"]): row for row in passages}
+        owned = (
+            [passage_by_id[str(row_id)] for row_id in canonical_ids]
+            if segment_metadata.get("canonical_passage_review")
+            and canonical_ids
+            and all(str(row_id) in passage_by_id for row_id in canonical_ids)
+            else [
+                row for row in passages
+                if segment.id in row.get("source_cue_ids", [])
+            ]
+        )
         if not owned:
             owned = [
                 row for row in passages
@@ -447,6 +548,70 @@ class SubtitleReviewService:
         payload["source_passage_ids"] = [row["id"] for row in owned]
         turns = {str(row.get("turn_id") or "") for row in owned}
         payload["turn_id"] = next(iter(turns)) if len(turns) == 1 else None
+        payload["owned_passages"] = [
+            {
+                "id": row["id"],
+                "text": row["text"],
+                "speaker": str(row.get("speaker") or ""),
+                "start_ms": row["start_ms"],
+                "end_ms": row["end_ms"],
+                "turn_id": row.get("turn_id"),
+                "review_state": str(row.get("review_state") or "clear"),
+                "review_note": str(row.get("review_note") or ""),
+            }
+            for row in owned
+        ]
+        capabilities = {
+            "ownership": "unverified",
+            "text": False,
+            "display_timing": False,
+            "speaker": False,
+            "start_new_utterance": False,
+            "split": False,
+            "merge": False,
+            "delete": False,
+            "reason": (
+                "Capabilities are unknown because this display cue has no verified "
+                "source passage."
+            ),
+        }
+        if len(owned) > 1:
+            passage_ids = ", ".join(str(row["id"]) for row in owned)
+            capabilities.update(
+                ownership="combined",
+                reason=(
+                    f"This display cue combines spoken passages [{passage_ids}]. "
+                    "Edit spoken passages separately."
+                ),
+            )
+        elif len(owned) == 1:
+            row = owned[0]
+            if (
+                segment.start_ms == row["start_ms"]
+                and segment.end_ms == row["end_ms"]
+            ):
+                capabilities.update(
+                    ownership="exact",
+                    text=True,
+                    display_timing=True,
+                    speaker=True,
+                    start_new_utterance=True,
+                    split=True,
+                    merge=True,
+                    delete=True,
+                    reason="",
+                )
+            else:
+                capabilities.update(
+                    ownership="fragment",
+                    text=True,
+                    reason=(
+                        f"This display cue is part of spoken passage {row['id']}. "
+                        "Change its speaker, timing or utterance at passage level; "
+                        "keep every fragment when saving."
+                    ),
+                )
+        payload["edit_capabilities"] = capabilities
         return payload
 
     def documents(self, session_id: str) -> dict[str, Any]:
@@ -654,6 +819,12 @@ class SubtitleReviewService:
             for segment in segment_rows:
                 segments_by_revision[segment.revision_id].append(segment)
 
+            resolved_settings, composition_hash = WorkspaceSettingsService(
+                self.database
+            ).resolve_in_session(session, session_id, sections=["subtitles"])
+            composition_settings = deepcopy(
+                resolved_settings.get("subtitles") or {}
+            )
             columns: list[dict[str, Any]] = []
             segment_sets: dict[str, list[Segment]] = {}
             for artifact_id in ordered_ids:
@@ -667,7 +838,9 @@ class SubtitleReviewService:
                     )
                 records = segments_by_revision[revision_id]
                 segment_sets[artifact_id] = records
-                passages = stored_passages(artifact) or []
+                passages = stored_passages(artifact)
+                if not passages:
+                    passages = source_passages(session, artifact, segments=records)
                 source_media_artifact_id: str | None = None
                 source_media_error: str | None = None
                 source_media_mime_type: str | None = None
@@ -692,10 +865,13 @@ class SubtitleReviewService:
                         "revision": revision.revision_number,
                         "reviewed": revision.reviewed,
                         "language": document.language,
+                        "composition_hash": composition_hash,
+                        "composition_settings": deepcopy(composition_settings),
                         "source_media_artifact_id": source_media_artifact_id,
                         "source_media_mime_type": source_media_mime_type,
                         "source_media_kind": source_media_kind,
                         "source_media_error": source_media_error,
+                        "logical_passages": deepcopy(passages),
                         "segments": [
                             self._payload_with_passages(item, passages) for item in records
                         ],
@@ -849,6 +1025,9 @@ class SubtitleReviewService:
         expected_source_hash: str | None = None,
         db_session=None,
         published_paths: list[Path] | None = None,
+        _prepared_canonical: list[dict[str, Any]] | None = None,
+        _prepared_composition_settings: dict[str, Any] | None = None,
+        _prepared_composition_hash: str | None = None,
     ) -> dict[str, Any]:
         if db_session is None:
             owned_paths: list[Path] = []
@@ -863,6 +1042,11 @@ class SubtitleReviewService:
                         expected_source_hash=expected_source_hash,
                         db_session=session,
                         published_paths=owned_paths,
+                        _prepared_canonical=_prepared_canonical,
+                        _prepared_composition_settings=(
+                            _prepared_composition_settings
+                        ),
+                        _prepared_composition_hash=_prepared_composition_hash,
                     )
             except Exception:
                 for path in owned_paths:
@@ -881,8 +1065,7 @@ class SubtitleReviewService:
                 continue
             if start_ms < 0 or end_ms <= start_ms:
                 raise ValueError(f"Segment {index + 1} has invalid timing.")
-            normalized.append(
-                {
+            normalized_segment: ReviewedSubtitleSegment = {
                     "id": str(item.get("id") or "").strip() or None,
                     "turn_id": str(item.get("turn_id") or "").strip() or None,
                     "source_passage_ids": list(item.get("source_passage_ids") or []),
@@ -917,7 +1100,12 @@ class SubtitleReviewService:
                         )
                     )[:20],
                 }
-            )
+            canonical_passage_id = str(
+                item.get("_canonical_passage_id") or ""
+            ).strip()
+            if canonical_passage_id:
+                normalized_segment["_canonical_passage_id"] = canonical_passage_id
+            normalized.append(normalized_segment)
         if not normalized:
             raise ValueError("A reviewed subtitle document cannot be empty.")
 
@@ -926,6 +1114,24 @@ class SubtitleReviewService:
             if db_session is None
             else _SessionContext(db_session)
         ) as session:
+            composition_settings: dict[str, Any] = {}
+            composition_hash: str | None = None
+            if _prepared_canonical is not None:
+                resolved_settings, composition_hash = WorkspaceSettingsService(
+                    self.database
+                ).resolve_in_session(session, session_id, sections=["subtitles"])
+                composition_settings = deepcopy(
+                    resolved_settings.get("subtitles") or {}
+                )
+                if (
+                    not _prepared_composition_hash
+                    or composition_hash != _prepared_composition_hash
+                    or composition_settings
+                    != (_prepared_composition_settings or {})
+                ):
+                    raise RuntimeError(
+                        "Subtitle composition settings changed; refresh the review."
+                    )
             evidence_ids = {
                 evidence_id
                 for item in normalized
@@ -939,6 +1145,10 @@ class SubtitleReviewService:
                     )
                 ).all()
             }
+            prepared_by_id = {
+                str(row.get("id") or ""): row
+                for row in (_prepared_canonical or [])
+            }
             for item in normalized:
                 for evidence_id in item["evidence_ids"]:
                     evidence = evidence_by_id.get(evidence_id)
@@ -950,8 +1160,31 @@ class SubtitleReviewService:
                         raise ValueError(
                             "Subtitle evidence cannot be attached while it is running."
                         )
-                    if min(item["end_ms"], evidence.end_ms) <= max(
-                        item["start_ms"], evidence.start_ms
+                    evidence_window = prepared_by_id.get(
+                        str(item.get("_canonical_passage_id") or "")
+                    )
+                    source_start = (
+                        evidence_window.get("_source_start_ms")
+                        if evidence_window is not None
+                        else None
+                    )
+                    source_end = (
+                        evidence_window.get("_source_end_ms")
+                        if evidence_window is not None
+                        else None
+                    )
+                    window_start = (
+                        source_start
+                        if isinstance(source_start, int)
+                        else item["start_ms"]
+                    )
+                    window_end = (
+                        source_end
+                        if isinstance(source_end, int)
+                        else item["end_ms"]
+                    )
+                    if min(window_end, evidence.end_ms) <= max(
+                        window_start, evidence.start_ms
                     ):
                         raise ValueError(
                             "Subtitle evidence must overlap the reviewed cue timing."
@@ -1101,21 +1334,34 @@ class SubtitleReviewService:
                     children[1]["_source_word_ids"] = list(source_row.get("source_word_ids") or [])[split_at:]
                 if any(item["split_boundary_id"] and not item["origin_segment_id"] for item in normalized):
                     raise ValueError("Split boundary requires origin_segment_id.")
-                logical_rows = _review_passage_rows(
-                    source_rows, previous_segments, normalized,
-                    source_hash=source_artifact.content_hash or "",
-                )
-                for item in normalized:
-                    if "_source_word_ids" not in item:
-                        continue
-                    matching = [
-                        row for row in logical_rows
-                        if row["start_ms"] == item["start_ms"]
-                        and row["end_ms"] == item["end_ms"]
-                    ]
-                    if len(matching) != 1:
-                        raise ValueError("Split child has ambiguous logical passage timing.")
-                    matching[0]["source_word_ids"] = item["_source_word_ids"]
+                if _prepared_canonical is not None:
+                    logical_rows = _merge_prepared_canonical_rows(
+                        source_rows, _prepared_canonical
+                    )
+                    canonical_ids = {str(row["id"]) for row in logical_rows}
+                    if any(
+                        item.get("_canonical_passage_id") not in canonical_ids
+                        for item in normalized
+                    ):
+                        raise ValueError(
+                            "Finalized display cues must identify a retained canonical passage."
+                        )
+                else:
+                    logical_rows = _review_passage_rows(
+                        source_rows, previous_segments, normalized,
+                        source_hash=source_artifact.content_hash or "",
+                    )
+                    for item in normalized:
+                        if "_source_word_ids" not in item:
+                            continue
+                        matching = [
+                            row for row in logical_rows
+                            if row["start_ms"] == item["start_ms"]
+                            and row["end_ms"] == item["end_ms"]
+                        ]
+                        if len(matching) != 1:
+                            raise ValueError("Split child has ambiguous logical passage timing.")
+                        matching[0]["source_word_ids"] = item["_source_word_ids"]
             else:
                 if any(item["id"] or item["turn_id"] or item["source_passage_ids"] or item["origin_segment_id"] or item["split_boundary_id"] for item in normalized):
                     raise ValueError("Reviewed identity requires an exact selected source artifact.")
@@ -1139,6 +1385,8 @@ class SubtitleReviewService:
                         "uncertain_source_cue_ids": item["uncertain_source_cue_ids"],
                     })
             for index, reviewed in enumerate(normalized, start=1):
+                if _prepared_canonical is not None:
+                    continue
                 # Genuine crosstalk can make an existing cue overlap another speaker.
                 # Preserve that inherited overlap when the reviewed cue keeps the same
                 # timing, while still rejecting newly created cues whose timing spans
@@ -1200,16 +1448,30 @@ class SubtitleReviewService:
                 revision_number=next_revision_number,
                 content_hash=_segments_hash(normalized),
                 reviewed=True,
+                settings_hash=composition_hash,
             )
             session.add(revision)
             session.flush()
             children = []
+            logical_rows_by_id = {
+                str(row["id"]): row for row in logical_rows
+            }
             for ordinal, reviewed in enumerate(normalized):
-                linked = [
-                    row for row in logical_rows
-                    if _overlaps(reviewed["start_ms"], reviewed["end_ms"], row)
-                ]
+                canonical_passage_id = reviewed.get("_canonical_passage_id")
+                linked = (
+                    [logical_rows_by_id[str(canonical_passage_id)]]
+                    if canonical_passage_id is not None
+                    else [
+                        row for row in logical_rows
+                        if _overlaps(reviewed["start_ms"], reviewed["end_ms"], row)
+                    ]
+                )
                 linked_turns = {str(row.get("turn_id") or "") for row in linked}
+                canonical_metadata = (
+                    linked[0]
+                    if canonical_passage_id is not None and linked
+                    else None
+                )
                 child = Segment(
                     revision_id=revision.id,
                     ordinal=ordinal,
@@ -1218,17 +1480,45 @@ class SubtitleReviewService:
                     text=reviewed["text"],
                     speaker=reviewed["speaker"],
                     metadata_json={
-                        "review_state": reviewed["review_state"],
-                        "review_note": reviewed["review_note"],
-                        "evidence_ids": reviewed["evidence_ids"],
-                        "uncertain_source_cue_ids": reviewed[
-                            "uncertain_source_cue_ids"
-                        ],
-                        "source_passage_ids": list(dict.fromkeys(
-                            source_id
-                            for row in linked
-                            for source_id in row.get("source_passage_ids") or [row["id"]]
-                        )),
+                        "review_state": (
+                            canonical_metadata.get("review_state", "clear")
+                            if canonical_metadata is not None
+                            else reviewed["review_state"]
+                        ),
+                        "review_note": (
+                            canonical_metadata.get("review_note", "")
+                            if canonical_metadata is not None
+                            else reviewed["review_note"]
+                        ),
+                        "evidence_ids": (
+                            list(canonical_metadata.get("evidence_ids") or [])
+                            if canonical_metadata is not None
+                            else reviewed["evidence_ids"]
+                        ),
+                        "uncertain_source_cue_ids": (
+                            list(
+                                canonical_metadata.get(
+                                    "uncertain_source_cue_ids"
+                                )
+                                or []
+                            )
+                            if canonical_metadata is not None
+                            else reviewed["uncertain_source_cue_ids"]
+                        ),
+                        "source_passage_ids": (
+                            [str(canonical_passage_id)]
+                            if canonical_passage_id is not None
+                            else list(dict.fromkeys(
+                                source_id
+                                for row in linked
+                                for source_id in row.get("source_passage_ids") or [row["id"]]
+                            ))
+                        ),
+                        **(
+                            {"canonical_passage_review": True}
+                            if canonical_passage_id is not None
+                            else {}
+                        ),
                         **({"turn_id": next(iter(linked_turns))} if len(linked_turns) == 1 and next(iter(linked_turns)) else {}),
                     },
                 )
@@ -1306,7 +1596,18 @@ class SubtitleReviewService:
                     role="tts_optimized" if stage == "tts_optimization" else stage,
                     session_id=session_id,
                     parent_ids=[parent_id] if parent_id else [],
-                    settings={"reviewed": True, "revision": revision_number},
+                    settings={
+                        "reviewed": True,
+                        "revision": revision_number,
+                        **(
+                            {
+                                "composition_hash": composition_hash,
+                                "composition_settings": composition_settings,
+                            }
+                            if _prepared_canonical is not None
+                            else {}
+                        ),
+                    },
                     metadata={
                         "document_id": document_id,
                         "revision_id": revision_id,
@@ -1319,6 +1620,16 @@ class SubtitleReviewService:
                             1
                             for item in normalized
                             if item["review_state"] == "uncertain"
+                        ),
+                        **(
+                            {
+                                "composition_hash": composition_hash,
+                                "composition_settings": deepcopy(
+                                    composition_settings
+                                ),
+                            }
+                            if _prepared_canonical is not None
+                            else {}
                         ),
                     },
                 )
@@ -1346,6 +1657,349 @@ class SubtitleReviewService:
             "revision_id": revision_id,
             "revision": revision_number,
         }
+
+    def save_passage_review(
+        self,
+        session_id: str,
+        stage: str,
+        expected_revision: int,
+        values: list[dict[str, Any]],
+        *,
+        source_artifact_id: str,
+        expected_source_hash: str,
+        expected_composition_hash: str,
+    ) -> dict[str, Any]:
+        """Save canonical passage edits in one immediate database transaction."""
+        published_paths: list[Path] = []
+        try:
+            with self.database.immediate_session() as session:
+                return self.save_passage_review_in_session(
+                    session,
+                    session_id,
+                    stage,
+                    expected_revision,
+                    values,
+                    source_artifact_id=source_artifact_id,
+                    expected_source_hash=expected_source_hash,
+                    expected_composition_hash=expected_composition_hash,
+                    published_paths=published_paths,
+                )
+        except Exception:
+            for path in published_paths:
+                path.unlink(missing_ok=True)
+            raise
+
+    def save_passage_review_in_session(
+        self,
+        session,
+        session_id: str,
+        stage: str,
+        expected_revision: int,
+        values: list[dict[str, Any]],
+        *,
+        source_artifact_id: str,
+        expected_source_hash: str,
+        expected_composition_hash: str,
+        published_paths: list[Path] | None = None,
+    ) -> dict[str, Any]:
+        """Prepare source-owned canonical edits within the caller's transaction."""
+        prepared, display_values, composition_settings = (
+            self._prepare_passage_review(
+                session,
+                session_id,
+                stage,
+                expected_revision,
+                values,
+                source_artifact_id=source_artifact_id,
+                expected_source_hash=expected_source_hash,
+                expected_composition_hash=expected_composition_hash,
+            )
+        )
+        return self.save_review(
+            session_id,
+            stage,
+            expected_revision,
+            display_values,
+            source_artifact_id=source_artifact_id,
+            expected_source_hash=expected_source_hash,
+            db_session=session,
+            published_paths=published_paths,
+            _prepared_canonical=prepared,
+            _prepared_composition_settings=composition_settings,
+            _prepared_composition_hash=expected_composition_hash,
+        )
+
+    def _prepare_passage_review(
+        self,
+        session,
+        session_id: str,
+        stage: str,
+        expected_revision: int,
+        values: list[dict[str, Any]],
+        *,
+        source_artifact_id: str,
+        expected_source_hash: str,
+        expected_composition_hash: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+        if stage not in STAGE_ORDER:
+            raise ValueError(f"Unsupported subtitle stage: {stage}")
+        source = session.get(Artifact, source_artifact_id)
+        if (
+            source is None
+            or source.session_id != session_id
+            or ARTIFACT_ROLE_TO_STAGE.get(source.role) != stage
+            or source.state == "deleted"
+        ):
+            raise KeyError(source_artifact_id)
+        if (
+            not source.content_hash
+            or source.content_hash != expected_source_hash
+            or not self._source_hash_matches(source)
+        ):
+            raise RuntimeError("Subtitle source content hash changed.")
+        source_metadata = source.metadata_json or {}
+        document = session.get(
+            Document, str(source_metadata.get("document_id") or "")
+        )
+        previous = session.get(
+            DocumentRevision, str(source_metadata.get("revision_id") or "")
+        )
+        if (
+            document is None
+            or previous is None
+            or document.session_id != session_id
+            or document.stage != stage
+            or previous.document_id != document.id
+        ):
+            raise KeyError(source_artifact_id)
+        if previous.revision_number != expected_revision:
+            raise RuntimeError(
+                f"Subtitle revision changed from {expected_revision} to "
+                f"{previous.revision_number}."
+            )
+        source_segments = list(
+            session.scalars(
+                select(Segment)
+                .where(Segment.revision_id == previous.id)
+                .order_by(Segment.ordinal)
+            ).all()
+        )
+        source_rows = source_passages(session, source, segments=source_segments)
+        if not source_rows:
+            raise ValueError("The selected source has no valid logical passages.")
+        if source_metadata.get("revision_id") != previous.id:
+            raise RuntimeError("Subtitle source revision changed.")
+
+        resolved, composition_hash = WorkspaceSettingsService(
+            self.database
+        ).resolve_in_session(session, session_id, sections=["subtitles"])
+        if not expected_composition_hash or composition_hash != expected_composition_hash:
+            raise RuntimeError(
+                "Subtitle composition settings changed; refresh the review."
+            )
+        composition_settings = deepcopy(resolved.get("subtitles") or {})
+
+        source_by_id = {str(row["id"]): row for row in source_rows}
+        submitted_ids: list[str] = []
+        submitted_by_id: dict[str, dict[str, Any]] = {}
+        for raw in values:
+            row_id = str(raw.get("id") or "").strip()
+            if not row_id:
+                raise ValueError("Every edited passage requires its source id.")
+            submitted_ids.append(row_id)
+            if row_id in submitted_by_id:
+                raise ValueError(f"Duplicate source passage id: {row_id}.")
+            submitted_by_id[row_id] = raw
+        if len(submitted_ids) != len(source_by_id) or set(submitted_ids) != set(
+            source_by_id
+        ):
+            missing = sorted(set(source_by_id) - set(submitted_ids))
+            foreign = sorted(set(submitted_ids) - set(source_by_id))
+            detail = []
+            if missing:
+                detail.append(f"missing {', '.join(missing)}")
+            if foreign:
+                detail.append(f"foreign {', '.join(foreign)}")
+            raise ValueError(
+                "Passage review must include every selected source passage exactly "
+                f"once ({'; '.join(detail) or 'duplicate ids'})."
+            )
+
+        prepared_by_id: dict[str, dict[str, Any]] = {}
+        for row_id, raw in submitted_by_id.items():
+            source_row = source_by_id[row_id]
+            start_ms = raw.get("start_ms")
+            end_ms = raw.get("end_ms")
+            if (
+                isinstance(start_ms, bool)
+                or not isinstance(start_ms, int)
+                or start_ms < 0
+                or isinstance(end_ms, bool)
+                or not isinstance(end_ms, int)
+                or end_ms <= start_ms
+            ):
+                raise ValueError(f"Passage {row_id} has invalid timing.")
+            text = str(raw.get("text") or "").strip()
+            if not text:
+                raise ValueError(f"Passage {row_id} cannot have empty text.")
+            if type(raw.get("deleted", False)) is not bool:
+                raise ValueError(f"Passage {row_id} has an invalid deleted flag.")
+            if type(raw.get("starts_new_turn", False)) is not bool:
+                raise ValueError(
+                    f"Passage {row_id} has an invalid starts_new_turn flag."
+                )
+            review_state = str(raw.get("review_state") or "clear").strip().lower()
+            if review_state not in {"clear", "uncertain"}:
+                raise ValueError(f"Passage {row_id} has an invalid review state.")
+            speaker = str(raw.get("speaker") or "").strip()
+            edited = deepcopy(source_row)
+            edited.update(
+                text=text,
+                speaker=speaker,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                review_state=review_state,
+                review_note=" ".join(
+                    str(raw.get("review_note") or "").split()
+                ).strip()[:4_000],
+                _deleted=raw.get("deleted", False),
+                _starts_new_turn=raw.get("starts_new_turn", False),
+                _source_start_ms=source_row["start_ms"],
+                _source_end_ms=source_row["end_ms"],
+            )
+            prepared_by_id[row_id] = edited
+
+        retained = [
+            prepared_by_id[str(row["id"])]
+            for row in source_rows
+            if not prepared_by_id[str(row["id"])]["_deleted"]
+        ]
+        if not retained:
+            raise ValueError("A reviewed subtitle document cannot be empty.")
+
+        timing_order = sorted(retained, key=lambda row: (row["start_ms"], row["end_ms"]))
+        for index, row in enumerate(timing_order):
+            row_speaker = str(row.get("speaker") or "").strip().casefold()
+            for other_index in range(index + 1, len(timing_order)):
+                other = timing_order[other_index]
+                if other["start_ms"] >= row["end_ms"]:
+                    break
+                other_speaker = str(other.get("speaker") or "").strip().casefold()
+                if (
+                    not row_speaker
+                    or not other_speaker
+                    or row_speaker == other_speaker
+                    or not _overlaps(row["start_ms"], row["end_ms"], other)
+                ):
+                    continue
+                source_row = source_by_id[str(row["id"])]
+                source_other = source_by_id[str(other["id"])]
+                timing_changed = (
+                    row["start_ms"] != source_row["start_ms"]
+                    or row["end_ms"] != source_row["end_ms"]
+                    or other["start_ms"] != source_other["start_ms"]
+                    or other["end_ms"] != source_other["end_ms"]
+                )
+                source_speaker = str(
+                    source_row.get("speaker") or ""
+                ).strip().casefold()
+                source_other_speaker = str(
+                    source_other.get("speaker") or ""
+                ).strip().casefold()
+                inherited_crosstalk = (
+                    _overlaps(source_row["start_ms"], source_row["end_ms"], source_other)
+                    and source_speaker
+                    and source_other_speaker
+                    and source_speaker != source_other_speaker
+                )
+                if timing_changed and not inherited_crosstalk:
+                    raise ValueError(
+                        f"Passage {row['id']} timing creates cross-speaker overlap "
+                        f"with passage {other['id']}."
+                    )
+
+        active_turn = ""
+        previous_source_turn: str | None = None
+        prepared: list[dict[str, Any]] = []
+        display_values: list[dict[str, Any]] = []
+        runtime_settings = adapt_runtime_settings(
+            "subtitles", composition_settings
+        )
+        full_text = " ".join(str(row["text"]) for row in retained)
+        finalization = SubtitleFinalizationConfig.from_settings(
+            runtime_settings,
+            language=document.language or "",
+            text=full_text,
+        )
+        for ordinal, source_row in enumerate(source_rows):
+            row = prepared_by_id[str(source_row["id"])]
+            source_turn = str(source_row.get("turn_id") or "").strip()
+            if ordinal == 0 or source_turn != previous_source_turn:
+                active_turn = source_turn
+            previous_source_turn = source_turn
+            if not row["_deleted"] and row["_starts_new_turn"]:
+                active_turn = "turn-" + hashlib.sha256(
+                    json.dumps(
+                        [
+                            "canonical-passage-review",
+                            source.id,
+                            source.content_hash,
+                            row["id"],
+                            ordinal,
+                        ],
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ).hexdigest()[:24]
+            if active_turn:
+                row["turn_id"] = active_turn
+            else:
+                row.pop("turn_id", None)
+            prepared.append(row)
+            if row["_deleted"]:
+                continue
+            passage_id = str(row["id"])
+            finalized = finalize_segments(
+                [
+                    SubtitleSegment(
+                        index=1,
+                        start_ms=row["start_ms"],
+                        end_ms=row["end_ms"],
+                        text=row["text"],
+                        speaker=str(row.get("speaker") or ""),
+                    )
+                ],
+                finalization,
+            )
+            if not finalized:
+                raise ValueError(
+                    f"Passage {passage_id} produced no display cues during composition."
+                )
+            for cue in finalized:
+                start = max(row["start_ms"], int(cue.start_ms))
+                end = min(row["end_ms"], int(cue.end_ms))
+                if end <= start:
+                    raise ValueError(
+                        f"Passage {passage_id} produced invalid display timing."
+                    )
+                display_values.append(
+                    {
+                        "_canonical_passage_id": passage_id,
+                        "source_passage_ids": [passage_id],
+                        "turn_id": row.get("turn_id"),
+                        "starts_new_turn": False,
+                        "start_ms": start,
+                        "end_ms": end,
+                        "text": cue.text,
+                        "speaker": str(row.get("speaker") or ""),
+                        "review_state": row.get("review_state", "clear"),
+                        "review_note": row.get("review_note", ""),
+                        "evidence_ids": list(row.get("evidence_ids") or []),
+                        "uncertain_source_cue_ids": list(
+                            row.get("uncertain_source_cue_ids") or []
+                        ),
+                    }
+                )
+        return prepared, display_values, composition_settings
 
     def save_review_in_session(
         self,

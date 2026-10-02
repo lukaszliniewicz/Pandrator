@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -349,11 +350,17 @@ def _parse_crispasr(payload: dict[str, Any]) -> NormalizedTranscript:
         ))
     )
     diarization = "native" if backend == "moss-diarize" else "external-or-channel"
+    metadata: dict[str, Any] = {"engine": backend, "diarization": diarization, "header": dict(header or {})}
+    supplied_metadata = payload.get("metadata")
+    if isinstance(supplied_metadata, dict):
+        for key in ("stt_routing", "vocal_isolation", "requested_language"):
+            if key in supplied_metadata:
+                metadata[key] = deepcopy(supplied_metadata[key])
     return NormalizedTranscript(
         segments=_sorted_segments(segments),
         source_format="crispasr",
         language=str(header.get("language_detected") or header.get("language") or payload.get("language") or ""),
-        metadata={"engine": backend, "diarization": diarization, "header": dict(header)},
+        metadata=metadata,
     )
 
 

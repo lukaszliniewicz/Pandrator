@@ -30,7 +30,7 @@ from .models import (
 from .multilingual_setup import SECTION, canonical_language, read_setup
 from .outcome_plans import derive_legacy_outcome
 from .session_forks import SessionForkService
-from .settings_policy import RevisionConflict
+from .settings_policy import RevisionConflict, stable_hash
 from .workspace_settings import WorkspaceSettingsService
 
 
@@ -155,11 +155,15 @@ def _branch_payload(session: Session, branch: TranslationProjectBranch) -> dict[
         "translation_artifact_id": current.id if current else None,
         "translation_status": translation_status,
         "active_translation_run_id": active_run.id if active_run else None,
+        "created_at": branch.created_at.isoformat(),
     }
 
 
 def project_payload(session: Session, project: TranslationProject) -> dict[str, Any]:
     source = session.get(SessionRecord, project.source_session_id)
+    checkpoint = session.get(Artifact, project.checkpoint_artifact_id)
+    checkpoint_revision_id = (checkpoint.metadata_json or {}).get("revision_id") if checkpoint else None
+    checkpoint_revision = session.get(DocumentRevision, checkpoint_revision_id) if checkpoint_revision_id else None
     branches = list(
         session.scalars(
             select(TranslationProjectBranch)
@@ -178,6 +182,9 @@ def project_payload(session: Session, project: TranslationProject) -> dict[str, 
             "source_session_name": source.name if source else None,
             "source_language": project.source_language,
             "checkpoint_artifact_id": project.checkpoint_artifact_id,
+            "checkpoint_revision_id": checkpoint_revision_id,
+            "checkpoint_created_at": checkpoint.created_at.isoformat() if checkpoint else None,
+            "checkpoint_revision_created_at": checkpoint_revision.created_at.isoformat() if checkpoint_revision else None,
             "source_content_hash": project.source_content_hash,
             "source_media_edit_revision_id": project.source_media_edit_revision_id,
             "source_media_edit_content_hash": project.source_media_edit_content_hash,
@@ -381,13 +388,16 @@ def create_branches_in_session(
             raise ValueError("carry_source_subtitle_settings must be a boolean.")
         normalized.append((language, title, carry_source_subtitle_settings))
 
+    settings_service = WorkspaceSettingsService(session_forks.database)
+    source_settings = {
+        section: settings_service.get_in_session(db, source.id, section)
+        for section in ("subtitles", "tts")
+    }
     source_subtitle_settings = None
     if any(carry for _, _, carry in normalized):
         # get_in_session uses the caller's SQLAlchemy session and does not open
         # another transaction, so carried settings share the branch write.
-        source_subtitle_settings = WorkspaceSettingsService(
-            session_forks.database
-        ).get_in_session(db, source.id, "subtitles")["effective"]
+        source_subtitle_settings = source_settings["subtitles"]["effective"]
     # The caller owns BEGIN IMMEDIATE and directory cleanup if any later fork or
     # commit fails. Each fork also removes its own partial directory on failure.
     for language, title, carry_source_subtitle_settings in normalized:
@@ -555,6 +565,26 @@ def create_branches_in_session(
             raise TranslationProjectConflict(
                 "The fork did not preserve the pinned correction hash."
             )
+        db.flush()
+        initial_settings = {
+            section: settings_service.get_in_session(db, record.id, section)
+            for section in ("subtitles", "tts")
+        }
+        def settings_identity(snapshot):
+            return {
+                "revision": snapshot["revision"],
+                "global_revision": snapshot["global_revision"],
+                "settings_hash": stable_hash(snapshot["effective"]),
+            }
+        cloned.metadata_json = {
+            **(cloned.metadata_json or {}),
+            "translation_project_settings_origin": {
+                "subtitles_mode": "copied_source" if carry_source_subtitle_settings else "automatic_language_defaults",
+                "source_session_id": source.id,
+                "source_settings": {section: settings_identity(snapshot) for section, snapshot in source_settings.items()},
+                "initial_branch_settings": {section: settings_identity(snapshot) for section, snapshot in initial_settings.items()},
+            },
+        }
         db.add(
             TranslationProjectBranch(
                 project_id=project.id,

@@ -850,9 +850,10 @@ class SubtitleReviewTests(unittest.TestCase):
             event.remove(self.database.engine, "before_cursor_execute", count_selects)
         self.assertEqual(payload, repeated)
         self.assertEqual(baseline_count, select_count)
-        # Exact lineage, an independently attached recording, and primary-source
-        # fallback are fixed queries, independent of subtitle history length.
-        self.assertLessEqual(select_count, 7)
+        # One coherent subtitle-composition settings snapshot adds a fixed 14
+        # reads; lineage, recording resolution, and primary-source fallback
+        # remain bounded independently of subtitle history length.
+        self.assertLessEqual(select_count, 21)
 
 
 if __name__ == "__main__":

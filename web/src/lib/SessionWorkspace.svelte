@@ -1,8 +1,11 @@
 <script lang="ts">
   import {
     sttLanguageProblem,
-    qwenTimedLanguageProblem
+    qwenTimedLanguageProblem,
+    sttLanguageOptions
   } from './stt-language-policy';
+  import LanguageSelect from './LanguageSelect.svelte';
+  import { languageSupportProblem } from './language-registry';
   import QwenTranscriptionControls from './QwenTranscriptionControls.svelte';
   import VocalIsolationControl from './VocalIsolationControl.svelte';
   import LocalModelPicker from './LocalModelPicker.svelte';
@@ -359,7 +362,7 @@
   let model = $state('default');
   let reasoningEffort = $state('');
   let backend = $state('llm');
-  let sttEngine = $state('whisper');
+  let sttEngine = $state('auto');
   let qwenAsrModel = $state('qwen3_asr_0_6b');
   let qwenChunkMode = $state('auto');
   let transcriptionVocalIsolation = $state('off');
@@ -641,6 +644,10 @@
     (capabilities?.stt?.compute_backends ?? []).includes(name);
   const normalizeSttEngine = (value: unknown) => {
     const normalized = String(value ?? '').toLowerCase();
+    if (['auto', 'automatic', 'parakeet_preferred'].includes(normalized))
+      return 'auto';
+    if (sttCatalogue.services.some((service) => service.id === normalized))
+      return normalized;
     if (normalized.includes('azure') && normalized.includes('mai'))
       return 'azure_mai_transcribe_1_5';
     if (normalized.includes('qwen')) return 'qwen3';
@@ -1152,7 +1159,7 @@
       stageSettings[stage.key]?.stt_engine
     );
     const preferredSttEngine = String(
-      capabilities?.stt?.default_engine ?? 'whisper'
+      capabilities?.stt?.default_engine ?? 'auto'
     );
     sttEngine = normalizeSttEngine(
       hasSavedSttModel
@@ -1172,12 +1179,6 @@
     )
       ? (savedCaptionAlignmentMethod as 'ctc' | 'ctc_asr_fallback' | 'asr')
       : 'ctc';
-    if (
-      hasAttachedCaptions &&
-      !hasSavedSttModel &&
-      captionAlignmentMethod === 'ctc_asr_fallback'
-    )
-      sttEngine = 'parakeet';
     captionAlignmentCtcModel = String(
       saved.caption_alignment_ctc_model ?? 'auto'
     );
@@ -1501,6 +1502,14 @@
     value: Record<string, unknown>
   ) {
     const stored = await sessionApi.settings(session.id, section);
+    if (section === 'stt') {
+      return sessionApi.patchSettings(
+        session.id,
+        section,
+        stored.revision,
+        value
+      );
+    }
     return sessionApi.saveSettings(session.id, section, stored.revision, {
       ...stored.override,
       ...value
@@ -2000,6 +2009,13 @@
       .sort(compareServices)
   );
   const ttsModels = $derived(selectedTtsService?.models ?? []);
+  const selectedTtsLanguageSupport = $derived(
+    selectedTtsService?.model_catalog?.find((item) => item.id === ttsModel)
+      ?.language_support
+  );
+  const ttsLanguageIssue = $derived(
+    languageSupportProblem(selectedTtsLanguageSupport, targetLanguage)
+  );
   const selectedLlmModel = $derived(
     model === 'default'
       ? (llmModels.find((item) => item.isDefault) ?? null)
@@ -2498,7 +2514,15 @@
   ): { section: string; value: Record<string, unknown> }[] {
     if (key === 'transcribe') {
       const updates: { section: string; value: Record<string, unknown> }[] = [
-        { section: 'stt', value: stageSettings[key] },
+        {
+          section: 'stt',
+          value: Object.fromEntries(
+            Object.entries(stageSettings[key]).filter(
+              ([field]) =>
+                field !== 'original_language' && !field.startsWith('subtitle_')
+            )
+          )
+        },
         {
           section: 'subtitles',
           value: {
@@ -2647,7 +2671,6 @@
     if (key === 'transcribe')
       stageSettings[key] = {
         stt_engine: sttEngine,
-        stt_backend: sttEngine,
         qwen_asr_model: qwenAsrModel,
         qwen_asr_chunk_mode: qwenChunkMode,
         transcription_vocal_isolation: transcriptionVocalIsolation,
@@ -2661,7 +2684,6 @@
         stt_compute_backend: sttComputeBackend,
         stt_compute_device: sttDevice,
         stt_language: originalLanguage,
-        original_language: originalLanguage,
         stt_threads: sttThreads,
         stt_chunk_seconds: sttEngine === 'moss' ? 0 : sttChunkSeconds,
         stt_chunk_overlap_seconds: sttChunkOverlap,
@@ -3021,6 +3043,10 @@
     }
     if (key === 'generate_audio' && publishingLibraryVoiceId) {
       error = `Wait for the selected library voice to finish ${audioCppLinkedReferences ? 'linking' : 'uploading'}.`;
+      return;
+    }
+    if (key === 'generate_audio' && ttsLanguageIssue) {
+      error = ttsLanguageIssue;
       return;
     }
     if (key === 'generate_audio' && !selectedTtsServiceAvailable) {
@@ -3820,14 +3846,6 @@
                   label="Caption alignment method"
                 /><select
                   bind:value={captionAlignmentMethod}
-                  onchange={() => {
-                    if (
-                      captionAlignmentMethod === 'ctc_asr_fallback' &&
-                      !isCloudStt(sttEngine) &&
-                      sttEngine === 'whisper'
-                    )
-                      sttEngine = 'parakeet';
-                  }}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
                   ><option value="ctc"
                     >Local CTC forced alignment · recommended</option
@@ -4074,6 +4092,8 @@
                       capabilities?.stt?.models?.[sttEngine]?.precision ?? 'f16'
                     ))}
                   class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                  ><option value="auto"
+                    >Automatic · Parakeet, then eligible Qwen, then Whisper</option
                   ><option
                     value="whisper"
                     disabled={Boolean(
@@ -4136,7 +4156,9 @@
                     ? 'The selected connection runs remotely; audio is sent to its configured provider.'
                     : sttEngine === 'qwen3'
                       ? 'Qwen3 runs through CrispASR; recognition, alignment and voice detection models download when needed.'
-                      : 'CrispASR downloads a model the first time you use it; the installer-selected model is the default.'}</span
+                      : sttEngine === 'auto'
+                        ? 'Prefers Parakeet for supported languages, then Qwen with a supported aligner, then Whisper. Automatic source language uses a short local Tiny sample; the chosen route is recorded with the transcript.'
+                        : 'CrispASR downloads the explicitly selected model on first use.'}</span
                 ></label
               >
               {#if sttLanguageIssue}<p
@@ -4169,19 +4191,16 @@
                   >
                 </div>
                 <div class="grid gap-3 sm:grid-cols-2">
-                  <label class="text-sm font-semibold"
-                    ><ParameterLabel
-                      section="stt"
-                      name="stt_language"
-                      label="Source language"
-                    /><select
+                  <div>
+                    <LanguageSelect
                       bind:value={originalLanguage}
-                      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                      >{#each LANGUAGE_OPTIONS as item}<option
-                          value={item.value}>{item.label}</option
-                        >{/each}</select
-                    ></label
-                  ><label class="text-sm font-semibold"
+                      options={sttLanguageOptions(capabilities, sttEngine)}
+                      label="Source language"
+                      allowAuto
+                      allowCustom
+                    />
+                  </div>
+                  <label class="text-sm font-semibold"
                     ><ParameterLabel
                       section="stt"
                       name="stt_transcribe_style"
@@ -4378,29 +4397,34 @@
                   </div>
                 {:else}
                   <div class="grid gap-3 sm:grid-cols-2">
-                    <label class="text-sm font-semibold"
-                      >Source language<select
+                    <div>
+                      <LanguageSelect
                         bind:value={originalLanguage}
-                        class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                        >{#each LANGUAGE_OPTIONS as item}<option
-                            value={item.value}>{item.label}</option
-                          >{/each}</select
-                      ></label
-                    ><label class="text-sm font-semibold"
-                      ><ParameterLabel
-                        section="stt"
-                        name="stt_lid_backend"
-                        label="Language detector"
-                      /><select
-                        bind:value={sttLidBackend}
-                        class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                        ><option value="whisper">Whisper tiny</option><option
-                          value="ecapa">ECAPA (recommended)</option
-                        ><option value="silero">Silero</option><option
-                          value="off">Off</option
-                        ></select
-                      ></label
-                    >
+                        options={sttLanguageOptions(capabilities, sttEngine)}
+                        label="Source language"
+                        allowAuto
+                        allowCustom
+                      />
+                    </div>
+                    {#if sttEngine === 'auto'}<p class="muted text-xs">
+                        Routing detection: multilingual Whisper Tiny, up to 15
+                        seconds on CPU. Silence or uncertain detection falls
+                        back to native Whisper detection.
+                      </p>{:else}<label class="text-sm font-semibold"
+                        ><ParameterLabel
+                          section="stt"
+                          name="stt_lid_backend"
+                          label="Language detector"
+                        /><select
+                          bind:value={sttLidBackend}
+                          class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+                          ><option value="whisper">Whisper tiny</option><option
+                            value="ecapa">ECAPA (recommended)</option
+                          ><option value="silero">Silero</option><option
+                            value="off">Off</option
+                          ></select
+                        ></label
+                      >{/if}
                   </div>
                 {/if}
                 {#if sttEngine === 'moss'}<label
@@ -5581,28 +5605,41 @@
                   </div>{/if}
               </section>
             {/if}
-            <label class="text-sm font-semibold"
-              >Speech language<select
-                bind:value={targetLanguage}
-                onchange={(event) => {
-                  const selected = ttsVoiceDescriptors.find(
-                    (voice) => voice.id === voiceName
-                  );
-                  if (
-                    selected &&
-                    !voiceSupportsLanguage(selected, event.currentTarget.value)
-                  )
-                    voiceName =
-                      ttsVoiceDescriptors.find((voice) =>
-                        voiceSupportsLanguage(voice, event.currentTarget.value)
-                      )?.id ?? '';
-                }}
-                class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
-                >{#each ttsLanguages.length ? ttsLanguages : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto') as item}<option
-                    value={item.value}>{item.label}</option
-                  >{/each}</select
-              ></label
-            >
+            <LanguageSelect
+              label="Speech language"
+              bind:value={targetLanguage}
+              options={ttsLanguages.length
+                ? ttsLanguages
+                : LANGUAGE_OPTIONS.filter((item) => item.value !== 'auto')}
+              allowCustom={!selectedTtsService?.model_catalog?.find(
+                (item) => item.id === ttsModel
+              )?.language_support ||
+                selectedTtsService?.model_catalog?.find(
+                  (item) => item.id === ttsModel
+                )?.language_support?.coverage !== 'exact'}
+              onchange={(language) => {
+                const selected = ttsVoiceDescriptors.find(
+                  (voice) => voice.id === voiceName
+                );
+                if (selected && !voiceSupportsLanguage(selected, language))
+                  voiceName =
+                    ttsVoiceDescriptors.find((voice) =>
+                      voiceSupportsLanguage(voice, language)
+                    )?.id ?? '';
+              }}
+            />
+            {#if ttsLanguageIssue}<p class="text-sm text-red-600" role="alert">
+                {ttsLanguageIssue}
+              </p>{:else if !selectedTtsLanguageSupport || selectedTtsLanguageSupport.coverage !== 'exact'}
+              <p class="muted text-xs" role="note">
+                {selectedTtsLanguageSupport?.coverage === 'subset'
+                  ? 'The listed languages are a verified subset.'
+                  : selectedTtsLanguageSupport?.coverage === 'claim'
+                    ? 'These languages are documented claims.'
+                    : 'Language coverage for this model is unverified.'} You can retain
+                or enter another code; test a short sample before full generation.
+              </p>
+            {/if}
             {#if supportsPrebuiltVoices || showClonedVoices}
               {#if !audioCppLinkedReferences || !showClonedVoices}
                 <label class="text-sm font-semibold"

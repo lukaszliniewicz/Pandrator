@@ -22,18 +22,16 @@ def build_output_settings_snapshot(
     sections: dict[str, dict[str, Any]] = {}
     for section in OUTPUT_SETTINGS_SECTIONS:
         resolved_section = resolved.get(section)
-        if isinstance(resolved_section, dict):
-            sections[section] = deepcopy(resolved_section)
-            continue
+        has_resolved_section = isinstance(resolved_section, dict)
+        values = deepcopy(resolved_section) if has_resolved_section else {}
         aliases = RUNTIME_SETTING_ALIASES.get(section, {})
-        values: dict[str, Any] = {}
         for key in BUILTIN_DEFAULTS[section]:
             runtime_key = aliases.get(key, key)
             if runtime_key in flattened:
                 values[key] = deepcopy(flattened[runtime_key])
             elif key in flattened:
                 values[key] = deepcopy(flattened[key])
-        if values:
+        if values or has_resolved_section:
             sections[section] = values
 
     return {

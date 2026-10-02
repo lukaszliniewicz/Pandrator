@@ -106,8 +106,8 @@ def test_unknown_model_does_not_silently_gain_cloning():
 
 
 def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
-    assert len(inventory()["families"]) == 86
-    assert catalogue_page(limit=100)["total"] == 256
+    assert len(inventory()["families"]) == 101
+    assert catalogue_page(limit=100)["total"] == 316
     qwen = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")
     assert qwen["reference_audio"] == "not_used"
     assert not qwen["upstream_features"]["voice_cloning"]
@@ -131,7 +131,7 @@ def test_package_language_and_control_filters():
     assert results["items"]
     assert all(item["supported_languages"] == ["de"] for item in results["items"])
     for item in results["items"]:
-        with pytest.raises(ValueError, match="matching the requested language"):
+        with pytest.raises(ValueError, match="does not support language 'en'"):
             payload("Hello.", settings(item["id"], language="en"), {})
     assert (
         catalogue_page(capability="vocal_events", recommended_only=True)["total"] >= 3

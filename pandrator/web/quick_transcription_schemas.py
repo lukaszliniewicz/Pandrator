@@ -28,7 +28,7 @@ class TranscriptionCreate(BaseModel):
     compute_backend: Literal["auto", "cpu", "cuda", "vulkan", "metal"] | None = None
     qwen_asr_model: Literal["qwen3_asr_0_6b", "qwen3_asr_1_7b"] | None = None
     transcription_vocal_isolation: Literal[
-        "off", "bs_roformer", "mel_band_roformer"
+        "off", "bs_roformer", "mel_band_roformer", "htdemucs"
     ] | None = None
 
     @field_validator("filename")
@@ -86,6 +86,7 @@ class TranscriptionSnapshot(BaseModel):
     result_available: bool
     inline_result: bool
     result_url: str
+    available_formats: list[TranscriptFormat] = Field(default_factory=list)
     result: TranscriptionResult | None = None
     error: dict[str, str] | None = None
 

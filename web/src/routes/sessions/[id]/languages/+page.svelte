@@ -6,13 +6,15 @@
     TranslationProject,
     MultilingualSetup,
     TranslationProjectPayload,
-    SubtitleReviewCatalogItem
+    SubtitleReviewCatalogItem,
+    ProjectReadiness
   } from '$lib/api-models';
   import { sessionApi, translationProjectApi } from '$lib/domain-api';
   import { errorMessage } from '$lib/errors';
   import { invalidationBus } from '$lib/invalidation';
   import { useSessionContext } from '$lib/session-context';
   import LanguagePicker from '$lib/LanguagePicker.svelte';
+  import ProjectOperationPanel from '$lib/ProjectOperationPanel.svelte';
   import {
     translationBranchStatus,
     translationLanguageName as languageName
@@ -21,6 +23,27 @@
   const context = useSessionContext();
   const sessionId = $derived(String(page.params.id));
   let project = $state<TranslationProject | null>(null);
+  let selectedBranches = $state<string[]>([]);
+  function statusName(state: ProjectReadiness | undefined) {
+    return (state?.status ?? 'unavailable').replaceAll('_', ' ');
+  }
+  function settingsOrigin(origin: string) {
+    return (
+      (
+        {
+          automatic_language_defaults: 'Automatic language defaults',
+          copied_source: 'Copied source settings',
+          custom_override: 'Custom override',
+          unknown_historical: 'Historical settings; origin unrecorded'
+        } as Record<string, string>
+      )[origin] ?? origin
+    );
+  }
+  function toggleBranch(id: string, checked: boolean) {
+    selectedBranches = checked
+      ? [...new Set([...selectedBranches, id])]
+      : selectedBranches.filter((value) => value !== id);
+  }
   let setup = $state<MultilingualSetup | null>(null);
   let setupState = $state<TranslationProjectPayload['setup_state']>('none');
   let readyCheckpointId = $state('');
@@ -120,6 +143,7 @@
 
   $effect(() => {
     project = null;
+    selectedBranches = [];
     setup = null;
     editingSetup = false;
     readyCheckpointId = '';
@@ -305,14 +329,69 @@
         New languages start from the saved correction and timeline. Changes
         within one language do not change the others.
       </p>
+      {#if project.source_status}<p class="muted mt-2 break-all text-xs">
+          Pinned correction {project.source_status.pinned_checkpoint
+            .revision_id || project.checkpoint_artifact_id} · {new Date(
+            project.source_status.pinned_checkpoint.revision_created_at ||
+              project.source_status.pinned_checkpoint.created_at ||
+              project.created_at
+          ).toLocaleString()} · source {project.source_content_hash.slice(
+            0,
+            12
+          )}
+        </p>
+        {#if project.source_status.source_changed}<div
+            class="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+            role="status"
+          >
+            <p class="font-semibold">
+              The source has changed since this project was created.
+            </p>
+            <p class="mt-1">
+              Existing languages keep their pinned correction and timeline.
+            </p>
+            {#each project.source_status.reasons as reason}<p
+                class="muted mt-1 text-xs"
+              >
+                {reason}
+              </p>{/each}
+          </div>{/if}
+      {/if}
     </section>
+    <div class="flex flex-wrap items-center gap-4 text-sm">
+      <button
+        type="button"
+        class="font-semibold text-[var(--accent)]"
+        onclick={() =>
+          (selectedBranches = project!.branches
+            .filter((branch) => !branch.trashed_at)
+            .slice(0, 20)
+            .map((branch) => branch.id))}>Select available languages</button
+      ><button
+        type="button"
+        class="font-semibold text-[var(--accent)]"
+        onclick={() => (selectedBranches = [])}>Clear selection</button
+      >
+    </div>
     <div class="grid gap-4 lg:grid-cols-2">
       {#each project.branches as branch (branch.id)}
         <section class="surface rounded-2xl p-5">
           <div class="flex items-start justify-between gap-4">
-            <h3 class="text-lg font-semibold">
-              {languageName(branch.target_language)}
-            </h3>
+            <label class="flex min-w-0 items-start gap-2"
+              ><input
+                type="checkbox"
+                aria-label={`Select ${languageName(branch.target_language)}`}
+                checked={selectedBranches.includes(branch.id)}
+                disabled={Boolean(branch.trashed_at) ||
+                  (!selectedBranches.includes(branch.id) &&
+                    selectedBranches.length >= 20)}
+                onchange={(event) =>
+                  toggleBranch(branch.id, event.currentTarget.checked)}
+              />
+              <h3 class="text-lg font-semibold">
+                {languageName(branch.target_language)}
+              </h3>
+            </label>
             <span class="muted text-xs uppercase">{branch.target_language}</span
             >
           </div>
@@ -320,6 +399,64 @@
           <p class="mt-3 text-sm" role="status">
             {translationBranchStatus(branch)}
           </p>
+          {#if branch.target_language_matches_settings === false}<p
+              class="mt-2 text-sm text-red-500"
+              role="alert"
+            >
+              Translation settings use {languageName(
+                branch.effective_target_language || ''
+              )}. Restore this branch's target language before submitting
+              project actions.
+            </p>{/if}
+          {#if branch.readiness}<dl class="mt-3 grid grid-cols-2 gap-2 text-xs">
+              {#each [{ label: 'Translation', state: branch.readiness.translation }, { label: 'Review', state: branch.readiness.review }, { label: 'Speech plan', state: branch.readiness.speech_plan }, { label: 'Voice', state: branch.readiness.voice }, { label: 'Generation', state: branch.readiness.generation }, { label: 'Configured output', state: branch.readiness.exports.configured }, { label: 'SRT subtitles', state: branch.readiness.exports.subtitles }] as item}
+                <div class="rounded-lg border border-[var(--line)] p-2">
+                  <dt class="muted">{item.label}</dt>
+                  <dd class="mt-1 font-semibold">{statusName(item.state)}</dd>
+                  {#if item.state.coverage_unverified}<p class="muted mt-1">
+                      Language coverage unverified
+                    </p>{/if}{#each item.state.reasons ?? [] as reason}<p
+                      class="mt-1 break-words text-red-500"
+                    >
+                      {reason}
+                    </p>{/each}{#if item.state.failure?.message}<p
+                      class="mt-1 break-words text-red-500"
+                    >
+                      {item.state.failure.message}
+                    </p>{/if}{#if item.state.active_job_id && item.state.progress_detail}<p
+                      class="muted mt-1"
+                    >
+                      {item.state.progress_detail}
+                    </p>{/if}
+                </div>
+              {/each}
+            </dl>{/if}
+          {#if branch.settings}<details class="mt-3 text-xs">
+              <summary class="cursor-pointer font-semibold"
+                >Effective voice and subtitle settings</summary
+              >{#each [['Voice', branch.settings.tts], ['Subtitles', branch.settings.subtitles]] as entry}<div
+                  class="mt-2 rounded-lg border border-[var(--line)] p-2"
+                >
+                  <p class="font-semibold">{entry[0] as string}</p>
+                  <p class="muted mt-1">
+                    {settingsOrigin(
+                      (entry[1] as typeof branch.settings.tts).origin
+                    )}
+                  </p>
+                  <dl class="mt-2 space-y-1">
+                    {#each Object.entries((entry[1] as typeof branch.settings.tts).effective) as [key, value]}<div
+                        class="flex flex-wrap justify-between gap-x-3"
+                      >
+                        <dt class="muted">{key.replaceAll('_', ' ')}</dt>
+                        <dd class="break-all">
+                          {typeof value === 'object'
+                            ? JSON.stringify(value)
+                            : String(value)}
+                        </dd>
+                      </div>{/each}
+                  </dl>
+                </div>{/each}
+            </details>{/if}
           {#if !branch.trashed_at}
             <div
               class="mt-4 flex flex-wrap gap-4 text-sm font-semibold text-[var(--accent)]"
@@ -339,6 +476,11 @@
           Add languages below to start their translations.
         </p>{/each}
     </div>
+    <ProjectOperationPanel
+      {project}
+      selected={selectedBranches}
+      onchanged={() => void load()}
+    />
     <form onsubmit={addBranches} class="surface rounded-2xl p-6">
       <h3 class="text-lg font-semibold">Add languages</h3>
       <p class="muted mt-2 text-sm leading-6">

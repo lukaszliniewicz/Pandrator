@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .project_readiness import enrich_project_payload
 from .settings_policy import RevisionConflict
 from .translation_projects import (
     TranslationProjectConflict,
@@ -167,21 +168,25 @@ def register_translation_project_routes(
                 )
                 if reservation.response is not None:
                     result, status = reservation.response
-                    response = jsonify(result)
-                    response.status_code = status
-                    response.headers["Idempotency-Replayed"] = "true"
-                    return response
-                result = action(db, directories)
-                services.idempotency.complete(
-                    db,
-                    reservation,
-                    response=result,
-                    status_code=200,
-                    resource_kind="translation_project",
-                    resource_id=result["project"]["id"],
-                )
+                    replayed = True
+                else:
+                    replayed = False
+                    status = 200
+                    result = action(db, directories)
+                    services.idempotency.complete(
+                        db,
+                        reservation,
+                        response=result,
+                        status_code=200,
+                        resource_kind="translation_project",
+                        resource_id=result["project"]["id"],
+                    )
             committed = True
-            return jsonify(result)
+            response = jsonify(enrich_project_payload(services, result))
+            response.status_code = status
+            if replayed:
+                response.headers["Idempotency-Replayed"] = "true"
+            return response
         except (
             KeyError,
             ValueError,
@@ -203,7 +208,8 @@ def register_translation_project_routes(
     def session_translation_project(session_id):
         try:
             with services.database.session() as db:
-                return jsonify(get_session_project(db, session_id, paths=services.paths))
+                result = get_session_project(db, session_id, paths=services.paths)
+            return jsonify(enrich_project_payload(services, result))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 
@@ -229,7 +235,8 @@ def register_translation_project_routes(
     def translation_project_get(project_id):
         try:
             with services.database.session() as db:
-                return jsonify(get_project(db, project_id))
+                result = get_project(db, project_id)
+            return jsonify(enrich_project_payload(services, result))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 

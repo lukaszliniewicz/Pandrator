@@ -388,6 +388,103 @@ class SettingsApiTests(unittest.TestCase):
         self.assertIn("Unknown STT settings key", str(typo.get_json()))
         self.assertIn("stt_engine", str(typo.get_json()))
 
+    def test_legacy_stt_subtitle_fields_survive_read_and_resave(self):
+        session_id = self.client.post(
+            "/api/v1/sessions", json={"name": "Legacy combined settings"}, headers=self.headers,
+        ).get_json()["id"]
+        database = self.app.extensions["pandrator"]["database"]
+        with database.immediate_session() as db:
+            db.add(SessionSetting(session_id=session_id, section="stt", revision=1, value_json={
+                "original_language": "uk-UA", "subtitle_max_chars_per_line": 37,
+                "subtitle_min_duration_ms": 900, "legacy_stt_hint": "retain",
+            }))
+        service = WorkspaceSettingsService(database)
+        initial = service.get(session_id, "stt")
+        self.assertEqual("uk-UA", initial["effective"]["stt_language"])
+        self.assertNotIn("original_language", initial["override"])
+        subtitles = service.get(session_id, "subtitles")
+        self.assertEqual(37, subtitles["effective"]["max_chars_per_line"])
+        self.assertFalse(subtitles["effective"]["language_defaults"])
+        self.assertEqual(0, subtitles["revision"], "A read must not migrate records.")
+        saved = service.patch(session_id, "stt", 1, {"stt_language": "pl"})
+        self.assertEqual({"stt_language": "pl", "legacy_stt_hint": "retain"}, saved["override"])
+        migrated = service.get(session_id, "subtitles")
+        self.assertEqual(1, migrated["revision"])
+        self.assertEqual(37, migrated["override"]["max_chars_per_line"])
+        self.assertEqual(900, migrated["override"]["min_duration_ms"])
+        with database.session() as db:
+            history = db.scalar(select(SessionSettingHistory).where(
+                SessionSettingHistory.session_id == session_id, SessionSettingHistory.section == "stt",
+            ))
+            self.assertEqual("uk-UA", history.value_json["original_language"])
+
+    def test_canonical_settings_win_over_stored_legacy_aliases(self):
+        session_id = self.client.post(
+            "/api/v1/sessions", json={"name": "Canonical settings"}, headers=self.headers,
+        ).get_json()["id"]
+        database = self.app.extensions["pandrator"]["database"]
+        with database.immediate_session() as db:
+            db.add(SessionSetting(session_id=session_id, section="stt", revision=1, value_json={
+                "original_language": "ja", "stt_language": "pl", "subtitle_max_chars_per_line": 37,
+            }))
+            db.add(SessionSetting(session_id=session_id, section="subtitles", revision=1, value_json={
+                "max_chars_per_line": 42, "language_defaults": True,
+            }))
+        service = WorkspaceSettingsService(database)
+        self.assertEqual("pl", service.get(session_id, "stt")["effective"]["stt_language"])
+        service.patch(session_id, "stt", 1, {"original_language": "uk-UA"})
+        self.assertEqual("uk-UA", service.get(session_id, "stt")["effective"]["stt_language"])
+        subtitles = service.get(session_id, "subtitles")
+        self.assertEqual(42, subtitles["effective"]["max_chars_per_line"])
+        self.assertTrue(subtitles["effective"]["language_defaults"])
+        self.assertEqual(1, subtitles["revision"])
+
+    def test_conflicting_source_aliases_and_stale_save_are_atomic(self):
+        session_id = self.client.post(
+            "/api/v1/sessions", json={"name": "Atomic STT save"}, headers=self.headers,
+        ).get_json()["id"]
+        url = f"/api/v1/sessions/{session_id}/settings/stt"
+        rejected = self.client.put(url, json={"value": {
+            "stt_language": "pl", "original_language": "ja", "subtitle_max_chars_per_line": 37,
+        }}, headers={**self.headers, "If-Match": '"0"'})
+        self.assertEqual(422, rejected.status_code, rejected.get_json())
+        self.assertIn("Conflicting source languages", str(rejected.get_json()))
+        saved = self.client.put(url, json={"value": {"stt_language": "pl"}},
+                                headers={**self.headers, "If-Match": '"0"'})
+        self.assertEqual(200, saved.status_code, saved.get_json())
+        stale = self.client.put(url, json={"value": {"subtitle_max_chars_per_line": 37}},
+                               headers={**self.headers, "If-Match": '"0"'})
+        self.assertEqual(409, stale.status_code, stale.get_json())
+        subtitles = self.client.get(f"/api/v1/sessions/{session_id}/settings/subtitles").get_json()
+        self.assertEqual(0, subtitles["revision"])
+
+    def test_global_legacy_stt_fields_migrate_without_losing_defaults(self):
+        database = self.app.extensions["pandrator"]["database"]
+        with database.immediate_session() as db:
+            row = db.get(AppSetting, "defaults.stt")
+            legacy = {"original_language": "uk-UA", "subtitle_max_chars_per_line": 37,
+                      "subtitle_min_duration_ms": 900, "legacy_stt_hint": "retain"}
+            if row is None:
+                db.add(AppSetting(key="defaults.stt", value_json=legacy, revision=1))
+            else:
+                row.value_json = legacy
+                row.revision = 1
+        before = self.client.get("/api/v1/defaults/stt").get_json()
+        self.assertEqual("uk-UA", before["effective"]["stt_language"])
+        self.assertEqual(37, self.client.get("/api/v1/defaults/subtitles").get_json()["effective"]["max_chars_per_line"])
+        response = self.client.put("/api/v1/settings/defaults.stt",
+                                   json={"value": {**before["value"], "stt_threads": 2}},
+                                   headers={**self.headers, "If-Match": '"1"'})
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual("retain", response.get_json()["value"]["legacy_stt_hint"])
+        after = self.client.get("/api/v1/defaults/subtitles").get_json()
+        self.assertEqual(1, after["revision"])
+        self.assertEqual(37, after["value"]["max_chars_per_line"])
+        self.assertFalse(after["value"]["language_defaults"])
+        invalid = self.client.put("/api/v1/settings/defaults.stt", json={"value": {"new_typo": True}},
+                                  headers={**self.headers, "If-Match": '"2"'})
+        self.assertEqual(422, invalid.status_code, invalid.get_json())
+
     def test_stt_settings_accept_catalogue_and_runtime_fields(self):
         session_id = self.client.post(
             "/api/v1/sessions",

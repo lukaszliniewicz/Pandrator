@@ -8,6 +8,7 @@ from unittest import mock
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import MetaData, Table
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import SCHEMA_HEAD, Database, sqlite_url, upgrade_database
@@ -19,6 +20,7 @@ from pandrator.web.models import (
     SessionSource,
     SessionStageSelection,
     SourceAsset,
+    utcnow,
 )
 from pandrator.web.sessions import SessionService
 from pandrator.web.workflow_handlers import WorkflowHandlers
@@ -80,16 +82,38 @@ class TranslationSourceRepairMigrationTests(unittest.TestCase):
                         name="Attached media setting",
                         storage_key="attached-media-setting-storage",
                     )
-                    session.add_all(
+                    # Seed the historical schema without new ORM columns such
+                    # as purge_after, which are introduced by later migrations.
+                    historical_sessions = Table(
+                        "sessions", MetaData(), autoload_with=session.connection()
+                    )
+                    timestamp = utcnow()
+                    session.execute(
+                        historical_sessions.insert(),
                         [
-                            parent,
-                            fork,
-                            other_fork,
-                            local_setting,
-                            attached_setting,
-                            missing_setting,
-                            attached_media_setting,
-                        ]
+                            {
+                                "id": item.id,
+                                "name": item.name,
+                                "storage_key": item.storage_key,
+                                "workflow_kind": "audiobook",
+                                "source_language": "auto",
+                                "workflow_preset": "custom",
+                                "included_stages_json": [],
+                                "status": "idle",
+                                "revision": 1,
+                                "created_at": timestamp,
+                                "updated_at": timestamp,
+                            }
+                            for item in (
+                                parent,
+                                fork,
+                                other_fork,
+                                local_setting,
+                                attached_setting,
+                                missing_setting,
+                                attached_media_setting,
+                            )
+                        ],
                     )
                     session.flush()
                     foreign = Artifact(

@@ -3,6 +3,8 @@ import inspect
 import json
 import subprocess
 import sys
+import tempfile
+import textwrap
 import tomllib
 import unittest
 from pathlib import Path
@@ -50,30 +52,65 @@ MCP_ROOT = ROOT / "pandrator_mcp"
 
 class McpArchitectureTests(unittest.TestCase):
     def test_package_imports_without_pandrator_application_runtime(self):
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import sys; import pandrator_mcp; "
-                    "assert not any(name.startswith('pandrator.web') "
-                    "for name in sys.modules)"
-                ),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        probe = textwrap.dedent("""
+            import asyncio
+            import contextlib
+            import importlib.abc
+            import io
+            import runpy
+            import sys
+            from pathlib import Path
+
+            class HideApplication(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname.split('.')[0] in {'pandrator', 'sqlalchemy'}:
+                        raise ModuleNotFoundError(fullname, name=fullname)
+
+            sys.meta_path.insert(0, HideApplication())
+            sys.path.insert(0, sys.argv[1])
+            from pandrator_mcp.schemas import MultilingualSetup
+            from pandrator_mcp.server import build_server
+            from pandrator_mcp.context import build_runtime
+            from pandrator_mcp.settings import McpSettings
+            from mcp import Client
+
+            assert MultilingualSetup(target_languages=[' PT_br ']).target_languages == ['pt-br']
+            runtime = build_runtime(McpSettings(
+                target_name='unconfigured',
+                configuration_path=Path.cwd() / 'absent.json',
+            ))
+
+            async def registered_tools():
+                async with Client(build_server(runtime), raise_exceptions=True) as client:
+                    tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+                    for name in ('pandrator_create_session', 'pandrator_update_session'):
+                        assert 'multilingual_setup' in tools[name].input_schema['properties']
+
+            asyncio.run(registered_tools())
+            sys.argv = ['pandrator-mcp', '--help']
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                try:
+                    runpy.run_module('pandrator_mcp', run_name='__main__')
+                except SystemExit as error:
+                    assert error.code == 0, error.code
+                else:
+                    raise AssertionError('CLI help did not exit')
+            assert 'usage:' in output.getvalue()
+            assert not any(name.split('.')[0] in {'pandrator', 'sqlalchemy'} for name in sys.modules)
+        """)
+        with tempfile.TemporaryDirectory() as root:
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", probe, str(ROOT)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_package_has_no_forbidden_application_imports(self):
-        forbidden = {
-            "pandrator.web.database",
-            "pandrator.web.models",
-            "pandrator.web.jobs",
-            "pandrator.web.application_services",
-        }
         found = []
         for path in MCP_ROOT.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -87,10 +124,7 @@ class McpArchitectureTests(unittest.TestCase):
                 overlap = {
                     name
                     for name in names
-                    if any(
-                        name == blocked or name.startswith(f"{blocked}.")
-                        for blocked in forbidden
-                    )
+                    if name == "pandrator" or name.startswith("pandrator.")
                 }
                 if overlap:
                     found.append((path.relative_to(ROOT), sorted(overlap)))
@@ -350,6 +384,11 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_create_speech_optimization_dispatch_run",
                 "pandrator_create_session",
                 "pandrator_create_text_source",
+                "pandrator_create_translation_branches",
+                "pandrator_create_translation_project",
+                "pandrator_execute_translation_project_operation",
+                "pandrator_cancel_translation_project_operation",
+                "pandrator_request_translation_project_export_bundle",
                 "pandrator_delete_output",
                 "pandrator_delete_session_permanently",
                 "pandrator_execute_component_plan",
@@ -358,6 +397,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_edit_performance_plan",
                 "pandrator_import_local_source",
                 "pandrator_import_subtitles",
+                "pandrator_fork_session",
                 "pandrator_inspect_source_cleaning_dispatch_extraction",
                 "pandrator_patch_subtitle_cues",
                 "pandrator_patch_session_settings",
@@ -453,6 +493,33 @@ class McpArchitectureTests(unittest.TestCase):
                 for action in ACTION_CATALOG.list()
                 if not action.mutating
             )
+        )
+
+    def test_translation_project_export_catalog_matches_authenticated_routes(self):
+        manifest = ACTION_CATALOG.get("pandrator_get_translation_project_export_manifest")
+        self.assertEqual(RiskClass.READ, manifest.risk)
+        self.assertEqual("app.read", manifest.required_scope)
+        self.assertEqual("getTranslationProjectExportManifest", manifest.downstream_operation_id)
+        self.assertEqual("GET", manifest.method)
+        self.assertEqual(
+            "/api/v1/translation-project-operations/{operationId}/exports/manifest",
+            manifest.path,
+        )
+        self.assertFalse(manifest.requires_idempotency)
+
+        bundle = ACTION_CATALOG.get("pandrator_request_translation_project_export_bundle")
+        self.assertEqual(RiskClass.WRITE, bundle.risk)
+        self.assertEqual("app.write", bundle.required_scope)
+        self.assertEqual("requestTranslationProjectExportBundle", bundle.downstream_operation_id)
+        self.assertEqual("POST", bundle.method)
+        self.assertEqual(
+            "/api/v1/translation-project-operations/{operationId}/exports/bundle",
+            bundle.path,
+        )
+        self.assertTrue(bundle.requires_idempotency)
+        self.assertEqual(
+            ACTION_CATALOG.get("pandrator_create_translation_branches").requires_confirmation,
+            bundle.requires_confirmation,
         )
 
     def test_manager_automation_contract_is_versioned_and_audience_bound(self):

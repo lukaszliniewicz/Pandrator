@@ -13,10 +13,6 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from pandrator.logic.dubbing.stt_languages import (
-    PARAKEET_V3_LANGUAGE_CODES,
-    normalize_stt_language,
-)
 from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService, sha256_file
@@ -39,9 +35,9 @@ def resolve_voice_sample_transcription_settings(
     """Freeze voice-reference transcription language and engine defaults.
 
     Voice samples use their voice language when the request does not select a
-    language.  Parakeet v3 is preferred for its authoritative language table;
-    explicit engine/backend choices remain untouched so this helper does not
-    alter session or global STT defaults.
+    language. The shared automatic policy selects a supported runtime after
+    resolving that source language. Explicit engine/backend choices remain
+    untouched.
     """
 
     resolved = deepcopy(dict(settings))
@@ -57,15 +53,8 @@ def resolve_voice_sample_transcription_settings(
     has_explicit_engine = bool(str(resolved.get("stt_engine") or "").strip())
     has_explicit_backend = bool(str(resolved.get("stt_backend") or "").strip())
     if not has_explicit_engine and not has_explicit_backend:
-        normalized_language = normalize_stt_language(str(selected_language))
-        engine = (
-            "parakeet"
-            if normalized_language == "auto"
-            or normalized_language in PARAKEET_V3_LANGUAGE_CODES
-            else "whisper"
-        )
-        resolved["stt_engine"] = engine
-        resolved["stt_backend"] = engine
+        resolved["stt_engine"] = "auto"
+        resolved["stt_backend"] = "auto"
     return resolved
 
 

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import LanguageSelect from '$lib/LanguageSelect.svelte';
+  import { sttLanguageOptions } from '$lib/stt-language-policy';
   import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/state';
   import { replaceState } from '$app/navigation';
@@ -47,7 +49,9 @@
   );
   const languageProblem = $derived(
     sttLanguageProblem(capabilities, effectiveEngine, language) ||
-      (isQwen ? qwenTimedLanguageProblem(capabilities, language) : '')
+      (isQwen && format !== 'txt'
+        ? qwenTimedLanguageProblem(capabilities, language)
+        : '')
   );
   let services = $state<SttService[]>([]);
   let job = $state<QuickTranscription | null>(null);
@@ -365,37 +369,57 @@
         ></audio>
       </div>
     {/if}
+    {#if file && job?.result_available && job.available_formats && !job.available_formats.includes('srt')}
+      <button
+        type="button"
+        class="mt-4 text-sm font-semibold text-[var(--accent)]"
+        onclick={() => {
+          if (timer) clearTimeout(timer);
+          resultGeneration += 1;
+          job = null;
+          remember(null);
+          retryKey = '';
+          preview = '';
+          format = 'srt';
+          notice =
+            'Ready for a new timed transcription. The previous text result remains available until its retention period ends.';
+        }}>Prepare a timed transcription of this file</button
+      >
+    {/if}
     <div class="mt-6 grid gap-4 sm:grid-cols-3">
       <label class="text-sm"
         >Output format
         <select
           class="mt-2 w-full"
           bind:value={format}
-          disabled={uploading || loadingResult}
+          disabled={busy || loadingResult}
           onchange={(event) => {
             format = event.currentTarget.value as TranscriptFormat;
             if (job?.result_available) void loadResult();
             else retryKey = '';
           }}
         >
-          <option value="txt">Plain text (.txt)</option><option value="srt"
-            >Subtitles (.srt)</option
+          <option value="txt">Plain text (.txt)</option><option
+            value="srt"
+            disabled={Boolean(
+              job?.available_formats && !job.available_formats.includes('srt')
+            )}>Subtitles (.srt)</option
           ><option value="json">Structured transcript (.json)</option>
         </select>
       </label>
-      {#if !isQwen}<label class="text-sm"
-          >Language
-          <input
-            class="mt-2 w-full"
-            bind:value={language}
-            disabled={busy}
-            placeholder="auto, en, pl…"
-            oninput={() => (retryKey = '')}
-          />
-          <span class="muted mt-1 block text-xs"
-            >Use auto to detect the language.</span
-          >
-        </label>{/if}
+      {#if !isQwen}<LanguageSelect
+          label="Source language"
+          bind:value={language}
+          options={sttLanguageOptions(
+            capabilities,
+            engine || 'auto',
+            format !== 'txt'
+          )}
+          allowAuto
+          allowCustom
+          disabled={busy}
+          onchange={() => (retryKey = '')}
+        />{/if}
       <label class="text-sm"
         >Transcription service
         <select
@@ -414,7 +438,7 @@
               ? ` (${configuredEngine || capabilities.stt?.default_engine})`
               : ''}</option
           >
-          {#each [['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B'], ['qwen3', 'Qwen3 ASR · CrispASR']] as [id, label]}
+          {#each [['auto', 'Automatic · Parakeet, then Qwen, then Whisper'], ['parakeet', 'Parakeet 0.6B v3'], ['whisper', 'Whisper large-v3'], ['moss', 'MOSS Diarize 0.9B'], ['qwen3', 'Qwen3 ASR · CrispASR']] as [id, label]}
             <option
               value={id}
               disabled={Boolean(sttLanguageProblem(capabilities, id, language))}
@@ -439,12 +463,13 @@
           bind:language
           bind:backend={qwenBackend}
           {capabilities}
+          requireWordTimestamps={format !== 'txt'}
         />
         <p class="muted text-xs">
-          Quick Transcribe prepares word timings so you can download text,
-          subtitles, or structured results from the same job. Qwen therefore
-          needs an explicit source language and a supported alignment path for
-          every output format.
+          Plain text prepares recognition and a JSON companion. Subtitles or a
+          new structured-transcript request prepare genuine word timings and
+          require an eligible alignment path. The output requirement is fixed
+          when you start the job.
         </p>
       {/if}
       <VocalIsolationControl bind:value={vocalIsolation} />

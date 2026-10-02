@@ -16,6 +16,7 @@ from pandrator.web.media_process import MediaProcessError
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
+    Document,
     DocumentRevision,
     Segment,
     SessionSource,
@@ -160,6 +161,93 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
             engine="test-asr",
             compute_backend="cpu",
         )
+
+    @staticmethod
+    def _pinned_isolation():
+        return {"method": "htdemucs", "status": "isolated", "model": "htdemucs_q8_0", "model_id": "htdemucs_q8_0", "family": "htdemucs", "cli_family": "htdemucs", "revision": "pin", "sha256": "f" * 64, "size_bytes": 61940768, "requested_backend": "cpu", "backend": "cpu", "threads": 2}
+
+    def test_caption_asr_preserves_resolved_language_route_request_and_isolation(self):
+        source, _caption = self._source_and_caption()
+        for requested, resolved in (("pl", "pl"), ("ja", "ja"), ("auto", "pl")):
+            with self.subTest(requested=requested):
+                result_stub = self._mock_transcription(self.paths.root / "source.mp4")
+                result_stub.resolved_language = resolved
+                result_stub.routing = {"requested_language": requested, "resolved_language": resolved, "engine": "test-asr"}
+                raw_path = Path(result_stub.word_timestamps_path)
+                raw_payload = json.loads(raw_path.read_text())
+                raw_payload["language"] = resolved
+                raw_payload["metadata"] = {"stt_routing": result_stub.routing, "vocal_isolation": {**self._pinned_isolation(), "vocal_isolation_model": "htdemucs_q8_0", "original_audio_retained": "/private/audio/source.wav"}}
+                raw_path.write_text(json.dumps(raw_payload))
+                settings = {"caption_alignment_method": "asr", "stt_engine": "auto", "stt_language": requested, "provider_configs": [{"id": "fixture", "api_key": "caption-secret"}]}
+                with patch("pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata", return_value=result_stub):
+                    result = self.handlers.transcribe({"session_id": self.session.id, "source_artifact_id": source.id, "settings": settings}, self.progress, threading.Event())
+                with self.database.session() as session:
+                    for key in ("artifact_id", "word_timestamps_artifact_id", "raw_asr_srt_artifact_id", "raw_asr_word_timestamps_artifact_id"):
+                        metadata = session.get(Artifact, result[key]).metadata_json
+                        self.assertEqual(resolved, metadata["language"])
+                        self.assertEqual(requested, metadata["requested_language"])
+                        self.assertEqual(result_stub.routing, metadata["stt_routing"])
+                        self.assertNotIn("caption-secret", json.dumps(metadata))
+                        for field, value in self._pinned_isolation().items():
+                            stored_field = "vocal_isolation_model" if field == "model" else field
+                            self.assertEqual(value, metadata["vocal_isolation"][stored_field])
+                        self.assertEqual("source.wav", metadata["vocal_isolation"]["original_audio_retained"])
+                    revision = session.get(DocumentRevision, result["revision_id"])
+                    self.assertEqual(resolved, session.get(Document, revision.document_id).language)
+                aligned = json.loads(self.artifacts.resolve(result["word_timestamps_artifact_id"])[1].read_text())
+                self.assertEqual(resolved, aligned["language"])
+                self.assertEqual(result_stub.routing, aligned["metadata"]["stt_routing"])
+                self.assertEqual(result_stub.routing, json.loads(raw_path.read_text())["metadata"]["stt_routing"])
+                self.assertNotIn("/private/", raw_path.read_text())
+                self.assertNotIn("/private/", json.dumps(aligned))
+
+    def test_caption_ctc_and_hybrid_preserve_language_provenance_and_full_isolation_pins(self):
+        source, _caption = self._source_and_caption()
+        for method, requested, resolved in (("ctc", "pl", "pl"), ("ctc", "auto", "auto"), ("ctc_asr_fallback", "pl", "pl"), ("ctc_asr_fallback", "auto", "pl"), ("ctc_asr_fallback", "ja", "ja")):
+            with self.subTest(method=method, requested=requested):
+                result_stub = self._mock_transcription(self.paths.root / "source.mp4")
+                result_stub.resolved_language = resolved
+                result_stub.routing = {"requested_language": requested, "resolved_language": resolved, "engine": "test-asr", "language_source": "detected" if requested == "auto" else "declared"}
+                raw_path = Path(result_stub.word_timestamps_path)
+                raw_payload = json.loads(raw_path.read_text())
+                raw_payload["metadata"] = {"vocal_isolation": {"vocal_isolation_model": "htdemucs_q8_0", **{key: value for key, value in self._pinned_isolation().items() if key != "model"}, "original_audio_retained": "/private/audio/source.wav"}}
+                raw_path.write_text(json.dumps(raw_payload))
+                def isolate(audio, *_args, **_kwargs):
+                    return str(audio), dict(self._pinned_isolation())
+                settings = {"caption_alignment_method": method, "stt_engine": "auto", "stt_language": requested, "crispasr_vad_enabled": False, "provider_configs": [{"id": "fixture", "api_key": "caption-secret"}]}
+                with (
+                    patch("pandrator.logic.dubbing.transcription.extract_audio", side_effect=_fake_extract_audio),
+                    patch("pandrator.logic.dubbing.transcription.apply_vocal_isolation", side_effect=isolate),
+                    patch("pandrator.logic.dubbing.crispasr.run_ctc_alignment", return_value=[{"word": "Hello,", "start": 1.1, "end": 1.3}, {"word": "world!", "start": 1.5, "end": 1.9}] if method == "ctc" else []),
+                    patch("pandrator.logic.dubbing.qwen_alignment.run_batch", return_value=[[]]),
+                    patch("pandrator.logic.dubbing.transcription.transcribe_source_file_with_metadata", return_value=result_stub),
+                ):
+                    result = self.handlers.transcribe({"session_id": self.session.id, "source_artifact_id": source.id, "settings": settings}, self.progress, threading.Event())
+                aligned = json.loads(self.artifacts.resolve(result["word_timestamps_artifact_id"])[1].read_text())
+                self.assertEqual(resolved, aligned["language"])
+                self.assertEqual("explicit" if requested != "auto" else "unresolved", aligned["metadata"]["alignment_language_resolution"]["source"])
+                if method == "ctc_asr_fallback":
+                    self.assertEqual(result_stub.routing, aligned["metadata"]["stt_routing"])
+                    self.assertEqual("asr", aligned["metadata"]["language_resolution"]["source"])
+                    raw_asr = json.loads(self.artifacts.resolve(result["raw_asr_word_timestamps_artifact_id"])[1].read_text())
+                    self.assertEqual(result_stub.routing, raw_asr["metadata"]["stt_routing"])
+                    self.assertEqual(requested, raw_asr["metadata"]["requested_language"])
+                    self.assertEqual("source.wav", raw_asr["metadata"]["vocal_isolation"]["original_audio_retained"])
+                    self.assertNotIn("/private/", json.dumps(raw_asr))
+                else:
+                    self.assertNotIn("stt_routing", aligned["metadata"])
+                diagnostics_path = self.artifacts.resolve(result["alignment_diagnostics_artifact_id"])[1]
+                diagnostic_payload = json.loads(diagnostics_path.read_text())
+                for field, value in self._pinned_isolation().items():
+                    stored_field = "vocal_isolation_model" if field == "model" else field
+                    self.assertEqual(value, aligned["metadata"]["vocal_isolation"][stored_field])
+                    self.assertEqual(value, diagnostic_payload["vocal_isolation"][stored_field])
+                with self.database.session() as session:
+                    for key in ("artifact_id", "word_timestamps_artifact_id", "alignment_diagnostics_artifact_id"):
+                        metadata = session.get(Artifact, result[key]).metadata_json
+                        self.assertNotIn("caption-secret", json.dumps(metadata))
+                        self.assertNotIn(str(self.paths.root), json.dumps(metadata))
+                        self.assertEqual("f" * 64, metadata["vocal_isolation"]["sha256"])
 
     def test_attached_caption_is_authoritative_and_raw_asr_is_evidence(self):
         source, _caption = self._source_and_caption()

@@ -5,6 +5,7 @@ writes stem/denoised WAVs. No acoustic quality is claimed: assertions cover
 command shape, byte preservation, timeline validation, and failure modes.
 """
 
+import hashlib
 import subprocess
 import threading
 import wave
@@ -72,26 +73,52 @@ def test_unknown_isolation_mode_is_rejected(tmp_path):
             tmp_path / "a.wav",
             tmp_path / "b.wav",
             {
-                "transcription_vocal_isolation": "htdemucs",
+                "transcription_vocal_isolation": "not_a_separator",
             },
         )
 
 
 @pytest.mark.parametrize(
-    ("mode", "model_id"),
-    [("bs_roformer", "bs_roformer"), ("mel_band_roformer", "mel_band_roformer")],
+    ("mode", "model_id", "cli_family"),
+    [
+        ("bs_roformer", "bs_roformer", "bs_roformer"),
+        ("mel_band_roformer", "mel_band_roformer", "mel_band_roformer"),
+        ("htdemucs", "htdemucs_q8_0", "htdemucs"),
+        ("demucs", "htdemucs_q8_0", "htdemucs"),
+        ("htdemucs_q8_0", "htdemucs_q8_0", "htdemucs"),
+    ],
 )
-def test_isolation_command_shape_and_valid_output(tmp_path, native, mode, model_id):
+def test_isolation_command_shape_and_valid_output(
+    tmp_path, native, mode, model_id, cli_family
+):
     source = make_wav(tmp_path / "song.wav", seconds=1.0)
     before = source.read_bytes()
+    source_sha256 = hashlib.sha256(before).hexdigest()
     destination = tmp_path / "vocals.wav"
     calls = []
 
     def runner(command, **kwargs):
         calls.append(command)
-        assert command[1:6] == ["--task", "sep", "--family", model_id, "--model"]
-        assert "--out-dir" in command
         out_dir = Path(command[command.index("--out-dir") + 1])
+        assert command == [
+            str(tmp_path / "audiocpp_cli"),
+            "--task",
+            "sep",
+            "--family",
+            cli_family,
+            "--model",
+            str(tmp_path / f"{model_id}.bin"),
+            "--backend",
+            "best",
+            "--device",
+            "0",
+            "--threads",
+            "4",
+            "--audio",
+            str(source.resolve()),
+            "--out-dir",
+            str(out_dir),
+        ]
         assert Path(command[command.index("--audio") + 1]).resolve() == source.resolve()
         with wave.open(str(source), "rb") as src:
             params, frames = src.getparams(), src.getnframes()
@@ -109,13 +136,22 @@ def test_isolation_command_shape_and_valid_output(tmp_path, native, mode, model_
         run_func=runner,
     )
     assert len(calls) == 1  # already-normalized input needs no ffmpeg
+    assert set(native) == {model_id}  # only the explicitly selected asset was ensured
     assert result["status"] == "isolated"
     assert result["model"] == model_id
+    assert result["model_id"] == result["asset_id"] == model_id
+    assert result["family"] == cli_family
+    assert result["cli_family"] == cli_family
+    spec = proc.assets.model_info(model_id)
+    assert result["revision"] == spec["revision"]
+    assert result["sha256"] == spec["sha256"]
+    assert result["size_bytes"] == spec["size_bytes"]
     assert result["source_duration_s"] == pytest.approx(1.0)
     assert result["output_duration_s"] == pytest.approx(1.0)
     assert result["output_sample_rate_hz"] == 44100
     assert wav_frames(destination) == wav_frames(source)
     assert source.read_bytes() == before  # original bytes preserved
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha256
     assert [s for s in stages if s in {"normalize", "isolate", "install"}] == [
         "normalize",
         "isolate",
@@ -185,7 +221,8 @@ def test_small_padding_within_sample_window_is_accepted(tmp_path, native):
     assert result["status"] == "isolated"
 
 
-def test_duration_drift_beyond_50ms_is_rejected(tmp_path, native):
+@pytest.mark.parametrize("mode", ["bs_roformer", "htdemucs"])
+def test_duration_drift_beyond_50ms_is_rejected(tmp_path, native, mode):
     source = make_wav(tmp_path / "song.wav", seconds=2.0)
     destination = tmp_path / "vocals.wav"
 
@@ -202,13 +239,14 @@ def test_duration_drift_beyond_50ms_is_rejected(tmp_path, native):
         proc.isolate_vocals(
             source,
             destination,
-            {"transcription_vocal_isolation": "bs_roformer"},
+            {"transcription_vocal_isolation": mode},
             run_func=runner,
         )
     assert not destination.exists()
 
 
-def test_missing_or_empty_model_output_is_rejected(tmp_path, native):
+@pytest.mark.parametrize("mode", ["bs_roformer", "htdemucs"])
+def test_missing_or_empty_model_output_is_rejected(tmp_path, native, mode):
     source = make_wav(tmp_path / "song.wav")
     destination = tmp_path / "vocals.wav"
 
@@ -220,7 +258,7 @@ def test_missing_or_empty_model_output_is_rejected(tmp_path, native):
         proc.isolate_vocals(
             source,
             destination,
-            {"transcription_vocal_isolation": "bs_roformer"},
+            {"transcription_vocal_isolation": mode},
             run_func=silent_runner,
         )
 
@@ -233,13 +271,37 @@ def test_missing_or_empty_model_output_is_rejected(tmp_path, native):
         proc.isolate_vocals(
             source,
             destination,
-            {"transcription_vocal_isolation": "bs_roformer"},
+            {"transcription_vocal_isolation": mode},
             run_func=empty_runner,
         )
     assert not destination.exists()
 
 
-def test_child_failure_and_cancellation_leave_no_partial_output(tmp_path, native):
+def test_htdemucs_rejects_stem_with_wrong_name(tmp_path, native):
+    source = make_wav(tmp_path / "song.wav")
+    destination = tmp_path / "vocals.wav"
+
+    def wrong_stem_runner(command, **kwargs):
+        out_dir = Path(command[command.index("--out-dir") + 1])
+        with wave.open(str(source), "rb") as src:
+            params, frames = src.getparams(), src.getnframes()
+        with wave.open(str(out_dir / "other_vocals.wav"), "wb") as out:
+            out.setparams(params)
+            out.writeframes(b"\1\0" * frames * params.nchannels)
+        return subprocess.CompletedProcess(command, 0)
+
+    with pytest.raises(proc.AudioProcessingError, match="no output"):
+        proc.isolate_vocals(
+            source,
+            destination,
+            {"transcription_vocal_isolation": "htdemucs"},
+            run_func=wrong_stem_runner,
+        )
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("mode", ["bs_roformer", "htdemucs"])
+def test_child_failure_and_cancellation_leave_no_partial_output(tmp_path, native, mode):
     source = make_wav(tmp_path / "song.wav")
     destination = tmp_path / "vocals.wav"
 
@@ -250,7 +312,7 @@ def test_child_failure_and_cancellation_leave_no_partial_output(tmp_path, native
         proc.isolate_vocals(
             source,
             destination,
-            {"transcription_vocal_isolation": "bs_roformer"},
+            {"transcription_vocal_isolation": mode},
             run_func=failing,
         )
     assert not destination.exists()
@@ -261,7 +323,7 @@ def test_child_failure_and_cancellation_leave_no_partial_output(tmp_path, native
         proc.isolate_vocals(
             source,
             destination,
-            {"transcription_vocal_isolation": "bs_roformer"},
+            {"transcription_vocal_isolation": mode},
             cancel_event=event,
             run_func=Mock(side_effect=AssertionError("must not run")),
         )

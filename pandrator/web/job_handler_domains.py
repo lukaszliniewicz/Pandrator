@@ -97,6 +97,7 @@ def register_generation_handlers(
                 "generation.assemble": "assemble_generation_output",
                 "audio.waveform": "generate_waveform",
                 "audio.preview": "generate_audio_preview",
+                "video.preview": "generate_video_preview",
                 "tts.preview": "preview_tts_voice",
             },
         ),
@@ -114,6 +115,7 @@ def register_generation_handlers(
                 "generation.assemble": ("output_assembly_id",),
                 "audio.waveform": ("source_artifact_id",),
                 "audio.preview": ("source_artifact_id",),
+                "video.preview": ("source_artifact_id", "source_content_hash", "preview_version"),
                 "tts.preview": ("text", "settings"),
             }
         ),
@@ -201,6 +203,7 @@ def register_delivery_handlers(
                 "pdf.apply_edits": "apply_pdf_edits",
                 "session.bundle.export": "export_session_bundle",
                 "session.bundle.import": "import_session_bundle",
+                "project.exports.bundle": "generate_project_export_bundle",
             },
         ),
         payload_contracts=_contracts(
@@ -215,6 +218,7 @@ def register_delivery_handlers(
                 "pdf.apply_edits": ("source_artifact_id",),
                 "session.bundle.export": ("session_id",),
                 "session.bundle.import": ("source_artifact_id",),
+                "project.exports.bundle": ("operation_id", "project_id", "manifest_digest", "input_digest", "languages"),
             }
         ),
     )

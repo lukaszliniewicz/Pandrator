@@ -6056,38 +6056,51 @@ def _audio_cpp_model_metadata(model: str, endpoint: dict) -> dict[str, object]:
 
 
 def _audio_cpp_language(model: str, language: object, endpoint: dict | None = None) -> str:
-    from .dubbing.languages import normalize_language_code
-    normalized = str(language or "").strip().lower().replace("_", "-")
-    canonical = normalize_language_code(normalized, default="")
-    native_dialect = normalized in {tag.lower().replace("_", "-") for tag in _AUDIO_CPP_FIRERED_DIALECTS}
-    if canonical.split("-")[0] in {"ja", "zh", "ko"} and not native_dialect:
-        normalized = canonical
-    if not normalized or normalized in {"auto", "unknown", "und"}:
-        return ""
-    iso = normalized.split("-", 1)[0]
+    from .tts_language_preflight import validate_tts_language
+
+    raw_language = str(language or "").strip()
+    normalized = raw_language.lower().replace("_", "-")
     metadata = _audio_cpp_model_metadata(model, endpoint or {})
     family = str(metadata.get("family") or "").strip().lower()
+    validation_endpoint = dict(endpoint or {})
+    validation_endpoint.setdefault("id", "audio_cpp")
+    validation_endpoint.setdefault("adapter", "audio_cpp")
+    try:
+        validated = validate_tts_language(
+            {"service": "audio.cpp", "xtts_model": model, "language": language},
+            endpoint=validation_endpoint,
+        )
+    except ValueError as exc:
+        supported = metadata.get("supported_languages")
+        if family == "pocket_tts" and supported == ["en"]:
+            raise ValueError(
+                "The selected PocketTTS package is English-only. "
+                "Select a model package matching the requested language."
+            ) from exc
+        raise ValueError(
+            f"audio.cpp model '{model}' does not support language '{language}'."
+        ) from exc
+    canonical = validated["language"]
+    native_language = validated["native_language"]
+    native_dialect = next(
+        (
+            tag
+            for tag in _AUDIO_CPP_FIRERED_DIALECTS
+            if tag.lower().replace("_", "-") == normalized
+        ),
+        None,
+    )
+    if not canonical or canonical == "auto":
+        return ""
+    iso = str(native_language).split("-", 1)[0]
     if family in {"fish_audio_s2", "fish_audio", "voxcpm2", "breeze_tts", "cosyvoice3"}:
         # These v0.7.2 sessions infer language from text; a hint is not consumed.
         return ""
     if family == "moss_voicegen":
-        names = {"en": "English", "zh": "Chinese", "english": "English", "chinese": "Chinese"}
-        if iso not in names:
-            raise ValueError(f"audio.cpp model '{model}' does not support language '{language}'.")
-        return names[iso]
+        names = {"en": "English", "zh": "Chinese"}
+        return names.get(iso, str(native_language))
     if family == "pocket_tts":
         # Pocket's language belongs to the loaded model package, not a request.
-        supported = metadata.get("supported_languages")
-        supported_languages = (
-            [str(value) for value in supported] if isinstance(supported, list) else []
-        )
-        requested = canonical.split("-")[0] or iso
-        if supported_languages and requested not in supported_languages:
-            label = "English-only" if supported_languages == ["en"] else "/".join(supported_languages)
-            raise ValueError(
-                f"The selected PocketTTS package is {label}. "
-                "Select a model package matching the requested language."
-            )
         return ""
     if family == "magpie_tts":
         # Keep supported regional Arabic tokenizers instead of collapsing to ar.
@@ -6095,24 +6108,21 @@ def _audio_cpp_language(model: str, language: object, endpoint: dict | None = No
             "ar-ae": "ar-AE", "ar-sa": "ar-SA", "ar-msa": "ar-MSA",
             "pt-br": "pt-BR", "pt-brasil": "pt-BR",
         }
-        return regional.get(normalized, iso)
+        return regional.get(canonical, iso)
     if family in {"qwen3_tts", "fireredtts3"}:
         if family == "fireredtts3":
-            dialect = next(
-                (tag for tag in _AUDIO_CPP_FIRERED_DIALECTS
-                 if tag.lower().replace("_", "-") == normalized),
-                None,
-            )
-            if dialect:
-                return dialect
+            if native_dialect:
+                return native_dialect
             names = _AUDIO_CPP_FIRERED_LANGUAGE_NAMES
         else:
             names = _AUDIO_CPP_QWEN_LANGUAGE_NAMES
-        named = next((name for name in names.values() if name.lower() == normalized), None)
+        named = next(
+            (name for name in names.values() if name.lower() == canonical), None
+        )
         result = named or names.get(iso)
         if result:
             return result
-        raise ValueError(f"audio.cpp model '{model}' does not support language '{language}'.")
+        return str(native_language)
     return iso
 
 
@@ -7041,6 +7051,13 @@ def _build_kobold_qwen_payload(text: str, tts_settings: dict) -> dict[str, str |
     if not model:
         model = KOBOLD_QWEN_DEFAULT_MODEL
 
+    from .tts_language_preflight import validate_tts_language
+
+    validate_tts_language(
+        {**tts_settings, "xtts_model": model},
+        endpoint={"id": "kobold_qwen", "provider": "kobold_qwen"},
+    )
+
     normalized_model = model.lower()
     cloning_model = normalized_model in {
         "voice cloning",
@@ -7388,6 +7405,9 @@ def text_to_audio(
     normalized_silero_base_url = _normalize_base_url(
         silero_base_url, SILERO_API_BASE_URL
     )
+    from .tts_language_preflight import validate_tts_language
+
+    language_preflight = validate_tts_language(tts_settings)
 
     max_attempts = max(1, min(20, int(max_attempts or 1)))
     try:
@@ -7451,16 +7471,35 @@ def text_to_audio(
             elif service == VERTEX_SERVICE:
                 response = _request_vertex_ai_audio(text, tts_settings)
             elif service == "Silero":
+                language_support = language_preflight.get("language_support")
+                request_aliases = (
+                    language_support.get("request_aliases")
+                    if isinstance(language_support, Mapping)
+                    else None
+                )
+                model_alias_applied = (
+                    isinstance(request_aliases, Mapping)
+                    and language_preflight["language"] in request_aliases
+                )
                 data = {
                     "model": str(
                         tts_settings.get("silero_model")
                         or tts_settings.get("xtts_model")
+                        or tts_settings.get("model")
                         or SILERO_DEFAULT_MODEL
                     ),
                     "input": text,
                     "voice": str(tts_settings.get("speaker") or ""),
-                    "language": normalize_silero_language_code(
-                        tts_settings.get("language")
+                    "language": (
+                        normalize_silero_language_code(
+                            language_preflight["native_language"]
+                        )
+                        if not isinstance(language_support, Mapping)
+                        or (
+                            language_support.get("coverage") == "unknown"
+                            and not model_alias_applied
+                        )
+                        else language_preflight["native_language"]
                     ),
                     "response_format": "wav",
                     "speed": _coerce_float(tts_settings.get("speed"), 1.0),

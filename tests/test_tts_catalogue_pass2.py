@@ -395,7 +395,10 @@ class TtsCataloguePass2Tests(unittest.TestCase):
         }
         builtin_override = slim_audio["qwen3_tts_1_7b_base_q8_0"]
         self.assertEqual("Custom Label", builtin_override["label"])
-        self.assertEqual(["en", "xx"], builtin_override["supported_languages"])
+        self.assertEqual(
+            builtin_override["language_support"]["languages"],
+            builtin_override["supported_languages"],
+        )
         self.assertEqual("design", builtin_override["voice_mode"])
         for key in ("catalogue_info", "request_parameters"):
             self.assertNotIn(key, builtin_override)
@@ -410,6 +413,12 @@ class TtsCataloguePass2Tests(unittest.TestCase):
                 expected = full_entry.get(key)
                 if expected is None and key == "voice_mode":
                     expected = full_modes.get(model_id)
+                if key == "language_support":
+                    expected = {
+                        field: expected[field]
+                        for field in value
+                        if field in expected
+                    }
                 self.assertEqual(expected, value, f"{model_id}.{key}")
         custom_entry = slim_audio["my_custom_model"]
         self.assertEqual("Mine", custom_entry["label"])

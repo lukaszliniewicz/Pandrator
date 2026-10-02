@@ -18,6 +18,9 @@ import type {
   EventSnapshot,
   ForkedSessionRecord,
   TranslationProjectPayload,
+  ProjectOperation,
+  ProjectExportManifest,
+  ProjectExportBundle,
   GenerationRun,
   GenerationSegment,
   GenerationSegmentPage,
@@ -184,6 +187,87 @@ export const appApi = {
 };
 
 export const translationProjectApi = {
+  exportManifest: (id: string) =>
+    apiJson<ProjectExportManifest>(
+      `/translation-project-operations/${encodeURIComponent(id)}/exports/manifest`
+    ),
+  exportBundle: (id: string, digest: string, key: string) =>
+    apiJson<ProjectExportBundle>(
+      `/translation-project-operations/${encodeURIComponent(id)}/exports/bundle`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        body: JSON.stringify({ expected_manifest_digest: digest })
+      }
+    ),
+  previewOperation: (
+    projectId: string,
+    body: {
+      selected_branch_ids: string[];
+      expected_project_revision: number;
+      action: ProjectOperation['action'];
+      export_kind: ProjectOperation['export_kind'];
+    },
+    idempotencyKey: string
+  ) =>
+    apiJson<ProjectOperation>(
+      `/translation-projects/${encodeURIComponent(projectId)}/operations/preview`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: JSON.stringify(body)
+      }
+    ),
+  operation: (id: string) =>
+    apiJson<ProjectOperation>(
+      `/translation-project-operations/${encodeURIComponent(id)}`
+    ),
+  executeOperation: (
+    operation: ProjectOperation,
+    accepted: string[],
+    idempotencyKey: string
+  ) =>
+    apiJson<ProjectOperation>(
+      `/translation-project-operations/${encodeURIComponent(operation.id)}/execute`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: JSON.stringify({
+          preview_digest: operation.preview_digest,
+          accepted_confirmations: accepted
+        })
+      }
+    ),
+  cancelOperation: (id: string, idempotencyKey: string) =>
+    apiJson<ProjectOperation>(
+      `/translation-project-operations/${encodeURIComponent(id)}/cancel`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: '{}'
+      }
+    ),
+  retryOperation: (id: string, revision: number, idempotencyKey: string) =>
+    apiJson<ProjectOperation>(
+      `/translation-project-operations/${encodeURIComponent(id)}/retry-preview`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: JSON.stringify({ expected_project_revision: revision })
+      }
+    ),
   forSession: (sessionId: string) =>
     apiJson<TranslationProjectPayload>(
       `/sessions/${sessionId}/translation-project`
@@ -360,6 +444,21 @@ export const sessionApi = {
       'put',
       SettingsPayload
     >('/api/v1/sessions/{sessionId}/settings/{section}', 'put', {
+      path: { sessionId, section },
+      headers: { 'If-Match': `"${revision}"` },
+      body: { value }
+    }),
+  patchSettings: (
+    sessionId: string,
+    section: string,
+    revision: number,
+    value: Record<string, unknown>
+  ) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/settings/{section}',
+      'patch',
+      SettingsPayload
+    >('/api/v1/sessions/{sessionId}/settings/{section}', 'patch', {
       path: { sessionId, section },
       headers: { 'If-Match': `"${revision}"` },
       body: { value }
@@ -796,7 +895,8 @@ export const sessionApi = {
   saveSubtitleReview: (
     sessionId: string,
     stage: string,
-    body: ApiSchema<'SubtitleReviewRequest'>
+    body: ApiSchema<'SubtitleReviewRequest'>,
+    idempotencyKey?: string
   ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/subtitles/{stage}/review',
@@ -809,8 +909,49 @@ export const sessionApi = {
       }
     >('/api/v1/sessions/{sessionId}/subtitles/{stage}/review', 'post', {
       path: { sessionId, stage },
-      body
+      body,
+      ...(idempotencyKey
+        ? { headers: { 'Idempotency-Key': idempotencyKey } }
+        : {})
     }),
+  saveSubtitlePassageReview: (
+    sessionId: string,
+    stage: string,
+    body: {
+      source_artifact_id: string;
+      expected_source_hash: string;
+      expected_revision: number;
+      expected_composition_hash: string;
+      passages: {
+        id: string;
+        text: string;
+        speaker: string;
+        start_ms: number;
+        end_ms: number;
+        starts_new_turn: boolean;
+        deleted: boolean;
+        review_state: 'clear' | 'uncertain';
+        review_note: string;
+      }[];
+    },
+    idempotencyKey?: string
+  ) =>
+    apiJson<{
+      artifact_id: string;
+      document_id: string;
+      revision_id: string;
+      revision: number;
+    }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}/subtitles/${encodeURIComponent(stage)}/passage-review`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {})
+        },
+        body: JSON.stringify(body)
+      }
+    ),
   subtitleEvidenceRoutes: (language?: string) =>
     apiJson<{ routes: SubtitleEvidenceRouteOption[] }>(
       `/api/v1/subtitle-evidence/routes${language ? `?language=${encodeURIComponent(language)}` : ''}`
@@ -935,6 +1076,11 @@ export const artifactApi = {
         start_ms: String(startMs),
         end_ms: String(endMs)
       })}`,
+      { signal }
+    ),
+  videoPreview: (artifactId: string, signal?: AbortSignal) =>
+    apiJson<AudioPreviewPreparation>(
+      `/api/v1/artifacts/${encodeURIComponent(artifactId)}/video-preview`,
       { signal }
     ),
   audioPreview: (artifactId: string, signal?: AbortSignal) =>

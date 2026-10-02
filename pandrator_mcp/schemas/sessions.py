@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
-
-from pandrator.web.multilingual_setup import MultilingualSetup
+from pydantic import Field, StrictBool, field_validator, model_validator
 
 from .common import ToolInput
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
+_LANGUAGE = re.compile(r"^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$")
 _STAGES = Literal[
     "transcribe",
     "correct",
@@ -298,6 +298,28 @@ class ListSourcesInput(ToolInput):
     kind: str | None = Field(default=None, max_length=80)
     mime_type: str | None = Field(default=None, max_length=160)
     limit: int = Field(default=50, ge=1, le=100)
+
+
+class MultilingualSetup(ToolInput):
+    target_languages: list[str] = Field(min_length=1, max_length=20)
+    generate_voiceover: StrictBool = False
+    keep_source_subtitles: StrictBool = True
+    carry_source_subtitle_settings: StrictBool = False
+
+    @field_validator("target_languages")
+    @classmethod
+    def normalize_languages(cls, languages: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for language in languages:
+            language = language.strip().replace("_", "-").lower()
+            if not 2 <= len(language) <= 40 or not _LANGUAGE.fullmatch(language):
+                raise ValueError("Use a language code of 2-40 letters, digits, and hyphens.")
+            if language == "auto":
+                raise ValueError("Choose a specific target language.")
+            normalized.append(language)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("Target languages must be unique.")
+        return normalized
 
 
 class CreateSessionInput(ToolInput):

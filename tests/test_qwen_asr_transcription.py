@@ -13,10 +13,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from pandrator.logic.cancellable_process import ProcessCancelled
 from pandrator.logic.dubbing import crispasr, crispasr_qwen_assets, qwen_asr, transcription
 from pandrator.logic.dubbing.qwen_asr import QwenASRError
+from pandrator.web.quick_transcription_schemas import (
+    TranscriptionCreate,
+    TranscriptionSnapshot,
+)
+from pandrator_mcp.schemas.transcription import TranscribeInput
 
 
 def _wav(path: Path, seconds: float = 2.0) -> Path:
@@ -81,12 +87,83 @@ def test_language_and_timing_coverage():
     assert qwen_asr.normalize_qwen_asr_model("qwen3_asr_1_7b") == "qwen3_asr_1_7b"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("htdemucs", "htdemucs"),
+        ("demucs", "htdemucs"),
+        ("htdemucs_q8_0", "htdemucs"),
+        ("HTDemucs", "htdemucs"),
+    ],
+)
+def test_htdemucs_isolation_aliases_normalize_to_canonical_mode(raw, expected):
+    assert qwen_asr.normalize_vocal_isolation(raw) == expected
+
+
+def test_http_and_mcp_transcription_schemas_share_isolation_choices():
+    create_args = {
+        "filename": "clip.wav",
+        "size_bytes": 1,
+        "sha256": "0" * 64,
+    }
+    mcp_args = {
+        "source": {"kind": "base64", "data": "AA==", "filename": "clip.wav"},
+        "idempotency_key": "isolation-check-0001",
+    }
+    for choice in qwen_asr.VOCAL_ISOLATION_CHOICES:
+        assert (
+            TranscriptionCreate(
+                **create_args, transcription_vocal_isolation=choice
+            ).transcription_vocal_isolation
+            == choice
+        )
+        assert (
+            TranscribeInput(
+                **mcp_args, transcription_vocal_isolation=choice
+            ).transcription_vocal_isolation
+            == choice
+        )
+    with pytest.raises(ValidationError):
+        TranscriptionCreate(
+            **create_args, transcription_vocal_isolation="htdemucs_6stems"
+        )
+    with pytest.raises(ValidationError):
+        TranscribeInput(
+            **mcp_args, transcription_vocal_isolation="htdemucs_6stems"
+        )
+
+
+def test_transcription_snapshot_available_formats_defaults_to_empty():
+    snapshot = TranscriptionSnapshot(
+        id="transcription-1",
+        job_id=None,
+        status="completed",
+        progress=1.0,
+        progress_detail=None,
+        expires_at="2099-01-01T00:00:00Z",
+        format="txt",
+        chunk_size=8 * 1024 * 1024,
+        next_chunk_index=0,
+        uploaded_bytes=0,
+        size_bytes=1,
+        result_available=False,
+        inline_result=False,
+        result_url="/api/v1/transcriptions/transcription-1/result",
+    )
+    assert snapshot.available_formats == []
+
+
 def test_pinned_model_and_aligner_specs():
     assets = crispasr_qwen_assets.ASSETS
+    qwen_keys = {"qwen3_asr_0_6b", "qwen3_asr_1_7b", "qwen3_forced_aligner"}
+    assert set(assets) == qwen_keys | {"whisper_tiny_language_detector"}
     assert assets["qwen3_asr_0_6b"].size == 1006809760
     assert assets["qwen3_asr_1_7b"].size == 2506723200
     assert assets["qwen3_forced_aligner"].size == 985594624
-    assert all(asset.filename.endswith("q8_0.gguf") for asset in assets.values())
+    assert all(assets[key].filename.endswith("q8_0.gguf") for key in qwen_keys)
+    assert assets["qwen3_asr_0_6b"].sha256 == "f547589d5ca582e093b2d3312ad9ff13b609b43d413f972c0e92b823dde70a00"
+    assert assets["qwen3_asr_1_7b"].sha256 == "9851ab996591a2d0cb0efb216002764b509c86bd40c95e613d7b65b8e69c8a6e"
+    assert assets["qwen3_forced_aligner"].sha256 == "539df5dd0fe1721e378ac13bfac9a26b1260dafb62d892c518c1f21244762636"
     assert all(len(asset.sha256) == 64 and len(asset.revision) == 40 for asset in assets.values())
     assert list(crispasr.MODELS)[:3] == ["whisper", "parakeet", "moss"]
 

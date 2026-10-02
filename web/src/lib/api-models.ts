@@ -1,6 +1,7 @@
 import type { JobStatus } from './job-status';
 import type { AudioCppModelInfo } from './audio-cpp-catalogue';
 import type { PassageStructure } from './passage-structure';
+import type { LanguageSupport } from './language-registry';
 
 export type LoadState =
   'idle' | 'loading' | 'ready' | 'empty' | 'stale' | 'failed';
@@ -24,6 +25,13 @@ export type SessionRecord = {
   updated_at: string;
   trashed_at?: string | null;
   purge_after?: string | null;
+  translation_project?: {
+    id: string;
+    name: string;
+    source_session_id: string;
+    role: 'source' | 'branch';
+    target_language?: string;
+  } | null;
 };
 
 type MediaEditWord = {
@@ -146,6 +154,106 @@ export type TranslationProjectBranch = {
   translation_artifact_id: string | null;
   translation_status: 'ready' | 'running' | 'completed' | 'stale';
   active_translation_run_id: string | null;
+  effective_target_language?: string;
+  target_language_matches_settings?: boolean;
+  settings?: { tts: ProjectSettings; subtitles: ProjectSettings };
+  readiness?: {
+    translation: ProjectReadiness;
+    review: ProjectReadiness;
+    voice: ProjectReadiness;
+    speech_plan: ProjectReadiness;
+    generation: ProjectReadiness;
+    exports: { configured: ProjectReadiness; subtitles: ProjectReadiness };
+  };
+};
+
+export type ProjectReadiness = {
+  status: string;
+  reasons?: string[];
+  active_job_id?: string | null;
+  job_id?: string | null;
+  progress?: number | null;
+  progress_detail?: string | null;
+  failure?: { code?: string | null; message?: string | null } | null;
+  coverage_unverified?: boolean;
+  artifact_ids?: string[];
+};
+
+type ProjectSettings = {
+  origin: string;
+  effective: Record<string, unknown>;
+  settings_hash: string;
+  revision: number;
+  global_revision: number;
+  provider_id?: string | null;
+  model_id?: string | null;
+  provenance: Record<string, Record<string, unknown>>;
+};
+
+export type ProjectOperation = {
+  id: string;
+  project_id: string;
+  action: 'translate' | 'generate' | 'export';
+  export_kind: 'configured' | 'subtitles';
+  status: string;
+  preview_digest: string;
+  expired: boolean;
+  expires_at: string;
+  child_job_count: number;
+  eligible_count: number;
+  children: {
+    branch_id: string;
+    session_id?: string;
+    session_deleted?: boolean;
+    target_language: string;
+    state: string;
+    eligible: boolean;
+    reason?: string;
+    job_id?: string;
+    progress?: number;
+    error?: { message?: string | null } | null;
+    manual_resume_required?: boolean;
+    result?: { artifact_id: string; download_url?: string };
+    retained?: { result?: { artifact_id: string; download_url?: string } };
+    preview?: Record<string, unknown> & {
+      required_confirmations?: string[];
+      downloads?: unknown[];
+    };
+  }[];
+};
+
+export type ProjectExportManifest = {
+  manifest_digest: string;
+  manifest: {
+    manifest_version: number;
+    project_id: string;
+    project_name: string;
+    project_revision: number;
+    operation_id: string;
+    complete: boolean;
+    blocked_reasons?: string[];
+    languages: {
+      branch_id: string;
+      language: string;
+      state: string;
+      reason?: string | null;
+      artifacts: {
+        artifact_id: string;
+        sha256: string;
+        size_bytes: number;
+        output_kind: string;
+        filename: string;
+      }[];
+    }[];
+  };
+};
+
+export type ProjectExportBundle = {
+  status: string;
+  job_id: string;
+  manifest_digest: string;
+  content_url?: string;
+  manifest_content_url?: string;
 };
 
 export type TranslationProject = {
@@ -161,6 +269,17 @@ export type TranslationProject = {
   revision: number;
   created_at: string;
   branches: TranslationProjectBranch[];
+  source_status?: {
+    source_changed: boolean;
+    reasons: string[];
+    pinned_checkpoint: {
+      artifact_id: string;
+      revision_id?: string | null;
+      created_at?: string | null;
+      revision_created_at?: string | null;
+      content_hash: string;
+    };
+  };
 };
 
 export type MultilingualSetup = {
@@ -236,6 +355,8 @@ export type RuntimeCapabilities = {
         installed?: boolean;
         precision?: string;
         supported_languages?: string[] | null;
+        timed_supported_languages?: string[];
+        language_support?: LanguageSupport;
         [key: string]: unknown;
       }
     >;
@@ -431,6 +552,8 @@ export type ArtifactContext = {
 };
 
 export type SubtitleSegment = {
+  /** Browser-only identity for an unsaved split or merge; never sent to the API. */
+  draft_id?: string;
   id?: string;
   turn_id?: string | null;
   starts_new_turn?: boolean;
@@ -446,6 +569,31 @@ export type SubtitleSegment = {
   review_note?: string;
   evidence_ids?: string[];
   uncertain_source_cue_ids?: number[];
+  edit_capabilities?: {
+    ownership: 'exact' | 'fragment' | 'combined' | 'unverified';
+    text: boolean;
+    display_timing: boolean;
+    speaker: boolean;
+    start_new_utterance: boolean;
+    split: boolean;
+    merge: boolean;
+    delete: boolean;
+    reason: string;
+  };
+  owned_passages?: SpokenPassage[];
+};
+
+export type SpokenPassage = {
+  id: string;
+  starts_new_turn?: boolean;
+  deleted?: boolean;
+  text: string;
+  speaker?: string;
+  start_ms: number;
+  end_ms: number;
+  turn_id?: string | null;
+  review_state?: string;
+  review_note?: string;
 };
 
 export type SubtitleEvidenceRoute =
@@ -476,6 +624,7 @@ export type SubtitleSplitInspection = {
   boundaries: Array<{
     id: string;
     after_word: number;
+    text_offset_utf16?: number;
     left_end_ms: number;
     right_start_ms: number;
     left_text?: string;
@@ -586,6 +735,9 @@ export type SubtitleReviewColumn = {
   reviewed: boolean;
   language?: string | null;
   segments: SubtitleSegment[];
+  logical_passages?: SpokenPassage[];
+  composition_hash?: string;
+  composition_settings?: Record<string, unknown>;
 };
 
 export type SubtitleComparisonRow = {
@@ -616,6 +768,7 @@ export type SubtitleReviewCatalog = {
 };
 
 export type SubtitleReviewPayload = {
+  edit_mode?: 'display' | 'passages';
   session_id: string;
   primary_artifact_id: string;
   columns: SubtitleReviewColumn[];
@@ -763,6 +916,7 @@ export type TtsRequestParameter = {
 };
 
 type TtsModel = {
+  language_support?: LanguageSupport;
   catalogue_info?: AudioCppModelInfo;
   family?: string;
   supported_languages?: string[];

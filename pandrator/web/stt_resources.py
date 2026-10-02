@@ -29,7 +29,7 @@ def stt_resource_keys(settings: dict[str, Any]) -> list[str]:
     from pandrator.logic.dubbing.stt_backends import normalize_stt_backend
 
     native_backends = []
-    if normalize_stt_backend(settings.get("stt_engine") or settings.get("stt_backend")) == "qwen3":
+    if normalize_stt_backend(settings.get("stt_engine") or settings.get("stt_backend")) in {"auto", "qwen3"}:
         native_backends.append(settings.get("qwen_asr_backend") or settings.get("stt_compute_backend") or "auto")
     if str(settings.get("transcription_vocal_isolation") or "off").lower() not in {"off", "none", "false", "disabled"}:
         native_backends.append(settings.get("audio_cpp_backend") or settings.get("stt_compute_backend") or "best")

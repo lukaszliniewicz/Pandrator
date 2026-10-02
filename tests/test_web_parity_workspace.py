@@ -21,7 +21,10 @@ from pandrator.web.models import (
     GenerationSegment,
     Job,
     OutputAssembly,
+    SessionRecord,
+    UploadSessionRecord,
     UsageEvent,
+    utcnow,
 )
 from pandrator.web.tts_providers import KoboldQwenAdapter, TtsBatchItem
 from pandrator.web.workspace import (
@@ -1273,6 +1276,39 @@ class WebParityWorkspaceTests(unittest.TestCase):
         self.assertEqual(completed.get_json()["source_asset_id"], sources[0]["id"])
         self.assertTrue(attached[0]["attachment"]["is_current"])
 
+    def test_chunk_upload_http_mutations_reject_trashed_or_purging_owner(self):
+        database = self.app.extensions["pandrator"]["database"]
+        for owner_status in ("trashed", "purging"):
+            with self.subTest(owner_status=owner_status):
+                record = self.create_session()
+                payload = {"filename": "pending.txt", "size_bytes": 10, "session_id": record["id"]}
+                initialized = self.client.post("/api/v1/uploads/init", json=payload, headers=self.headers)
+                self.assertEqual(201, initialized.status_code)
+                upload_id = initialized.get_json()["id"]
+                response = self.client.put(
+                    f"/api/v1/uploads/{upload_id}/chunks/0", data=b"1234567890", headers=self.headers
+                )
+                self.assertEqual(200, response.status_code)
+                with database.immediate_session() as session:
+                    owner = session.get(SessionRecord, record["id"])
+                    owner.status = owner_status
+                    owner.trashed_at = utcnow()
+                    relative = session.get(UploadSessionRecord, upload_id).temporary_relative_path
+                root = Path(self.temporary.name)
+                files_before = sorted(path.relative_to(root).as_posix() for path in (root / "tmp/uploads").rglob("*"))
+                self.assertEqual(422, self.client.post("/api/v1/uploads/init", json=payload, headers=self.headers).status_code)
+                self.assertNotEqual(201, self.client.post(
+                    "/api/v1/uploads/init", json=payload,
+                    headers={**self.headers, "Idempotency-Key": f"blocked-upload:{owner_status}"},
+                ).status_code)
+                self.assertEqual(422, self.client.put(
+                    f"/api/v1/uploads/{upload_id}/chunks/0", data=b"abcdefghij", headers=self.headers,
+                ).status_code)
+                self.assertEqual(409, self.client.post(f"/api/v1/uploads/{upload_id}/complete", headers=self.headers).status_code)
+                self.assertEqual(409, self.client.delete(f"/api/v1/uploads/{upload_id}", headers=self.headers).status_code)
+                self.assertEqual(b"1234567890", (root / relative / "00000000.part").read_bytes())
+                self.assertEqual(files_before, sorted(path.relative_to(root).as_posix() for path in (root / "tmp/uploads").rglob("*")))
+
     def test_generation_segment_edits_stale_existing_takes_and_pause_is_safe(self):
         record = self.create_session("audiobook")
         plan = self.client.post(
@@ -1689,7 +1725,7 @@ class WebParityWorkspaceTests(unittest.TestCase):
             f"/api/v1/sessions/{record['id']}/generation-runs",
             json={
                 "run_override": {
-                    "tts": {"service": "XTTS", "model": "base"},
+                    "tts": {"service": "XTTS", "model": "base", "casting_enabled": True},
                     "text": {"llm_tts_optimization": True},
                     "audio": {"sentence_silence_ms": 999},
                     "output": {"format": "mp3"},

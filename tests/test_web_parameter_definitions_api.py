@@ -180,7 +180,7 @@ class ParameterDefinitionsApiTests(unittest.TestCase):
         self.assertEqual("stt", item["section"])
         self.assertEqual("stt_engine", item["name"])
         self.assertEqual("string", item["value_type"])
-        self.assertEqual("whisper", item["default"])
+        self.assertEqual("auto", item["default"])
         json.dumps(payload)
 
     def test_openapi_declares_operation_parameters_schema_and_security(self):

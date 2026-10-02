@@ -1,31 +1,5 @@
 {
     "files": {
-        "./pandrator/logic/audio_cpp_catalogue.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/logic/audio_evidence.py": [
             {
                 "code": "reportOperatorIssue",
@@ -478,22 +452,6 @@
                 "range": {
                     "startColumn": 63,
                     "endColumn": 66,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 75,
-                    "endColumn": 87,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 80,
-                    "endColumn": 86,
                     "lineCount": 1
                 }
             }
@@ -2985,48 +2943,6 @@
                     "startColumn": 12,
                     "endColumn": 13,
                     "lineCount": 5
-                }
-            }
-        ],
-        "./pandrator/web/uploads.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 37,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 34,
-                    "lineCount": 1
                 }
             }
         ],

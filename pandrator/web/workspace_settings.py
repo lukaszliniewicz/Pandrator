@@ -17,6 +17,7 @@ from pandrator.logic.tts_provider_switch import (
 from .database import Database
 from .models import (
     AppSetting,
+    AppSettingHistory,
     Artifact,
     GenerationRun,
     OutcomePlan,
@@ -34,12 +35,46 @@ from .settings_policy import (
     _secret_free,
     normalize_stt_engine_aliases,
     normalize_subtitle_limit_override,
+    split_legacy_stt_settings,
     stable_hash,
     validate_output_settings,
+    validate_stt_replacement,
     validate_stt_settings,
     validate_voiceover_repair_settings,
 )
 from .source_resolution import classify_source, resolve_media_source
+
+
+def migrate_legacy_subtitle_settings(
+    session: Session, legacy: dict[str, Any], *, session_id: str | None = None,
+) -> None:
+    """Move recognized flat fields atomically; canonical section values win."""
+    if not legacy:
+        return
+    record = (
+        session.get(SessionSetting, (session_id, "subtitles"))
+        if session_id is not None else session.get(AppSetting, "defaults.subtitles")
+    )
+    stored = dict(record.value_json or {}) if record else {}
+    migrated = {**legacy, **stored}
+    if migrated == stored:
+        return
+    if record is None:
+        record = (
+            SessionSetting(session_id=session_id, section="subtitles", value_json=migrated, revision=1)
+            if session_id is not None else AppSetting(key="defaults.subtitles", value_json=migrated, revision=1)
+        )
+        session.add(record)
+    else:
+        history = (
+            SessionSettingHistory(session_id=session_id, section="subtitles", value_json=stored, revision=record.revision)
+            if session_id is not None else AppSettingHistory(key="defaults.subtitles", value_json=stored, revision=record.revision)
+        )
+        session.add(history)
+        record.value_json = migrated
+        record.revision += 1
+        record.updated_at = utcnow()
+    session.flush()
 
 
 def subtitle_settings_provenance(
@@ -245,6 +280,20 @@ class WorkspaceSettingsService:
             else {}
         )
         override_value = override.value_json if override else {}
+        if section == "stt":
+            global_value, _ = split_legacy_stt_settings(global_value, reject_conflicts=False)
+            override_value, _ = split_legacy_stt_settings(override_value, reject_conflicts=False)
+        elif section == "subtitles":
+            legacy_global = session.get(AppSetting, "defaults.stt")
+            legacy_override = session.get(SessionSetting, (session_id, "stt"))
+            _, global_subtitles = split_legacy_stt_settings(
+                dict(legacy_global.value_json or {}) if legacy_global else {}, reject_conflicts=False,
+            )
+            _, override_subtitles = split_legacy_stt_settings(
+                dict(legacy_override.value_json or {}) if legacy_override else {}, reject_conflicts=False,
+            )
+            global_value = {**global_subtitles, **global_value}
+            override_value = {**override_subtitles, **override_value}
         source_language = str(session_record.source_language or "auto")
         target_language = str(session_record.target_language or "")
         outcome = session.get(OutcomePlan, session_id)
@@ -550,8 +599,11 @@ class WorkspaceSettingsService:
         elif section == "stt":
             # Canonicalize the submitted alias before merging, so it replaces
             # an older stt_engine value instead of being shadowed by it.
-            value = normalize_stt_engine_aliases(value)
+            value, submitted_subtitles = split_legacy_stt_settings(value)
             validate_stt_settings(value)
+            # Keep recognized aliases until the write migrates them in the same
+            # transaction. Unknown old fields remain in the merged override.
+            value.update({RUNTIME_SETTING_ALIASES["subtitles"][key]: item for key, item in submitted_subtitles.items()})
             existing = normalize_stt_engine_aliases(
                 existing if isinstance(existing, dict) else {},
                 reject_conflicts=False,
@@ -593,12 +645,19 @@ class WorkspaceSettingsService:
 
             validate_audiobook_chunking_settings(value)
         if section == "stt":
-            value = normalize_stt_engine_aliases(
+            value, incoming_subtitles = split_legacy_stt_settings(
                 value,
                 reject_conflicts=not _stt_fields_validated,
             )
+            stored = session.get(SessionSetting, (session_id, section))
+            previous_stt, previous_subtitles = split_legacy_stt_settings(
+                dict(stored.value_json or {}) if stored else {}, reject_conflicts=False,
+            )
             if not _stt_fields_validated:
-                validate_stt_settings(value)
+                validate_stt_replacement(value, previous_stt)
+            migrate_legacy_subtitle_settings(
+                session, {**previous_subtitles, **incoming_subtitles}, session_id=session_id,
+            )
         if section == "tts":
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]

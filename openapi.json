@@ -60,7 +60,7 @@
             "type": "string"
           },
           "application_version": {
-            "default": "0.10.1",
+            "default": "0.11.0",
             "title": "Application Version",
             "type": "string"
           },
@@ -4432,6 +4432,96 @@
         "title": "MultilingualSetup",
         "type": "object"
       },
+      "OperationCancelRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "OperationCancelRequest",
+        "type": "object"
+      },
+      "OperationExecuteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_confirmations": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Accepted Confirmations",
+            "type": "array"
+          },
+          "preview_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Preview Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview_digest"
+        ],
+        "title": "OperationExecuteRequest",
+        "type": "object"
+      },
+      "OperationPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "translate",
+              "generate",
+              "export"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "expected_project_revision": {
+            "minimum": 1,
+            "title": "Expected Project Revision",
+            "type": "integer"
+          },
+          "export_kind": {
+            "default": "configured",
+            "enum": [
+              "configured",
+              "subtitles"
+            ],
+            "title": "Export Kind",
+            "type": "string"
+          },
+          "selected_branch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Selected Branch Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "selected_branch_ids",
+          "expected_project_revision",
+          "action"
+        ],
+        "title": "OperationPreviewRequest",
+        "type": "object"
+      },
+      "OperationRetryPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_project_revision": {
+            "minimum": 1,
+            "title": "Expected Project Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_project_revision"
+        ],
+        "title": "OperationRetryPreviewRequest",
+        "type": "object"
+      },
       "OptimizationReviewItem": {
         "additionalProperties": false,
         "properties": {
@@ -5344,6 +5434,23 @@
           "lease_token"
         ],
         "title": "PerformanceSubmitRequest",
+        "type": "object"
+      },
+      "ProjectExportBundleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_manifest_digest": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Manifest Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_manifest_digest"
+        ],
+        "title": "ProjectExportBundleRequest",
         "type": "object"
       },
       "PronunciationCreate": {
@@ -8668,6 +8775,122 @@
         "title": "SubtitleEvidenceResolveRequest",
         "type": "object"
       },
+      "SubtitlePassageInput": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "end_ms": {
+            "exclusiveMinimum": 0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "review_note": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Review Note",
+            "type": "string"
+          },
+          "review_state": {
+            "default": "clear",
+            "enum": [
+              "clear",
+              "uncertain"
+            ],
+            "title": "Review State",
+            "type": "string"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker"
+          },
+          "start_ms": {
+            "minimum": 0,
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "starts_new_turn": {
+            "default": false,
+            "title": "Starts New Turn",
+            "type": "boolean"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "start_ms",
+          "end_ms"
+        ],
+        "title": "SubtitlePassageInput",
+        "type": "object"
+      },
+      "SubtitlePassageReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_composition_hash": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Composition Hash",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_source_hash": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Source Hash",
+            "type": "string"
+          },
+          "passages": {
+            "items": {
+              "$ref": "#/components/schemas/SubtitlePassageInput"
+            },
+            "minItems": 1,
+            "title": "Passages",
+            "type": "array"
+          },
+          "source_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Source Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_artifact_id",
+          "expected_source_hash",
+          "expected_revision",
+          "expected_composition_hash",
+          "passages"
+        ],
+        "title": "SubtitlePassageReviewRequest",
+        "type": "object"
+      },
       "SubtitleReviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -9128,7 +9351,8 @@
                 "enum": [
                   "off",
                   "bs_roformer",
-                  "mel_band_roformer"
+                  "mel_band_roformer",
+                  "htdemucs"
                 ],
                 "type": "string"
               },
@@ -9236,6 +9460,18 @@
       },
       "TranscriptionSnapshot": {
         "properties": {
+          "available_formats": {
+            "items": {
+              "enum": [
+                "txt",
+                "srt",
+                "json"
+              ],
+              "type": "string"
+            },
+            "title": "Available Formats",
+            "type": "array"
+          },
           "chunk_size": {
             "title": "Chunk Size",
             "type": "integer"
@@ -11234,6 +11470,45 @@
             "description": "PDF geometry"
           }
         }
+      }
+    },
+    "/api/v1/artifacts/{artifactId}/video-preview": {
+      "get": {
+        "operationId": "getArtifactVideoPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cached compatible video preview"
+          },
+          "202": {
+            "description": "Durable preview job queued or running"
+          },
+          "422": {
+            "description": "Source cannot produce a bounded video preview; audio fallback is available"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/artifacts/{artifactId}/waveform": {
@@ -19945,6 +20220,74 @@
         ]
       }
     },
+    "/api/v1/sessions/{sessionId}/subtitles/{stage}/passage-review": {
+      "post": {
+        "operationId": "saveSubtitlePassageReview",
+        "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitlePassageReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Canonical spoken passages saved and display cues recomposed"
+          },
+          "409": {
+            "description": "Source, composition settings or revision conflict"
+          },
+          "422": {
+            "description": "Invalid passage edit"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/subtitles/{stage}/review": {
       "post": {
         "operationId": "saveSubtitleReview",
@@ -21918,6 +22261,371 @@
         ]
       }
     },
+    "/api/v1/translation-project-operations/{operationId}": {
+      "get": {
+        "description": "Read redacted progress and results derived from existing jobs, generation runs and produced artifacts. Passive translation dispatch remains awaiting_agent with manual resume information.",
+        "operationId": "getTranslationProjectOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redacted durable operation and live child states"
+          },
+          "201": {
+            "description": "Created operation preview; no jobs submitted"
+          },
+          "202": {
+            "description": "Eligible child work submitted or recovered"
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Expired/stale preview, target mismatch, confirmation or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid selection or request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.read"
+        ]
+      }
+    },
+    "/api/v1/translation-project-operations/{operationId}/cancel": {
+      "post": {
+        "description": "Durably block pending children and request cancellation of supported active queue work, including committed children not yet linked after a crash. Completed work and passive dispatch authority are preserved.",
+        "operationId": "cancelTranslationProjectOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Redacted durable operation and live child states"
+          },
+          "201": {
+            "description": "Created operation preview; no jobs submitted"
+          },
+          "202": {
+            "description": "Eligible child work submitted or recovered"
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Expired/stale preview, target mismatch, confirmation or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid selection or request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.write"
+        ]
+      }
+    },
+    "/api/v1/translation-project-operations/{operationId}/execute": {
+      "post": {
+        "description": "Submit eligible captured children sequentially through existing workflow or reviewed-generation authorities. Exact replay recovers committed children without duplicate jobs.",
+        "operationId": "executeTranslationProjectOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Redacted durable operation and live child states"
+          },
+          "201": {
+            "description": "Created operation preview; no jobs submitted"
+          },
+          "202": {
+            "description": "Eligible child work submitted or recovered"
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Expired/stale preview, target mismatch, confirmation or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid selection or request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.write"
+        ]
+      }
+    },
+    "/api/v1/translation-project-operations/{operationId}/exports/bundle": {
+      "post": {
+        "description": "Queue or recover a durable ZIP bundle only when every selected export is complete and still matches its recorded managed-file hash.",
+        "operationId": "requestTranslationProjectExportBundle",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectExportBundleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Matching cached bundle and manifest artifacts"
+          },
+          "202": {
+            "description": "Bundle job queued, running or recovered"
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Incomplete, stale or unavailable bundle inputs"
+          },
+          "422": {
+            "description": "Invalid bundle request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.write"
+        ]
+      }
+    },
+    "/api/v1/translation-project-operations/{operationId}/exports/manifest": {
+      "get": {
+        "description": "Return a redacted, versioned manifest for every selected language, including incomplete states and verified artifact hashes.",
+        "operationId": "getTranslationProjectExportManifest",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Versioned project export manifest"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Operation target or export action is incompatible"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.read"
+        ]
+      }
+    },
+    "/api/v1/translation-project-operations/{operationId}/retry-preview": {
+      "post": {
+        "description": "Create a new preview with fresh guards/settings for failed, blocked or canceled eligible children. Successful children are retained; active or partial passive translation work requires manual resume.",
+        "operationId": "retryTranslationProjectOperationPreview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationRetryPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Redacted durable operation and live child states"
+          },
+          "201": {
+            "description": "Created operation preview; no jobs submitted"
+          },
+          "202": {
+            "description": "Eligible child work submitted or recovered"
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Expired/stale preview, target mismatch, confirmation or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid selection or request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.read"
+        ]
+      }
+    },
     "/api/v1/translation-projects/{projectId}": {
       "get": {
         "operationId": "getTranslationProject",
@@ -22035,6 +22743,76 @@
               "app.write"
             ]
           }
+        ]
+      }
+    },
+    "/api/v1/translation-projects/{projectId}/operations/preview": {
+      "post": {
+        "description": "Create a job-free, principal-bound preview for selected language branches. Blocked branches are skipped; inputs, settings and required confirmations are captured for 30 minutes.",
+        "operationId": "previewTranslationProjectOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Redacted durable operation and live child states"
+          },
+          "201": {
+            "description": "Created operation preview; no jobs submitted"
+          },
+          "202": {
+            "description": "Eligible child work submitted or recovered"
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key"
+          },
+          "404": {
+            "description": "Operation not found or belongs to another principal"
+          },
+          "409": {
+            "description": "Expired/stale preview, target mismatch, confirmation or idempotency conflict"
+          },
+          "422": {
+            "description": "Invalid selection or request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "x-required-scopes": [
+          "app.read"
         ]
       }
     },

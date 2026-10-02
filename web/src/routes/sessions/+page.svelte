@@ -33,6 +33,29 @@
       item.name.toLowerCase().includes(search.toLowerCase())
     )
   );
+  const groups = $derived.by(() => {
+    const grouped = new Map<
+      string,
+      { project: SessionRecord['translation_project']; items: SessionRecord[] }
+    >();
+    for (const item of visible) {
+      const key = item.translation_project?.id || item.id;
+      const group = grouped.get(key) ?? {
+        project: item.translation_project,
+        items: []
+      };
+      group.items.push(item);
+      grouped.set(key, group);
+    }
+    return [...grouped.values()].map((group) => ({
+      ...group,
+      items: group.items.sort(
+        (a, b) =>
+          Number(b.translation_project?.role === 'source') -
+          Number(a.translation_project?.role === 'source')
+      )
+    }));
+  });
   async function load() {
     try {
       const [sessions, policy] = await Promise.all([
@@ -125,80 +148,94 @@
     />
   </div>
   <div class="surface mt-5 overflow-hidden rounded-2xl">
-    {#each visible as item}
-      <article class="border-b border-[var(--line)] last:border-0">
-        <div class="flex flex-wrap items-center gap-3 p-4">
-          <a href={`/sessions/${item.id}`} class="min-w-0 flex-1"
-            ><div class="truncate font-semibold">{item.name}</div>
-            <div class="muted mt-1 text-xs capitalize">
-              {item.workflow_kind} · {item.status} · updated {new Date(
-                item.updated_at
-              ).toLocaleString()}
-            </div>
-            {#if item.trashed_at}<p class="muted mt-1 text-xs">
-                {item.status === 'purging'
-                  ? 'Permanent deletion in progress or awaiting retry'
-                  : retentionEnabled && item.purge_after
-                    ? `Scheduled for deletion ${new Date(item.purge_after).toLocaleString()}`
-                    : 'Kept in Trash'}
-              </p>{/if}</a
+    {#each groups as group}
+      {#if group.project}<header
+          class="border-b border-[var(--line)] bg-[var(--accent-soft)] px-4 py-3"
+        >
+          <a
+            class="text-sm font-semibold text-[var(--accent)]"
+            href={`/sessions/${group.project.source_session_id}/languages`}
+            >{group.project.name} · Language project</a
           >
-          <button
-            onclick={() => reindex(item)}
-            title="Reindex artifacts"
-            class="tool"><RefreshCw size={16} /></button
-          >{#if item.status === 'trashed' || item.status === 'purging'}{#if item.status !== 'purging'}<button
-                onclick={() => restore(item)}
-                class="tool"><ArchiveRestore size={16} /> Restore</button
+          <p class="muted mt-1 text-xs">
+            {group.items.length} matching sessions · each language keeps its own workspace
+          </p>
+        </header>{/if}
+      {#each group.items as item}
+        <article class="border-b border-[var(--line)] last:border-0">
+          <div class="flex flex-wrap items-center gap-3 p-4">
+            <a href={`/sessions/${item.id}`} class="min-w-0 flex-1"
+              ><div class="truncate font-semibold">{item.name}</div>
+              <div class="muted mt-1 text-xs capitalize">
+                {item.workflow_kind} · {item.status} · updated {new Date(
+                  item.updated_at
+                ).toLocaleString()}
+              </div>
+              {#if item.trashed_at}<p class="muted mt-1 text-xs">
+                  {item.status === 'purging'
+                    ? 'Permanent deletion in progress or awaiting retry'
+                    : retentionEnabled && item.purge_after
+                      ? `Scheduled for deletion ${new Date(item.purge_after).toLocaleString()}`
+                      : 'Kept in Trash'}
+                </p>{/if}</a
+            >
+            <button
+              onclick={() => reindex(item)}
+              title="Reindex artifacts"
+              class="tool"><RefreshCw size={16} /></button
+            >{#if item.status === 'trashed' || item.status === 'purging'}{#if item.status !== 'purging'}<button
+                  onclick={() => restore(item)}
+                  class="tool"><ArchiveRestore size={16} /> Restore</button
+                >{/if}<button
+                class="tool text-red-600"
+                onclick={() => (deleteTarget = item)}
+                ><Trash2 size={16} />{item.status === 'purging'
+                  ? 'Retry deletion'
+                  : 'Delete permanently'}</button
+              >{:else}<button
+                onclick={() => trash(item)}
+                class="tool text-red-500"><Trash2 size={16} /> Trash</button
               >{/if}<button
-              class="tool text-red-600"
-              onclick={() => (deleteTarget = item)}
-              ><Trash2 size={16} />{item.status === 'purging'
-                ? 'Retry deletion'
-                : 'Delete permanently'}</button
-            >{:else}<button
-              onclick={() => trash(item)}
-              class="tool text-red-500"><Trash2 size={16} /> Trash</button
-            >{/if}<button
-            onclick={() => expand(item.id)}
-            class="tool"
-            aria-label={`${expanded === item.id ? 'Collapse' : 'Expand'} artifacts for ${item.name}`}
-            aria-expanded={expanded === item.id}
-            ><ChevronDown
-              class={expanded === item.id ? 'rotate-180' : ''}
-              size={17}
-            /></button
-          >
-        </div>
-        {#if expanded === item.id}
-          <div class="border-t border-[var(--line)] bg-[var(--paper)] p-4">
-            <div class="section-label mb-3">Artifacts</div>
-            <div class="grid gap-2 md:grid-cols-2">
-              {#each artifacts[item.id] ?? [] as artifact}
-                <button
-                  onclick={() => {
-                    preview = artifact;
-                  }}
-                  class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-left"
-                  >{#if artifact.kind === 'audio'}<FileAudio
-                      size={17}
-                    />{:else}<FileText size={17} />{/if}
-                  <div class="min-w-0">
-                    <div class="truncate text-sm font-semibold">
-                      {artifactRoleLabel(artifact.role)}
-                    </div>
-                    <div class="muted truncate text-xs">
-                      {artifact.relative_path} · {artifact.state}
-                    </div>
-                  </div></button
-                >
-              {:else}<p class="muted text-sm">
-                  No registered artifacts.
-                </p>{/each}
-            </div>
+              onclick={() => expand(item.id)}
+              class="tool"
+              aria-label={`${expanded === item.id ? 'Collapse' : 'Expand'} artifacts for ${item.name}`}
+              aria-expanded={expanded === item.id}
+              ><ChevronDown
+                class={expanded === item.id ? 'rotate-180' : ''}
+                size={17}
+              /></button
+            >
           </div>
-        {/if}
-      </article>
+          {#if expanded === item.id}
+            <div class="border-t border-[var(--line)] bg-[var(--paper)] p-4">
+              <div class="section-label mb-3">Artifacts</div>
+              <div class="grid gap-2 md:grid-cols-2">
+                {#each artifacts[item.id] ?? [] as artifact}
+                  <button
+                    onclick={() => {
+                      preview = artifact;
+                    }}
+                    class="flex items-center gap-3 rounded-xl border border-[var(--line)] p-3 text-left"
+                    >{#if artifact.kind === 'audio'}<FileAudio
+                        size={17}
+                      />{:else}<FileText size={17} />{/if}
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-semibold">
+                        {artifactRoleLabel(artifact.role)}
+                      </div>
+                      <div class="muted truncate text-xs">
+                        {artifact.relative_path} · {artifact.state}
+                      </div>
+                    </div></button
+                  >
+                {:else}<p class="muted text-sm">
+                    No registered artifacts.
+                  </p>{/each}
+              </div>
+            </div>
+          {/if}
+        </article>
+      {/each}
     {:else}<div class="muted p-10 text-center">
         No matching sessions.
       </div>{/each}

@@ -205,7 +205,7 @@ def test_expanded_packages_are_single_file_offline_configs():
 
 
 def test_existing_packages_and_audio_cpp_pins_remain_unchanged():
-    assert AUDIO_CPP_VERSION == "0.8.1"
+    assert AUDIO_CPP_VERSION == "0.9.0"
     assert AUDIO_CPP_MODEL_REVISION == "dc6fecccc2b0c6bdda0a8b2f38fa61394fee0b9c"
     assert tuple(MODEL_PACKAGES)[:15] == (*LEGACY_PACKAGE_IDS, *EXPANDED_PACKAGES)
     assert tuple(SUPPORTED_MODEL_IDS)[:15] == (*LEGACY_PACKAGE_IDS, *EXPANDED_PACKAGES)

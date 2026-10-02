@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Collection
+from typing import Any, cast
 
 import regex
 from sqlalchemy import select
@@ -41,8 +42,18 @@ def plan_signature(session, revision_id: str) -> str:
 
 
 def freeze_speech_snapshot(
-    session, revision_id: str, snapshot: dict[str, Any], *, explicit: bool = False
+    session,
+    revision_id: str,
+    snapshot: dict[str, Any],
+    *,
+    explicit: bool = False,
+    segment_ids: Collection[str] | None = None,
 ) -> None:
+    """Freeze plan metadata and language bindings for all or selected segments.
+
+    ``segment_ids=None`` validates every active segment; an explicit collection
+    restricts only the language-binding records to those requested for synthesis.
+    """
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (revision.operation_json or {}).get("draft"):
         raise RevisionConflict("Adopt this resegmentation draft with a topology restore before generation.")
@@ -62,6 +73,95 @@ def freeze_speech_snapshot(
             **dict(snapshot.get("text") or {}),
             "llm_tts_optimization": False,
             "use_existing_speech_plans": True,
+        }
+    if revision is not None:
+        effective_tts = performance_runtime_settings(snapshot)
+        selected_override: Any = snapshot.get("selected_segment_override") or {}
+        selected_tts_override_raw = (
+            selected_override.get("tts")
+            if isinstance(selected_override, dict)
+            else None
+        )
+        selected_tts_override: dict[str, Any] = (
+            cast(dict[str, Any], selected_tts_override_raw)
+            if isinstance(selected_tts_override_raw, dict)
+            else {}
+        )
+        alternate_language = str(
+            selected_tts_override.get("language")
+            or selected_tts_override.get("target_language")
+            or ""
+        ).strip()
+        from pandrator.logic.tts_language_preflight import validate_tts_language
+
+        records: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        bindings: dict[str, dict[str, Any]] = {}
+        service_config_cache: dict = {}
+        segment_query = select(m.GenerationSegment).where(
+            m.GenerationSegment.plan_revision_id == revision_id,
+            m.GenerationSegment.removed.is_(False),
+        )
+        if segment_ids is not None:
+            segment_query = segment_query.where(
+                m.GenerationSegment.id.in_(tuple(segment_ids))
+            )
+        segments = session.scalars(segment_query.order_by(m.GenerationSegment.ordinal))
+        for segment in segments:
+            segment_text = segment.optimized_text or segment.text
+            segment_settings = segment_performance_settings(
+                effective_tts, snapshot, segment.id, segment_text
+            )
+            segment_language = str(segment.language or "").strip()
+            if (
+                not alternate_language
+                and segment_language.lower() not in {"", "auto", "und", "unknown"}
+            ):
+                segment_settings.update(
+                    language=segment_language,
+                    target_language=segment_language,
+                )
+            validation = validate_tts_language(
+                segment_settings,
+                _service_config_cache=service_config_cache,
+            )
+            support = validation["language_support"]
+            if isinstance(support, dict):
+                provider_id = str(support.get("provider_id") or "")
+                model_id = str(support.get("model_id") or "")
+                language = str(validation["language"])
+                operation = str(support.get("operation") or "tts")
+                identity = (provider_id, model_id, language, operation)
+                if identity not in records:
+                    records[identity] = {
+                        "provider_id": provider_id,
+                        "model_id": model_id,
+                        "language": language,
+                        "operation": operation,
+                        "decision": validation["decision"],
+                        "native_language": validation["native_language"],
+                        "language_support": support,
+                    }
+                record_key = stable_hash(list(identity))
+                bindings[str(segment.id)] = {
+                    "record_key": record_key,
+                    "provider_id": provider_id,
+                    "model_id": model_id,
+                    "language": language,
+                    "operation": operation,
+                    "decision": validation["decision"],
+                    "unresolved_model": False,
+                }
+            else:
+                bindings[str(segment.id)] = {
+                    "language": str(validation["language"]),
+                    "operation": "tts",
+                    "decision": "unverified",
+                    "unresolved_model": True,
+                }
+        snapshot["tts_language_snapshot"] = {
+            "schema_version": 1,
+            "records": list(records.values()),
+            "bindings": bindings,
         }
 
 
