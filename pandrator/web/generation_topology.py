@@ -570,8 +570,9 @@ class GenerationTopologyService:
                             continue
                         if end > start and [start, end] not in cue[key]:
                             cue[key].append([start, end])
-                cue["start_ms"] = cue.get("start_ms") or raw_cue.get("start_ms")
-                cue["end_ms"] = cue.get("end_ms") or raw_cue.get("end_ms")
+                for timing_key in ("start_ms", "end_ms"):
+                    if cue.get(timing_key) is None:
+                        cue[timing_key] = raw_cue.get(timing_key)
                 cue["display_text"] = cue.get("display_text") or raw_cue.get(
                     "display_text"
                 )

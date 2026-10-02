@@ -1431,6 +1431,73 @@ class GenerationTopologyTests(unittest.TestCase):
             self.assertEqual("A🙂 B", original.optimized_text)
             self.assertEqual(source_xml, original.speech_plan_json["speech_xml"])
 
+    def test_merge_preserves_native_zero_start_time_in_persisted_provenance(self):
+        blocks = []
+        for text, start in (("First words.", 0), ("More words.", None)):
+            blocks.append({
+                "text": text,
+                "source_segment_ids": [0],
+                "speech_block_provenance": {
+                    "schema_version": 1,
+                    "source_reference_namespace": "subtitle_ordinal",
+                    "source_cues": [{
+                        "reference": 0,
+                        "start_ms": start,
+                        "end_ms": 1000,
+                        "display_text": text,
+                        "speech_text": text,
+                        "display_spans": [[0, len(text)]],
+                        "speech_spans": [[0, len(text)]],
+                    }],
+                },
+            })
+        # Native planning supplies provenance; the HTTP plan-create schema
+        # intentionally does not accept this server-owned field.
+        service = self.app.extensions["pandrator"]["generation"]
+        plan = service.create_plan(
+            self.session_id, source_revision_id=None, segments=blocks
+        )
+        initial = self._segments()["items"]
+        response = self._topology(
+            plan["active_revision_id"],
+            {"action": "merge", "left_segment_id": initial[0]["id"],
+             "right_segment_id": initial[1]["id"]},
+            "topology-merge-zero-start",
+        )
+        self.assertEqual(201, response.status_code, response.get_json())
+        merged = self._segments()["items"][0]
+        self.assertEqual("First words. More words.", merged["text"])
+        self.assertEqual([0], merged["source_segment_ids"])
+        provenance = merged["speech_block_provenance"]
+        self.assertEqual("subtitle_ordinal", provenance["source_reference_namespace"])
+        self.assertEqual(1, len(provenance["source_cues"]))
+        cue = provenance["source_cues"][0]
+        self.assertEqual(0, cue["reference"])
+        self.assertEqual(0, cue["start_ms"])
+        self.assertEqual(1000, cue["end_ms"])
+        self.assertEqual([[0, 12], [13, 24]], cue["display_spans"])
+        self.assertEqual([[0, 12], [13, 24]], cue["speech_spans"])
+
+    def test_merge_provenance_uses_first_known_time_including_zero(self):
+        # Zero end time is a synthetic storage control, not a valid
+        # positive-duration passage. Both fields use None for missing data.
+        for key in ("start_ms", "end_ms"):
+            for left, right, expected in (
+                (0, None, 0), (100, None, 100), (None, 0, 0),
+                (100, 250, 100), (None, None, None),
+            ):
+                with self.subTest(key=key, left=left, right=right):
+                    left_provenance = {"source_cues": [{"reference": 0, key: left}]}
+                    right_provenance = {"source_cues": [{"reference": 0, key: right}]}
+                    before = deepcopy((left_provenance, right_provenance))
+                    merged = GenerationService._merge_provenance(
+                        left_provenance, right_provenance,
+                        display_offset=0, speech_offset=0,
+                        event={"source_references": [0]},
+                    )
+                    self.assertEqual(expected, merged["source_cues"][0][key])
+                    self.assertEqual(before, (left_provenance, right_provenance))
+
     def test_split_preserves_source_references_for_legacy_rows_without_spans(self):
         response = self._topology(
             self.initial_revision_id,
