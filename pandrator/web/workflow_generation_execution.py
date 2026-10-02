@@ -71,13 +71,18 @@ class GenerationExecutionContext:
 
 
 def _restore_optional_pass_status(database: Database, run_id: str, final_status: str) -> str:
-    """Restore the first-pass result while retaining durable cancellation."""
+    """Restore the first-pass result or settle a durable stop request."""
     with database.immediate_session() as session:
         current = session.get(GenerationRun, run_id)
         if current is None:
             return final_status
         if current.cancel_requested or current.status in {"cancel_requested", "canceled"}:
             return current.status
+        if current.pause_requested or current.status in {"pausing", "pause_requested", "paused"}:
+            if current.status != "paused":
+                current.status = "paused"
+                current.updated_at = utcnow()
+            return "paused"
         current.status = final_status
         return final_status
 

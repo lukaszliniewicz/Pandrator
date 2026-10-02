@@ -12,6 +12,7 @@ from pandrator.logic.dubbing.models import AudioAlignmentBlock
 from pandrator.web.database import Database
 from pandrator.web.generation_review import revision_history
 from pandrator.web.models import (
+    Artifact,
     AudioTake,
     Document,
     DocumentRevision,
@@ -219,6 +220,100 @@ class VoiceoverRepairTests(unittest.TestCase):
                 )
             )
         self.assertEqual([take_id], selected)
+
+    def _check_native_repair_pause(self, stage):
+        self.plan()
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        job = self.handlers.jobs.enqueue(
+            "generation.run", {"generation_run_id": self.run_id}, session_id=self.record.id
+        )
+        with self.database.session() as session:
+            session.get(GenerationRun, self.run_id).job_id = job.id
+        claimed = self.handlers.jobs.claim("repair-pause-fixture")
+        self.assertEqual(job.id, claimed.id)
+        observed = {}
+        calls = 0
+
+        def request_pause():
+            self.assertEqual("pausing", service.request_pause(self.run_id)["status"])
+            with self.database.session() as session:
+                takes = list(session.scalars(select(AudioTake).where(
+                    AudioTake.generation_run_id == self.run_id
+                )))
+                observed["takes"] = [(take.id, take.artifact_id, take.created_at) for take in takes]
+                observed["files"] = {
+                    take.artifact_id: self.paths.managed_path(
+                        session.get(Artifact, take.artifact_id).relative_path
+                    ).read_bytes() for take in takes
+                }
+            self.assertEqual(2, len(observed["takes"]))
+
+        def synth(text, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if stage == "child" and calls == 3:
+                request_pause()
+            return Sine(440).to_audio_segment(duration=(
+                2000 if text.startswith(self.first) and self.second in text else 1000
+            ))
+
+        def progress(_value, detail=None):
+            if stage == "inspection" and detail == "Checking voiceover timing 1 of 2":
+                request_pause()
+
+        with patch("pandrator.logic.tts_handler.text_to_audio", side_effect=synth):
+            result = self.handlers.run_generation(
+                {"generation_run_id": self.run_id}, progress, threading.Event()
+            )
+        self.assertEqual("paused", result["status"])
+        self.assertEqual(0, result["repaired_blocks"])
+        self.assertEqual(self.revision_id, self.active())
+        self.assertEqual(2 if stage == "inspection" else 3, calls)
+        with self.database.session() as session:
+            run = session.get(GenerationRun, self.run_id)
+            self.assertEqual("paused", run.status)
+            self.assertTrue(run.pause_requested)
+        self.handlers.jobs.complete(
+            job.id, "repair-pause-fixture", result, lease_generation=claimed.lease_generation
+        )
+        with self.database.session() as session:
+            self.assertEqual("paused", session.get(GenerationRun, self.run_id).status)
+        resumed = service.resume(self.run_id)
+        self.assertEqual("queued", resumed["status"])
+        resumed_job = self.handlers.jobs.claim("repair-resume-fixture")
+        self.assertEqual(resumed["job_id"], resumed_job.id)
+        with patch("pandrator.logic.tts_handler.text_to_audio", return_value=(
+            Sine(440).to_audio_segment(duration=1000)
+        )) as synthesize:
+            result = self.handlers.run_generation(
+                resumed_job.payload_json, lambda *_args: None, threading.Event()
+            )
+        resume_calls = synthesize.call_count
+        self.handlers.jobs.complete(
+            resumed_job.id, "repair-resume-fixture", result,
+            lease_generation=resumed_job.lease_generation,
+        )
+        self.assertEqual("completed", result["status"])
+        self.assertEqual((0, 2), (result["generated"], result["skipped"]))
+        self.assertEqual(2, resume_calls)
+        self.assertEqual(1, result["repaired_blocks"])
+        with self.database.session() as session:
+            for take_id, artifact_id, created_at in observed["takes"]:
+                take = session.get(AudioTake, take_id)
+                self.assertEqual(artifact_id, take.artifact_id)
+                self.assertEqual(created_at, take.created_at)
+                self.assertTrue(take.is_active)
+                self.assertEqual("completed", take.status)
+                path = self.paths.managed_path(session.get(Artifact, artifact_id).relative_path)
+                self.assertEqual(observed["files"][artifact_id], path.read_bytes())
+
+    def test_native_pause_during_repair_inspection_preserves_checkpoint_and_resume(self):
+        self._check_native_repair_pause("inspection")
+
+    def test_native_pause_during_repair_child_preserves_checkpoint_and_resume(self):
+        self._check_native_repair_pause("child")
 
     def test_disabled_keeps_original_plan_and_number_of_generations(self):
         self.plan(enabled=False)
