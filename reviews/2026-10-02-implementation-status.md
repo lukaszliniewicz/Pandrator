@@ -42,4 +42,6 @@ Release versions: **Pandrator 0.11.0, MCP 0.6.0, Manager 0.9.28**. This is the q
 
 The first platform run exposed a Windows CP1252 import failure in the expanded catalogue and a Node 24 JSON import-attribute failure before browser-test collection. Both were repaired explicitly. The catalogue/model focused suite passed 29 tests, including two legacy-Windows-encoding regressions; frontend quality/build passed and browser-test collection found 514 tests. Full platform reruns remain required for the repaired commit. The Python typing baseline was not expanded.
 
+One Ubuntu native-progress assertion also needed to account for FFmpeg emitting `N/A` before a timestamped frame. Its numeric/monotonic/final-record checks remain enforced; all ten focused media-process tests passed. This was a test-only repair.
+
 Temporary evidence roots: `/tmp/pandrator-final-acceptance-20261002`, `/tmp/pandrator-native-acceptance-20261002`, `/tmp/pandrator-native-tts-translation-20261002`. Durable acceptance summaries will be updated before publication.

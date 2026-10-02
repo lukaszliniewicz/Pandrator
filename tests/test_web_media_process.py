@@ -125,9 +125,15 @@ def test_real_synthetic_ffmpeg_progress_timestamps_are_monotonic(tmp_path):
 
     timestamps = []
     for record in records:
-        value = record.get("out_time_us") or record.get("out_time_ms")
-        if value is not None:
+        # FFmpeg may report N/A before it has emitted a timestamped frame.
+        # Ignore only that unavailable value; malformed numbers
+        # should still fail this native progress check.
+        for field in ("out_time_us", "out_time_ms"):
+            value = record.get(field)
+            if value is None or value == "N/A":
+                continue
             timestamps.append(int(value))
+            break
     assert result.returncode == 0
     assert output.is_file()
     assert timestamps

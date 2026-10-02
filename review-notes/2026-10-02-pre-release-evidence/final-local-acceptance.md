@@ -24,6 +24,8 @@ All fresh lanes' Python runtime snapshots at the first candidate match SHA-256 `
 
 Platform CI then found two compatibility failures: Windows CP1252 decoding of Unicode catalogue resources during application import, and Node 24 requiring a JSON import attribute before Playwright could collect tests. The explicit UTF-8 readers and JSON import attribute were repaired. The focused catalogue/model suite passed **29 tests**, including **two new CP1252-default regressions**; frontend quality/build passed and Playwright collected **514 tests** without launching browsers. Full platform reruns qualify the repaired commit separately; the earlier runtime hash is retained as provenance, not asserted for the repaired source.
 
+The Ubuntu remainder lane also exposed an FFmpeg-version difference in its native progress test: a pre-frame `N/A` timestamp was parsed as an integer. The test now skips that unavailable value, tries the alternate timestamp field, and still requires numeric timestamps in monotonic order and a final `end` record. All ten focused media-process tests passed after this assertion repair; application code was unchanged.
+
 ## Migration and package isolation
 
 An actual old-HEAD 0051 fixture was copied and upgraded to 0052. Its 73 existing tables and six managed files were preserved; integrity, foreign-key and reference checks passed. The original fixture was untouched. Final migration source hashes still match this experiment.
