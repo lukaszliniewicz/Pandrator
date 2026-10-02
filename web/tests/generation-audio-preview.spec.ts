@@ -301,17 +301,23 @@ test('hundreds of playable rows mount a single audio element on demand', async (
       page.evaluate(() => document.querySelector('audio')?.currentSrc ?? '')
     )
     .toContain('preview-artifact-7/content');
-  const focused = await page.evaluate(() => {
-    const active = document.activeElement;
-    return {
-      label: active?.getAttribute('aria-label') ?? '',
-      row:
-        active
-          ?.closest('tr[data-segment-id]')
-          ?.getAttribute('data-segment-id') ?? ''
-    };
-  });
-  expect(focused).toEqual({ label: 'Pause', row: 'preview-segment-7' });
+  // currentSrc is available before the browser has started playback. Wait
+  // for the transport state as well as focus before sending another key.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const active = document.activeElement;
+        return {
+          label: active?.getAttribute('aria-label') ?? '',
+          row:
+            active
+              ?.closest('tr[data-segment-id]')
+              ?.getAttribute('data-segment-id') ?? '',
+          paused: document.querySelector('audio')?.paused ?? true
+        };
+      })
+    )
+    .toEqual({ label: 'Pause', row: 'preview-segment-7', paused: false });
 
   // Mounted player keeps native keyboard behavior: Enter pauses and Space
   // resumes without the drawer shortcut taking over or unmounting.
