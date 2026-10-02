@@ -1029,13 +1029,28 @@ class AudioCppAdapter(LegacyTtsAdapter):
             raise ValueError(error)
         return self._session_for_base_url(str(endpoint.get("base_url") or ""))
 
+    @staticmethod
+    def _endpoint_settings(
+        settings: dict[str, Any], options: dict[str, Any]
+    ) -> dict[str, Any]:
+        service = str(settings.get("service") or "").strip().lower()
+        override = str(options.get("audio_cpp_base_url") or "").strip()
+        if (
+            override
+            and service in {"audio.cpp", "audio_cpp", "audio-cpp", "audiocpp"}
+            and "audio_cpp_base_url" not in settings
+        ):
+            return {**settings, "audio_cpp_base_url": override}
+        return settings
+
     def synthesize(
         self,
         text: str,
         settings: dict[str, Any],
         **options: Any,
     ) -> AudioSegment | None:
-        options.setdefault("request_session", self._session_for(settings))
+        if "request_session" not in options:
+            options["request_session"] = self._session_for(self._endpoint_settings(settings, options))
         return super().synthesize(text, settings, **options)
 
     def capabilities(
@@ -1214,29 +1229,18 @@ class AudioCppAdapter(LegacyTtsAdapter):
     ) -> Iterator[TtsBatchResult]:
         if not items:
             return
-        endpoint_override = str(options.get("audio_cpp_base_url") or "").strip()
-
-        def endpoint_settings(settings: dict[str, Any]) -> dict[str, Any]:
-            service = str(settings.get("service") or "").strip().lower()
-            if endpoint_override and service in {
-                "audio.cpp",
-                "audio_cpp",
-                "audio-cpp",
-                "audiocpp",
-            }:
-                return {**settings, "audio_cpp_base_url": endpoint_override}
-            return settings
-
-        batch_settings = endpoint_settings(items[0].settings)
+        batch_settings = self._endpoint_settings(items[0].settings, options)
         batch_key = self._batch_key(batch_settings)
         if any(
-            self._batch_key(endpoint_settings(item.settings)) != batch_key
+            self._batch_key(self._endpoint_settings(item.settings, options)) != batch_key
             for item in items[1:]
         ):
             raise ValueError("Every audio.cpp batch item must use the same endpoint.")
 
         size = max(1, min(32, int(batch_size or 1)))
-        request_session = self._session_for(batch_settings)
+        batch_options = dict(options)
+        if "request_session" not in batch_options:
+            batch_options["request_session"] = self._session_for(batch_settings)
         with tts_handler.audio_cpp_endpoint_lock(batch_settings, options.get("cancel_event")):
             for start in range(0, len(items), size):
                 for item in items[start : start + size]:
@@ -1244,8 +1248,7 @@ class AudioCppAdapter(LegacyTtsAdapter):
                         audio = self.synthesize(
                             item.text,
                             item.settings,
-                            request_session=request_session,
-                            **options,
+                            **batch_options,
                         )
                         if audio is None:
                             raise TtsProviderError(
