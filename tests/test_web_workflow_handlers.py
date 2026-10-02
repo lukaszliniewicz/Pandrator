@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -16,6 +17,7 @@ from sqlalchemy import event, func, select
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.credentials import (
     auxiliary_credential_key,
+    contains_inline_secret,
     database_reference,
     tts_service_credential_key,
     upsert_credential,
@@ -36,6 +38,7 @@ from pandrator.web.models import (
     SessionRecord,
     SessionSetting,
     SessionStageSelection,
+    StoredCredential,
     UsageEvent,
 )
 from pandrator.web.pronunciations import PronunciationLibrary
@@ -1430,6 +1433,116 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             self.assertEqual(original_id, plan.active_revision_id)
             self.assertEqual([original_id], list(db.scalars(select(GenerationPlanRevision.id))))
             self.assertEqual(original_segments, list(db.scalars(select(GenerationSegment.id))))
+
+    def test_generation_plan_does_not_persist_hydrated_provider_credentials(self):
+        secret = "synthetic-plan-credential"
+        key = tts_service_credential_key("elevenlabs")
+        reference = database_reference(key)
+        with self.database.session() as db:
+            upsert_credential(db, key, "Synthetic only", secret)
+        source_path = self.session_dir / "credential-source.json"
+        source_path.write_text(json.dumps([{"text": "Narration."}]), encoding="utf-8")
+        source = self.artifacts.register(
+            source_path, kind="json", role="tts_optimized", session_id=self.session.id
+        )
+        settings = {
+            "service": "ElevenLabs", "voice": "fixture-voice",
+            "provider_configs": [{"id": "elevenlabs", "secret_ref": reference, "connection_mode": "external"}],
+        }
+        original_settings = deepcopy(settings)
+        store = self.handlers._store_generation_plan
+        captured = {}
+
+        class StopBeforeSynthesis(Exception):
+            pass
+
+        def store_then_stop(*args, **kwargs):
+            captured["runtime"] = kwargs["settings"]
+            captured["revision_id"], _ = store(*args, **kwargs)
+            raise StopBeforeSynthesis()
+
+        with mock.patch.object(self.handlers, "manager_bridge", SimpleNamespace(configured=False)), mock.patch.object(
+            self.handlers, "_store_generation_plan", side_effect=store_then_stop
+        ):
+            with self.assertRaises(StopBeforeSynthesis):
+                self.handlers.generate_audiobook_audio(
+                    {"session_id": self.session.id, "source_artifact_id": source.id, "settings": settings},
+                    self.progress, threading.Event(),
+                )
+        self.assertEqual(secret, captured["runtime"]["provider_configs"][0]["api_key"])
+        self.assertEqual(original_settings, settings)
+        with self.database.session() as db:
+            saved = db.get(GenerationPlanRevision, captured["revision_id"]).settings_json
+            self.assertFalse(contains_inline_secret(saved))
+            self.assertNotIn(secret, json.dumps(saved))
+            self.assertEqual(reference, saved["provider_configs"][0]["secret_ref"])
+            self.assertEqual("fixture-voice", saved["voice"])
+            self.assertEqual(source.id, saved["_source_artifact_id"])
+            self.assertEqual(secret, db.get(StoredCredential, key).secret_value)
+
+    def test_generation_plan_redacts_nested_secrets_without_mutating_runtime_settings(self):
+        settings = {
+            "language": "en", "voice": "fixture", "model": "test-model",
+            "api_key": "synthetic-top-key", "password": "synthetic-password",
+            "audio_cpp_voice_ref": "inline-reference",
+            "audio_cpp_reference_text": "inline-transcript",
+            "provider_configs": [{
+                "id": "elevenlabs", "secret_ref": "db:tts:elevenlabs", "api_key_env": "ELEVENLABS_API_KEY",
+                "api_key": "synthetic-provider-key", "options": {"headers": {
+                    "Authorization": "synthetic-bearer", "User-Agent": "fixture-agent",
+                }, "temperature": 0.3},
+            }],
+        }
+        original = deepcopy(settings)
+        records = [{"text": "Narration."}]
+        revision_id, segment_ids = self.handlers._store_generation_plan(self.session.id, records, settings=settings)
+        self.assertEqual(original, settings)
+        with self.database.session() as db:
+            saved = db.get(GenerationPlanRevision, revision_id).settings_json
+            self.assertFalse(contains_inline_secret(saved))
+            self.assertNotIn("audio_cpp_voice_ref", saved)
+            self.assertNotIn("audio_cpp_reference_text", saved)
+            self.assertEqual({key: original[key] for key in ("language", "voice", "model")}, {key: saved[key] for key in ("language", "voice", "model")})
+            provider = saved["provider_configs"][0]
+            self.assertEqual("db:tts:elevenlabs", provider["secret_ref"])
+            self.assertEqual("ELEVENLABS_API_KEY", provider["api_key_env"])
+            self.assertEqual({"headers": {"User-Agent": "fixture-agent"}, "temperature": 0.3}, provider["options"])
+        rotated = deepcopy(settings)
+        rotated["provider_configs"][0]["api_key"] = "synthetic-rotated-key"
+        self.assertEqual((revision_id, segment_ids), self.handlers._store_generation_plan(self.session.id, records, settings=rotated))
+        self.assertEqual("synthetic-rotated-key", rotated["provider_configs"][0]["api_key"])
+
+    def test_generation_plan_reuse_redacts_legacy_settings_without_changing_topology(self):
+        from pandrator.web.speech_plan_workspace import plan_signature
+
+        records, settings = [{"text": "Narration."}], {"voice": "fixture"}
+        revision_id, segment_ids = self.handlers._store_generation_plan(self.session.id, records, settings=settings)
+        with self.database.session() as db:
+            revision = db.get(GenerationPlanRevision, revision_id)
+            revision.settings_json = {**revision.settings_json, "provider_configs": [{
+                "id": "elevenlabs", "secret_ref": "db:tts:elevenlabs", "api_key": "synthetic-legacy-key",
+            }]}
+            signature, digest, number = plan_signature(db, revision_id), revision.content_hash, revision.revision_number
+
+        class CallerRollback(Exception):
+            pass
+
+        with self.assertRaises(CallerRollback):
+            with self.database.immediate_session() as caller:
+                self.assertEqual((revision_id, segment_ids), self.handlers._store_generation_plan(
+                    self.session.id, records, settings=settings, db_session=caller
+                ))
+                self.assertFalse(contains_inline_secret(caller.get(GenerationPlanRevision, revision_id).settings_json))
+                raise CallerRollback()
+        with self.database.session() as db:
+            self.assertTrue(contains_inline_secret(db.get(GenerationPlanRevision, revision_id).settings_json))
+        self.assertEqual((revision_id, segment_ids), self.handlers._store_generation_plan(self.session.id, records, settings=settings))
+        with self.database.session() as db:
+            revision = db.get(GenerationPlanRevision, revision_id)
+            self.assertFalse(contains_inline_secret(revision.settings_json))
+            self.assertEqual("db:tts:elevenlabs", revision.settings_json["provider_configs"][0]["secret_ref"])
+            self.assertEqual((signature, digest, number), (plan_signature(db, revision_id), revision.content_hash, revision.revision_number))
+            self.assertEqual(1, db.scalar(select(func.count()).select_from(GenerationPlanRevision)))
 
     def test_generation_plan_reuses_revision_for_identical_content(self):
         records = [{"text": "First sentence.", "paragraph": "yes"}, {"text": "Second sentence."}]

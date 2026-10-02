@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .credentials import redact_inline_secrets
 from .database import Database
 from .models import GenerationPlan, GenerationPlanRevision, GenerationSegment, utcnow
 
@@ -72,6 +73,8 @@ def store_generation_plan(
                 # Identical source content and segmentation settings: keep
                 # the existing segments so takes, edits, and run history
                 # stay attached instead of being orphaned by a new revision.
+                # Legacy plans may contain transient hydrated provider keys.
+                active.settings_json = redact_inline_secrets(active.settings_json or {})
                 segment_ids = list(
                     session.scalars(
                         select(GenerationSegment.id)
@@ -92,7 +95,7 @@ def store_generation_plan(
             )
             or 0
         )
-        stored_settings = context._secret_free_tts_settings(settings)
+        stored_settings = redact_inline_secrets(context._secret_free_tts_settings(settings))
         if source_artifact_id:
             stored_settings["_source_artifact_id"] = source_artifact_id
         revision = GenerationPlanRevision(
