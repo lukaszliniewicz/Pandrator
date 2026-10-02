@@ -341,6 +341,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 if path is not None:
                     removable.append(path)
                 db_session.delete(sample)
+            # Finish explicit sample deletions before the voice FK cascade.
+            db_session.flush()
             db_session.delete(voice)
         remove_managed_files(removable)
         return "", 204

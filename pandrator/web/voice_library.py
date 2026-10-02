@@ -307,10 +307,23 @@ def retire_sample_artifact(
     paths: DataPaths,
     sample: VoiceSample,
 ) -> Path | None:
-    """Soft-delete one artifact and return a safely removable managed path."""
+    """Retire an unshared sample artifact and return its removable managed path."""
 
     artifact = session.get(Artifact, sample.artifact_id)
     if artifact is None:
+        return None
+    references = int(
+        session.scalar(
+            select(func.count())
+            .select_from(VoiceSample)
+            .where(
+                VoiceSample.artifact_id == artifact.id,
+                VoiceSample.id != sample.id,
+            )
+        )
+        or 0
+    )
+    if references:
         return None
     ArtifactService._mark_descendants_stale(session, artifact.id)
     artifact.state = "deleted"
@@ -326,18 +339,7 @@ def retire_sample_artifact(
         return None
     if not path.is_relative_to(voice_root):
         return None
-    references = int(
-        session.scalar(
-            select(func.count())
-            .select_from(VoiceSample)
-            .where(
-                VoiceSample.artifact_id == artifact.id,
-                VoiceSample.id != sample.id,
-            )
-        )
-        or 0
-    )
-    return path if references == 0 else None
+    return path
 
 
 def remove_managed_files(paths: list[Path]) -> None:

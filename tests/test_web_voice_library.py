@@ -5,12 +5,14 @@ import json
 import tempfile
 import threading
 import unittest
+import warnings
 import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import SAWarning
 
 from pandrator.logic import tts_handler
 from pandrator.web.api import create_app
@@ -695,6 +697,107 @@ class VoiceLibraryApiTests(unittest.TestCase):
         )
         self.assertEqual(409, response.status_code)
         self.assertEqual("legacy_registration", response.get_json()["error"]["code"])
+
+    def _historical_shared_voice_samples(self):
+        # Repeated promotion before UUID output paths created distinct sample
+        # rows for the same managed artifact. Preserve that historical shape.
+        extension = self.app.extensions["pandrator"]
+        with extension["database"].session() as session:
+            voice = Voice(name="Historical shared samples", language="en")
+            session.add(voice)
+            session.flush()
+            voice_id = voice.id
+        path = extension["paths"].voices / voice_id / "sample-historical.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(silent_wav())
+        artifact = extension["artifacts"].register(
+            path, kind="audio", role="voice_sample", metadata={"historical": True}
+        )
+        transcript_path = path.with_suffix(".txt")
+        transcript_path.write_text("Shared reference transcript", encoding="utf-8")
+        descendant = extension["artifacts"].register(
+            transcript_path, kind="text", role="voice_transcription",
+            parent_ids=[artifact.id],
+        )
+        with extension["database"].session() as session:
+            samples = [VoiceSample(voice_id=voice_id, artifact_id=artifact.id)
+                       for _ in range(2)]
+            session.add_all(samples)
+            session.flush()
+            sample_ids = [sample.id for sample in samples]
+        return voice_id, sample_ids, artifact, descendant, path
+
+    def test_retiring_one_historical_shared_sample_preserves_remaining_reference(self):
+        voice_id, sample_ids, artifact, descendant, path = self._historical_shared_voice_samples()
+        original = path.read_bytes()
+        response = self.client.delete(
+            f"/api/v1/voices/{voice_id}/samples/{sample_ids[0]}",
+            headers={"X-CSRF-Token": self.csrf, "If-Match": '"1"'},
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        remaining = self.client.get(f"/api/v1/voices/{voice_id}/samples").get_json()["items"]
+        self.assertEqual([sample_ids[1]], [sample["id"] for sample in remaining])
+        self.assertTrue(remaining[0]["available"])
+        extension = self.app.extensions["pandrator"]
+        with extension["database"].session() as session:
+            shared = session.get(Artifact, artifact.id)
+            self.assertEqual("current", shared.state)
+            self.assertEqual(artifact.metadata_json, shared.metadata_json)
+            self.assertEqual("current", session.get(Artifact, descendant.id).state)
+        self.assertEqual(original, path.read_bytes())
+
+        final = self.client.delete(
+            f"/api/v1/voices/{voice_id}/samples/{sample_ids[1]}",
+            headers={"X-CSRF-Token": self.csrf, "If-Match": '"2"'},
+        )
+        self.assertEqual(200, final.status_code, final.get_json())
+        with extension["database"].session() as session:
+            self.assertEqual("deleted", session.get(Artifact, artifact.id).state)
+            self.assertEqual("stale", session.get(Artifact, descendant.id).state)
+        self.assertFalse(path.exists())
+
+    def test_replacing_one_historical_shared_sample_preserves_other_sample(self):
+        voice_id, sample_ids, artifact, descendant, path = self._historical_shared_voice_samples()
+        original = path.read_bytes()
+        extension = self.app.extensions["pandrator"]
+        source_path = extension["paths"].uploads / "replacement.wav"
+        source_path.write_bytes(silent_wav())
+        source = extension["artifacts"].register(source_path, kind="audio", role="recording_upload")
+
+        def normalize(command, **_kwargs):
+            Path(command[-1]).write_bytes(source_path.read_bytes())
+
+        with mock.patch("pandrator.web.workflow_handlers.subprocess.run", side_effect=normalize):
+            result = extension["workflow_handlers"].normalize_voice_recording(
+                {"voice_id": voice_id, "source_artifact_id": source.id,
+                 "replace_sample_id": sample_ids[0], "expected_voice_revision": 1},
+                lambda *_: None, threading.Event(),
+            )
+        self.assertEqual(sample_ids[0], result["sample_id"])
+        self.assertNotEqual(artifact.id, result["artifact_id"])
+        remaining = self.client.get(f"/api/v1/voices/{voice_id}/samples").get_json()["items"]
+        self.assertEqual(2, len(remaining))
+        self.assertTrue(all(sample["available"] for sample in remaining))
+        with extension["database"].session() as session:
+            self.assertEqual(artifact.id, session.get(VoiceSample, sample_ids[1]).artifact_id)
+            self.assertEqual("current", session.get(Artifact, artifact.id).state)
+            self.assertEqual("current", session.get(Artifact, descendant.id).state)
+        self.assertEqual(original, path.read_bytes())
+
+    def test_deleting_voice_retires_final_historical_shared_sample(self):
+        voice_id, _sample_ids, artifact, descendant, path = self._historical_shared_voice_samples()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SAWarning)
+            response = self.client.delete(
+                f"/api/v1/voices/{voice_id}",
+                headers={"X-CSRF-Token": self.csrf, "If-Match": '"1"'},
+            )
+        self.assertEqual(204, response.status_code)
+        with self.app.extensions["pandrator"]["database"].session() as session:
+            self.assertIsNone(session.get(Voice, voice_id))
+            self.assertEqual("deleted", session.get(Artifact, artifact.id).state)
+            self.assertEqual("stale", session.get(Artifact, descendant.id).state)
+        self.assertFalse(path.exists())
 
     def test_voice_and_sample_lifecycle_is_revisioned_and_cleans_managed_files(self):
         voice = self.client.post(
