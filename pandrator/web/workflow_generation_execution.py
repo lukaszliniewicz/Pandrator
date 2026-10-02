@@ -70,6 +70,18 @@ class GenerationExecutionContext:
     _regroup_generation_blocks: Callable[[str, Progress, threading.Event], dict[str, Any]]
 
 
+def _restore_optional_pass_status(database: Database, run_id: str, final_status: str) -> str:
+    """Restore the first-pass result while retaining durable cancellation."""
+    with database.immediate_session() as session:
+        current = session.get(GenerationRun, run_id)
+        if current is None:
+            return final_status
+        if current.cancel_requested or current.status in {"cancel_requested", "canceled"}:
+            return current.status
+        current.status = final_status
+        return final_status
+
+
 def run_generation(
     context: GenerationExecutionContext,
     payload: dict[str, Any],
@@ -1053,10 +1065,9 @@ def run_generation(
             context._logger.warning("Optional voiceover repair could not finish; the generated audio remains available.", exc_info=True)
             result["early_repair_status"] = "failed"
         finally:
-            with context.database.session() as session:
-                current = session.get(GenerationRun, run_id)
-                if current is not None:
-                    current.status = final_status
+            result["status"] = _restore_optional_pass_status(
+                context.database, run_id, final_status
+            )
         if result.get("repaired_blocks"):
             result["source_generation_run_id"] = run_id
             result["generation_run_id"] = result["repaired_generation_run_id"]
@@ -1073,10 +1084,9 @@ def run_generation(
             context._logger.warning("Optional voiceover regroup could not finish; the generated audio remains available.", exc_info=True)
             result["regroup_status"] = "failed"
         finally:
-            with context.database.session() as session:
-                current = session.get(GenerationRun, run_id)
-                if current is not None:
-                    current.status = final_status
+            result["status"] = _restore_optional_pass_status(
+                context.database, run_id, final_status
+            )
         if result.get("regrouped_groups"):
             result["source_generation_run_id"] = run_id
             result["generation_run_id"] = result["regrouped_generation_run_id"]

@@ -3809,6 +3809,105 @@ A single reviewed cue.
             self.assertTrue(take.is_active)
             self.assertTrue(self.artifacts.resolve(take.artifact_id)[1].is_file())
 
+    def test_generation_postpasses_preserve_native_cancellation_and_job_acknowledgement(self):
+        with self.database.immediate_session() as db:
+            db.get(SessionRecord, self.session.id).workflow_kind = "voiceover"
+        service = GenerationService(
+            self.database, self.handlers.jobs, WorkspaceSettingsService(self.database)
+        )
+        for mode, target, count_key in (
+            ("legacy", "pandrator.web.voiceover_repair.repair_early_blocks", "repaired_blocks"),
+            ("passage", "pandrator.web.voiceover_regroup.repair_regroup_blocks", "regrouped_groups"),
+        ):
+            for owned_job in (False, True):
+                with self.subTest(mode=mode, owned_job=owned_job):
+                    settings = {
+                        "service": "XTTS", "speech_block_generation_mode": mode,
+                        "speech_block_early_repair_enabled": True,
+                        "speech_block_regroup_enabled": True,
+                    }
+                    revision_id, segment_ids = self.handlers._store_generation_plan(
+                        self.session.id, [{"text": "Keep this completed take."}],
+                        settings=settings, force_new=True,
+                    )
+                    with self.database.session() as db:
+                        run = GenerationRun(
+                            session_id=self.session.id, plan_revision_id=revision_id,
+                            sequence_number=int(db.scalar(
+                                select(func.max(GenerationRun.sequence_number)).where(
+                                    GenerationRun.session_id == self.session.id
+                                )
+                            ) or 0) + 1,
+                            status="queued", settings_snapshot_json={"tts": settings},
+                        )
+                        db.add(run)
+                        db.flush()
+                        run_id = run.id
+                    if owned_job:
+                        job = self.handlers.jobs.enqueue(
+                            "generation.run", {"generation_run_id": run_id},
+                            session_id=self.session.id,
+                        )
+                        with self.database.session() as db:
+                            db.get(GenerationRun, run_id).job_id = job.id
+                        claimed = self.handlers.jobs.claim("postpass-fixture")
+                        self.assertEqual(job.id, claimed.id)
+                    observed = {}
+
+                    def cancel_postpass(
+                        handler, sent_run_id, _progress, _event, *,
+                        run_id=run_id, observed=observed, owned_job=owned_job,
+                        count_key=count_key,
+                    ):
+                        self.assertIs(self.handlers, handler)
+                        self.assertEqual(run_id, sent_run_id)
+                        observed["status"] = service.cancel(run_id)["status"]
+                        with self.database.session() as db:
+                            current = db.get(GenerationRun, run_id)
+                            observed["updated_at"] = current.updated_at
+                            observed["cancel_requested"] = current.cancel_requested
+                            take = db.scalar(select(AudioTake).where(
+                                AudioTake.generation_run_id == run_id
+                            ))
+                            artifact = db.get(Artifact, take.artifact_id)
+                            observed["take_id"] = take.id
+                            observed["artifact_id"] = artifact.id
+                            observed["path"] = self.paths.managed_path(artifact.relative_path)
+                            observed["bytes"] = observed["path"].read_bytes()
+                        if owned_job:
+                            return {count_key: 0}
+                        raise RuntimeError("Injected postpass failure after native cancellation")
+
+                    with mock.patch(target, side_effect=cancel_postpass), mock.patch(
+                        "pandrator.logic.tts_handler.text_to_audio",
+                        return_value=AudioSegment.silent(duration=25),
+                    ) as synthesize:
+                        result = self.handlers.run_generation(
+                            {"generation_run_id": run_id}, self.progress, threading.Event()
+                        )
+                    self.assertEqual(1, synthesize.call_count)
+                    expected_status = "cancel_requested" if owned_job else "canceled"
+                    self.assertEqual(expected_status, observed["status"])
+                    self.assertEqual(expected_status, result["status"])
+                    with self.database.session() as db:
+                        current = db.get(GenerationRun, run_id)
+                        self.assertEqual(expected_status, current.status)
+                        self.assertEqual(observed["updated_at"], current.updated_at)
+                        self.assertEqual(observed["cancel_requested"], current.cancel_requested)
+                        take = db.get(AudioTake, observed["take_id"])
+                        self.assertEqual(observed["artifact_id"], take.artifact_id)
+                        self.assertTrue(take.is_active)
+                        self.assertEqual("completed", take.status)
+                        self.assertEqual("completed", db.get(GenerationSegment, segment_ids[0]).status)
+                    self.assertEqual(observed["bytes"], observed["path"].read_bytes())
+                    if owned_job:
+                        self.assertTrue(self.handlers.jobs.cancel_owned(
+                            job.id, "postpass-fixture", lease_generation=claimed.lease_generation
+                        ))
+                        with self.database.session() as db:
+                            self.assertEqual("canceled", db.get(GenerationRun, run_id).status)
+                            self.assertFalse(db.get(GenerationRun, run_id).cancel_requested)
+
     def test_generation_reporting_failure_preserves_committed_take_and_resume_checkpoint(self):
         revision_id, segment_ids = self.handlers._store_generation_plan(
             self.session.id, [{"text": "First."}, {"text": "Second."}], settings={}
