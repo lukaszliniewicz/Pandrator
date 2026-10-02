@@ -7738,13 +7738,13 @@ class WorkflowHandlers:
                             take_path,
                             exc_info=True,
                         )
-                with self.database.session() as session:
+                with self.database.immediate_session() as session:
                     segment = session.get(GenerationSegment, segment_id)
                     run = session.get(GenerationRun, run_id)
                     canceled_cast = cast_render and (
                         cancel_event.is_set() or run is None or run.cancel_requested
                     )
-                    if segment is not None:
+                    if segment is not None and not take_committed:
                         if canceled_cast:
                             has_active_take = session.scalar(select(AudioTake.id).where(
                                 AudioTake.generation_segment_id == segment_id,
@@ -7755,7 +7755,7 @@ class WorkflowHandlers:
                         else:
                             segment.status = "failed"
                         segment.updated_at = utcnow()
-                    if run is not None:
+                    if run is not None and run.status in JobQueue.GENERATION_ACTIVE_STATUSES:
                         run.status = "canceled" if canceled_cast else "failed"
                         run.updated_at = utcnow()
                 if canceled_cast:

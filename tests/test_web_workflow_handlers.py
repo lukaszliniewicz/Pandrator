@@ -3534,6 +3534,124 @@ A single reviewed cue.
             )
             self.assertEqual("valid", segment.speech_plan_json["status"])
 
+    def test_generation_late_reporting_error_preserves_native_cancellation_and_saved_take(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "Narration."}], settings={}
+        )
+        with self.database.session() as db:
+            run = GenerationRun(
+                session_id=self.session.id, plan_revision_id=revision_id, status="queued",
+                settings_snapshot_json={"tts": {"service": "XTTS"}},
+            )
+            db.add(run)
+            db.flush()
+            run_id = run.id
+        generation = GenerationService(
+            self.database, JobQueue(self.database), WorkspaceSettingsService(self.database),
+            artifacts=self.artifacts,
+        )
+        error = RuntimeError("Injected reporting error after cancellation")
+        observed = {}
+
+        def progress(_value, detail=None):
+            if detail == "Generated segment 1 of 1":
+                generation.cancel(run_id)
+                with self.database.session() as db:
+                    observed["updated_at"] = db.get(GenerationRun, run_id).updated_at
+                raise error
+
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=25),
+        ), self.assertRaises(RuntimeError) as raised:
+            self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                progress, threading.Event(),
+            )
+        self.assertIs(error, raised.exception)
+        with self.database.session() as db:
+            run = db.get(GenerationRun, run_id)
+            self.assertEqual("canceled", run.status)
+            self.assertEqual(observed["updated_at"], run.updated_at)
+            self.assertEqual("completed", db.get(GenerationSegment, segment_ids[0]).status)
+            take = db.scalar(select(AudioTake))
+            self.assertEqual("completed", take.status)
+            self.assertTrue(take.is_active)
+            self.assertTrue(self.artifacts.resolve(take.artifact_id)[1].is_file())
+
+    def test_generation_reporting_failure_preserves_committed_take_and_resume_checkpoint(self):
+        revision_id, segment_ids = self.handlers._store_generation_plan(
+            self.session.id, [{"text": "First."}, {"text": "Second."}], settings={}
+        )
+        with self.database.session() as db:
+            run = GenerationRun(
+                session_id=self.session.id, plan_revision_id=revision_id, status="queued",
+                settings_snapshot_json={
+                    "text": {"llm_tts_optimization": False}, "tts": {"service": "XTTS"},
+                },
+            )
+            db.add(run)
+            db.flush()
+            run_id = run.id
+        error = RuntimeError("Injected take reporting failure")
+        observed = {}
+
+        def progress(_value, detail=None):
+            if detail == "Generated segment 1 of 2":
+                with self.database.session() as db:
+                    segment = db.get(GenerationSegment, segment_ids[0])
+                    take = db.scalar(select(AudioTake).where(
+                        AudioTake.generation_segment_id == segment.id
+                    ))
+                    observed.update(
+                        status=segment.status, updated_at=segment.updated_at,
+                        take_id=take.id, artifact_id=take.artifact_id,
+                    )
+                raise error
+
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=25),
+        ) as synthesize, self.assertRaises(RuntimeError) as raised:
+            self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "generate"},
+                progress, threading.Event(),
+            )
+        self.assertIs(error, raised.exception)
+        self.assertEqual(1, synthesize.call_count)
+        self.assertEqual("completed", observed["status"])
+        with self.database.session() as db:
+            self.assertEqual("failed", db.get(GenerationRun, run_id).status)
+            segment = db.get(GenerationSegment, segment_ids[0])
+            self.assertEqual("completed", segment.status)
+            self.assertEqual(observed["updated_at"], segment.updated_at)
+            take = db.get(AudioTake, observed["take_id"])
+            self.assertEqual("completed", take.status)
+            self.assertTrue(take.is_active)
+        _artifact, take_path = self.artifacts.resolve(observed["artifact_id"])
+        original_take_bytes = take_path.read_bytes()
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=25),
+        ) as synthesize:
+            resumed = self.handlers.run_generation(
+                {"generation_run_id": run_id, "operation": "resume"},
+                self.progress, threading.Event(),
+            )
+        self.assertEqual(1, synthesize.call_count)
+        self.assertEqual(("completed", 1, 1), (
+            resumed["status"], resumed["generated"], resumed["skipped"],
+        ))
+        self.assertEqual(original_take_bytes, take_path.read_bytes())
+        with self.database.session() as db:
+            self.assertEqual(["completed", "completed"], list(db.scalars(
+                select(GenerationSegment.status).where(
+                    GenerationSegment.id.in_(segment_ids)
+                ).order_by(GenerationSegment.ordinal)
+            )))
+            self.assertEqual(2, db.scalar(select(func.count()).select_from(AudioTake)))
+            self.assertEqual(observed["artifact_id"], db.get(AudioTake, observed["take_id"]).artifact_id)
+
     def test_generation_progress_has_no_phantom_optimization_reserve(self):
         revision_id, _ = self.handlers._store_generation_plan(
             self.session.id,
