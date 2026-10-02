@@ -2021,6 +2021,7 @@ class WorkflowHandlers:
                 else {}
             ),
         )
+        blocks: list[dict[str, Any]]
         if source_markup:
             # XML belongs to an accepted cue. Keep its timing envelope and
             # wording integral; casting splits only internal synthesis calls.
@@ -2032,7 +2033,7 @@ class WorkflowHandlers:
             blocks = []
             for cue in display_segments:
                 spoken = spoken_by_index[cue.index]
-                cue_blocks = create_speech_blocks(
+                cue_blocks: list[dict[str, Any]] = create_speech_blocks(
                     one_cue_srt(cue),
                     **{**block_options, "preserve_source_boundaries": True,
                        "generation_mode": "passage",
@@ -2124,8 +2125,11 @@ class WorkflowHandlers:
             if source_markup and any(str(position_by_index.get(cue, -1) + 1) in source_markup for cue in subtitle_ids):
                 from .generation_cast_runtime import combine_source_markup
                 from .generation_controls import get_generation_controls
+                control_session_id = session_id or source_artifact.session_id
+                if control_session_id is None:
+                    raise KeyError(control_session_id)
                 with self.database.session() as db:
-                    characters = get_generation_controls(db, session_id or source_artifact.session_id)["characters"]
+                    characters = get_generation_controls(db, control_session_id)["characters"]
                 source_rows = {item.index: item for item in (speech_segments or display_segments)}
                 combined = combine_source_markup(
                     [(source_rows[cue].text, source_markup.get(str(position_by_index[cue] + 1))) for cue in subtitle_ids],
@@ -2237,11 +2241,8 @@ class WorkflowHandlers:
                 if outcome and isinstance(outcome.value_json, dict)
                 else {}
             )
-            inputs = (
-                outcome_value.get("inputs")
-                if isinstance(outcome_value.get("inputs"), dict)
-                else {}
-            )
+            inputs_raw = outcome_value.get("inputs")
+            inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
             transformations = workflow_transformations(session, session_id, outcome, self.database)
             generation_input = (
                 str(inputs.get("generation") or "translation").strip().lower()

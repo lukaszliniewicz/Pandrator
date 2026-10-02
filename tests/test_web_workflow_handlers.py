@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from unittest import mock
 from pydub import AudioSegment
 from pydub.generators import Sine
 from sqlalchemy import event, func, select
+from sqlalchemy.exc import SAWarning
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.credentials import (
@@ -1582,6 +1584,32 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             settings=settings,
         )
         self.assertNotEqual(changed_merge_id, third_id)
+
+    def test_annotated_global_subtitles_require_a_control_session_without_null_lookup(self):
+        path = self.session_dir / "global-annotated.srt"
+        text = "Hello world."
+        source_bytes = f"1\n00:00:01,250 --> 00:00:03,750\n{text}\n".encode()
+        path.write_bytes(source_bytes)
+        source = self.artifacts.register(
+            path, kind="srt", role="tts_optimized",
+            metadata={"speech_markup": {"1": f'<segment id="1">{text}</segment>'}},
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SAWarning)
+            with self.assertRaises(KeyError) as missing:
+                self.handlers._subtitle_generation_records(source, path, {}, "en")
+        self.assertEqual((None,), missing.exception.args)
+        records, _revision_id, display = self.handlers._subtitle_generation_records(
+            source, path, {}, "en", session_id=self.session.id
+        )
+        self.assertEqual(source.id, display.id)
+        self.assertEqual([1], records[0]["source_segment_ids"])
+        cue = records[0]["provenance"]["source_cues"][0]
+        self.assertEqual((1250, 3750), (cue["start_ms"], cue["end_ms"]))
+        self.assertIn(text, records[0]["speech_plan"]["speech_xml"])
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationPlan)))
 
     def test_subtitle_plan_threshold_is_monotonic_and_preserves_speaker(self):
         # Explicitly exercise legacy threshold-based merging; passage mode preserves boundaries.
