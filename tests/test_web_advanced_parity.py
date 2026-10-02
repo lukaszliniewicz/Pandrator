@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 
 from pandrator.logic.source_cleaning.deterministic import (
     EpubExtractionError,
@@ -174,6 +175,84 @@ class AdvancedApiTests(unittest.TestCase):
 
 
 class TrainingHandlerTests(unittest.TestCase):
+    def test_training_requires_its_terminal_record(self):
+        # Synthetic disappearance checks the required-row invariant; the
+        # supported training API does not delete an active training record.
+        for canceled in (False, True):
+            with self.subTest(canceled=canceled), tempfile.TemporaryDirectory() as directory:
+                paths = prepare_web_test_data_root(directory)
+                database = Database(paths.database)
+                try:
+                    source_path = paths.uploads / "voice.wav"
+                    source_path.write_bytes(b"training source")
+                    source = ArtifactService(database, paths).register(source_path, kind="audio", role="upload")
+                    with database.session() as session:
+                        training = TrainingRun(source_artifact_id=source.id, model_name="narrator")
+                        session.add(training)
+                        session.flush()
+                        training_id = training.id
+                    cancel = threading.Event()
+
+                    def train(*_args, _database=database, _training_id=training_id,
+                              _canceled=canceled, _cancel=cancel, **_kwargs):
+                        with _database.session() as session:
+                            session.delete(session.get(TrainingRun, _training_id))
+                        if _canceled:
+                            _cancel.set()
+                        return True, "trained"
+
+                    with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", side_effect=train):
+                        with self.assertRaises(NoResultFound):
+                            WorkflowHandlers(database, paths).train_xtts(
+                                {"training_id": training_id, "source_artifact_id": source.id,
+                                 "model_name": "narrator"},
+                                lambda *_args: None, cancel,
+                            )
+                    with database.session() as session:
+                        self.assertIsNone(session.get(TrainingRun, training_id))
+                    self.assertEqual(b"training source", source_path.read_bytes())
+                finally:
+                    database.dispose()
+
+    def test_training_cancellation_and_failure_preserve_terminal_states(self):
+        for canceled in (False, True):
+            with self.subTest(canceled=canceled), tempfile.TemporaryDirectory() as directory:
+                paths = prepare_web_test_data_root(directory)
+                database = Database(paths.database)
+                try:
+                    source_path = paths.uploads / "voice.wav"
+                    source_path.write_bytes(b"training source")
+                    source = ArtifactService(database, paths).register(source_path, kind="audio", role="upload")
+                    with database.session() as session:
+                        training = TrainingRun(source_artifact_id=source.id, model_name="narrator")
+                        session.add(training)
+                        session.flush()
+                        training_id = training.id
+                    cancel = threading.Event()
+
+                    def train(*_args, _canceled=canceled, _cancel=cancel, **_kwargs):
+                        if _canceled:
+                            _cancel.set()
+                        return False, "trainer stopped"
+
+                    with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", side_effect=train):
+                        handler = WorkflowHandlers(database, paths)
+                        payload = {"training_id": training_id, "source_artifact_id": source.id,
+                                   "model_name": "narrator"}
+                        if canceled:
+                            self.assertEqual({}, handler.train_xtts(payload, lambda *_args: None, cancel))
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "trainer stopped"):
+                                handler.train_xtts(payload, lambda *_args: None, cancel)
+                    with database.session() as session:
+                        record = session.get(TrainingRun, training_id)
+                        self.assertEqual("canceled" if canceled else "failed", record.status)
+                        self.assertIsNone(record.output_artifact_id)
+                        self.assertEqual(None if canceled else "trainer stopped", record.error_message)
+                    self.assertEqual(b"training source", source_path.read_bytes())
+                finally:
+                    database.dispose()
+
     def test_successful_training_leaves_xtts_catalogue_to_wrapper_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
