@@ -1,9 +1,12 @@
 import tempfile
 import threading
 import unittest
+import wave
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.orm import Session
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
@@ -18,7 +21,7 @@ from pandrator.web.models import (
     Job,
     OutputAssembly,
 )
-from pandrator.web.workspace import GenerationService, stable_hash
+from pandrator.web.workspace import GenerationService, RevisionConflict, stable_hash
 
 
 class GenerationTopologyTests(unittest.TestCase):
@@ -419,6 +422,165 @@ class GenerationTopologyTests(unittest.TestCase):
         self.assertEqual(
             "idempotency_key_required", response.get_json()["error"]["code"]
         )
+
+    def _assert_standalone_mutation_serializes_revision_guard(self, mutation):
+        services = self.app.extensions["pandrator"]
+        generation = services["generation"]
+        record = services["sessions"].create(
+            f"Concurrent {mutation}", workflow_kind="audiobook"
+        )
+        segment_count = 2 if mutation == "update_segments" else 1
+        plan = generation.create_plan(
+            record.id,
+            source_revision_id=None,
+            segments=[{"text": f"Original {index}."} for index in range(segment_count)],
+        )
+        with self.database.session() as session:
+            segments = list(session.scalars(
+                select(GenerationSegment)
+                .where(GenerationSegment.plan_revision_id == plan["active_revision_id"])
+                .order_by(GenerationSegment.ordinal)
+            ))
+            segment_ids = [segment.id for segment in segments]
+            self.assertEqual([1] * segment_count, [segment.revision for segment in segments])
+        wav_path = services["paths"].uploads / f"{mutation}.wav"
+        with wave.open(str(wav_path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 1600)
+        artifact = services["artifacts"].register(
+            wav_path, kind="audio", role="generation_take", session_id=record.id
+        )
+        take_ids = {}
+        with self.database.session() as session:
+            for segment_id in segment_ids:
+                takes = [AudioTake(
+                    generation_segment_id=segment_id, artifact_id=artifact.id,
+                    status="completed", is_active=(index == 0),
+                ) for index in range(2)]
+                session.add_all(takes)
+                session.flush()
+                take_ids[segment_id] = [take.id for take in takes]
+
+        started = [threading.Event(), threading.Event()]
+        reached = [threading.Event(), threading.Event()]
+        release = [threading.Event(), threading.Event()]
+        local = threading.local()
+        outcomes = {}
+        observed_revisions = {}
+
+        def pause_once(segment):
+            index = local.index
+            if reached[index].is_set():
+                return
+            observed_revisions[index] = segment.revision
+            reached[index].set()
+            if not release[index].wait(5):
+                raise TimeoutError(f"Writer {index + 1} exceeded the post-guard pause")
+
+        original_apply = generation._apply_segment_changes
+
+        def paused_apply(session, segment, changes, **kwargs):
+            pause_once(segment)
+            return original_apply(session, segment, changes, **kwargs)
+
+        def before_attach(session, instance):
+            if (
+                isinstance(instance, GenerationSegmentRevision)
+                and instance.generation_segment_id in segment_ids
+                and hasattr(local, "index")
+            ):
+                pause_once(session.get(GenerationSegment, instance.generation_segment_id))
+
+        def writer(index):
+            local.index = index
+            try:
+                started[index].set()
+                if mutation == "update_segment":
+                    result = generation.update_segment(
+                        segment_ids[0], 1, {"text": f"Writer {index + 1} segment 0."}
+                    )
+                elif mutation == "update_segments":
+                    result = generation.update_segments(record.id, [{
+                        "id": segment_id, "revision": 1,
+                        "changes": {"text": f"Writer {index + 1} segment {ordinal}."},
+                    } for ordinal, segment_id in enumerate(segment_ids)])
+                else:
+                    result = generation.select_take(
+                        segment_ids[0], take_ids[segment_ids[0]][1 - index], 1
+                    )
+                outcomes[index] = result
+            except Exception as error:
+                outcomes[index] = error
+
+        threads = [threading.Thread(target=writer, args=(index,)) for index in range(2)]
+        started_threads = []
+        apply_patch = patch.object(generation, "_apply_segment_changes", side_effect=paused_apply)
+        if mutation == "select_take":
+            event.listen(Session, "before_attach", before_attach)
+        else:
+            apply_patch.start()
+        try:
+            threads[0].start()
+            started_threads.append(threads[0])
+            self.assertTrue(reached[0].wait(5), "First writer did not reach its revision guard")
+            threads[1].start()
+            started_threads.append(threads[1])
+            self.assertTrue(started[1].wait(5), "Second writer did not start")
+            # The old deferred transaction lets writer 2 pass its stale guard.
+            # A serialized writer waits here, then rejects after writer 1 commits.
+            reached[1].wait(1)
+            release[0].set()
+            threads[0].join(5)
+            self.assertFalse(threads[0].is_alive(), "First writer did not finish")
+            release[1].set()
+            threads[1].join(5)
+            self.assertFalse(threads[1].is_alive(), "Second writer did not finish")
+        finally:
+            for signal in release:
+                signal.set()
+            for thread in started_threads:
+                thread.join(5)
+            if mutation == "select_take":
+                event.remove(Session, "before_attach", before_attach)
+            else:
+                apply_patch.stop()
+            self.assertFalse(any(thread.is_alive() for thread in started_threads),
+                             "A mutation thread survived cleanup")
+
+        self.assertEqual(1, observed_revisions[0])
+        self.assertIsInstance(outcomes[0], dict, outcomes)
+        self.assertIsInstance(outcomes[1], RevisionConflict, outcomes)
+        first_items = outcomes[0]["items"] if mutation == "update_segments" else [outcomes[0]]
+        self.assertEqual([2] * segment_count, [item["revision"] for item in first_items])
+        with self.database.session() as session:
+            for ordinal, segment_id in enumerate(segment_ids):
+                segment = session.get(GenerationSegment, segment_id)
+                self.assertEqual(2, segment.revision)
+                self.assertEqual(
+                    f"Original {ordinal}." if mutation == "select_take"
+                    else f"Writer 1 segment {ordinal}.", segment.text,
+                )
+                history = list(session.scalars(select(GenerationSegmentRevision).where(
+                    GenerationSegmentRevision.generation_segment_id == segment_id
+                )))
+                self.assertEqual([1], [row.revision for row in history])
+                selected = list(session.scalars(select(AudioTake).where(
+                    AudioTake.generation_segment_id == segment_id,
+                    AudioTake.is_active.is_(True),
+                )))
+                expected_take = take_ids[segment_id][1 if mutation == "select_take" else 0]
+                self.assertEqual([expected_take], [take.id for take in selected])
+
+    def test_standalone_segment_update_serializes_revision_guard(self):
+        self._assert_standalone_mutation_serializes_revision_guard("update_segment")
+
+    def test_standalone_batch_update_serializes_revision_guard(self):
+        self._assert_standalone_mutation_serializes_revision_guard("update_segments")
+
+    def test_standalone_take_selection_serializes_revision_guard(self):
+        self._assert_standalone_mutation_serializes_revision_guard("select_take")
 
     def _concurrent_plan_creates(self, session_id):
         generation = self.app.extensions["pandrator"]["generation"]

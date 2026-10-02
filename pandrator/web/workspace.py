@@ -861,7 +861,7 @@ class GenerationService(GenerationHistoryReader):
     def update_segment(
         self, segment_id: str, expected_revision: int, changes: dict[str, Any]
     ) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             return self.update_segment_in_session(
                 session, segment_id, expected_revision, changes
             )
@@ -905,7 +905,7 @@ class GenerationService(GenerationHistoryReader):
                 "Every generation segment update requires at least one change."
             )
 
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             if session.get(SessionRecord, session_id) is None:
                 raise KeyError(session_id)
             segments = {
@@ -2086,7 +2086,7 @@ class GenerationService(GenerationHistoryReader):
     def select_take(
         self, segment_id: str, take_id: str, expected_revision: int
     ) -> dict[str, Any]:
-        with self.database.session() as session:
+        with self.database.immediate_session() as session:
             return self.select_take_in_session(
                 session, segment_id, take_id, expected_revision
             )
