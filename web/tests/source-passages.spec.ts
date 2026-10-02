@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import {
   SOURCE_PASSAGE_DEFAULTS,
@@ -470,6 +471,184 @@ test('a stale rebuild refreshes state and asks for a fresh preview instead of re
   await expect(
     dialog.getByRole('button', { name: 'Rebuild as new branch' })
   ).toBeDisabled();
+});
+
+for (const change of ['edit', 'reopen'] as const) {
+  test(`${change === 'edit' ? 'Editing settings' : 'Reopening settings'} discards a preview still in flight`, async ({
+    page
+  }) => {
+    await signIn(page);
+    const sessionId = await createIsolatedSession(page);
+    await selectFixtureArtifact(page, sessionId);
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/settings/source_passages`,
+      (route) =>
+        route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(PASSAGE_DEFAULTS_BODY)
+        })
+    );
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/sources/*/passages`,
+      (route) =>
+        route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(STATUS_PINNED)
+        })
+    );
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const requestStarted = new Promise<void>((resolve) => (started = resolve));
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/sources/*/passages/preview`,
+      async (route) => {
+        started();
+        await gate;
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(PREVIEW_RESPONSE)
+        });
+      }
+    );
+    let dialog = await openTranscribeSettings(page, sessionId);
+    await dialog.locator('summary', { hasText: 'Preview & rebuild' }).click();
+    await dialog.getByRole('button', { name: 'Reload status' }).click();
+    await expect(dialog.getByText(/Pinned passages: 12/)).toBeVisible();
+    const response = page.waitForResponse((result) =>
+      result.url().endsWith('/passages/preview')
+    );
+    await dialog.getByRole('button', { name: 'Preview passages' }).click();
+    await requestStarted;
+    if (change === 'edit') {
+      await dialog
+        .getByRole('spinbutton', { name: 'Preferred passage size (soft)' })
+        .fill('240');
+    } else {
+      await dialog
+        .getByRole('button', { name: 'Close stage settings' })
+        .click();
+      const card = page
+        .getByRole('heading', { name: 'Transcribe', exact: true })
+        .locator('xpath=ancestor::article');
+      await card.getByRole('button', { name: 'Settings' }).click();
+      dialog = page.getByRole('dialog');
+      await expect(
+        dialog.getByRole('group', { name: 'Source logical passages' })
+      ).toBeVisible();
+      await dialog.locator('summary', { hasText: 'Preview & rebuild' }).click();
+    }
+    release();
+    await (await response).finished();
+    await expect(
+      dialog.getByRole('button', { name: 'Preview passages', exact: true })
+    ).toBeEnabled();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    );
+    await expect(dialog.getByText(/Preview: 14 passages/)).toHaveCount(0);
+    await expect(
+      dialog.getByRole('button', { name: 'Rebuild as new branch' })
+    ).toBeDisabled();
+  });
+}
+
+test('a rebuild conflict refreshes guards while preserving the passage draft', async ({
+  page
+}, info) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sessionId = await createIsolatedSession(page);
+  await selectFixtureArtifact(page, sessionId);
+  let conflicted = false;
+  let rebuildCalls = 0;
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/settings/source_passages`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ...PASSAGE_DEFAULTS_BODY,
+          effective: {
+            ...SOURCE_PASSAGE_DEFAULTS,
+            preferred_chars: conflicted ? 260 : 160
+          }
+        })
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/sources/*/passages`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(STATUS_PINNED)
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/sources/*/passages/preview`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(PREVIEW_RESPONSE)
+      })
+  );
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/sources/*/passages/rebuild`,
+    (route) => {
+      rebuildCalls += 1;
+      conflicted = true;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: {
+            code: 'source_changed',
+            message: 'The source changed during rebuild.'
+          }
+        })
+      });
+    }
+  );
+  const dialog = await openTranscribeSettings(page, sessionId);
+  const preferred = dialog.getByRole('spinbutton', {
+    name: 'Preferred passage size (soft)'
+  });
+  await preferred.fill('240');
+  await dialog.locator('summary', { hasText: 'Preview & rebuild' }).click();
+  await dialog.getByRole('button', { name: 'Preview passages' }).click();
+  await expect(
+    dialog.getByRole('button', { name: 'Rebuild as new branch' })
+  ).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Rebuild as new branch' }).click();
+  await expect(
+    dialog.getByText(/run a fresh preview, then rebuild again/i)
+  ).toBeVisible();
+  await expect(preferred).toHaveValue('240');
+  await expect(
+    dialog.getByRole('button', { name: 'Rebuild as new branch' })
+  ).toBeDisabled();
+  expect(rebuildCalls).toBe(1);
+  await preferred.focus();
+  await page.keyboard.press('ArrowUp');
+  await expect(preferred).toHaveValue('241');
+  expect(
+    await dialog.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth
+    )
+  ).toBe(true);
+  const accessibility = await new AxeBuilder({ page })
+    .include('[role="dialog"]')
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  expect(
+    accessibility.violations.filter((item) =>
+      ['serious', 'critical'].includes(item.impact ?? '')
+    )
+  ).toEqual([]);
+  await dialog.screenshot({
+    path: `../review-notes/2026-10-02-structure-evidence/passage-settings-narrow-${info.project.name}.png`
+  });
 });
 
 test('real API preview and rebuild preserve the selected source', async ({
