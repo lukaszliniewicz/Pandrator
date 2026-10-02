@@ -1059,6 +1059,7 @@
   }
 
   function applyLoadResult(result: GenerationLoadResult) {
+    if (result.discarded) return;
     selectedRunId = result.selectedRunId;
     if (result.shouldExpand) expandIfCollapsed();
   }

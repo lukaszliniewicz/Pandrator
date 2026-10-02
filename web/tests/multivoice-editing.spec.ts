@@ -459,22 +459,27 @@ test('audiobook voice mode is an atomic choice and exposes model-aware narration
   await page.goto(`/sessions/${id}`);
   const card = page.getByRole('region', { name: 'Voices', exact: true });
   await expect(card).toBeVisible();
+  const textBeforeMode = await (
+    await page.request.get(`/api/v1/sessions/${id}/settings/text`)
+  ).json();
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   await card.getByTestId('cast-help-summary').click();
   await expect(
     card.getByRole('list', { name: 'Multiple-voice steps' })
   ).toBeVisible();
   await expect(card).toContainText('Identify speakers');
-  const response = await page.request.get(
-    `/api/v1/sessions/${id}/audiobook-setup`
-  );
+  const response = await page.request.get(`/api/v1/sessions/${id}/voice-setup`);
   expect(response.ok()).toBeTruthy();
   expect(await response.json()).toMatchObject({
     mode: 'multi_voice',
     casting_enabled: true,
-    annotation_mode: 'speakers',
-    configured: true
+    legacy_voice_overrides: false
   });
+  expect(
+    await (
+      await page.request.get(`/api/v1/sessions/${id}/settings/text`)
+    ).json()
+  ).toEqual(textBeforeMode);
   await card.screenshot({
     path: `../tmp/audiobook-casting-${info.project.name}.png`
   });

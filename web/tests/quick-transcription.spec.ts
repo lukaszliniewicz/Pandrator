@@ -126,8 +126,17 @@ test('Qwen quick transcription explains timing limits and submits local model an
   await qwen
     .getByRole('combobox', { name: 'Source language', exact: true })
     .selectOption('pl');
+  await page
+    .getByRole('combobox', { name: 'Output format', exact: true })
+    .selectOption('srt');
   await expect(qwen.getByTestId('qwen-timing-explanation')).toContainText(
     'Canary CTC'
+  );
+  await page
+    .getByRole('combobox', { name: 'Output format', exact: true })
+    .selectOption('txt');
+  await expect(qwen.getByTestId('qwen-timing-explanation')).toContainText(
+    'No forced aligner is downloaded'
   );
   await qwen.getByLabel('Qwen model size').selectOption('qwen3_asr_1_7b');
   await qwen.getByText('Local processing settings', { exact: true }).click();

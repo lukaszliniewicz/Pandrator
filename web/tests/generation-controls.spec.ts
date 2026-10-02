@@ -266,7 +266,7 @@ test('recognition settings and managed voice categories are editable without gen
   page
 }) => {
   test.setTimeout(60_000);
-  const { csrf } = await setup(page);
+  const { csrf, sid } = await setup(page);
   const stage = page.locator('article').filter({
     has: page.getByRole('heading', {
       name: 'Optimize text for speech',
@@ -275,6 +275,34 @@ test('recognition settings and managed voice categories are editable without gen
   });
   await stage.getByRole('button', { name: 'Timing & settings' }).click();
   const dialog = page.getByRole('dialog', { name: 'Optimize text for speech' });
+  await expect(
+    dialog.getByRole('combobox', { name: 'Annotation level' })
+  ).toHaveCount(0);
+  await expect(dialog).toContainText(
+    'separate analysis controls in the prepared speech plan'
+  );
+  await page.getByRole('button', { name: 'Close stage settings' }).click();
+  const textUrl = `/api/v1/sessions/${sid}/settings/text`;
+  const textSettings = await (await page.request.get(textUrl)).json();
+  const legacy = await page.request.put(textUrl, {
+    headers: { 'X-CSRF-Token': csrf, 'If-Match': `"${textSettings.revision}"` },
+    data: {
+      value: {
+        ...textSettings.override,
+        llm_tts_annotation_mode: 'speakers',
+        llm_tts_annotation_only: false,
+        llm_tts_document_optimization: true
+      }
+    }
+  });
+  expect(legacy.ok(), await legacy.text()).toBeTruthy();
+  await page.reload();
+  await stage.getByRole('button', { name: 'Timing & settings' }).click();
+  await dialog
+    .getByText('Existing combined text and speaker preparation', {
+      exact: true
+    })
+    .click();
   await dialog
     .getByRole('combobox', { name: 'Annotation level' })
     .selectOption('speakers');
@@ -283,7 +311,7 @@ test('recognition settings and managed voice categories are editable without gen
   ).toBeVisible();
   await dialog.getByRole('checkbox', { name: /Annotate only/ }).check();
   await expect(
-    dialog.getByRole('radio', { name: /During generation/ })
+    dialog.getByRole('radio', { name: /During plan preparation/ })
   ).toBeDisabled();
   await dialog
     .getByRole('group', { name: 'Dialogue and character recognition' })

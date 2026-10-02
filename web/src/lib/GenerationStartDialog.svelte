@@ -93,8 +93,15 @@
     `I understand ${(preview?.replace_count ?? 0) === 1 ? '1 existing recording' : `${preview?.replace_count ?? 0} existing recordings`} will be replaced. Previous takes stay in history.`
   );
 
+  // Parent row refreshes can replace the payload object without changing the
+  // selected revision. Primitive derived values keep those refreshes from
+  // repeating the preflight and clearing an already reviewed acknowledgment.
+  const previewRevisionId = $derived(planRevisionId);
+  const previewSessionId = $derived(sessionId);
+  const previewSettingsSourceRunId = $derived(settingsSourceRunId || null);
+
   $effect(() => {
-    if (!planRevisionId) {
+    if (!previewRevisionId) {
       preview = null;
       previewError = 'No speech plan revision is selected.';
       return;
@@ -102,8 +109,8 @@
     // Capture the current selection: late responses that no longer match it
     // are discarded, never applied.
     const requestedMode = mode;
-    const requestedRevision = planRevisionId;
-    const requestedSession = sessionId;
+    const requestedRevision = previewRevisionId;
+    const requestedSession = previewSessionId;
     const ticket = ++previewTicket;
     const controller = new AbortController();
     previewLoading = true;
@@ -113,7 +120,7 @@
       requestedSession,
       {
         speech_plan_revision_id: requestedRevision,
-        settings_source_run_id: settingsSourceRunId || null,
+        settings_source_run_id: previewSettingsSourceRunId,
         ...flags
       },
       controller.signal

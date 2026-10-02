@@ -834,7 +834,9 @@ test('a selected correction checkpoint can fork a clean session branch', async (
   await expect(page).toHaveURL(`/sessions/${forkedId}`);
   expect(forkPayload).toEqual({
     checkpoint_artifact_id: artifact.id,
-    name: 'Polish alternate'
+    name: 'Polish alternate',
+    expected_revision: session.revision,
+    carry_media_assets: true
   });
 });
 

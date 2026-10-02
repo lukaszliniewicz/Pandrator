@@ -290,6 +290,7 @@ test('durable export completion remains visible and exposes its finished video',
   });
   await page.goto(`/sessions/${session.id}/output`);
   await expect(page.getByText('Running export')).toBeVisible();
+  await waitForEvents(page);
   artifacts = [
     {
       id: 'finished-video',
@@ -305,8 +306,8 @@ test('durable export completion remains visible and exposes its finished video',
     }
   ];
   Object.assign(job, { status: 'succeeded', progress: 1 });
-  await page.evaluate((sid) => {
-    window.__emitExportTestEvent?.('job.succeeded', {
+  const delivered = await page.evaluate((sid) => {
+    return window.__emitExportTestEvent?.('job.succeeded', {
       job_id: 'finished-video-job',
       job_kind: 'export.variant',
       session_id: sid,
@@ -315,6 +316,7 @@ test('durable export completion remains visible and exposes its finished video',
       changed_entities: ['jobs', 'output']
     });
   }, session.id);
+  expect(delivered).toBe(1);
   await expect(page.getByText(/^Completed export\s+finished$/)).toBeVisible();
   await expect(
     page.getByRole('link', { name: 'Download finished-voiceover.mp4' })

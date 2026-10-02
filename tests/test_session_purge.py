@@ -1077,7 +1077,7 @@ def test_upload_directory_removal_failure_keeps_empty_upload_for_retry(harness, 
     assert purge.sweep()["complete"] == 1 and not directory.exists()
 
 
-@pytest.mark.parametrize("unsafe", ["traversal", "absolute", "alias", "directory_symlink", "file_symlink", "fifo"])
+@pytest.mark.parametrize("unsafe", ["traversal", "absolute", "alias", "directory_symlink", "file_symlink", pytest.param("fifo", marks=pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Host does not support POSIX FIFOs"))])
 def test_unsafe_upload_storage_blocks_purge(harness, unsafe):
     database, paths, _sessions, purge = harness
     record, _ = _session(harness)
@@ -1412,7 +1412,7 @@ def test_activity_lock_is_nonblocking_scoped_and_keeps_its_inode(harness):
         assert lock.stat().st_ino == inode
 
 
-@pytest.mark.parametrize("unsafe", ["identifier", "lock_symlink", "lock_fifo", "ancestor_symlink", "ancestor_file"])
+@pytest.mark.parametrize("unsafe", ["identifier", "lock_symlink", pytest.param("lock_fifo", marks=pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="Host does not support POSIX FIFOs")), "ancestor_symlink", "ancestor_file"])
 def test_activity_lock_rejects_unsafe_paths(harness, unsafe):
     _database, paths, _sessions, _purge = harness
     directory = paths.temporary / "upload-locks"

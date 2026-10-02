@@ -19,6 +19,15 @@ async function fixture(page: Page) {
   let edited = false;
   let patch: Record<string, unknown> | undefined;
   let started: Record<string, unknown> | undefined;
+  let runRequests = 0;
+  let releaseHistory!: () => void;
+  let historyRequested!: () => void;
+  const heldHistory = new Promise<void>(
+    (resolve) => (releaseHistory = resolve)
+  );
+  const historyRequest = new Promise<void>(
+    (resolve) => (historyRequested = resolve)
+  );
   const old = {
     id: 'history',
     session_id: sessionId,
@@ -60,20 +69,31 @@ async function fixture(page: Page) {
           },
           status: 202
         });
-      } else await route.fulfill({ json: { items: [old] } });
+      } else {
+        runRequests++;
+        await route.fulfill({ json: { items: [old] } });
+      }
     }
   );
   await page.route(
     `**/api/v1/sessions/${sessionId}/generation-segments?*`,
-    (route) =>
-      route.fulfill({
+    async (route) => {
+      if (
+        new URL(route.request().url()).searchParams.get('generation_run_id') ===
+        'history'
+      ) {
+        historyRequested();
+        await heldHistory;
+      }
+      await route.fulfill({
         json: {
           items: [row()],
           total: 1,
           next_cursor: null,
           plan_revision_id: edited ? 'r2' : 'r1'
         }
-      })
+      });
+    }
   );
   await page.route('**/api/v1/generation-segments/old-row', async (route) => {
     patch = route.request().postDataJSON();
@@ -85,7 +105,14 @@ async function fixture(page: Page) {
   await page
     .getByRole('combobox', { name: 'Audio view', exact: true })
     .selectOption('history');
-  return { sessionId, patch: () => patch, started: () => started };
+  await historyRequest;
+  return {
+    sessionId,
+    patch: () => patch,
+    started: () => started,
+    releaseHistory,
+    runRequests: () => runRequests
+  };
 }
 
 test('display edit retains spoken wording and historical settings after plan copy', async ({
@@ -102,6 +129,9 @@ test('display edit retains spoken wording and historical settings after plan cop
     text: 'New subtitles.',
     optimized_text: 'Original spoken wording.'
   });
+  // The earlier history load was canceled by this edit-copy. Its late
+  // completion must not restore history and restart the loading loop.
+  state.releaseHistory();
   await expect(
     page.getByRole('combobox', { name: 'Audio view', exact: true })
   ).toHaveValue('');
@@ -125,6 +155,7 @@ test('display edit retains spoken wording and historical settings after plan cop
     settings_source_run_id: 'history',
     generation_run_id: null
   });
+  expect(state.runRequests()).toBeLessThan(12);
 });
 
 test('full generation preview retains historical settings and queued rows explain export wait', async ({
@@ -132,10 +163,12 @@ test('full generation preview retains historical settings and queued rows explai
 }) => {
   const state = await fixture(page);
   let previewBody: Record<string, unknown> | undefined;
+  let previewRequests = 0;
   await page.route(
     `**/api/v1/sessions/${state.sessionId}/generation-runs/preview`,
     async (route) => {
       previewBody = route.request().postDataJSON();
+      previewRequests++;
       await route.fulfill({
         json: {
           mode: 'all',
@@ -146,6 +179,7 @@ test('full generation preview retains historical settings and queued rows explai
           preserve_count: 0,
           replace_count: 1,
           missing_count: 1,
+          first_generate_ordinal: 0,
           reasons: { missing_audio: 1 },
           settings_summary: { service: 'openai', model: 'tts-1', voice: 'nova' }
         }
@@ -171,6 +205,16 @@ test('full generation preview retains historical settings and queued rows explai
       name: 'I understand 1 existing recording will be replaced. Previous takes stay in history.'
     })
     .check();
+  const historyResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes('generation-segments?') &&
+      new URL(response.url()).searchParams.get('generation_run_id') ===
+        'history'
+  );
+  // Finish the pending row refresh after acknowledgment. The revision and
+  // saved settings are identical, so the preview must stay reviewed.
+  state.releaseHistory();
+  await historyResponse;
   await page
     .getByRole('button', { name: 'Generate 1 block', exact: true })
     .click();
@@ -178,6 +222,7 @@ test('full generation preview retains historical settings and queued rows explai
     settings_source_run_id: 'history',
     expected_selection_hash: 'hash'
   });
+  expect(previewRequests).toBe(1);
   await page.route(
     `**/api/v1/sessions/${state.sessionId}/generation-runs`,
     (route) =>

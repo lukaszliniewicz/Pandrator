@@ -68,6 +68,8 @@ export type GenerationLoadOptions = {
 export type GenerationLoadResult = {
   selectedRunId: string;
   shouldExpand: boolean;
+  /** A canceled or superseded request must not restore its old view selection. */
+  discarded?: boolean;
 };
 
 const ACTIVE_RUN_STATUS_PRIORITY = [
@@ -160,7 +162,8 @@ export class GenerationStore {
       if (controller.signal.aborted) {
         return {
           selectedRunId: options.selectedRunId,
-          shouldExpand: false
+          shouldExpand: false,
+          discarded: true
         };
       }
       const runs = runPayload.items;
@@ -186,7 +189,7 @@ export class GenerationStore {
         controller.signal
       );
       if (controller.signal.aborted) {
-        return { selectedRunId, shouldExpand: false };
+        return { selectedRunId, shouldExpand: false, discarded: true };
       }
       let payload = next;
       if (!reset && this.payload.plan_revision_id === next.plan_revision_id) {
@@ -222,7 +225,7 @@ export class GenerationStore {
             controller.signal
           );
           if (controller.signal.aborted) {
-            return { selectedRunId, shouldExpand: false };
+            return { selectedRunId, shouldExpand: false, discarded: true };
           }
           items.push(...page.items.filter((item) => !known.has(item.id)));
           for (const item of page.items) known.add(item.id);
@@ -238,7 +241,7 @@ export class GenerationStore {
         // A mutation was adopted after this load started: the loaded page
         // is older than the authoritative store state. Discard it instead
         // of overwriting the adopted revision/rows.
-        return { selectedRunId, shouldExpand: false };
+        return { selectedRunId, shouldExpand: false, discarded: true };
       }
       this.payload = payload;
       this.runs = runs;
@@ -274,7 +277,8 @@ export class GenerationStore {
       if (controller.signal.aborted) {
         return {
           selectedRunId: options.selectedRunId,
-          shouldExpand: false
+          shouldExpand: false,
+          discarded: true
         };
       }
       this.error = errorMessage(caught);
@@ -437,7 +441,7 @@ export class GenerationStore {
         reset: true,
         preserveLoaded: true
       });
-      onLoaded(result);
+      if (!result.discarded) onLoaded(result);
     } catch {
       // The store exposes load failures; event callbacks remain non-throwing.
     } finally {
