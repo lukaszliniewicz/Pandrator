@@ -294,6 +294,47 @@ class BackendArchitectureTests(unittest.TestCase):
                 self.assertIs(expected, handlers.handler_registry[kind](payload, progress, cancel))
                 replacement.assert_called_once_with(payload, progress, cancel)
 
+    def test_generation_plan_store_captures_fresh_dependencies_and_forwards_identity(self):
+        from pandrator.web import workflow_handlers
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        records, settings, caller_session = [{"text": "Narration."}], {"voice": "fixture"}, object()
+        fields = {"database": object()}
+        fields.update({name: lambda *_args, **_kwargs: None for name in (
+            "_is_subtitle_generation_record", "_usable_language", "_optimization_text_hash",
+        )})
+        helpers = {name: lambda *_args, **_kwargs: None for name in (
+            "_generation_segmentation_settings", "_secret_free_tts_settings", "_default_silence_after_ms",
+        )}
+        with patch.multiple(handlers, **fields), patch.multiple(workflow_handlers, **helpers), patch.object(
+            workflow_handlers, "_store_generation_plan_impl"
+        ) as owner:
+            expected = ("revision", ["segment"])
+            owner.return_value = expected
+            result = handlers._store_generation_plan(
+                "session", records, settings=settings, source_revision_id="source-revision",
+                source_artifact_id="source-artifact", db_session=caller_session, force_new=True,
+            )
+            self.assertIs(expected, result)
+            owner.assert_called_once()
+            context, session_id, sent_records = owner.call_args.args
+            self.assertEqual("session", session_id)
+            self.assertIs(records, sent_records)
+            self.assertIs(settings, owner.call_args.kwargs["settings"])
+            self.assertIs(caller_session, owner.call_args.kwargs["db_session"])
+            self.assertEqual({"settings": settings, "source_revision_id": "source-revision", "source_artifact_id": "source-artifact", "db_session": caller_session, "force_new": True}, owner.call_args.kwargs)
+            for name, value in {**fields, **helpers}.items():
+                self.assertIs(value, getattr(context, name))
+            replacements = {name: object() for name in fields}
+            later_helpers = {name: object() for name in helpers}
+            with patch.multiple(handlers, **replacements), patch.multiple(workflow_handlers, **later_helpers):
+                handlers._store_generation_plan("session", records, settings=settings)
+            latest = owner.call_args.args[0]
+            self.assertIsNot(context, latest)
+            for name, value in {**replacements, **later_helpers}.items():
+                self.assertIs(value, getattr(latest, name))
+            self.assertEqual({"settings": settings, "source_revision_id": None, "source_artifact_id": None, "db_session": None, "force_new": False}, owner.call_args.kwargs)
+
     def test_tts_registry_exposes_and_dispatches_the_provider_protocol(self):
         class RecordingAdapter:
             service_id = "xtts"

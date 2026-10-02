@@ -13,7 +13,6 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict
-from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -42,6 +41,8 @@ from .credentials import (
 )
 from .database import Database
 from .export_contract import export_requires_generation_assembly
+from .generation_plan_store import GenerationPlanStoreContext
+from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
 from .jobs import JobQueue
 from .logical_passages import (
     attach_passages,
@@ -5888,6 +5889,17 @@ class WorkflowHandlers:
     def prepare_text(self, payload, progress, cancel_event):
         return _source_prepare_text(self._source_workflow_context(), payload, progress, cancel_event)
 
+    def _generation_plan_store_context(self) -> GenerationPlanStoreContext:
+        return GenerationPlanStoreContext(
+            database=self.database,
+            _is_subtitle_generation_record=self._is_subtitle_generation_record,
+            _usable_language=self._usable_language,
+            _optimization_text_hash=self._optimization_text_hash,
+            _generation_segmentation_settings=_generation_segmentation_settings,
+            _secret_free_tts_settings=_secret_free_tts_settings,
+            _default_silence_after_ms=_default_silence_after_ms,
+        )
+
     def _store_generation_plan(
         self,
         session_id: str,
@@ -5899,174 +5911,16 @@ class WorkflowHandlers:
         db_session=None,
         force_new: bool = False,
     ) -> tuple[str, list[str]]:
-        clean = [
-            item
-            for item in records
-            if str(item.get("text") or item.get("original_sentence") or "").strip()
-        ]
-        digest = hashlib.sha256(
-            json.dumps(
-                {
-                    "records": clean,
-                    "settings": _generation_segmentation_settings(settings),
-                    "source_revision_id": source_revision_id,
-                    "source_artifact_id": source_artifact_id,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        with (nullcontext(db_session) if db_session is not None else self.database.immediate_session()) as session:
-            plan = session.scalar(
-                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
-            )
-            if plan is not None and plan.active_revision_id:
-                active = session.get(GenerationPlanRevision, plan.active_revision_id)
-                if not force_new and active is not None and active.content_hash == digest:
-                    # Identical source content and segmentation settings: keep
-                    # the existing segments so takes, edits, and run history
-                    # stay attached instead of being orphaned by a new revision.
-                    segment_ids = list(
-                        session.scalars(
-                            select(GenerationSegment.id)
-                            .where(GenerationSegment.plan_revision_id == active.id)
-                            .order_by(GenerationSegment.ordinal)
-                        ).all()
-                    )
-                    return active.id, [str(segment_id) for segment_id in segment_ids]
-            if plan is None:
-                plan = GenerationPlan(session_id=session_id)
-                session.add(plan)
-                session.flush()
-            maximum = (
-                session.scalar(
-                    select(func.max(GenerationPlanRevision.revision_number)).where(
-                        GenerationPlanRevision.plan_id == plan.id
-                    )
-                )
-                or 0
-            )
-            stored_settings = _secret_free_tts_settings(settings)
-            if source_artifact_id:
-                stored_settings["_source_artifact_id"] = source_artifact_id
-            revision = GenerationPlanRevision(
-                plan_id=plan.id,
-                parent_revision_id=plan.active_revision_id,
-                source_revision_id=source_revision_id,
-                revision_number=int(maximum) + 1,
-                settings_json=stored_settings,
-                content_hash=digest,
-            )
-            session.add(revision)
-            session.flush()
-            segment_ids = []
-            from pandrator.logic.speech_markup import parse_speech_markup
-
-            from .generation_cast_runtime import remap_markup
-            from .generation_controls import get_generation_controls
-            characters = get_generation_controls(session, session_id)["characters"]
-            for ordinal, record in enumerate(clean):
-                record = dict(record)
-                source_markup = record.get("speech_xml") or (record.get("speech_plan") or {}).get("speech_xml")
-                if source_markup:
-                    spoken = str(record.get("tts_optimized_sentence") or record.get("text") or record.get("original_sentence") or "").strip()
-                    normalized = remap_markup(source_markup, str(ordinal + 1), spoken, characters)
-                    structure = parse_speech_markup(normalized, expected_segment_id=str(ordinal + 1), expected_text=spoken, characters=characters)
-                    record["speech_boundary_after"] = structure.boundary_after or (
-                        "dialogue_turn" if structure.spans and structure.spans[-1].dialogue else None
-                    )
-                    if record["speech_boundary_after"] in {"continuation", "dialogue_turn"}:
-                        record["paragraph_break_after"] = False
-                is_subtitle = self._is_subtitle_generation_record(record)
-                explicit_language = (
-                    self._usable_language(record.get("language")) or None
-                )
-                explicit_voice = str(record.get("voice") or "").strip() or None
-                segment = GenerationSegment(
-                    plan_revision_id=revision.id,
-                    ordinal=ordinal,
-                    source_segment_ids_json=list(
-                        record.get("source_segment_ids")
-                        or record.get("subtitles")
-                        or []
-                    ),
-                    speech_block_provenance_json=dict(
-                        record.get("speech_block_provenance")
-                        or record.get("provenance")
-                        or {}
-                    ),
-                    alignment_group=str(record.get("alignment_group") or "").strip()
-                    or None,
-                    node_kind=str(
-                        record.get("node_kind")
-                        or (
-                            "subtitle_cue"
-                            if is_subtitle
-                            else "chapter_marker"
-                            if str(record.get("chapter") or "").lower() == "yes"
-                            else "paragraph"
-                        )
-                    ),
-                    paragraph_break_after=False
-                    if is_subtitle
-                    else bool(
-                        record.get(
-                            "paragraph_break_after",
-                            str(record.get("paragraph") or "").lower() == "yes",
-                        )
-                    ),
-                    speaker=str(record.get("speaker") or "").strip() or None,
-                    text=str(
-                        record.get("text") or record.get("original_sentence") or ""
-                    ).strip(),
-                    optimized_text=(
-                        str(record.get("tts_optimized_sentence") or "").strip() or None
-                    ),
-                    speech_plan_json=dict(record.get("speech_plan") or {}),
-                    optimization_status=(
-                        "optimized"
-                        if str(record.get("tts_optimized_sentence") or "").strip()
-                        else "not_requested"
-                    ),
-                    optimization_source_hash=(
-                        self._optimization_text_hash(
-                            str(
-                                record.get("text")
-                                or record.get("original_sentence")
-                                or ""
-                            ).strip()
-                        )
-                        if str(record.get("tts_optimized_sentence") or "").strip()
-                        else None
-                    ),
-                    optimization_model=(
-                        str(
-                            (record.get("speech_plan") or {}).get("model") or ""
-                        ).strip()
-                        or None
-                    ),
-                    voice_id=record.get("voice_id"),
-                    voice=explicit_voice,
-                    # A missing value is meaningful: it follows the session TTS
-                    # language and remains responsive to later settings changes.
-                    language=explicit_language,
-                    silence_after_ms=_default_silence_after_ms(
-                        record, settings, is_subtitle=is_subtitle
-                    ),
-                    marked=bool(record.get("marked", False)),
-                )
-                session.add(segment)
-                session.flush()
-                if source_markup:
-                    segment.speech_plan_json = {
-                        **(segment.speech_plan_json or {}),
-                        "speech_xml": remap_markup(source_markup, segment.id, segment.optimized_text or segment.text, characters),
-                    }
-                segment_ids.append(segment.id)
-            plan.active_revision_id = revision.id
-            plan.updated_at = utcnow()
-            return revision.id, segment_ids
+        return _store_generation_plan_impl(
+            self._generation_plan_store_context(),
+            session_id,
+            records,
+            settings=settings,
+            source_revision_id=source_revision_id,
+            source_artifact_id=source_artifact_id,
+            db_session=db_session,
+            force_new=force_new,
+        )
 
     @staticmethod
     def _tts_urls(settings: dict[str, Any]) -> dict[str, str]:

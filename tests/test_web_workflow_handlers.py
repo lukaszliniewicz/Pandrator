@@ -11,7 +11,7 @@ from unittest import mock
 
 from pydub import AudioSegment
 from pydub.generators import Sine
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.credentials import (
@@ -28,6 +28,7 @@ from pandrator.web.models import (
     ArtifactEdge,
     AudioTake,
     GenerationPlan,
+    GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
     OutputAssembly,
@@ -1338,6 +1339,97 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(source.id, translation.metadata_json["source_artifact_id"])
         translate = self._continue_generation({})
         translate.assert_called_once()
+
+    def test_standalone_generation_plan_store_reuses_and_forces_descendant_revision(self):
+        from pandrator.web import workflow_handlers
+        from pandrator.web.generation_plan_store import (
+            GenerationPlanStoreContext,
+            store_generation_plan,
+        )
+
+        context = GenerationPlanStoreContext(
+            database=self.database,
+            _is_subtitle_generation_record=WorkflowHandlers._is_subtitle_generation_record,
+            _usable_language=WorkflowHandlers._usable_language,
+            _optimization_text_hash=WorkflowHandlers._optimization_text_hash,
+            _generation_segmentation_settings=workflow_handlers._generation_segmentation_settings,
+            _secret_free_tts_settings=workflow_handlers._secret_free_tts_settings,
+            _default_silence_after_ms=workflow_handlers._default_silence_after_ms,
+        )
+        records = [{"text": "First narration."}, {"text": "Second narration."}]
+        settings = {"language": "en", "sentence_silence_ms": 250, "voice": "alice"}
+        original_id, original_segments = store_generation_plan(context, self.session.id, records, settings=settings)
+        changed_voice = {**settings, "voice": "bob", "service": "Kokoro", "model": "other"}
+        reused = store_generation_plan(context, self.session.id, records, settings=changed_voice)
+        self.assertEqual((original_id, original_segments), reused)
+        forced_id, forced_segments = store_generation_plan(context, self.session.id, records, settings=changed_voice, force_new=True)
+        self.assertNotEqual(original_id, forced_id)
+        self.assertTrue(set(original_segments).isdisjoint(forced_segments))
+        with self.database.session() as db:
+            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            original = db.get(GenerationPlanRevision, original_id)
+            forced = db.get(GenerationPlanRevision, forced_id)
+            self.assertEqual(forced_id, plan.active_revision_id)
+            self.assertEqual(original_id, forced.parent_revision_id)
+            self.assertEqual(original.revision_number + 1, forced.revision_number)
+            self.assertEqual(2, db.scalar(select(func.count()).select_from(GenerationPlanRevision)))
+            self.assertEqual(set(original_segments + forced_segments), set(db.scalars(select(GenerationSegment.id))))
+
+    def test_generation_plan_store_caller_session_stages_then_rolls_back(self):
+        records = [{"text": "Original narration."}]
+        original_id, original_segments = self.handlers._store_generation_plan(self.session.id, records, settings={})
+        class CallerRollback(Exception):
+            pass
+        with self.assertRaises(CallerRollback):
+            with self.database.immediate_session() as caller:
+                with mock.patch.object(self.database, "immediate_session", side_effect=AssertionError("nested transaction")):
+                    staged_id, staged_segments = self.handlers._store_generation_plan(
+                        self.session.id, [{"text": "Staged narration."}], settings={}, db_session=caller, force_new=True
+                    )
+                    plan = caller.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+                    staged = caller.get(GenerationPlanRevision, staged_id)
+                    self.assertEqual(staged_id, plan.active_revision_id)
+                    self.assertEqual(original_id, staged.parent_revision_id)
+                    self.assertNotEqual(original_segments, staged_segments)
+                    self.assertEqual(staged_segments, list(caller.scalars(select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == staged_id))))
+                raise CallerRollback()
+        with self.database.session() as db:
+            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            self.assertEqual(original_id, plan.active_revision_id)
+            self.assertEqual([original_id], list(db.scalars(select(GenerationPlanRevision.id))))
+            self.assertEqual(original_segments, list(db.scalars(select(GenerationSegment.id))))
+
+    def test_generation_plan_store_mid_write_fault_rolls_back_owned_transaction(self):
+        from pandrator.web import workflow_handlers
+
+        original_id, original_segments = self.handlers._store_generation_plan(self.session.id, [{"text": "Original narration."}], settings={})
+        silence = workflow_handlers._default_silence_after_ms
+        calls = []
+        def fail_second(record, settings, *, is_subtitle=False):
+            calls.append(record["text"])
+            if len(calls) == 2:
+                raise RuntimeError("forced plan rollback")
+            return silence(record, settings, is_subtitle=is_subtitle)
+        inserted_segments = []
+        def capture_insert(_connection, _cursor, statement, parameters, _context, _executemany):
+            if statement.startswith("INSERT INTO generation_segments"):
+                inserted_segments.append(parameters)
+        event.listen(self.database.engine, "after_cursor_execute", capture_insert)
+        try:
+            with mock.patch.object(workflow_handlers, "_default_silence_after_ms", side_effect=fail_second):
+                with self.assertRaisesRegex(RuntimeError, "forced plan rollback"):
+                    self.handlers._store_generation_plan(
+                        self.session.id, [{"text": "First new narration."}, {"text": "Second new narration."}], settings={}, force_new=True
+                    )
+        finally:
+            event.remove(self.database.engine, "after_cursor_execute", capture_insert)
+        self.assertEqual(1, len(inserted_segments))
+        self.assertEqual(["First new narration.", "Second new narration."], calls)
+        with self.database.session() as db:
+            plan = db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == self.session.id))
+            self.assertEqual(original_id, plan.active_revision_id)
+            self.assertEqual([original_id], list(db.scalars(select(GenerationPlanRevision.id))))
+            self.assertEqual(original_segments, list(db.scalars(select(GenerationSegment.id))))
 
     def test_generation_plan_reuses_revision_for_identical_content(self):
         records = [{"text": "First sentence.", "paragraph": "yes"}, {"text": "Second sentence."}]
