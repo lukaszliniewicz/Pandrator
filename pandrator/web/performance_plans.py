@@ -952,7 +952,7 @@ def adopt_plan(
         previous.status = "superseded"
     plan.status, plan.adopted_at = "adopted", m.utcnow()
     plan.version += 1
-    from .workspace import mark_output_assemblies_stale
+    from .output_assembly_lifecycle import mark_output_assemblies_stale
 
     mark_output_assemblies_stale(session, plan.session_id)
     session.flush()

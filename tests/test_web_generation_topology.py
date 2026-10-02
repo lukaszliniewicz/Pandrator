@@ -1,8 +1,10 @@
+import inspect
 import tempfile
 import threading
 import unittest
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from unittest.mock import patch
 
 from sqlalchemy import event, select
@@ -197,6 +199,189 @@ class GenerationTopologyTests(unittest.TestCase):
             self.running_job_id = running_job.id
             self.queued_assembly_id = queued_assembly.id
             self.running_assembly_id = running_assembly.id
+
+    def test_topology_owner_facade_signatures_and_fresh_keyword_forwarding(self):
+        from pandrator.web.generation_topology import GenerationTopologyService
+
+        generation = self.app.extensions["pandrator"]["generation"]
+        for name in ("create_plan", "revise_topology_in_session"):
+            self.assertEqual(
+                inspect.signature(getattr(GenerationService, name)),
+                inspect.signature(getattr(GenerationTopologyService, name)),
+            )
+        database, jobs, caller_session = object(), object(), object()
+        segments, settings = [{"text": "Forward these words."}], {"speech_block_max_chars": 200}
+        operation = {"action": "split", "segment_id": "segment", "cursor": 2}
+        with patch.object(generation, "database", database), patch.object(
+            generation, "jobs", jobs
+        ), patch("pandrator.web.workspace.GenerationTopologyService") as owner_class:
+            expected = {"forwarded": True}
+            owner_class.return_value.create_plan.return_value = expected
+            self.assertIs(expected, generation.create_plan(
+                "session", source_revision_id="source", segments=segments, settings=settings
+            ))
+            owner_class.assert_called_once_with(database, jobs)
+            owner_class.return_value.create_plan.assert_called_once_with(
+                "session", source_revision_id="source", segments=segments, settings=settings
+            )
+            owner_class.reset_mock()
+            owner_class.return_value.revise_topology_in_session.return_value = expected
+            self.assertIs(expected, generation.revise_topology_in_session(
+                caller_session, "session", "revision", operation, activate=False
+            ))
+            owner_class.assert_called_once_with(database, jobs)
+            owner_class.return_value.revise_topology_in_session.assert_called_once_with(
+                caller_session, "session", "revision", operation, activate=False
+            )
+
+    def test_topology_helper_class_and_instance_compatibility(self):
+        from pandrator.web.generation_topology import GenerationTopologyService
+
+        generation = self.app.extensions["pandrator"]["generation"]
+        owner = GenerationTopologyService(self.database, generation.jobs)
+        with self.database.session() as session:
+            segment = session.get(GenerationSegment, self.initial_segment_ids[0])
+            split_options = {
+                "display_cursor": 2, "speech_cursor": 2, "display_length": 4,
+                "speech_length": 4, "display_value": "A🙂 B", "speech_value": "A🙂 B",
+                "operation_event": {"source_references": ["source-uuid-1"]},
+                "parent_segment_id": segment.id, "parent_speech_plan_ids": [],
+            }
+            examples = (
+                ("_segment_copy_values", (segment,), {}),
+                ("_provenance_source_refs", (segment.speech_block_provenance_json,), {}),
+                ("_clip_local_ranges", ([[0, 4]], 0, 2), {}),
+                ("_split_provenance", (segment.speech_block_provenance_json,), split_options),
+                ("_speech_plan_ids", ({"id": "speech-plan"},), {}),
+                ("_companion_offset", ("A🙂 B", "A🙂 B", 2), {"selected_layer": "display", "provenance": {}}),
+                ("_merge_provenance", ({}, {}), {"display_offset": 5, "speech_offset": 5, "event": {}}),
+                ("_clone_available_takes", (session, "missing-source", "missing-target"), {}),
+                ("_clone_available_takes_batch", (session, []), {}),
+                ("_recompute_alignment_groups", ([],), {}),
+                ("_recompute_alignment_group_values", ([],), {}),
+            )
+            for name, args, kwargs in examples:
+                with self.subTest(helper=name):
+                    methods = [getattr(target, name) for target in (
+                        GenerationService, generation, GenerationTopologyService, owner
+                    )]
+                    self.assertTrue(all(inspect.signature(method) == inspect.signature(methods[0]) for method in methods))
+                    results = [method(*args, **kwargs) for method in methods]
+                    self.assertTrue(all(result == results[0] for result in results))
+
+    def test_standalone_topology_owner_creates_and_commits_split_revision(self):
+        from pandrator.web.generation_topology import GenerationTopologyService
+
+        services = self.app.extensions["pandrator"]
+        record = services["sessions"].create("Standalone topology", workflow_kind="audiobook")
+        owner = GenerationTopologyService(self.database, services["generation"].jobs)
+        plan = owner.create_plan(record.id, source_revision_id=None, segments=[{"text": "A🙂 B"}])
+        with self.database.session() as session:
+            segment_id = session.scalar(select(GenerationSegment.id).where(
+                GenerationSegment.plan_revision_id == plan["active_revision_id"]
+            ))
+        result = owner.revise_topology(record.id, plan["active_revision_id"], {
+            "action": "split", "segment_id": segment_id, "cursor": 2, "text_layer": "display"
+        })
+        self.assertEqual(result["segment_ids"], result["lineage"][segment_id])
+        with self.database.session() as session:
+            persisted = session.get(GenerationPlan, plan["id"])
+            self.assertEqual(result["plan_revision_id"], persisted.active_revision_id)
+            revisions = list(session.scalars(select(GenerationPlanRevision).where(
+                GenerationPlanRevision.plan_id == plan["id"]
+            ).order_by(GenerationPlanRevision.revision_number)))
+            self.assertEqual([1, 2], [revision.revision_number for revision in revisions])
+            self.assertEqual(plan["active_revision_id"], revisions[1].parent_revision_id)
+            rows = list(session.scalars(select(GenerationSegment).where(
+                GenerationSegment.plan_revision_id == result["plan_revision_id"]
+            ).order_by(GenerationSegment.ordinal)))
+            self.assertEqual(["A🙂", "B"], [row.text for row in rows])
+
+    @staticmethod
+    def _topology_persisted_state(session):
+        state = {}
+        for model in (GenerationPlan, GenerationPlanRevision, GenerationSegment, AudioTake, Artifact, Job, OutputAssembly):
+            state[model.__tablename__] = [
+                {column.key: deepcopy(getattr(row, column.key)) for column in model.__table__.columns}
+                for row in session.scalars(select(model).order_by(model.id))
+            ]
+        return state
+
+    def test_inactive_topology_uses_caller_transaction_and_rolls_back_all_staged_state(self):
+        class RollbackSentinel(Exception):
+            pass
+
+        generation = self.app.extensions["pandrator"]["generation"]
+        with self.database.session() as session:
+            before = self._topology_persisted_state(session)
+        with self.assertRaises(RollbackSentinel), self.database.immediate_session() as session:
+            with patch.object(self.database, "session", side_effect=AssertionError("nested session")), patch.object(
+                self.database, "immediate_session", side_effect=AssertionError("nested transaction")
+            ):
+                result = generation.revise_topology_in_session(
+                    session, self.session_id, self.initial_revision_id,
+                    {"action": "split", "segment_id": self.initial_segment_ids[0], "cursor": 2, "text_layer": "display"},
+                    activate=False,
+                )
+            self.assertTrue(result["is_draft"])
+            self.assertEqual(self.initial_revision_id, session.get(GenerationPlan, result["id"]).active_revision_id)
+            self.assertIsNotNone(session.get(GenerationPlanRevision, result["plan_revision_id"]))
+            staged = list(session.scalars(select(GenerationSegment).where(
+                GenerationSegment.plan_revision_id == result["plan_revision_id"]
+            )))
+            self.assertEqual(3, len(staged))
+            clones = list(session.scalars(select(AudioTake).where(
+                AudioTake.generation_segment_id.in_(result["segment_ids"])
+            )))
+            self.assertEqual(2, len(clones))
+            self.assertEqual({self.initial_take_ids[1], self.stale_take_id}, {take.parent_take_id for take in clones})
+            raise RollbackSentinel()
+        with self.database.session() as session:
+            self.assertEqual(before, self._topology_persisted_state(session))
+
+    def test_concurrent_topology_commits_only_one_revision_for_the_same_expected_revision(self):
+        services = self.app.extensions["pandrator"]
+        generation = services["generation"]
+        record = services["sessions"].create("Concurrent topology", workflow_kind="audiobook")
+        plan = generation.create_plan(record.id, source_revision_id=None, segments=[{"text": "A🙂 B"}])
+        with self.database.session() as session:
+            segment_id = session.scalar(select(GenerationSegment.id).where(
+                GenerationSegment.plan_revision_id == plan["active_revision_id"]
+            ))
+        barrier = threading.Barrier(2)
+        outcomes = []
+
+        def mutate():
+            try:
+                barrier.wait(timeout=5)
+                outcomes.append(generation.revise_topology(record.id, plan["active_revision_id"], {
+                    "action": "split", "segment_id": segment_id, "cursor": 2, "text_layer": "display"
+                }))
+            except BaseException as error:
+                outcomes.append(error)
+
+        threads = [threading.Thread(target=mutate, daemon=True) for _ in range(2)]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+            self.assertTrue(all(not thread.is_alive() for thread in threads), "topology writers did not finish")
+        finally:
+            barrier.abort()
+            for thread in threads:
+                if thread.is_alive():
+                    thread.join(timeout=5)
+        successes = [result for result in outcomes if isinstance(result, dict)]
+        conflicts = [result for result in outcomes if isinstance(result, RevisionConflict)]
+        self.assertEqual(1, len(successes), outcomes)
+        self.assertEqual(1, len(conflicts), outcomes)
+        with self.database.session() as session:
+            revisions = list(session.scalars(select(GenerationPlanRevision).where(
+                GenerationPlanRevision.plan_id == plan["id"]
+            )))
+            self.assertEqual(2, len(revisions))
+            self.assertEqual(successes[0]["plan_revision_id"], session.get(GenerationPlan, plan["id"]).active_revision_id)
 
     def test_large_inactive_repair_batches_unchanged_audio_copies(self):
         import time
