@@ -3,6 +3,7 @@ import re
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from pandrator.logic import tts_handler
@@ -334,6 +335,64 @@ class BackendArchitectureTests(unittest.TestCase):
             for name, value in {**replacements, **later_helpers}.items():
                 self.assertIs(value, getattr(latest, name))
             self.assertEqual({"settings": settings, "source_revision_id": None, "source_artifact_id": None, "db_session": None, "force_new": False}, owner.call_args.kwargs)
+
+    def test_generation_binding_facades_capture_current_ports_and_forward_identity(self):
+        from pandrator.web import workflow_handlers
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        source, path, settings = object(), Path("unchanged.srt"), {"unchanged": []}
+        records = [{"text": "Unchanged."}]
+        fields = {name: object() for name in ("database", "artifacts")}
+        fields.update({name: lambda *_args, **_kwargs: None for name in (
+            "_session_record", "_resolve_input", "_operation_dir", "_latest_stage_input", "_usable_language",
+            "_subtitle_speaker_map", "_subtitle_generation_records", "_store_generation_plan",
+            "_generation_source_for_plan_refresh", "_generation_language", "_materialize_subtitle_generation_plan",
+        )})
+        helpers = {name: lambda *_args, **_kwargs: None for name in (
+            "_structured_speaker", "_speech_block_settings", "_speech_block_generation_mode",
+            "_next_available_path", "_generation_segmentation_settings",
+        )}
+        helpers["logger"] = object()
+        cases = (
+            ("_generation_language", "generation_language", ("session", source, settings), {}, "pl"),
+            ("_subtitle_speaker_map", "subtitle_speaker_map", (source, path), {}, {7: "Alice"}),
+            ("_subtitle_speaker_map", "subtitle_speaker_map", (source,), {}, {7: "Alice"}),
+            ("_subtitle_generation_records", "subtitle_generation_records", (source, path, settings, "pl"), {"session_id": "session"}, (records, None, source)),
+            ("_subtitle_generation_records", "subtitle_generation_records", (source, path, settings, "pl"), {}, (records, None, source)),
+            ("_materialize_subtitle_generation_plan", "materialize_subtitle_generation_plan", ("session", source, path, settings, "pl"), {}, "revision"),
+            ("_generation_source_for_plan_refresh", "generation_source_for_plan_refresh", ("session",), {}, source),
+            ("refresh_generation_plan", "refresh_generation_plan", ("session", settings), {}, "revision"),
+        )
+        for name, owner_name, args, kwargs, expected in cases:
+            # Retain the original facade while replacing the callbacks it captures.
+            facade = getattr(handlers, name)
+            with self.subTest(handler=name, kwargs=kwargs), patch.multiple(handlers, **fields), patch.multiple(
+                workflow_handlers, **helpers
+            ), patch.object(workflow_handlers, f"_binding_{owner_name}") as owner:
+                owner.return_value = expected
+                self.assertIs(expected, facade(*args, **kwargs))
+                owner.assert_called_once()
+                context, *sent_args = owner.call_args.args
+                expected_args = list(args)
+                if owner_name == "subtitle_speaker_map" and len(expected_args) == 1:
+                    expected_args.append(None)
+                for expected_arg, sent_arg in zip(expected_args, sent_args, strict=True):
+                    self.assertIs(expected_arg, sent_arg)
+                self.assertEqual({"session_id": kwargs.get("session_id")} if owner_name == "subtitle_generation_records" else {}, owner.call_args.kwargs)
+                for field, value in fields.items():
+                    self.assertIs(value, getattr(context, field))
+                for field, value in helpers.items():
+                    self.assertIs(value, getattr(context, "_logger" if field == "logger" else field))
+                replacements = {field: object() for field in fields}
+                later_helpers = {field: object() for field in helpers}
+                with patch.multiple(handlers, **replacements), patch.multiple(workflow_handlers, **later_helpers):
+                    facade(*args, **kwargs)
+                latest = owner.call_args.args[0]
+                self.assertIsNot(context, latest)
+                for field, value in replacements.items():
+                    self.assertIs(value, getattr(latest, field))
+                for field, value in later_helpers.items():
+                    self.assertIs(value, getattr(latest, "_logger" if field == "logger" else field))
 
     def test_tts_registry_exposes_and_dispatches_the_provider_protocol(self):
         class RecordingAdapter:

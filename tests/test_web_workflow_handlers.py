@@ -1585,6 +1585,81 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         )
         self.assertNotEqual(changed_merge_id, third_id)
 
+    def test_standalone_generation_binding_preserves_native_srt_provenance(self):
+        from pandrator.web import workflow_handlers
+        from pandrator.web.workflow_generation_binding import (
+            GenerationBindingContext,
+            subtitle_generation_records,
+            subtitle_speaker_map,
+        )
+
+        source_path = self.session_dir / "standalone-binding.srt"
+        source_bytes = b"7\n00:00:01,000 --> 00:00:02,500\n[SPEAKER_1]: First narration.\n\n11\n00:00:03,000 --> 00:00:04,750\n[SPEAKER_2]: Second narration.\n"
+        source_path.write_bytes(source_bytes)
+        source = self.artifacts.register(source_path, kind="srt", role="translation", session_id=self.session.id, metadata={"language": "en"})
+        unused = mock.Mock(side_effect=AssertionError("unused context port"))
+        context = GenerationBindingContext(
+            database=self.database, artifacts=self.artifacts,
+            _session_record=lambda _id: self.session, _resolve_input=self.artifacts.resolve,
+            _operation_dir=unused, _latest_stage_input=unused,
+            _usable_language=WorkflowHandlers._usable_language,
+            _subtitle_speaker_map=lambda artifact, path: subtitle_speaker_map(context, artifact, path),
+            _subtitle_generation_records=unused, _store_generation_plan=unused,
+            _generation_source_for_plan_refresh=unused, _generation_language=unused,
+            _materialize_subtitle_generation_plan=unused,
+            _structured_speaker=workflow_handlers._structured_speaker,
+            _speech_block_settings=workflow_handlers._speech_block_settings,
+            _speech_block_generation_mode=workflow_handlers._speech_block_generation_mode,
+            _next_available_path=workflow_handlers._next_available_path,
+            _generation_segmentation_settings=workflow_handlers._generation_segmentation_settings,
+            _logger=workflow_handlers.logger,
+        )
+        records, revision_id, display = subtitle_generation_records(context, source, source_path, {}, "en")
+        self.assertIs(source, display)
+        self.assertIsNone(revision_id)
+        self.assertEqual(source_bytes, source_path.read_bytes())
+        self.assertEqual([[7], [11]], [record["source_segment_ids"] for record in records])
+        self.assertEqual(["SPEAKER_1", "SPEAKER_2"], [record["speaker"] for record in records])
+        self.assertEqual(["First narration.", "Second narration."], [record["text"] for record in records])
+        cues = [cue for record in records for cue in record["provenance"]["source_cues"]]
+        self.assertEqual([(7, 1000, 2500), (11, 3000, 4750)], [(cue["reference"], cue["start_ms"], cue["end_ms"]) for cue in cues])
+        self.assertEqual(["subtitle_ordinal", "subtitle_ordinal"], [record["provenance"]["source_reference_namespace"] for record in records])
+        self.assertEqual(["en", "en"], [record["language"] for record in records])
+        unused.assert_not_called()
+        with self.database.session() as db:
+            self.assertEqual([source.id], list(db.scalars(select(Artifact.id))))
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationPlan)))
+
+    def test_generation_binding_refresh_uses_instance_callbacks_and_mutates_snapshot_exactly(self):
+        source_path = self.session_dir / "binding-refresh.srt"
+        source_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nNarration.\n", encoding="utf-8")
+        source = self.artifacts.register(source_path, kind="srt", role="tts_optimized", session_id=self.session.id)
+        snapshot = {"text": {"use_existing_speech_plans": False, "marker": "retained"}, "tts": {"voice": "fixture"}, "other": {"unchanged": []}}
+        expected = deepcopy(snapshot)
+        expected["source_artifact_id"] = source.id
+        expected["text"]["use_existing_speech_plans"] = True
+        with mock.patch.object(self.handlers, "_generation_source_for_plan_refresh", return_value=source) as select_source, mock.patch.object(
+            self.handlers, "_resolve_input", return_value=(source, source_path)
+        ) as resolve, mock.patch.object(self.handlers, "_generation_language", return_value="pl") as language, mock.patch.object(
+            self.handlers, "_materialize_subtitle_generation_plan", return_value="callback-revision"
+        ) as materialize:
+            self.assertEqual("callback-revision", self.handlers.refresh_generation_plan(self.session.id, snapshot))
+        select_source.assert_called_once_with(self.session.id)
+        resolve.assert_called_once_with(source.id)
+        self.assertEqual(expected, snapshot)
+        language.assert_called_once()
+        self.assertEqual(self.session.id, language.call_args.args[0])
+        self.assertIs(source, language.call_args.args[1])
+        materialize.assert_called_once()
+        session_id, sent_source, sent_path, settings, sent_language = materialize.call_args.args
+        self.assertEqual(self.session.id, session_id)
+        self.assertIs(source, sent_source)
+        self.assertIs(source_path, sent_path)
+        self.assertEqual("pl", sent_language)
+        self.assertEqual("pl", settings["language"])
+        self.assertEqual("pl", settings["target_language"])
+        self.assertEqual("fixture", settings["voice"])
+
     def test_annotated_global_subtitles_require_a_control_session_without_null_lookup(self):
         path = self.session_dir / "global-annotated.srt"
         text = "Hello world."
