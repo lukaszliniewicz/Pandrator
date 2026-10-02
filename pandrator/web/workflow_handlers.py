@@ -56,7 +56,6 @@ from .logical_passages import (
 from .models import (
     Artifact,
     ArtifactEdge,
-    AudioTake,
     Document,
     DocumentRevision,
     GenerationPlan,
@@ -98,6 +97,7 @@ from .workflow_generation_binding import (
 from .workflow_generation_binding import subtitle_speaker_map as _binding_subtitle_speaker_map
 from .workflow_generation_execution import GenerationExecutionContext
 from .workflow_generation_execution import run_generation as _execution_run_generation
+from .workflow_generation_finalization import finalize_run_audio_verification
 from .workflow_generation_protocols import Progress
 from .workflow_generation_start import GenerationStartContext
 from .workflow_generation_start import run_reviewable_generation as _start_run_reviewable_generation
@@ -758,59 +758,12 @@ class WorkflowHandlers:
 
     def _finalize_run_audio_verification(self, run_id: str) -> int:
         """Check the latest available take per segment within this output run."""
-        marked_segment_ids: set[str] = set()
-        with self.database.session() as session:
-            rows = list(
-                session.execute(
-                    select(AudioTake, Artifact)
-                    .join(Artifact, AudioTake.artifact_id == Artifact.id)
-                    .where(
-                        AudioTake.generation_run_id == run_id,
-                        AudioTake.status == "completed",
-                    )
-                    .order_by(AudioTake.created_at.desc())
-                ).all()
-            )
-            grouped: dict[
-                tuple[str, str], list[tuple[AudioTake, Artifact, dict[str, Any]]]
-            ] = {}
-            seen_segments: set[str] = set()
-            for take, artifact in rows:
-                if take.generation_segment_id in seen_segments:
-                    continue
-                seen_segments.add(take.generation_segment_id)
-                metadata = dict(artifact.metadata_json or {})
-                verification = metadata.get("audio_verification")
-                if (
-                    not isinstance(verification, dict)
-                    or verification.get("mode") != "signal"
-                ):
-                    continue
-                if verification.get("status") != "passed":
-                    marked_segment_ids.add(take.generation_segment_id)
-                key = (str(take.kind or ""), str(take.settings_hash or ""))
-                grouped.setdefault(key, []).append((take, artifact, verification))
-
-            for entries in grouped.values():
-                values = [
-                    (entry[2].get("metrics") or {}).get("rms_dbfs") for entry in entries
-                ]
-                for index, detail in run_rms_outliers(values).items():
-                    take, artifact, verification = entries[index]
-                    metadata = dict(artifact.metadata_json or {})
-                    metadata["audio_verification"] = add_run_rms_warning(
-                        verification, detail
-                    )
-                    artifact.metadata_json = metadata
-                    artifact.updated_at = utcnow()
-                    marked_segment_ids.add(take.generation_segment_id)
-
-            for segment_id in marked_segment_ids:
-                segment = session.get(GenerationSegment, segment_id)
-                if segment is not None:
-                    segment.marked = True
-                    segment.updated_at = utcnow()
-        return len(marked_segment_ids)
+        return finalize_run_audio_verification(
+            self.database,
+            run_id,
+            find_outliers=run_rms_outliers,
+            add_warning=add_run_rms_warning,
+        )
 
     def handlers(self):
         """Compatibility mapping for callers not yet accepting a registry."""

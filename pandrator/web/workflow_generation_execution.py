@@ -10,10 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select
 
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
+from .workflow_generation_finalization import (
+    finalize_generation_run,
+    restore_optional_pass_status,
+)
 from .workflow_generation_protocols import (
     ApplySegmentTtsOverridesProtocol,
     EnsureQwenVoiceProtocol,
@@ -24,6 +28,10 @@ from .workflow_generation_protocols import (
     StreamingTtsBatchProtocol,
     TtsUsageEventProtocol,
     VoiceoverSecondPassProtocol,
+)
+from .workflow_generation_publication import (
+    GenerationTakePublication,
+    publish_generation_take,
 )
 
 if TYPE_CHECKING:
@@ -68,23 +76,6 @@ class GenerationExecutionContext:
     _logger: logging.Logger
     _repair_early_generation_blocks: Callable[[str, Progress, threading.Event], dict[str, Any]]
     _regroup_generation_blocks: Callable[[str, Progress, threading.Event], dict[str, Any]]
-
-
-def _restore_optional_pass_status(database: Database, run_id: str, final_status: str) -> str:
-    """Restore the first-pass result or settle a durable stop request."""
-    with database.immediate_session() as session:
-        current = session.get(GenerationRun, run_id)
-        if current is None:
-            return final_status
-        if current.cancel_requested or current.status in {"cancel_requested", "canceled"}:
-            return current.status
-        if current.pause_requested or current.status in {"pausing", "pause_requested", "paused"}:
-            if current.status != "paused":
-                current.status = "paused"
-                current.updated_at = utcnow()
-            return "paused"
-        current.status = final_status
-        return final_status
 
 
 def run_generation(
@@ -839,99 +830,61 @@ def run_generation(
                 segment = session.get(GenerationSegment, segment_id)
                 if segment is None:
                     raise KeyError(segment_id)
-                artifact = context.artifacts.register_in_session(
+                duration_ms = len(audio)
+                publish_generation_take(
                     session,
-                    take_path,
-                    kind="audio",
-                    role="generation_take",
-                    session_id=session_id,
-                    parent_ids=take_parent_ids,
-                    settings=stored_take_settings,
-                    metadata={
-                        "generation_segment_id": segment_id,
-                        "generation_run_id": output_run_id,
-                        **({"generation_audio_identity": audio_identities[segment_id]} if operation != "rvc" else {}),
-                        **(
-                            {"generation_task_run_id": run_id}
-                            if output_run_id != run_id
-                            else {}
+                    context.artifacts,
+                    GenerationTakePublication(
+                        segment=segment,
+                        session_id=session_id,
+                        run_id=run_id,
+                        output_run_id=output_run_id,
+                        path=take_path,
+                        kind=take_kind,
+                        duration_ms=duration_ms,
+                        parent_ids=take_parent_ids,
+                        parent_take_id=parent_take_id,
+                        settings=stored_take_settings,
+                        metadata={
+                            "generation_segment_id": segment_id,
+                            "generation_run_id": output_run_id,
+                            **(
+                                {"generation_audio_identity": audio_identities[segment_id]}
+                                if operation != "rvc"
+                                else {}
+                            ),
+                            **({"generation_task_run_id": run_id} if output_run_id != run_id else {}),
+                            "kind": take_kind,
+                            "speaker": segment_speaker,
+                            "source_text": text,
+                            "synthesized_text": synthesized_text,
+                            **({"render_parts": render_manifest} if render_manifest else {}),
+                            "llm_optimized": (operation != "rvc" and synthesized_text != text),
+                            "llm_model": optimization_model or None,
+                            **({"audio_verification": verification} if verification is not None else {}),
+                        },
+                        prepared=prepared_artifact,
+                        expected_selection=(settings_snapshot.get("generation_selection_guards") or {}).get(
+                            segment_id
                         ),
-                        "kind": take_kind,
-                        "speaker": segment_speaker,
-                        "source_text": text,
-                        "synthesized_text": synthesized_text,
-                        **({"render_parts": render_manifest} if render_manifest else {}),
-                        "llm_optimized": (
-                            operation != "rvc" and synthesized_text != text
-                        ),
-                        "llm_model": optimization_model or None,
-                        **(
-                            {"audio_verification": verification}
-                            if verification is not None
-                            else {}
-                        ),
-                    },
-                    _prepared=prepared_artifact,
-                )
-                if operation != "rvc":
-                    usage_event = context._tts_usage_event(
-                        session_id,
-                        take_settings,
-                        synthesized_text,
-                        len(audio),
-                        job_id=job_id,
-                        artifact_id=artifact.id,
-                        generation_run_id=output_run_id,
+                        verification=verification,
+                    ),
+                    usage_event_factory=(
+                        lambda artifact_id, take_settings=take_settings, synthesized_text=synthesized_text, duration_ms=duration_ms: (
+                            context._tts_usage_event(
+                                session_id,
+                                take_settings,
+                                synthesized_text,
+                                duration_ms,
+                                job_id=job_id,
+                                artifact_id=artifact_id,
+                                generation_run_id=output_run_id,
+                            )
+                        )
                     )
-                    if usage_event is not None:
-                        session.add(usage_event)
-                from .generation_edit_audio import selection_is_unchanged
-
-                selected_before = session.scalar(select(AudioTake).where(
-                    AudioTake.generation_segment_id == segment_id,
-                    AudioTake.is_active.is_(True),
-                ))
-                expected_selection = (settings_snapshot.get("generation_selection_guards") or {}).get(segment_id)
-                activate_new = selection_is_unchanged(selected_before, expected_selection)
-                if activate_new:
-                    deactivate = update(AudioTake).where(
-                        AudioTake.generation_segment_id == segment_id,
-                        AudioTake.is_active.is_(True),
-                    )
-                    session.execute(
-                        deactivate.values(
-                            is_active=False,
-                            revision=AudioTake.revision + 1,
-                        ).execution_options(synchronize_session=False)
-                    )
-                new_take = AudioTake(
-                    generation_segment_id=segment_id,
-                    generation_run_id=output_run_id,
-                    artifact_id=artifact.id,
-                    parent_take_id=parent_take_id,
-                    kind=take_kind,
-                    status="completed",
-                    settings_hash=artifact.settings_hash,
-                    duration_ms=len(audio),
-                    is_active=activate_new,
-                )
-                session.add(new_take)
-                session.flush()
-                from .generation_edit_audio import publish_to_edit_copy
-
-                publish_to_edit_copy(session, segment, new_take, artifact, expected_selection)
-                segment.status = "completed" if activate_new else (selected_before.status if selected_before else "ready")
-                if (
-                    verification is not None
-                    and verification.get("status") != "passed"
-                ):
-                    segment.marked = True
-                segment.updated_at = utcnow()
-                mark_output_assemblies_stale(
-                    session,
-                    session_id,
-                    generation_run_id=output_run_id,
-                    include_later_runs=output_run_id != run_id,
+                    if operation != "rvc"
+                    else None,
+                    mark_stale=mark_output_assemblies_stale,
                 )
             take_committed = True
             generated += 1
@@ -978,68 +931,14 @@ def run_generation(
         raise parallel_wave_error
 
     verification_warning_count = context._finalize_run_audio_verification(output_run_id)
-    with context.database.immediate_session() as session:
-        run = session.get(GenerationRun, run_id)
-        if run is None:
-            raise KeyError(run_id)
-        if operation == "rvc" or (
-            operation == "regenerate" and run.output_generation_run_id is None
-        ):
-            incomplete = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(GenerationSegment)
-                    .where(
-                        GenerationSegment.plan_revision_id == plan_revision_id,
-                        GenerationSegment.removed.is_(False),
-                        GenerationSegment.status != "completed",
-                    )
-                )
-                or 0
-            )
-        else:
-            completed_segments = (
-                select(AudioTake.generation_segment_id)
-                .where(
-                    AudioTake.generation_run_id == output_run_id,
-                    AudioTake.status == "completed",
-                    AudioTake.artifact_id.is_not(None),
-                )
-                .distinct()
-            )
-            incomplete = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(GenerationSegment)
-                    .where(
-                        GenerationSegment.plan_revision_id == plan_revision_id,
-                        GenerationSegment.removed.is_(False),
-                        ~GenerationSegment.id.in_(completed_segments),
-                    )
-                )
-                or 0
-            )
-        final_status = "partial" if incomplete else "completed"
-        if run.cancel_requested or run.status in {"cancel_requested", "canceled"}:
-            final_status = run.status
-        elif run.pause_requested or run.status in {"pausing", "pause_requested", "paused"}:
-            final_status = "paused"
-            if run.status != "paused":
-                run.status = "paused"
-                run.updated_at = utcnow()
-        else:
-            run.status = "running" if repair_requested and final_status == "completed" else final_status
-            run.updated_at = utcnow()
-        if output_run_id != run_id and final_status in {"completed", "partial"}:
-            output_run = session.get(GenerationRun, output_run_id)
-            if output_run is not None and output_run.status in {
-                "completed",
-                "partial",
-                "failed",
-                "canceled",
-            }:
-                output_run.status = final_status
-                output_run.updated_at = utcnow()
+    final_status, incomplete = finalize_generation_run(
+        context.database,
+        run_id=run_id,
+        output_run_id=output_run_id,
+        plan_revision_id=plan_revision_id,
+        operation=operation,
+        repair_requested=repair_requested,
+    )
     progress(
         1.0,
         "Generation paused" if final_status == "paused"
@@ -1079,7 +978,7 @@ def run_generation(
             context._logger.warning("Optional voiceover repair could not finish; the generated audio remains available.", exc_info=True)
             result["early_repair_status"] = "failed"
         finally:
-            result["status"] = _restore_optional_pass_status(
+            result["status"] = restore_optional_pass_status(
                 context.database, run_id, final_status
             )
         if result.get("repaired_blocks"):
@@ -1098,7 +997,7 @@ def run_generation(
             context._logger.warning("Optional voiceover regroup could not finish; the generated audio remains available.", exc_info=True)
             result["regroup_status"] = "failed"
         finally:
-            result["status"] = _restore_optional_pass_status(
+            result["status"] = restore_optional_pass_status(
                 context.database, run_id, final_status
             )
         if result.get("regrouped_groups"):

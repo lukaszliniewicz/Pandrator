@@ -239,14 +239,17 @@ class VoiceoverRepairTests(unittest.TestCase):
         def request_pause():
             self.assertEqual("pausing", service.request_pause(self.run_id)["status"])
             with self.database.session() as session:
-                takes = list(session.scalars(select(AudioTake).where(
-                    AudioTake.generation_run_id == self.run_id
-                )))
+                takes = list(
+                    session.scalars(
+                        select(AudioTake).where(AudioTake.generation_run_id == self.run_id)
+                    )
+                )
                 observed["takes"] = [(take.id, take.artifact_id, take.created_at) for take in takes]
                 observed["files"] = {
                     take.artifact_id: self.paths.managed_path(
                         session.get(Artifact, take.artifact_id).relative_path
-                    ).read_bytes() for take in takes
+                    ).read_bytes()
+                    for take in takes
                 }
             self.assertEqual(2, len(observed["takes"]))
 
@@ -255,9 +258,9 @@ class VoiceoverRepairTests(unittest.TestCase):
             calls += 1
             if stage == "child" and calls == 3:
                 request_pause()
-            return Sine(440).to_audio_segment(duration=(
-                2000 if text.startswith(self.first) and self.second in text else 1000
-            ))
+            return Sine(440).to_audio_segment(
+                duration=(2000 if text.startswith(self.first) and self.second in text else 1000)
+            )
 
         def progress(_value, detail=None):
             if stage == "inspection" and detail == "Checking voiceover timing 1 of 2":
@@ -284,15 +287,18 @@ class VoiceoverRepairTests(unittest.TestCase):
         self.assertEqual("queued", resumed["status"])
         resumed_job = self.handlers.jobs.claim("repair-resume-fixture")
         self.assertEqual(resumed["job_id"], resumed_job.id)
-        with patch("pandrator.logic.tts_handler.text_to_audio", return_value=(
-            Sine(440).to_audio_segment(duration=1000)
-        )) as synthesize:
+        with patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=(Sine(440).to_audio_segment(duration=1000)),
+        ) as synthesize:
             result = self.handlers.run_generation(
                 resumed_job.payload_json, lambda *_args: None, threading.Event()
             )
         resume_calls = synthesize.call_count
         self.handlers.jobs.complete(
-            resumed_job.id, "repair-resume-fixture", result,
+            resumed_job.id,
+            "repair-resume-fixture",
+            result,
             lease_generation=resumed_job.lease_generation,
         )
         self.assertEqual("completed", result["status"])
