@@ -1927,6 +1927,103 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(before_snapshot, snapshot)
         self.assertEqual(source_bytes, path.read_bytes())
 
+    def test_reviewable_start_preserves_completed_run_after_reporting_failure(self):
+        path, source_bytes, source = self._reviewable_start_source()
+        observed = {}
+        error = RuntimeError("Injected completion reporting failure")
+
+        def progress(_value, detail=None):
+            if detail == "Generation run complete":
+                with self.database.session() as db:
+                    run = db.scalar(select(GenerationRun))
+                    observed["status"] = run.status
+                    observed["updated_at"] = run.updated_at
+                raise error
+
+        with mock.patch(
+            "pandrator.logic.tts_handler.text_to_audio",
+            return_value=AudioSegment.silent(duration=25),
+        ), self.assertRaises(RuntimeError) as raised:
+            self.handlers._run_reviewable_generation(
+                {"session_id": self.session.id, "source_artifact_id": source.id,
+                 "settings": {"service": "XTTS", "llm_tts_optimization": False}},
+                progress, threading.Event(),
+            )
+        self.assertIs(error, raised.exception)
+        self.assertEqual("completed", observed["status"])
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            run = db.scalar(select(GenerationRun))
+            self.assertEqual("completed", run.status)
+            self.assertEqual(observed["updated_at"], run.updated_at)
+            takes = list(db.scalars(select(AudioTake)))
+            self.assertEqual(1, len(takes))
+            self.assertEqual("completed", takes[0].status)
+            self.assertTrue(self.artifacts.resolve(takes[0].artifact_id)[1].is_file())
+
+    def test_reviewable_start_preserves_native_cancellation_after_delegate_error(self):
+        path, source_bytes, source = self._reviewable_start_source()
+        generation = GenerationService(
+            self.database, JobQueue(self.database), WorkspaceSettingsService(self.database),
+            artifacts=self.artifacts,
+        )
+        error = RuntimeError("Injected error after cancellation")
+        observed = {}
+
+        def cancel_then_raise(payload, _progress, _cancel):
+            run_id = payload["generation_run_id"]
+            generation.cancel(run_id)
+            with self.database.session() as db:
+                run = db.get(GenerationRun, run_id)
+                observed["status"], observed["updated_at"] = run.status, run.updated_at
+            raise error
+
+        with mock.patch.object(self.handlers, "run_generation", side_effect=cancel_then_raise), self.assertRaises(RuntimeError) as raised:
+            self.handlers._run_reviewable_generation(
+                {"session_id": self.session.id, "source_artifact_id": source.id,
+                 "settings": {"service": "XTTS"}},
+                self.progress, threading.Event(),
+            )
+        self.assertIs(error, raised.exception)
+        self.assertEqual("canceled", observed["status"])
+        self.assertEqual(source_bytes, path.read_bytes())
+        with self.database.session() as db:
+            run = db.scalar(select(GenerationRun))
+            self.assertEqual("canceled", run.status)
+            self.assertEqual(observed["updated_at"], run.updated_at)
+            self.assertEqual(0, db.scalar(select(func.count()).select_from(AudioTake)))
+
+    def test_reviewable_start_marks_active_failure_in_an_immediate_transaction(self):
+        _path, _source_bytes, source = self._reviewable_start_source()
+        error = RuntimeError("Injected synthesis failure")
+        observed = {}
+        immediate = self.database.immediate_session
+
+        def fail_active(payload, _progress, _cancel):
+            observed["run_id"] = payload["generation_run_id"]
+            # Start watching only after plan/run creation; the failure handler
+            # must acquire its own writer transaction before reading the run.
+            observed["guard"] = mock.patch.object(
+                self.database, "immediate_session", wraps=immediate
+            )
+            observed["writer"] = observed["guard"].start()
+            raise error
+
+        try:
+            with mock.patch.object(self.handlers, "run_generation", side_effect=fail_active), self.assertRaises(RuntimeError) as raised:
+                self.handlers._run_reviewable_generation(
+                    {"session_id": self.session.id, "source_artifact_id": source.id,
+                     "settings": {"service": "XTTS"}},
+                    self.progress, threading.Event(),
+                )
+            self.assertIs(error, raised.exception)
+            observed["writer"].assert_called_once_with()
+        finally:
+            if "guard" in observed:
+                observed["guard"].stop()
+        with self.database.session() as db:
+            self.assertEqual("failed", db.get(GenerationRun, observed["run_id"]).status)
+
     def _subtitle_publication_fixture(self):
         path = self.session_dir / "publication-source.srt"
         source_bytes = b"1\n00:00:01,000 --> 00:00:05,000\nHello world. A second phrase.\n"

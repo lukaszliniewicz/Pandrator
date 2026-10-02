@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from .credentials import redact_inline_secrets
 from .database import Database
+from .jobs import JobQueue
 from .models import Artifact, GenerationPlan, GenerationPlanRevision, GenerationRun, utcnow
 from .workflow_generation_binding import GenerationPlanStoreProtocol
 
@@ -249,9 +250,10 @@ def run_reviewable_generation(
             cancel_event,
         )
     except Exception:
-        with context.database.session() as session:
+        with context.database.immediate_session() as session:
             failed = session.get(GenerationRun, run_id)
-            if failed is not None:
+            # A late reporting error must not replace a finished domain result.
+            if failed is not None and failed.status in JobQueue.GENERATION_ACTIVE_STATUSES:
                 failed.status = "failed"
                 failed.updated_at = utcnow()
         raise
