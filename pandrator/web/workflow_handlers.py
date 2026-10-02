@@ -6112,7 +6112,9 @@ class WorkflowHandlers:
             )
             if cancel_event.is_set():
                 with self.database.session() as session:
-                    training = session.get_one(TrainingRun, training_id)
+                    training = session.get(TrainingRun, training_id)
+                    if training is None:
+                        raise ValueError("Training record not found.")
                     training.status = "canceled"
                 return {}
             if not success:
@@ -6138,7 +6140,9 @@ class WorkflowHandlers:
                 metadata={"model_name": model_name},
             )
             with self.database.session() as session:
-                training = session.get_one(TrainingRun, training_id)
+                training = session.get(TrainingRun, training_id)
+                if training is None:
+                    raise ValueError("Training record not found.")
                 training.status = "succeeded"
                 training.output_artifact_id = artifact.id
                 training.updated_at = utcnow()

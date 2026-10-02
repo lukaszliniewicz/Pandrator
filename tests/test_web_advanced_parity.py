@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 from sqlalchemy import select
-from sqlalchemy.exc import NoResultFound
 
 from pandrator.logic.source_cleaning.deterministic import (
     EpubExtractionError,
@@ -202,7 +201,7 @@ class TrainingHandlerTests(unittest.TestCase):
                         return True, "trained"
 
                     with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", side_effect=train):
-                        with self.assertRaises(NoResultFound):
+                        with self.assertRaisesRegex(ValueError, "Training record not found"):
                             WorkflowHandlers(database, paths).train_xtts(
                                 {"training_id": training_id, "source_artifact_id": source.id,
                                  "model_name": "narrator"},
