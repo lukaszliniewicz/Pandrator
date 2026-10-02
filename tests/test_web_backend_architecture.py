@@ -182,6 +182,64 @@ class BackendArchitectureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "session_id"):
             validated["validated"]({}, lambda *_: None, threading.Event())
 
+    def test_voice_facades_capture_current_dependencies_and_forward_identity(self):
+        from pandrator.web import workflow_handlers
+
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        payload, progress, cancel = {"unchanged": []}, lambda *_args: None, threading.Event()
+        fields = {
+            name: object() for name in ("database", "paths", "artifacts", "tts_providers", "manager_bridge")
+        }
+        fields.update(_resolve_input=lambda _id: None, _session_dir=lambda _id: None)
+        def scale(callback, _start, _end):
+            return callback
+        for name in (
+            "transcribe_voice", "normalize_voice_recording", "publish_voice", "unpublish_voice",
+            "upload_rvc_model", "convert_with_rvc",
+        ):
+            with self.subTest(handler=name), patch.multiple(handlers, **fields), patch.object(
+                workflow_handlers, "_scaled_progress_callback", scale
+            ), patch.object(workflow_handlers, f"_voice_{name}") as owner:
+                expected = {"result": name}
+                owner.return_value = expected
+                self.assertIs(expected, getattr(handlers, name)(payload, progress, cancel))
+                owner.assert_called_once()
+                context, sent_payload, sent_progress, sent_cancel = owner.call_args.args
+                self.assertIs(payload, sent_payload)
+                self.assertIs(progress, sent_progress)
+                self.assertIs(cancel, sent_cancel)
+                for field, value in fields.items():
+                    self.assertIs(value, getattr(context, field))
+                self.assertIs(scale, context._scaled_progress_callback)
+        # A later invocation must replace the context and capture replaced fields.
+        with patch.object(workflow_handlers, "_voice_publish_voice") as owner:
+            handlers.publish_voice(payload, progress, cancel)
+            initial = owner.call_args.args[0]
+            changed_database = object()
+            with patch.object(handlers, "database", changed_database):
+                handlers.publish_voice(payload, progress, cancel)
+            latest = owner.call_args.args[0]
+            self.assertIsNot(initial, latest)
+            self.assertIs(changed_database, latest.database)
+
+    def test_extracted_voice_registry_handlers_remain_late_bound(self):
+        handlers = self.app.extensions["pandrator"]["workflow_handlers"]
+        registrations = {
+            "voice.transcribe": "transcribe_voice", "voice.normalize_recording": "normalize_voice_recording",
+            "voice.publish": "publish_voice", "voice.unpublish": "unpublish_voice",
+            "rvc.model.upload": "upload_rvc_model", "rvc.convert": "convert_with_rvc",
+        }
+        payload = {key: "test" for key in (
+            "voice_id", "sample_artifact_id", "source_artifact_id", "service_id", "pth_artifact_id", "index_artifact_id"
+        )}
+        progress, cancel = lambda *_args: None, threading.Event()
+        for kind, name in registrations.items():
+            with self.subTest(kind=kind), patch.object(handlers, name) as replacement:
+                expected = {"late_bound": kind}
+                replacement.return_value = expected
+                self.assertIs(expected, handlers.handler_registry[kind](payload, progress, cancel))
+                replacement.assert_called_once_with(payload, progress, cancel)
+
     def test_tts_registry_exposes_and_dispatches_the_provider_protocol(self):
         class RecordingAdapter:
             service_id = "xtts"

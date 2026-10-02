@@ -579,6 +579,32 @@ def fake_normalization(command, **_kwargs):
     return subprocess.CompletedProcess(command, 0, "", "")
 
 
+def test_normalization_owner_runs_with_explicit_standalone_context(normalization_case):
+    from pandrator.web.workflow_handlers import _scaled_progress_callback
+    from pandrator.web.workflow_voice import VoiceWorkflowContext, normalize_voice_recording
+
+    case = normalization_case
+    handlers = case.handlers
+    context = VoiceWorkflowContext(
+        database=case.database, paths=case.paths, artifacts=handlers.artifacts,
+        tts_providers=handlers.tts_providers, manager_bridge=handlers.manager_bridge,
+        _resolve_input=handlers._resolve_input, _session_dir=handlers._session_dir,
+        _scaled_progress_callback=_scaled_progress_callback,
+    )
+    raw = case.source.read_bytes()
+    with mock.patch("pandrator.web.workflow_handlers.subprocess.run", fake_normalization):
+        result = normalize_voice_recording(context, case.payload, lambda *_args: None, threading.Event())
+    artifact, output = handlers.artifacts.resolve(result["artifact_id"])
+    assert artifact.role == "voice_sample"
+    assert wav_params(output) == (1, 24000)
+    assert case.source.read_bytes() == raw
+    with case.database.session() as session:
+        sample = session.get(VoiceSample, result["sample_id"])
+        assert sample.transcript == "New words"
+        assert sample.transcript_reviewed
+        assert session.get(Voice, case.voice_id).revision == 2
+
+
 @pytest.mark.parametrize("replace", [False, True])
 @pytest.mark.parametrize("noise_reduction", ["none", "deepfilternet2"])
 @pytest.mark.parametrize("failure", ["ffmpeg", "prepare", "registration", "commit"])
@@ -654,7 +680,7 @@ def test_postcommit_failure_preserves_new_normalized_sample(normalization_case, 
     raw = case.source.read_bytes()
     with (
         mock.patch("pandrator.web.workflow_handlers.subprocess.run", fake_normalization),
-        mock.patch("pandrator.web.workflow_handlers.remove_managed_files", remove),
+        mock.patch("pandrator.web.workflow_voice.remove_managed_files", remove),
         pytest.raises(OSError, match=f"S2 {failure} failed"),
     ):
         case.handlers.normalize_voice_recording(
