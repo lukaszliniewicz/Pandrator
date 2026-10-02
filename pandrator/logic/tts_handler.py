@@ -52,6 +52,8 @@ from .tts_endpoint_transport import (
 from .tts_endpoint_transport import (
     audio_cpp_endpoint_lock_for_key,
     endpoint_lock_guard,
+    endpoint_lock_key,
+    endpoint_lock_urls,
 )
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
@@ -1966,8 +1968,20 @@ def _configured_endpoint_url(base_url: str, path: str) -> str:
     return urljoin(f"{origin}/", normalized_path.lstrip("/"))
 
 
+def _audio_cpp_endpoint_lock_key(base_url: str) -> str:
+    return endpoint_lock_key(base_url, key_for=_audio_cpp_endpoint_key)
+
+
+def _audio_cpp_endpoint_lock_urls(endpoint: Mapping[str, object]) -> list[str]:
+    base_url = str(endpoint.get("base_url") or "")
+    speech_url = _configured_endpoint_url(
+        base_url, str(endpoint.get("speech_path") or "/v1/audio/speech")
+    )
+    return endpoint_lock_urls(base_url, speech_url, lock_key_for=_audio_cpp_endpoint_lock_key)
+
+
 def _audio_cpp_endpoint_lock_for(base_url: str) -> RLock:
-    return audio_cpp_endpoint_lock_for_key(_audio_cpp_endpoint_key(base_url))
+    return audio_cpp_endpoint_lock_for_key(_audio_cpp_endpoint_lock_key(base_url))
 
 
 @contextmanager
@@ -1986,10 +2000,13 @@ def audio_cpp_endpoint_lock(tts_settings: dict, cancel_event=None):
     ):
         yield
         return
-    base_url = str(endpoint.get("base_url") or "")
-    with local_tts_audio_cpp_guard(base_url, cancel_event):
-        with _audio_cpp_endpoint_guard(base_url, cancel_event):
-            yield
+    urls = _audio_cpp_endpoint_lock_urls(endpoint)
+    with ExitStack() as stack:
+        for url in urls:
+            stack.enter_context(local_tts_audio_cpp_guard(url, cancel_event))
+        for url in urls:
+            stack.enter_context(_audio_cpp_endpoint_guard(url, cancel_event))
+        yield
 
 
 def _coerce_bool(value, default: bool) -> bool:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from threading import Event, Lock, RLock
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import requests
 
@@ -31,6 +31,23 @@ def audio_cpp_endpoint_key(base_url: str) -> str:
         port = 443 if scheme == "https" else 80
     path = parsed.path.rstrip("/") or "/"
     return f"{scheme}://{hostname}:{port}{path}"
+
+
+def endpoint_lock_key(base_url: str, *, key_for: Callable[[str], str]) -> str:
+    """Resident model state belongs to a server, independent of its URL path."""
+    parsed = urlparse(str(base_url or "").strip())
+    origin = urlunparse(parsed._replace(path="", params="", query="", fragment=""))
+    return key_for(origin)
+
+
+def endpoint_lock_urls(
+    base_url: str, speech_url: str, *, lock_key_for: Callable[[str], str]
+) -> list[str]:
+    """Order distinct base/target servers consistently for nested acquisition."""
+    urls_by_key: dict[str, str] = {}
+    for url in (base_url, speech_url):
+        urls_by_key.setdefault(lock_key_for(url), url)
+    return [urls_by_key[key] for key in sorted(urls_by_key)]
 
 
 def audio_cpp_endpoint_lock_for_key(key: str) -> RLock:

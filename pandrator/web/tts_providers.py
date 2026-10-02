@@ -1203,7 +1203,7 @@ class AudioCppAdapter(LegacyTtsAdapter):
         return result
 
     @staticmethod
-    def _batch_key(settings: dict[str, Any]) -> str:
+    def _batch_key(settings: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
         endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
         if endpoint is None:
             raise ValueError(error)
@@ -1212,7 +1212,13 @@ class AudioCppAdapter(LegacyTtsAdapter):
             != "audio_cpp"
         ):
             raise ValueError("The selected endpoint is not an audio.cpp service.")
-        return tts_handler._audio_cpp_endpoint_key(str(endpoint.get("base_url") or ""))
+        return (
+            tts_handler._audio_cpp_endpoint_key(str(endpoint.get("base_url") or "")),
+            tuple(
+                tts_handler._audio_cpp_endpoint_lock_key(url)
+                for url in tts_handler._audio_cpp_endpoint_lock_urls(endpoint)
+            ),
+        )
 
     def synthesize_batch(
         self,
