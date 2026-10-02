@@ -109,15 +109,20 @@ export class GenerationPlaybackController {
 
     this.activePlayingId = item.id;
     this.options.onSelect(item.id);
+    const audio = new Audio(`/api/v1/artifacts/${take.artifact_id}/content`);
     await new Promise<void>((resolve) => {
       this.resolveAudio = resolve;
-      this.audio = new Audio(`/api/v1/artifacts/${take.artifact_id}/content`);
-      this.audio.onended = () => resolve();
-      this.audio.onerror = () => resolve();
-      void this.audio.play().catch(resolve);
+      this.audio = audio;
+      audio.onended = () => resolve();
+      audio.onerror = () => resolve();
+      void audio.play().catch(resolve);
     });
-    this.resolveAudio = null;
-    this.audio = null;
+    // stop() settles the previous attempt before its continuation runs. A
+    // replacement may already own these handles by then; keep it stoppable.
+    if (this.audio === audio) {
+      this.resolveAudio = null;
+      this.audio = null;
+    }
 
     if (token === this.token) {
       await this.waitForSilence(Number(item.silence_after_ms || 0), token);

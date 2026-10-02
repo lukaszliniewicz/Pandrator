@@ -83,11 +83,15 @@ The web client uses its locked Prettier, ESLint, Svelte/TypeScript, and Knip che
 ```bash
 pixi run --environment web-build web-install
 pixi run --environment web-build npm --prefix web run quality
+pixi run --environment web-build npm --prefix web run test:unit
 pixi run --environment web-build web-build
 ```
 
 Run the Svelte check and build sequentially: both write `.svelte-kit` metadata.
 Then run relevant browser tests against the resulting production build.
+The frontend unit command runs every `web/unit-tests/*.test.mjs` file, including
+deterministic request and playback lifecycle checks. CI runs it alongside the
+frontend quality checks. These small tests complement production browser tests.
 
 For supporting tool behavior, see the [Ruff linter documentation](https://docs.astral.sh/ruff/linter/),
 [basedpyright configuration](https://docs.basedpyright.com/latest/configuration/config-files/),

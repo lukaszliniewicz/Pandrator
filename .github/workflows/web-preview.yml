@@ -150,6 +150,8 @@ jobs:
           git diff --exit-code -- openapi.json web/src/lib/api.generated.ts
       - name: Run frontend quality checks
         run: npm --prefix web run quality
+      - name: Run frontend unit tests
+        run: npm --prefix web run test:unit
       - name: Build production frontend
         run: npm --prefix web run build
       - name: Verify tracked static build output

@@ -14,6 +14,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "quality": "npm run format:check && npm run lint && npm run check && npm run dead-code",
+    "test:unit": "node --test \"unit-tests/*.test.mjs\"",
     "test:a11y": "playwright test tests/accessibility.spec.ts",
     "test:e2e": "playwright test",
     "build:manager-models": "node scripts/build-manager-model-groups.mjs",

@@ -207,6 +207,60 @@ test('per-row audio defers to one mounted player', () => {
   expect(table).toContain('generation-virtual-window');
 });
 
+test('rapid keyboard playback replacement remains stoppable', async ({
+  page
+}) => {
+  const pageErrors = trackPageErrors(page);
+  await signIn(page);
+  const sessionId = await createAudiobookSession(page);
+  await mockCompletedCorpus(page, sessionId, 3);
+  await page.goto(`/sessions/${sessionId}`);
+  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  const row = await revealSegment(page, 'preview-segment-0', 0);
+  await row.locator('td').nth(1).click();
+
+  const playback = await page.evaluate(async () => {
+    const OriginalAudio = window.Audio;
+    const instances: HTMLAudioElement[] = [];
+    window.Audio = class extends OriginalAudio {
+      constructor(src?: string) {
+        super(src);
+        instances.push(this);
+      }
+    };
+    try {
+      // Same-turn replacement makes the canceled attempt resume only after
+      // its successor has acquired the controller's playback handles.
+      for (let i = 0; i < 2; i += 1) {
+        document.body.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+        );
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      const stop = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Stop playlist"]'
+      );
+      if (!stop) throw new Error('Playback did not expose its stop control.');
+      stop.click();
+      return instances.map((audio) => ({
+        src: audio.src,
+        paused: audio.paused
+      }));
+    } finally {
+      window.Audio = OriginalAudio;
+      for (const audio of instances) audio.pause();
+    }
+  });
+  expect(playback).toHaveLength(2);
+  expect(playback.every((audio) => audio.paused)).toBeTruthy();
+  expect(playback[1].src).toContain('preview-artifact-0/content');
+  await expect(page.getByRole('button', { name: 'Stop playlist' })).toHaveCount(
+    0
+  );
+  expect(pageErrors).toEqual([]);
+});
+
 test('hundreds of playable rows mount a single audio element on demand', async ({
   page
 }) => {
