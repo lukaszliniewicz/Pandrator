@@ -34,6 +34,7 @@ from pandrator.web.models import (
     GenerationRun,
     GenerationSegment,
     Job,
+    OutputAssembly,
     utcnow,
 )
 
@@ -198,6 +199,141 @@ class SessionViewPerformanceTests(unittest.TestCase):
             if "FROM jobs" in item and "jobs.lease_expires_at >" in item
         ]
         return selects, blockers
+
+    def _history_assembly(self, session, session_id, run_id, job, *, created_at):
+        assembly = OutputAssembly(
+            session_id=session_id,
+            generation_run_id=run_id,
+            job_id=job.id if job else None,
+            status="running",
+            settings_json={"history_run": run_id},
+            created_at=created_at,
+        )
+        session.add(assembly)
+        session.flush()
+        session.refresh(assembly)
+        return self.generation._assembly_payload(assembly, job)
+
+    def _run_history_assembly_fixture(self, count, *, run_status, job_status):
+        session_id, run_ids = self._run_history_fixture(
+            count, run_status=run_status, job_status=job_status
+        )
+        expected = {}
+        now = utcnow()
+        with self.database.session() as session:
+            for index, run_id in enumerate(run_ids, start=1):
+                old_job = Job(session_id=session_id, kind="output.assembly", status="queued")
+                latest_job = Job(
+                    session_id=session_id,
+                    kind="output.assembly",
+                    status="running",
+                    progress=0.25,
+                    progress_detail=f"assembly-{index}-running",
+                )
+                session.add_all([old_job, latest_job])
+                session.flush()
+                self._history_assembly(
+                    session, session_id, run_id, old_job,
+                    created_at=now - timedelta(seconds=1),
+                )
+                expected[run_id] = self._history_assembly(
+                    session, session_id, run_id, latest_job, created_at=now,
+                )
+        return session_id, run_ids, expected
+
+    def test_run_history_batches_latest_assembly_jobs_with_constant_queries(self):
+        log = self._statement_log()
+        for run_status, job_status in (("completed", "succeeded"), ("queued", "queued")):
+            for count in (1, 10, 50):
+                session_id, run_ids, expected = self._run_history_assembly_fixture(
+                    count, run_status=run_status, job_status=job_status
+                )
+                for read_name, read in (
+                    ("full", lambda session_id=session_id: self.generation.list_runs(session_id)),
+                    ("limit", lambda session_id=session_id: self.generation.list_runs(session_id, limit=1)),
+                    ("latest", lambda session_id=session_id: [self.generation.latest_run(session_id)]),
+                ):
+                    with self.subTest(run_status=run_status, count=count, read=read_name):
+                        log.clear()
+                        items = read()
+                        selects, blockers = self._history_selects(log)
+                        self.assertEqual(count if read_name == "full" else 1, len(items))
+                        self.assertEqual(run_ids[-1], items[0]["id"])
+                        for item in items:
+                            self.assertEqual(expected[item["id"]], item["assembly"])
+                            self.assertEqual(0.25, item["assembly"]["progress"])
+                            self.assertEqual(
+                                f"assembly-{item['sequence_number']}-running",
+                                item["assembly"]["progress_detail"],
+                            )
+                        self.assertEqual(
+                            [],
+                            [sql for sql in selects if "FROM jobs" in sql and "WHERE jobs.id =" in sql],
+                        )
+                        self.assertLessEqual(len(selects), 9 if job_status == "queued" else 8)
+                        self.assertEqual(1 if job_status == "queued" else 0, len(blockers))
+
+    def test_assembly_job_batch_skips_missing_reused_and_older_jobs(self):
+        session_id, run_ids = self._run_history_fixture(
+            3, run_status="completed", job_status="succeeded"
+        )
+        expected = {}
+        generation_job_ids = set()
+        now = utcnow()
+        with self.database.session() as session:
+            for run_id in run_ids:
+                generation_job_ids.add(session.get(GenerationRun, run_id).job_id)
+            reused_job = session.get(Job, session.get(GenerationRun, run_ids[1]).job_id)
+            reused_job.progress = 0.6
+            reused_job.progress_detail = "reused-generation-job"
+            selected_job = Job(
+                session_id=session_id, kind="output.assembly", status="queued",
+                progress=0.25, progress_detail="selected-queued-assembly-job",
+            )
+            session.add(selected_job)
+            session.flush()
+            selected_job_id = selected_job.id
+            for run_id, selected in zip(run_ids, (None, reused_job, selected_job), strict=True):
+                older_job = Job(
+                    session_id=session_id, kind="output.assembly", status="queued",
+                    progress_detail="unused-old-assembly-job",
+                )
+                session.add(older_job)
+                session.flush()
+                self._history_assembly(
+                    session, session_id, run_id, older_job,
+                    created_at=now - timedelta(seconds=1),
+                )
+                expected[run_id] = self._history_assembly(
+                    session, session_id, run_id, selected, created_at=now,
+                )
+
+        job_batches = []
+
+        def record_job_batch(conn, cursor, statement, parameters, context, executemany):
+            if "FROM jobs" in statement and "WHERE jobs.id IN" in statement:
+                job_batches.append(set(parameters))
+
+        event.listen(self.database.engine, "before_cursor_execute", record_job_batch)
+        self.addCleanup(
+            event.remove, self.database.engine, "before_cursor_execute", record_job_batch
+        )
+        log = self._statement_log()
+        items = self.generation.list_runs(session_id)
+        selects, blockers = self._history_selects(log)
+        self.assertEqual([generation_job_ids, {selected_job_id}], job_batches)
+        self.assertEqual([], blockers)
+        self.assertLessEqual(len(selects), 8)
+        self.assertEqual(
+            [], [sql for sql in selects if "FROM jobs" in sql and "WHERE jobs.id =" in sql]
+        )
+        self.assertEqual(expected, {item["id"]: item["assembly"] for item in items})
+        self.assertEqual(0.0, expected[run_ids[0]]["progress"])
+        self.assertIsNone(expected[run_ids[0]]["progress_detail"])
+        self.assertEqual(0.6, expected[run_ids[1]]["progress"])
+        self.assertEqual("reused-generation-job", expected[run_ids[1]]["progress_detail"])
+        self.assertEqual(0.25, expected[run_ids[2]]["progress"])
+        self.assertEqual("selected-queued-assembly-job", expected[run_ids[2]]["progress_detail"])
 
     def test_run_history_queries_are_constant_for_completed_and_queued_runs(self):
         log = self._statement_log()

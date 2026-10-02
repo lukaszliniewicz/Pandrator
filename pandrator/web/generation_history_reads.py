@@ -178,6 +178,17 @@ class GenerationHistoryReader:
             if assembly.generation_run_id is not None:
                 assembly_by_run_id.setdefault(assembly.generation_run_id, assembly)
 
+        assembly_job_ids = {
+            assembly.job_id
+            for assembly in assembly_by_run_id.values()
+            if assembly.job_id and assembly.job_id not in job_by_id
+        }
+        if assembly_job_ids:
+            assembly_jobs = session.scalars(
+                select(Job).where(Job.id.in_(assembly_job_ids))
+            ).all()
+            job_by_id.update((job.id, job) for job in assembly_jobs)
+
         take_counts: dict[str, int] = {}
         if output_run_ids:
             for generation_run_id, count in session.execute(
@@ -490,7 +501,7 @@ class GenerationHistoryReader:
             "assembly": (
                 self._assembly_payload(
                     assembly,
-                    session.get(Job, assembly.job_id) if assembly.job_id else None,
+                    context["jobs_by_id"].get(assembly.job_id) if assembly.job_id else None,
                 )
                 if assembly
                 else None
