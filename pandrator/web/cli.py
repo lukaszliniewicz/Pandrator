@@ -519,12 +519,15 @@ def command_worker(args) -> int:
                     payload_contract=registration.payload_contract,
                 )
             worker = Worker(queue, worker_id, handler_registry)
-            with worker_termination(worker.stop):
+            with worker_termination(worker.stop) as termination_requested:
                 try:
                     if args.once:
                         worker.run_once()
                     else:
-                        worker.run_forever(args.poll_interval)
+                        worker.run_forever(
+                            args.poll_interval,
+                            stop_requested=termination_requested,
+                        )
                 except KeyboardInterrupt:
                     worker.stop()
     finally:

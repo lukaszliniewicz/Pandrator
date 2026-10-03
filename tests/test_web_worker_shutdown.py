@@ -39,14 +39,13 @@ class WorkerShutdownTests(unittest.TestCase):
                 child.kill()
             child.wait(timeout=5)
 
-    def _start_worker(self, *, poll_interval=0.05):
+    def _start_worker(self, *, poll_interval=0.05, script=None):
         log = (self.paths.root / "worker.log").open("w")
         self.addCleanup(log.close)
+        launcher = [sys.executable, str(script)] if script else [sys.executable, "-m", "pandrator"]
         child = subprocess.Popen(
             [
-                sys.executable,
-                "-m",
-                "pandrator",
+                *launcher,
                 "--data-dir",
                 str(self.paths.root),
                 "worker",
@@ -90,6 +89,32 @@ class WorkerShutdownTests(unittest.TestCase):
         self.assertEqual((deferred.status, deferred.attempts), ("queued", 0))
         self.assertFalse(self.paths.worker_presence.exists())
 
+    def test_sigterm_at_handler_return_leaves_next_job_unclaimed(self):
+        current = self.queue.enqueue("noop", {"echo": "signal before return"})
+        following = self.queue.enqueue("noop", {"duration": 0.25})
+        script = self.paths.root / "signal-at-return.py"
+        script.write_text(
+            f"""
+import signal, sys
+sys.path.insert(0, {str(REPO)!r})
+from pandrator.web import cli
+native_noop = cli.noop_handler
+def signal_at_return(payload, progress, cancel_event):
+    result = native_noop(payload, progress, cancel_event)
+    if payload.get('echo') == 'signal before return':
+        signal.raise_signal(signal.SIGTERM)
+    return result
+cli.noop_handler = signal_at_return
+raise SystemExit(cli.main(sys.argv[1:]))
+"""
+        )
+        child = self._start_worker(script=script)
+        self.assertEqual(child.wait(timeout=20), 0)
+        self.assertEqual(self.queue.get(current.id).status, "succeeded")
+        deferred = self.queue.get(following.id)
+        self.assertEqual((deferred.status, deferred.attempts), ("queued", 0))
+        self.assertFalse(self.paths.worker_presence.exists())
+
     def test_sigterm_wakes_idle_worker_with_long_poll_interval(self):
         warmup = self.queue.enqueue("noop")
         child = self._start_worker(poll_interval=30)
@@ -106,9 +131,11 @@ import json, signal, threading
 from pandrator.web.worker_shutdown import worker_termination
 stopped = threading.Event()
 previous = signal.getsignal(signal.SIGTERM)
-with worker_termination(stopped.set):
+with worker_termination(stopped.set) as termination_requested:
+    assert not termination_requested()
     with stopped._cond:
         signal.raise_signal(signal.SIGTERM)
+        assert termination_requested(), 'Signal request not visible before monitor stop'
     assert stopped.wait(2), 'Signal did not request worker stop'
 assert signal.getsignal(signal.SIGTERM) == previous, 'Signal handler not restored'
 try:

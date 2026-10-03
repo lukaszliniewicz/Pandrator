@@ -10,7 +10,7 @@ from types import FrameType
 
 
 @contextmanager
-def worker_termination(stop: Callable[[], None]) -> Iterator[None]:
+def worker_termination(stop: Callable[[], None]) -> Iterator[Callable[[], bool]]:
     """Request worker stop outside the SIGTERM callback and restore its handler."""
 
     requested = False
@@ -19,6 +19,9 @@ def worker_termination(stop: Callable[[], None]) -> Iterator[None]:
     def request_stop(_signum: int, _frame: FrameType | None) -> None:
         nonlocal requested
         requested = True
+
+    def termination_requested() -> bool:
+        return requested
 
     def monitor_termination() -> None:
         while not finished.wait(0.05):
@@ -34,7 +37,7 @@ def worker_termination(stop: Callable[[], None]) -> Iterator[None]:
     previous = signal.signal(signal.SIGTERM, request_stop)
     try:
         monitor.start()
-        yield
+        yield termination_requested
     finally:
         finished.set()
         try:

@@ -1375,8 +1375,15 @@ class Worker:
                         error,
                     )
 
-    def run_forever(self, poll_interval: float = 0.5) -> None:
+    def run_forever(
+        self,
+        poll_interval: float = 0.5,
+        *,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> None:
         while not self.stop_event.is_set():
+            if stop_requested is not None and stop_requested():
+                break
             try:
                 processed = self.run_once()
             except Exception as error:
