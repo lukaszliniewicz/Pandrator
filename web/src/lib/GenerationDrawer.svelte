@@ -420,8 +420,11 @@
     return params;
   });
   let speechOptionsLoading = $state(false);
+  let speechOptionsError = $state('');
+  let speechOptionsRequest = 0;
+  let disposed = false;
   let topologyBusy = $state(false);
-  let supportingOptionsLoaded = false;
+  let supportingOptionsStarted = false;
   let ttsSettings = $state<Record<string, unknown>>({});
   let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
   let libraryVoices = $state<VoiceRecord[]>([]);
@@ -972,6 +975,10 @@
   }
 
   async function loadSpeechOptions() {
+    const request = ++speechOptionsRequest;
+    const scope = sessionId;
+    const isCurrent = () =>
+      !disposed && request === speechOptionsRequest && scope === sessionId;
     speechOptionsLoading = true;
     try {
       const [settings, services, voices] = await Promise.all([
@@ -979,6 +986,8 @@
         getTtsCompactCatalogue(true),
         getVoiceLibrary()
       ]);
+      if (!isCurrent()) return;
+      speechOptionsError = '';
       ttsSettings = settings.effective ?? {};
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];
@@ -1000,6 +1009,7 @@
             service.api_base,
             service.id
           );
+          if (!isCurrent()) return;
           if (discovered?.success) {
             const refreshed = ttsCatalogue.services.map((candidate) =>
               candidate.id === service.id
@@ -1028,12 +1038,10 @@
           // The saved catalogue remains useful when a backend has no discovery route.
         }
       }
-    } catch {
-      ttsSettings = {};
-      ttsCatalogue = { services: [] };
-      libraryVoices = [];
+    } catch (caught) {
+      if (isCurrent()) speechOptionsError = errorMessage(caught);
     } finally {
-      speechOptionsLoading = false;
+      if (isCurrent()) speechOptionsLoading = false;
     }
   }
 
@@ -1553,8 +1561,8 @@
   }
 
   async function loadSupportingOptions() {
-    if (supportingOptionsLoaded) return;
-    supportingOptionsLoaded = true;
+    if (supportingOptionsStarted) return;
+    supportingOptionsStarted = true;
     await Promise.all([loadRvc(), loadSpeechOptions()]);
   }
 
@@ -2182,6 +2190,8 @@
       applyLoadResult
     );
     return () => {
+      disposed = true;
+      speechOptionsRequest++;
       disconnect();
       disconnectPlanEditor();
       if (timer) window.clearTimeout(timer);
@@ -2947,6 +2957,20 @@
         {#if error}<p class="p-3 text-sm text-red-500" role="alert">
             {error}
           </p>{/if}
+        {#if speechOptionsError}
+          <div
+            class="flex flex-wrap items-center gap-3 p-3 text-sm text-red-500"
+            role="alert"
+          >
+            <p>Could not refresh speech options: {speechOptionsError}</p>
+            <button
+              type="button"
+              class="action"
+              disabled={speechOptionsLoading}
+              onclick={() => loadSpeechOptions()}>Retry speech options</button
+            >
+          </div>
+        {/if}
         {#if run?.status === 'queued' && run.waiting_for_job}
           <p class="px-4 py-2 text-sm" role="status">
             Generation queued — waiting for {run.waiting_for_job.kind.startsWith(
