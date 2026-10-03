@@ -2210,16 +2210,6 @@
                 }
             }
         ],
-        "./pandrator/web/media_edit_dispatch.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/media_edit_routes.py": [
             {
                 "code": "reportArgumentType",

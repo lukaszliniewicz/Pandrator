@@ -678,7 +678,7 @@ class MediaEditDispatchRunService:
                     "source_revision_number": run.source_revision_number,
                 },
             )
-        proposal = dict(
+        proposal: dict[str, Any] = dict(
             batch.normalized_output_json or {"kind": "media_edit", "cuts": []}
         )
         try:
