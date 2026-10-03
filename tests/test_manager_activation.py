@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -18,12 +19,14 @@ from pandrator_manager.models import (
     TERMINAL_OPERATION_STATES,
     ComponentDefinition,
     DesiredComponentState,
+    ManagedProcessSpec,
     OperationKind,
     OperationState,
     TaskState,
 )
 from pandrator_manager.operations import OperationEngine
 from pandrator_manager.operations.handlers import FilesystemTaskHandler
+from pandrator_manager.supervisor import ProcessSupervisor
 
 
 class ActivationTests(unittest.TestCase):
@@ -382,3 +385,73 @@ class ActivationTests(unittest.TestCase):
         for empty_receipt in (False, True):
             with self.subTest(empty_receipt=empty_receipt):
                 self._assert_redirected_rollback_preserved(empty_receipt=empty_receipt)
+
+    def _assert_live_guard_without_service_key(self, *, available):
+        application = self.application
+        supervisor = ProcessSupervisor(
+            application.context, application.store, manager_instance_id=str(uuid.uuid4())
+        )
+        self.addCleanup(supervisor.shutdown, stop_children=True)
+        processes = []
+        slots = []
+
+        class StartedThenFailedHandler(FilesystemTaskHandler):
+            def _execute_activate_component(self, execution, task):
+                receipt = super()._execute_activate_component(execution, task)
+                slots.append(Path(receipt["active_path"]))
+                spec = ManagedProcessSpec(
+                    service_id="fixture.background",
+                    component_id="fixture",
+                    label="Fixture background child",
+                    executable=sys.executable,
+                    arguments=("-c", "import time; time.sleep(60)"),
+                    cwd=receipt["active_path"],
+                    startup_timeout_seconds=3,
+                    shutdown_timeout_seconds=1,
+                )
+                supervisor.register(spec)
+                supervisor.start(spec.service_id)
+                processes.append(supervisor._runtime[spec.service_id].process)
+                raise RuntimeError("injected activation failure with an owned child")
+
+        self.assertIsNone(self.registry.definition("fixture").service_key)
+        _plan, operation = self._submit()
+        engine = OperationEngine(
+            application.context,
+            application.store,
+            self.registry,
+            supervisor=supervisor if available else None,
+            task_handler=StartedThenFailedHandler(),
+            lifecycle_lock=application.lifecycle_lock,
+        )
+        self.addCleanup(engine.shutdown)
+        engine._execute(operation.id)
+        active = active_component_path(application.context.layout, "fixture")
+        self.assertEqual(len(processes), 1)
+        assert processes[0] is not None
+        measured = {
+            "active": str(active),
+            "new_slot_exists": slots[0].exists(),
+            "actual_child_alive": processes[0].poll() is None,
+            "identity_recorded": application.store.list_services()[0].process is not None,
+        }
+        self.assertEqual(
+            application.store.get_operation(operation.id).state,
+            OperationState.RECOVERY_REQUIRED,
+            measured,
+        )
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertTrue(active.exists())
+        self.assertEqual((active / "marker.txt").read_text(), "one")
+        self.assertEqual(application.store.configuration_revision(), 0)
+        self.assertTrue((application.context.layout.staging / operation.id).exists())
+        self.assertEqual(len(processes), 1)
+        assert processes[0] is not None
+        self.assertIsNone(processes[0].poll())
+
+    def test_live_child_blocks_slot_rollback_without_catalogue_service_key(self):
+        self._assert_live_guard_without_service_key(available=True)
+
+    def test_recorded_child_blocks_slot_rollback_without_catalogue_service_key_or_supervisor(self):
+        self._assert_live_guard_without_service_key(available=False)

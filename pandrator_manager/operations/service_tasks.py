@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import ManagedProcessSpec, TaskSpec
@@ -17,6 +18,13 @@ from ..runtime_specs import (
 from .contracts import OperationTaskContext, UnsupportedTask
 from .source_tasks import ComponentSourceTasks
 from .task_files import _atomic_json
+
+
+@dataclass(frozen=True, slots=True)
+class _ServiceValidationJournal:
+    target_spec: ManagedProcessSpec
+    previous_spec: ManagedProcessSpec | None
+    kept_running: bool
 
 
 class ServiceTasks(ComponentSourceTasks):
@@ -37,6 +45,81 @@ class ServiceTasks(ComponentSourceTasks):
             preferences=preferences,
         )
 
+    @staticmethod
+    def _service_validation_journal_path(
+        execution: OperationTaskContext,
+        task: TaskSpec,
+    ) -> Path:
+        layout = execution.context.layout
+        staging = layout.require_within(layout.staging, roots=(layout.root,))
+        operation_staging = layout.require_within(
+            staging / execution.operation.id,
+            roots=(staging,),
+        )
+        filename = hashlib.sha256(task.id.encode("utf-8")).hexdigest() + ".json"
+        return layout.require_within(
+            operation_staging / "service-validation" / filename,
+            roots=(operation_staging,),
+        )
+
+    @staticmethod
+    def _load_service_validation_journal(
+        execution: OperationTaskContext,
+        task: TaskSpec,
+        *,
+        component_id: str,
+        service_id: str,
+    ) -> _ServiceValidationJournal | None:
+        try:
+            path = ServiceTasks._service_validation_journal_path(execution, task)
+            journal = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(journal, dict)
+                or type(journal.get("schema_version")) is not int
+                or journal.get("schema_version") != 1
+                or journal.get("operation_id") != execution.operation.id
+                or journal.get("task_id") != task.id
+                or journal.get("component_id") != component_id
+                or journal.get("service_id") != service_id
+                or type(journal.get("kept_running")) is not bool
+                or not isinstance(journal.get("target_spec"), dict)
+                or "previous_spec" not in journal
+                or (
+                    journal["previous_spec"] is not None
+                    and not isinstance(journal["previous_spec"], dict)
+                )
+            ):
+                raise ValueError
+            target_spec = ManagedProcessSpec.model_validate(journal["target_spec"])
+            previous_spec = (
+                ManagedProcessSpec.model_validate(journal["previous_spec"])
+                if journal["previous_spec"] is not None
+                else None
+            )
+            if (
+                target_spec.component_id != component_id
+                or target_spec.service_id != service_id
+                or (
+                    previous_spec is not None
+                    and (
+                        previous_spec.component_id != component_id
+                        or previous_spec.service_id != service_id
+                    )
+                )
+            ):
+                raise ValueError
+            return _ServiceValidationJournal(
+                target_spec=target_spec,
+                previous_spec=previous_spec,
+                kept_running=journal["kept_running"],
+            )
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            raise RuntimeError(
+                "The service validation journal is invalid or does not match this operation task."
+            ) from error
+
     def _execute_validate_service(
         self,
         execution: OperationTaskContext,
@@ -54,7 +137,59 @@ class ServiceTasks(ComponentSourceTasks):
         spec = execution.service_spec_factory(definition.id, resolved)
         if spec is None:
             raise UnsupportedTask(f"{definition.label} has no managed runtime specification.")
-        previous_spec = execution.supervisor.replace_spec(spec)
+        if spec.component_id != definition.id or spec.service_id != definition.service_key:
+            raise RuntimeError("The managed service specification does not match this component.")
+        stop_result = execution.prior_results.get(f"{definition.id}:stop", {})
+        keep_running = bool(
+            desired.options.get("start_after_install", False)
+            or stop_result.get("was_running", False)
+            or stop_result.get("desired_running", False)
+        )
+        journal = self._load_service_validation_journal(
+            execution,
+            task,
+            component_id=definition.id,
+            service_id=spec.service_id,
+        )
+        if journal is None:
+            def save_journal(previous: ManagedProcessSpec | None) -> None:
+                _atomic_json(
+                    ServiceTasks._service_validation_journal_path(execution, task),
+                    {
+                        "schema_version": 1,
+                        "operation_id": execution.operation.id,
+                        "task_id": task.id,
+                        "component_id": definition.id,
+                        "service_id": spec.service_id,
+                        "kept_running": keep_running,
+                        "target_spec": spec.model_dump(mode="json"),
+                        "previous_spec": (
+                            previous.model_dump(mode="json") if previous is not None else None
+                        ),
+                    },
+                )
+
+            previous_spec = execution.supervisor.replace_spec(
+                spec,
+                before_replace=save_journal,
+            )
+        else:
+            if spec != journal.target_spec or keep_running != journal.kept_running:
+                raise RuntimeError(
+                    "The managed service specification or running intent changed during validation recovery."
+                )
+            current_spec = execution.supervisor.spec(spec.service_id)
+            if current_spec is not None and current_spec not in (
+                journal.target_spec,
+                journal.previous_spec,
+            ):
+                raise RuntimeError(
+                    "The registered service specification does not match validation recovery."
+                )
+            execution.supervisor.stop(spec.service_id)
+            execution.supervisor.replace_spec(spec)
+            previous_spec = journal.previous_spec
+            keep_running = journal.kept_running
         try:
             service = execution.supervisor.start(spec.service_id)
         except Exception:
@@ -63,12 +198,6 @@ class ServiceTasks(ComponentSourceTasks):
             else:
                 execution.supervisor.unregister(spec.service_id)
             raise
-        stop_result = execution.prior_results.get(f"{definition.id}:stop", {})
-        keep_running = bool(
-            desired.options.get("start_after_install", False)
-            or stop_result.get("was_running", False)
-            or stop_result.get("desired_running", False)
-        )
         if not keep_running:
             execution.supervisor.stop(spec.service_id)
         return {
@@ -86,16 +215,50 @@ class ServiceTasks(ComponentSourceTasks):
         task: TaskSpec,
         result: dict,
     ) -> None:
-        if execution.supervisor is None or not result.get("service_id"):
+        if result:
+            if not result.get("service_id"):
+                return
+            if execution.supervisor is None:
+                raise RuntimeError(
+                    "The process supervisor is unavailable for service validation recovery."
+                )
+            service_id = str(result["service_id"])
+            if result.get("kept_running"):
+                execution.supervisor.stop(service_id)
+            previous = result.get("previous_spec")
+            if isinstance(previous, dict):
+                execution.supervisor.replace_spec(ManagedProcessSpec.model_validate(previous))
+            else:
+                execution.supervisor.unregister(service_id)
             return
-        service_id = str(result["service_id"])
-        if result.get("kept_running"):
-            execution.supervisor.stop(service_id)
-        previous = result.get("previous_spec")
-        if isinstance(previous, dict):
-            execution.supervisor.replace_spec(ManagedProcessSpec.model_validate(previous))
+        definition = self._definition(execution, task)
+        if not definition.service_key:
+            return
+        journal = self._load_service_validation_journal(
+            execution,
+            task,
+            component_id=definition.id,
+            service_id=definition.service_key,
+        )
+        if journal is None:
+            return
+        if execution.supervisor is None:
+            raise RuntimeError(
+                "The process supervisor is unavailable for service validation recovery."
+            )
+        current_spec = execution.supervisor.spec(definition.service_key)
+        if current_spec is not None and current_spec not in (
+            journal.target_spec,
+            journal.previous_spec,
+        ):
+            raise RuntimeError(
+                "The registered service specification does not match validation recovery."
+            )
+        execution.supervisor.stop(definition.service_key)
+        if journal.previous_spec is not None:
+            execution.supervisor.replace_spec(journal.previous_spec)
         else:
-            execution.supervisor.unregister(service_id)
+            execution.supervisor.unregister(definition.service_key)
 
     def _execute_start_application(
         self,

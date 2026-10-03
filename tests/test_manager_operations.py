@@ -566,10 +566,17 @@ class OperationEngineTests(unittest.TestCase):
             arguments=("-c", "pass"),
         )
         execution.service_spec_factory.return_value = replacement
-        supervisor.replace_spec.return_value = None
+
+        def replace_spec(_spec, *, before_replace=None):
+            if before_replace is not None:
+                before_replace(None)
+            return None
+
+        supervisor.replace_spec.side_effect = replace_spec
         supervisor.start.return_value = mock.Mock(health=None)
+        validation_task = mock.Mock(component_id="fixture", id="fixture:validate-service")
         with mock.patch.object(handler, "_definition", return_value=definition):
-            validated = handler._execute_validate_service(execution, task)
+            validated = handler._execute_validate_service(execution, validation_task)
 
         self.assertTrue(validated["kept_running"])
         supervisor.start.assert_called_once_with("fixture.service")

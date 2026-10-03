@@ -189,8 +189,16 @@ class ComponentActivationTasks(ComponentSourceTasks):
                 "previous_pointer": journal.get("previous_pointer"),
             }
         removal_guard = nullcontext()
-        if definition.service_key and execution.supervisor is not None:
+        if execution.supervisor is not None:
             removal_guard = execution.supervisor.component_slot_removal_guard(definition.id)
+        elif any(
+            service.component_id == definition.id and service.process is not None
+            for service in execution.store.list_services()
+        ):
+            raise RuntimeError(
+                f"Cannot roll back {definition.label} activation without a process supervisor "
+                "while a managed process is recorded."
+            )
         with removal_guard:
             container = component_container(execution.context.layout, definition.id)
             # Refuse redirected roots before restoring pointers or deleting slots.

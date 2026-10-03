@@ -10,6 +10,7 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,12 +120,17 @@ class ProcessSupervisor:
     def replace_spec(
         self,
         spec: ManagedProcessSpec,
+        *,
+        before_replace: Callable[[ManagedProcessSpec | None], None] | None = None,
     ) -> ManagedProcessSpec | None:
         with self._lock:
             if spec.service_id in self._runtime:
                 raise RuntimeError(
                     f"Cannot replace running service specification {spec.service_id}."
                 )
+            previous = self._specs.get(spec.service_id)
+            if before_replace is not None:
+                before_replace(previous.model_copy(deep=True) if previous is not None else None)
             previous = self._specs.pop(spec.service_id, None)
             try:
                 occupied = {
@@ -444,6 +450,14 @@ class ProcessSupervisor:
         *,
         restart_count: int = 0,
     ) -> ManagedService:
+        prior_desired_running = next(
+            (
+                service.desired_running
+                for service in self.store.list_services()
+                if service.id == spec.service_id
+            ),
+            False,
+        )
         self._check_ports(spec)
         log_path = self.context.layout.logs / "services" / f"{spec.service_id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -484,6 +498,19 @@ class ProcessSupervisor:
             restart_count=restart_count,
         )
         self._runtime[spec.service_id] = runtime
+        try:
+            self._save_runtime_service(
+                runtime,
+                self._service_snapshot(
+                    runtime,
+                    HealthResult(state=HealthState.STARTING, service_id=spec.service_id),
+                ),
+                force=True,
+            )
+        except Exception:
+            self._terminate(runtime)
+            self._runtime.pop(spec.service_id, None)
+            raise
         self.context.event_sink.emit(
             "service.starting",
             {"service_id": spec.service_id, "pid": identity.pid},
@@ -513,6 +540,13 @@ class ProcessSupervisor:
             time.sleep(0.2)
         self._terminate(runtime)
         self._runtime.pop(spec.service_id, None)
+        service = self._service_snapshot(
+            runtime,
+            HealthResult(state=HealthState.FAILED, service_id=spec.service_id),
+            desired_running=prior_desired_running,
+        )
+        service.process = None
+        self._save_runtime_service(runtime, service, force=True)
         raise RuntimeError(
             f"{spec.label} did not become healthy before its startup timeout. "
             f"See {log_path}."
