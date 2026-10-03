@@ -7,13 +7,13 @@ import json
 import os
 import shutil
 import sys
-import tempfile
+import tempfile as tempfile
 import zipfile as zipfile
 from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit as urlsplit
 
 from dulwich import porcelain
 from dulwich.repo import Repo
@@ -89,7 +89,8 @@ from ..runtime_specs import (
     PANDRATOR_SERVICE_START_ORDER as PANDRATOR_SERVICE_START_ORDER,
 )
 from ..state import ManagerStore
-from ..tls import CABundleSelection, dulwich_config_with_ca, select_ca_bundle
+from ..tls import CABundleSelection as CABundleSelection
+from ..tls import dulwich_config_with_ca, select_ca_bundle
 from ..uninstall import (
     prepare_uninstall_handoff,
     rollback_prepared_uninstall,
@@ -97,113 +98,11 @@ from ..uninstall import (
 from .contracts import OperationTaskContext as OperationTaskContext
 from .contracts import UnsupportedTask as UnsupportedTask
 from .release_tasks import ReleaseTasks
+from .source_errors import _is_tls_verification_error as _is_tls_verification_error
+from .source_errors import _source_acquisition_error as _source_acquisition_error
+from .task_files import _atomic_json as _atomic_json
+from .task_files import _atomic_text as _atomic_text
 from .uninstall_tasks import UninstallTasks
-
-
-def _is_tls_verification_error(error: BaseException) -> bool:
-    inspected: set[int] = set()
-    pending: list[BaseException] = [error]
-    while pending and len(inspected) < 16:
-        selected = pending.pop()
-        if id(selected) in inspected:
-            continue
-        inspected.add(id(selected))
-        message = str(selected).casefold()
-        if any(
-            marker in message
-            for marker in (
-                "certificate_verify_failed",
-                "certificate verify failed",
-                "unable to get local issuer certificate",
-                "self-signed certificate",
-                "hostname mismatch",
-            )
-        ):
-            return True
-        for nested in (selected.__cause__, selected.__context__):
-            if isinstance(nested, BaseException):
-                pending.append(nested)
-        pending.extend(item for item in selected.args if isinstance(item, BaseException))
-    return False
-
-
-def _source_acquisition_error(
-    *,
-    error: Exception,
-    label: str,
-    repo_url: str,
-    ca_bundle: CABundleSelection,
-) -> ManagerError:
-    host = str(urlsplit(repo_url).hostname or "the source host")
-    details = {
-        "host": host,
-        "ca_bundle_source": ca_bundle.source,
-        "error_type": type(error).__name__,
-    }
-    if _is_tls_verification_error(error):
-        return ManagerError(
-            "source_tls_verification_failed",
-            f"Pandrator could not verify the TLS certificate while downloading "
-            f"{label} from {host}. Check the computer's date and time and any "
-            "HTTPS-inspecting proxy, then download the diagnostic bundle if "
-            "the problem continues.",
-            details,
-            502,
-        )
-    return ManagerError(
-        "source_download_failed",
-        f"Pandrator could not download {label} from {host}. Check the internet "
-        "and proxy connection, then download the diagnostic bundle if the "
-        "problem continues.",
-        details,
-        502,
-    )
-
-
-def _atomic_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        text=True,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _atomic_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        text=True,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        if os.name != "nt" and content.startswith("#!"):
-            path.chmod(path.stat().st_mode | 0o755)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
 
 
 class FilesystemTaskHandler(ReleaseTasks, UninstallTasks):
