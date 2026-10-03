@@ -2221,11 +2221,8 @@ class TtsCatalogueService:
                 },
                 service,
             )
-        default_voices = (
-            service.get("default_voices")
-            if isinstance(service.get("default_voices"), dict)
-            else {}
-        )
+        raw_default_voices = service.get("default_voices")
+        default_voices = raw_default_voices if isinstance(raw_default_voices, dict) else {}
         if (
             preserve_blank_voice
             and is_audio_cpp
@@ -2245,14 +2242,12 @@ class TtsCatalogueService:
             if service.get("is_custom")
             else str(service.get("name") or service_id)
         )
+        raw_service_settings = service.get("settings")
+        service_settings = raw_service_settings if isinstance(raw_service_settings, dict) else {}
         settings = {
             **BUILTIN_DEFAULTS["tts"],
             **default_value,
-            **(
-                service.get("settings")
-                if isinstance(service.get("settings"), dict)
-                else {}
-            ),
+            **service_settings,
             **connection_value,
             "service": service_name,
             "model": resolved_model,

@@ -2798,30 +2798,6 @@
                     "endColumn": 13,
                     "lineCount": 5
                 }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportGeneralTypeIssues",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 5
-                }
             }
         ],
         "./pandrator/web/web_research.py": [
