@@ -343,6 +343,12 @@ class FilesystemTaskHandler(ReleaseTasks, UninstallTasks, ComponentStagingTasks)
         container = component_container(execution.context.layout, definition.id)
         versions = container / "versions"
         destination = versions / safe_revision
+        # Anchor both roots before trusting containment relative to versions.
+        execution.context.layout.require_within(
+            container,
+            roots=(execution.context.layout.root,),
+        )
+        execution.context.layout.require_within(versions, roots=(container,))
         versions.mkdir(parents=True, exist_ok=True)
         execution.context.layout.require_within(
             destination,
@@ -464,6 +470,15 @@ class FilesystemTaskHandler(ReleaseTasks, UninstallTasks, ComponentStagingTasks)
         if definition.service_key and execution.supervisor is not None:
             removal_guard = execution.supervisor.component_slot_removal_guard(definition.id)
         with removal_guard:
+            container = component_container(execution.context.layout, definition.id)
+            # Refuse redirected roots before restoring pointers or deleting slots.
+            execution.context.layout.require_within(
+                container,
+                roots=(execution.context.layout.root,),
+            )
+            execution.context.layout.require_within(
+                container / "versions", roots=(container,),
+            )
             pointer = component_pointer(execution.context.layout, definition.id)
             previous = result.get("previous_pointer")
             if isinstance(previous, dict):
@@ -476,10 +491,6 @@ class FilesystemTaskHandler(ReleaseTasks, UninstallTasks, ComponentStagingTasks)
             if result.get("created_slot"):
                 active = Path(str(result.get("active_path") or ""))
                 if active.exists():
-                    container = component_container(
-                        execution.context.layout,
-                        definition.id,
-                    )
                     execution.context.layout.require_within(
                         active,
                         roots=(container / "versions",),
