@@ -7,13 +7,23 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..models import ManagedProcessSpec, TaskSpec
+from ..components.slots import active_component_path
+from ..models import HealthState, ManagedProcessSpec, TaskSpec, TaskState
 from ..network import load_network_configuration
 from ..runtime_specs import (
+    PANDRATOR_CORE_SERVICES,
     PANDRATOR_MCP_SERVICE,
+    PANDRATOR_SERVICE_START_ORDER,
     PANDRATOR_SERVICE_STOP_ORDER,
     PANDRATOR_WORKER_SERVICE,
     pandrator_runtime_specs,
+)
+from .application_recovery import (
+    _ApplicationServiceState,
+    _ApplicationStartJournal,
+    load_application_start_journal,
+    require_application_specs_match,
+    save_application_start_journal,
 )
 from .contracts import OperationTaskContext, UnsupportedTask
 from .source_tasks import ComponentSourceTasks
@@ -260,12 +270,30 @@ class ServiceTasks(ComponentSourceTasks):
         else:
             execution.supervisor.unregister(definition.service_key)
 
+    @staticmethod
+    def _application_autostart_failed(
+        execution: OperationTaskContext,
+        error: Exception,
+    ) -> dict:
+        execution.context.event_sink.emit(
+            "application.autostart_failed",
+            {"error": str(error)},
+            component_id="pandrator",
+            operation_id=execution.operation.id,
+        )
+        return {"started": False, "error": str(error)}
+
     def _execute_start_application(
         self,
         execution: OperationTaskContext,
         task: TaskSpec,
     ) -> dict:
+        journal = load_application_start_journal(execution, task)
         if execution.supervisor is None:
+            if journal is not None:
+                raise RuntimeError(
+                    "The process supervisor is unavailable for application startup recovery."
+                )
             return {
                 "started": False,
                 "error": "The process supervisor is unavailable.",
@@ -283,55 +311,93 @@ class ServiceTasks(ComponentSourceTasks):
                 preferences["CRISPASR_DEFAULT_QUANTIZATION"] = quantization
         try:
             specifications = self._application_runtime_specs(execution, preferences)
-            running = {
-                service.id
-                for service in execution.supervisor.snapshot()
-                if service.process is not None
-            }
-            # A component update activates a new application slot before this
-            # task refreshes the launch contracts. ProcessSupervisor correctly
-            # refuses to replace a running contract, so quiesce every
-            # application-owned service first.
-            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
-                if service_id in running:
-                    execution.supervisor.stop(service_id)
-            selected_ids = {specification.service_id for specification in specifications}
-            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
-                if (
-                    service_id not in selected_ids
-                    and execution.supervisor.spec(service_id) is not None
-                ):
-                    execution.supervisor.unregister(service_id)
-            for specification in specifications:
-                execution.supervisor.replace_spec(specification)
-            service = execution.supervisor.start(PANDRATOR_WORKER_SERVICE)
-            mcp_error = None
-            if PANDRATOR_MCP_SERVICE in selected_ids:
-                try:
-                    execution.supervisor.start(PANDRATOR_MCP_SERVICE)
-                except Exception as error:
-                    mcp_error = str(error) or "Pandrator MCP could not be started."
-                    execution.context.event_sink.emit(
-                        "application.mcp_start_failed",
-                        {"error": mcp_error, "action": "install"},
-                        component_id="pandrator",
-                        operation_id=execution.operation.id,
-                        service_id=PANDRATOR_MCP_SERVICE,
-                    )
         except Exception as error:
-            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
-                try:
+            if journal is not None:
+                raise
+            return self._application_autostart_failed(execution, error)
+        if not isinstance(specifications, tuple):
+            raise RuntimeError("Pandrator startup did not produce its required managed services.")
+        target: dict[str, ManagedProcessSpec] = {}
+        for specification in specifications:
+            if (
+                not isinstance(specification, ManagedProcessSpec)
+                or specification.component_id != "pandrator"
+                or specification.service_id not in PANDRATOR_SERVICE_START_ORDER
+                or specification.service_id in target
+            ):
+                raise RuntimeError("Pandrator startup did not produce its required managed services.")
+            target[specification.service_id] = specification
+        if not PANDRATOR_CORE_SERVICES.issubset(target):
+            raise RuntimeError("Pandrator startup did not produce its required managed services.")
+        with execution.supervisor.service_transition_guard():
+            if journal is None:
+                snapshots = {service.id: service for service in execution.supervisor.snapshot()}
+                previous: dict[str, _ApplicationServiceState] = {}
+                for service_id in PANDRATOR_SERVICE_START_ORDER:
+                    snapshot = snapshots.get(service_id)
+                    previous[service_id] = _ApplicationServiceState(
+                        spec=execution.supervisor.spec(service_id),
+                        was_running=bool(snapshot is not None and snapshot.process is not None),
+                        desired_running=bool(snapshot is not None and snapshot.desired_running),
+                    )
+                previous_pointer = execution.prior_results.get("pandrator:activate", {}).get(
+                    "previous_pointer"
+                )
+                previous_path = None
+                if previous_pointer is not None:
+                    if (
+                        not isinstance(previous_pointer, dict)
+                        or not isinstance(previous_pointer.get("path"), str)
+                        or not previous_pointer["path"]
+                    ):
+                        raise RuntimeError(
+                            "The application startup journal is invalid or does not match this operation task."
+                        )
+                    previous_path = Path(previous_pointer["path"])
+                journal = save_application_start_journal(
+                    execution, task, _ApplicationStartJournal(previous, target, previous_path)
+                )
+            elif target != journal.target:
+                raise RuntimeError(
+                    "The application launch specifications changed during startup recovery."
+                )
+            require_application_specs_match(execution.supervisor, journal)
+            try:
+                for service_id in PANDRATOR_SERVICE_STOP_ORDER:
                     if execution.supervisor.spec(service_id) is not None:
                         execution.supervisor.stop(service_id)
-                except Exception:
-                    pass
-            execution.context.event_sink.emit(
-                "application.autostart_failed",
-                {"error": str(error)},
-                component_id="pandrator",
-                operation_id=execution.operation.id,
-            )
-            return {"started": False, "error": str(error)}
+                selected_ids = set(journal.target)
+                for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+                    if (
+                        service_id not in selected_ids
+                        and execution.supervisor.spec(service_id) is not None
+                    ):
+                        execution.supervisor.unregister(service_id)
+                for service_id in PANDRATOR_SERVICE_START_ORDER:
+                    if service_id in journal.target:
+                        execution.supervisor.replace_spec(journal.target[service_id])
+                service = execution.supervisor.start(PANDRATOR_WORKER_SERVICE)
+                mcp_error = None
+                if PANDRATOR_MCP_SERVICE in selected_ids:
+                    try:
+                        execution.supervisor.start(PANDRATOR_MCP_SERVICE)
+                    except Exception as error:
+                        mcp_error = str(error) or "Pandrator MCP could not be started."
+                        execution.context.event_sink.emit(
+                            "application.mcp_start_failed",
+                            {"error": mcp_error, "action": "install"},
+                            component_id="pandrator",
+                            operation_id=execution.operation.id,
+                            service_id=PANDRATOR_MCP_SERVICE,
+                        )
+            except Exception as error:
+                for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+                    try:
+                        if execution.supervisor.spec(service_id) is not None:
+                            execution.supervisor.stop(service_id)
+                    except Exception:
+                        pass
+                return self._application_autostart_failed(execution, error)
         execution.context.event_sink.emit(
             "application.started",
             {"action": "install"},
@@ -353,11 +419,65 @@ class ServiceTasks(ComponentSourceTasks):
         task: TaskSpec,
         result: dict,
     ) -> None:
-        if execution.supervisor is None or not result.get("started"):
+        journal = load_application_start_journal(execution, task)
+        if journal is None and not result.get("started"):
             return
-        for service_id in PANDRATOR_SERVICE_STOP_ORDER:
-            if execution.supervisor.spec(service_id) is not None:
-                execution.supervisor.stop(service_id)
+        if execution.supervisor is None:
+            raise RuntimeError(
+                "The process supervisor is unavailable for application startup recovery."
+            )
+        with execution.supervisor.service_transition_guard():
+            if journal is not None:
+                require_application_specs_match(execution.supervisor, journal)
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+                if execution.supervisor.spec(service_id) is not None:
+                    execution.supervisor.stop(service_id)
+            if journal is None:
+                return
+            for service_id in PANDRATOR_SERVICE_STOP_ORDER:
+                if execution.supervisor.spec(service_id) is not None:
+                    execution.supervisor.unregister(service_id)
+            for service_id in PANDRATOR_SERVICE_START_ORDER:
+                previous_spec = journal.previous[service_id].spec
+                if previous_spec is not None:
+                    execution.supervisor.register(previous_spec)
+
+    def _restore_application_after_rollback(self, execution: OperationTaskContext) -> None:
+        records = {
+            record.task.id: record
+            for record in execution.store.operation_tasks(execution.operation.id)
+        }
+        for task in execution.plan.tasks:
+            record = records.get(task.id)
+            if (
+                task.kind != "start_application"
+                or record is None
+                or record.state != TaskState.ROLLED_BACK
+            ):
+                continue
+            journal = load_application_start_journal(execution, task)
+            if journal is None:
+                continue
+            if execution.supervisor is None:
+                raise RuntimeError(
+                    "The process supervisor is unavailable for application startup recovery."
+                )
+            if active_component_path(execution.context.layout, "pandrator") != journal.previous_active_path:
+                raise RuntimeError("The previous application slot has not been restored for rollback.")
+            with execution.supervisor.service_transition_guard():
+                for service_id in PANDRATOR_SERVICE_START_ORDER:
+                    if execution.supervisor.spec(service_id) != journal.previous[service_id].spec:
+                        raise RuntimeError(
+                            "The previous application specifications have not been restored for rollback."
+                        )
+                for service_id in PANDRATOR_SERVICE_START_ORDER:
+                    previous = journal.previous[service_id]
+                    if previous.was_running or previous.desired_running:
+                        service = execution.supervisor.start(service_id)
+                        if service.health is None or service.health.state != HealthState.HEALTHY:
+                            raise RuntimeError(
+                                "The previous Pandrator service did not become healthy during rollback."
+                            )
 
     @staticmethod
     def _service_stop_journal_path(

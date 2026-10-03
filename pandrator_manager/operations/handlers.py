@@ -474,6 +474,10 @@ class FilesystemTaskHandler(
         *,
         succeeded: bool,
     ) -> None:
+        if not succeeded:
+            # Task rollback restores launch contracts before pointer rollback.
+            # Restore their running intent only after every rollback succeeds.
+            self._restore_application_after_rollback(execution)
         operation_staging = execution.context.layout.staging / execution.operation.id
         if operation_staging.exists():
             execution.context.layout.require_within(

@@ -117,6 +117,13 @@ class ProcessSupervisor:
             selected = self._specs.get(service_id)
             return selected.model_copy(deep=True) if selected is not None else None
 
+    @contextmanager
+    def service_transition_guard(self):
+        """Keep service contracts and processes stable across a group transition."""
+
+        with self._lock:
+            yield
+
     def replace_spec(
         self,
         spec: ManagedProcessSpec,

@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -471,11 +472,24 @@ class OperationEngineTests(unittest.TestCase):
         handler = FilesystemTaskHandler()
         supervisor = mock.Mock()
         supervisor.snapshot.return_value = [
-            mock.Mock(id="pandrator.api", process=object()),
-            mock.Mock(id="pandrator.worker", process=object()),
+            mock.Mock(id="pandrator.api", component_id="pandrator", desired_running=True, process=object()),
+            mock.Mock(id="pandrator.worker", component_id="pandrator", desired_running=True, process=object()),
         ]
-        api_spec = mock.Mock(service_id="pandrator.api")
-        worker_spec = mock.Mock(service_id="pandrator.worker")
+        api_spec = ManagedProcessSpec(
+            service_id="pandrator.api", component_id="pandrator",
+            label="Fixture API", executable=sys.executable,
+        )
+        worker_spec = ManagedProcessSpec(
+            service_id="pandrator.worker", component_id="pandrator",
+            label="Fixture worker", executable=sys.executable,
+            dependencies=("pandrator.api",),
+        )
+        previous_specs = {
+            spec.service_id: spec.model_copy(update={"label": "Previous " + spec.label})
+            for spec in (api_spec, worker_spec)
+        }
+        supervisor.spec.side_effect = previous_specs.get
+        supervisor.service_transition_guard.return_value = nullcontext()
         supervisor.start.return_value = mock.Mock(
             id="pandrator.worker",
             health=None,
@@ -485,6 +499,8 @@ class OperationEngineTests(unittest.TestCase):
         execution.plan.desired = {}
         execution.context.layout = self.application.context.layout
         execution.context.environment = {}
+        execution.operation.id = str(uuid.uuid4())
+        execution.prior_results = {}
         network = mock.Mock(application=mock.sentinel.exposure)
 
         with (
@@ -499,7 +515,7 @@ class OperationEngineTests(unittest.TestCase):
         ):
             result = handler._execute_start_application(
                 execution,
-                mock.Mock(),
+                mock.Mock(id="pandrator:start", kind="start_application", component_id="pandrator"),
             )
 
         self.assertTrue(result["started"])
