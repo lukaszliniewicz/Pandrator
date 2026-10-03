@@ -20,6 +20,7 @@ from pandrator_manager.components.slots import (
     component_pointer,
 )
 from pandrator_manager.context import CancellationToken
+from pandrator_manager.errors import CancellationRequested, ManagerError
 from pandrator_manager.models import (
     TERMINAL_OPERATION_STATES,
     ComponentDefinition,
@@ -763,6 +764,143 @@ class OperationEngineTests(unittest.TestCase):
         self.assertIsNone(
             active_component_path(self.application.context.layout, "fixture")
         )
+
+    def _assert_interrupted_rollback_resumes(self, *, savepoint, cancelled=False, legacy=False):
+        plan, submitted = self._plan_and_submit(OperationKind.INSTALL, DesiredComponentState())
+        store = self.application.store
+        activation = next(item for item in plan.tasks if item.kind == "activate_component")
+        native_operation_save = store.update_operation
+        native_task_save = store.update_operation_task
+        stopped: list[str] = []
+
+        class FixtureDaemonStop(BaseException):
+            pass
+
+        def save_operation(operation):
+            if savepoint == "terminal" and operation.state in TERMINAL_OPERATION_STATES and not stopped:
+                stopped.append("before terminal operation save")
+                raise FixtureDaemonStop()
+            return native_operation_save(operation)
+
+        def save_task(operation_id, task_id, **kwargs):
+            result = native_task_save(operation_id, task_id, **kwargs)
+            if (
+                savepoint == "receipt"
+                and task_id == activation.id
+                and kwargs.get("state") == TaskState.ROLLED_BACK
+                and not stopped
+            ):
+                stopped.append("after activation rollback receipt save")
+                raise FixtureDaemonStop()
+            return result
+
+        def reject_activation(operation, task, _result):
+            if task.kind == "activate_component":
+                if cancelled:
+                    store.request_cancellation(operation.id)
+                    raise CancellationRequested()
+                raise ManagerError("fixture_rejected", "Keep the previous activation.", {"marker": "original cause"})
+
+        engine = OperationEngine(
+            self.application.context,
+            store,
+            self.application.registry,
+            fault_injector=reject_activation,
+        )
+        with (
+            mock.patch.object(store, "update_operation", side_effect=save_operation),
+            mock.patch.object(store, "update_operation_task", side_effect=save_task),
+            self.assertRaises(FixtureDaemonStop),
+        ):
+            engine._execute(submitted.id)
+        self.assertEqual(len(stopped), 1)
+        interrupted = store.get_operation(submitted.id)
+        self.assertEqual(interrupted.state, OperationState.ROLLING_BACK)
+        self.assertIsNone(active_component_path(self.application.context.layout, "fixture"))
+        before_tasks = store.operation_tasks(submitted.id)
+        before_attempts = {item.task.id: item.attempt for item in before_tasks}
+        rolled_receipts = {item.task.id: item.result for item in before_tasks if item.state == TaskState.ROLLED_BACK}
+        self.assertIn(activation.id, rolled_receipts)
+        if legacy:
+            interrupted.recovery = {}
+            store.update_operation(interrupted)
+        reopened = create_application(self.base / "workspace", registry=_registry(self.repository))
+        forward: list[str] = []
+        rollback: list[str] = []
+        seen_receipts: list[dict] = []
+
+        class ObservingHandler(FilesystemTaskHandler):
+            def execute(self, execution, task):
+                forward.append(task.id)
+                return super().execute(execution, task)
+
+            def rollback(self, execution, task, result):
+                rollback.append(task.id)
+                seen_receipts.append(dict(execution.prior_results))
+                return super().rollback(execution, task, result)
+
+            def finalize(self, execution, *, succeeded):
+                seen_receipts.append(dict(execution.prior_results))
+                return super().finalize(execution, succeeded=succeeded)
+
+        restarted = OperationEngine(reopened.context, reopened.store, reopened.registry, task_handler=ObservingHandler())
+        native_recover = restarted._recover_interrupted
+        recovered_states: list[OperationState] = []
+
+        def recover():
+            native_recover()
+            recovered_states.append(reopened.store.get_operation(submitted.id).state)
+
+        with mock.patch.object(restarted, "_recover_interrupted", side_effect=recover):
+            restarted.start()
+        self.addCleanup(restarted.shutdown, timeout=30)
+        completed = _wait(reopened, submitted.id)
+        restarted.shutdown(timeout=30)
+        self.assertEqual(forward, [])
+        self.assertEqual(recovered_states, [OperationState.ROLLING_BACK])
+        self.assertEqual(completed.state, OperationState.CANCELLED if cancelled else OperationState.FAILED)
+        self.assertEqual(completed.error_code, "cancelled" if cancelled else "fixture_rejected")
+        self.assertEqual(completed.error_message, interrupted.error_message)
+        self.assertEqual(completed.recovery, {"rollback_errors": []})
+        expected_cause = {
+            "code": "cancelled" if cancelled else "fixture_rejected",
+            "message": interrupted.error_message,
+        }
+        if not cancelled and not legacy:
+            expected_cause["details"] = {"marker": "original cause"}
+        if not legacy:
+            self.assertEqual(interrupted.recovery["rollback_cause"], expected_cause)
+            self.assertIs(interrupted.recovery["rollback_cancelled"], cancelled)
+        terminal_events = [
+            event for event in reopened.store.events_after(0, limit=1000)
+            if event.operation_id == submitted.id
+            and event.event_type == f"operation.{completed.state.value}"
+        ]
+        self.assertEqual(len(terminal_events), 1)
+        self.assertEqual(terminal_events[0].payload["error"], expected_cause)
+        self.assertEqual(reopened.store.configuration_revision(), 0)
+        self.assertIsNone(active_component_path(reopened.context.layout, "fixture"))
+        after_tasks = reopened.store.operation_tasks(submitted.id)
+        self.assertEqual({item.task.id: item.attempt for item in after_tasks}, before_attempts)
+        for item in after_tasks:
+            self.assertIn(item.state, {TaskState.ROLLED_BACK, TaskState.PENDING})
+        self.assertTrue(seen_receipts)
+        for receipts in seen_receipts:
+            for task_id, value in rolled_receipts.items():
+                self.assertEqual(receipts.get(task_id), value)
+        self.assertNotIn(activation.id, rollback)
+
+    def test_restart_continues_rollback_after_terminal_save_interruption(self):
+        self._assert_interrupted_rollback_resumes(savepoint="terminal")
+
+    def test_restart_continues_partially_recorded_rollback(self):
+        self._assert_interrupted_rollback_resumes(savepoint="receipt")
+
+    def test_restart_preserves_cancelled_partial_rollback(self):
+        self._assert_interrupted_rollback_resumes(savepoint="receipt", cancelled=True)
+
+    def test_restart_supports_legacy_rollback_cause_fields(self):
+        self._assert_interrupted_rollback_resumes(savepoint="terminal", legacy=True)
 
     def test_interrupted_running_task_is_recovered_and_retried(self):
         _plan, submitted = self._plan_and_submit(

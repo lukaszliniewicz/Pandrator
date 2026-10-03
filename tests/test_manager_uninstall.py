@@ -323,6 +323,32 @@ class ManagerUninstallTests(unittest.TestCase):
         self.assertFalse(journal.exists())
         handler.rollback(execution, task.task, task.result)
 
+    def test_terminal_recovery_required_is_preserved_on_restart_and_direct_execution(self):
+        final, _task, _plan, destination, _published = self._run_export_receipt_or_replacement_failure("replacement")
+        self.assertEqual(final.state, OperationState.RECOVERY_REQUIRED)
+        journal = self.layout.staging / final.id / "uninstall-export.json"
+        destination_bytes = destination.read_bytes()
+        journal_bytes = journal.read_bytes()
+        reopened = create_application(self.temporary.name)
+        handler = FilesystemTaskHandler()
+        engine = OperationEngine(
+            reopened.context,
+            reopened.store,
+            reopened.registry,
+            supervisor=self.supervisor,
+            task_handler=handler,
+        )
+        with mock.patch.object(handler, "execute", wraps=handler.execute) as execute:
+            try:
+                engine.start()
+                engine._execute(final.id)
+            finally:
+                engine.shutdown(timeout=30)
+            execute.assert_not_called()
+        self.assertEqual(reopened.store.get_operation(final.id), final)
+        self.assertEqual(destination.read_bytes(), destination_bytes)
+        self.assertEqual(journal.read_bytes(), journal_bytes)
+
     def test_export_publication_refuses_a_destination_created_after_review(self):
         destination = Path(self.temporary.name) / "collision.zip"
         plan = self._plan(export_data=str(destination))

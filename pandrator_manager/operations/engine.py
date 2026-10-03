@@ -149,6 +149,13 @@ class OperationEngine:
                 OperationState.HANDOFF_PENDING,
             }:
                 continue
+            if operation.state == OperationState.ROLLING_BACK:
+                self.context.event_sink.emit(
+                    "operation.recovered",
+                    {"operation_id": operation.id},
+                    operation_id=operation.id,
+                )
+                continue
             for task in self.store.operation_tasks(operation.id):
                 if task.state == TaskState.RUNNING:
                     self.store.update_operation_task(
@@ -194,6 +201,10 @@ class OperationEngine:
             task.task.id: task.result
             for task in task_records
             if task.state == TaskState.SUCCEEDED
+            or (
+                operation.state == OperationState.ROLLING_BACK
+                and task.state == TaskState.ROLLED_BACK
+            )
         }
         execution = OperationTaskContext(
             context=self.context,
@@ -207,6 +218,9 @@ class OperationEngine:
             release_authority=self.release_authority,
             service_spec_factory=self.service_spec_factory,
         )
+        if operation.state == OperationState.ROLLING_BACK:
+            self._resume_rollback(execution, operation)
+            return
         operation.state = OperationState.RUNNING
         operation.updated_at = self._now()
         self.store.update_operation(operation)
@@ -502,6 +516,42 @@ class OperationEngine:
             ),
         )
 
+    def _resume_rollback(
+        self,
+        execution: OperationTaskContext,
+        operation: OperationRecord,
+    ) -> None:
+        persisted_cause = operation.recovery.get("rollback_cause")
+        if (
+            isinstance(persisted_cause, dict)
+            and isinstance(persisted_cause.get("code"), str)
+            and isinstance(persisted_cause.get("message"), str)
+        ):
+            code = persisted_cause["code"]
+            message = persisted_cause["message"]
+            persisted_details = persisted_cause.get("details")
+            details = persisted_details if isinstance(persisted_details, dict) else None
+        else:
+            code = (
+                operation.error_code
+                if operation.error_code is not None
+                else "manager_interrupted"
+            )
+            message = (
+                operation.error_message
+                if operation.error_message is not None
+                else "Interrupted rollback resumed."
+            )
+            details = None
+        persisted_cancelled = operation.recovery.get("rollback_cancelled")
+        cancelled = (
+            persisted_cancelled
+            if isinstance(persisted_cancelled, bool)
+            else operation.error_code == "cancelled"
+        )
+        cause = ManagerError(code, message, details)
+        self._rollback(execution, operation, cause, cancelled=cancelled)
+
     def _rollback(
         self,
         execution: OperationTaskContext,
@@ -516,6 +566,11 @@ class OperationEngine:
             "cancelled" if cancelled else str(error_payload["code"])
         )
         operation.error_message = str(error_payload["message"])
+        operation.recovery = {
+            **operation.recovery,
+            "rollback_cause": error_payload,
+            "rollback_cancelled": cancelled,
+        }
         operation.updated_at = self._now()
         self.store.update_operation(operation)
         self._event(
