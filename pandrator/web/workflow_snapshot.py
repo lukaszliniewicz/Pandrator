@@ -286,7 +286,8 @@ def build_workflow_snapshot(
         agentic_job_kinds = {
             definition.job_kind
             for definition in definitions
-            if definition.key in {"correct", "translate", "optimize_tts"}
+            if context.canonical_stage_key(definition.key)
+            in {"correct", "translate", "optimize_tts"}
             and definition.job_kind
         }
         # Completed artifacts carry their AgentRun ID in immutable
