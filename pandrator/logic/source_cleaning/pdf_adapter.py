@@ -243,7 +243,7 @@ def build_source_document(
     line_number = 1
     source_index = 0
     try:
-        for page_index, page in enumerate(pdf):
+        for page_index, page in enumerate(pdf.pages()):
             _emit(
                 progress_callback,
                 f"Ingesting PDF page {page_index + 1}/{pdf.page_count}...",
@@ -451,7 +451,7 @@ def _extract_native_lines(page: Any) -> list[dict[str, Any]]:
             lines.append(
                 {
                     "text": text,
-                    "bbox": _round_bbox(bbox),
+                    "bbox": _round_bbox((bbox.x0, bbox.y0, bbox.x1, bbox.y1)),
                     "block_index": block_index,
                     "direction": _transform_direction(
                         line.get("dir") or (1.0, 0.0), rotation_matrix
