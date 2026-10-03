@@ -10,16 +10,14 @@ import sys
 import tempfile
 import zipfile
 from contextlib import nullcontext
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from dulwich import porcelain
 from dulwich.repo import Repo
 
 from ..artifacts import ArtifactDownloader, ArtifactSpec, SafeExtractor
-from ..components import ComponentRegistry
 from ..components.audiocpp import (
     AUDIO_CPP_MODEL_REVISION,
     AUDIO_CPP_VERSION,
@@ -36,7 +34,6 @@ from ..components.slots import (
     component_container,
     component_pointer,
 )
-from ..context import CancellationSignal, ManagerContext
 from ..environments import PIXI_VERSION, PixiBootstrapper
 from ..errors import ManagerError
 from ..legacy_data import (
@@ -46,8 +43,6 @@ from ..legacy_data import (
 )
 from ..models import (
     ManagedProcessSpec,
-    OperationPlan,
-    OperationRecord,
     PreflightCheck,
     TaskSpec,
 )
@@ -75,17 +70,13 @@ from ..runtime_specs import (
     pandrator_runtime_specs,
     runtime_python,
 )
-from ..state import ManagerStore
-from ..supervisor import ProcessSupervisor
 from ..tls import CABundleSelection, dulwich_config_with_ca, select_ca_bundle
 from ..uninstall import (
     prepare_uninstall_handoff,
     rollback_prepared_uninstall,
 )
-
-
-class UnsupportedTask(RuntimeError):
-    pass
+from .contracts import OperationTaskContext as OperationTaskContext
+from .contracts import UnsupportedTask as UnsupportedTask
 
 
 def _is_tls_verification_error(error: BaseException) -> bool:
@@ -146,23 +137,6 @@ def _source_acquisition_error(
         details,
         502,
     )
-
-
-@dataclass(slots=True)
-class OperationTaskContext:
-    context: ManagerContext
-    store: ManagerStore
-    registry: ComponentRegistry
-    supervisor: ProcessSupervisor | None
-    operation: OperationRecord
-    plan: OperationPlan
-    prior_results: dict[str, dict]
-    cancellation: CancellationSignal
-    release_authority: ReleaseAuthority | None = None
-    service_spec_factory: Callable[[str, object], ManagedProcessSpec | None] | None = None
-
-    def check_cancelled(self) -> None:
-        self.cancellation.raise_if_requested()
 
 
 def _atomic_json(path: Path, payload: dict) -> None:

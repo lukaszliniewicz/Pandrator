@@ -29,7 +29,8 @@ from ..models import (
 from ..releases.authority import ReleaseAuthority
 from ..state import ManagerStore
 from ..supervisor import ProcessSupervisor
-from .handlers import FilesystemTaskHandler, OperationTaskContext
+from .contracts import OperationTaskContext
+from .handlers import FilesystemTaskHandler
 
 
 class _StoreCancellation:
