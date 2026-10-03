@@ -31,7 +31,11 @@ from pandrator_manager.models import (
     ProcessIdentity,
     TaskState,
 )
-from pandrator_manager.operations import OperationEngine
+from pandrator_manager.operations import (
+    FilesystemTaskHandler,
+    OperationEngine,
+    OperationTaskContext,
+)
 from pandrator_manager.releases import (
     ReleaseActivationError,
     ReleaseSlotManager,
@@ -705,6 +709,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         *,
         fail_new_health: bool,
         idempotency_key: str,
+        task_handler: FilesystemTaskHandler | None = None,
     ):
         old_specs = pandrator_runtime_specs(self.layout)
         supervisor = _ReleaseSupervisor(
@@ -731,6 +736,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             self.application.store,
             self.application.registry,
             supervisor=supervisor,
+            task_handler=task_handler,
             release_authority=self.application.release_authority,
         )
         engine._execute(operation.id)
@@ -744,6 +750,42 @@ class DurableApplicationReleaseTests(unittest.TestCase):
     def _database_value(path: Path) -> str:
         with closing(sqlite3.connect(path)) as connection:
             return connection.execute("SELECT value FROM state").fetchone()[0]
+
+    def test_release_handler_keeps_overrides_and_fresh_runtime_spec_binding(self):
+        prior_calls: list[str] = []
+
+        class ObservingHandler(FilesystemTaskHandler):
+            @staticmethod
+            def _prior(execution: OperationTaskContext, task_id: str) -> dict:
+                prior_calls.append(task_id)
+                return FilesystemTaskHandler._prior(execution, task_id)
+
+        handler = ObservingHandler()
+        for sequence, version in ((1, "1.0.0"), (2, "1.1.0")):
+            with self.subTest(version=version):
+                first_call = len(prior_calls)
+                manifest = self._prepare_manifest(version=version, sequence=sequence)
+                with mock.patch(
+                    "pandrator_manager.operations.handlers.pandrator_runtime_specs",
+                    wraps=pandrator_runtime_specs,
+                ) as runtime_specs:
+                    _plan, operation, _supervisor = self._execute_manifest(
+                        manifest,
+                        fail_new_health=False,
+                        idempotency_key=f"fresh-specs-{sequence}",
+                        task_handler=handler,
+                    )
+
+                self.assertEqual(operation.state, OperationState.SUCCEEDED)
+                runtime_specs.assert_called_once_with(self.layout)
+                self.assertEqual(
+                    prior_calls[first_call:],
+                    ["release:download", "release:stage", "release:stop-application"],
+                )
+                accepted = self.application.store.accepted_release("pandrator")
+                assert accepted is not None
+                self.assertEqual(accepted["version"], version)
+                self.assertEqual(accepted["sequence"], sequence)
 
     def test_success_atomically_accepts_release_slot_and_ownership(self):
         plan, operation, supervisor = self._execute(fail_new_health=False)
