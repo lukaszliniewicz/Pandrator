@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.client import ManagerClient, ProductUninstalled
 from pandrator_manager.context import WorkspaceLayout
+from pandrator_manager.errors import ManagerError
 from pandrator_manager.launcher import install_stable_launcher
 from pandrator_manager.models import (
     HealthResult,
@@ -226,6 +228,77 @@ class ManagerUninstallTests(unittest.TestCase):
         control.write_text("not a directory", encoding="utf-8")
         with self.assertRaisesRegex(Exception, "real directory"):
             pending_uninstalls(self.layout)
+
+    def _assert_rollback_rejects_control_redirection(self, *, symlink: bool) -> None:
+        operation = self._pending_operation(self._plan())
+        control = uninstall_module.uninstall_control_root(self.layout)
+        saved = control.with_name(control.name + ".saved")
+        control.rename(saved)
+        if symlink:
+            control.symlink_to(saved, target_is_directory=True)
+        else:
+            control.write_text("not a directory", encoding="utf-8")
+        witnesses = [
+            uninstall_module._state_descriptor_path(self.layout, operation.id),
+            *saved.iterdir(),
+        ]
+        before = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in witnesses
+            if path.is_file()
+        }
+        error: Exception | None = None
+        try:
+            uninstall_module.rollback_prepared_uninstall(
+                layout=self.layout,
+                operation_id=operation.id,
+            )
+        except Exception as failure:
+            error = failure
+        after = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in witnesses
+            if path.is_file()
+        }
+        self.assertEqual(after, before)
+        assert isinstance(error, ManagerError)
+        self.assertEqual(error.code, "unsafe_uninstall_control")
+
+        control.unlink()
+        saved.rename(control)
+        envelope, _secret = read_uninstall_handoff(self.layout, operation.id)
+        self.assertEqual(envelope.payload.operation_id, operation.id)
+        uninstall_module.rollback_prepared_uninstall(
+            layout=self.layout,
+            operation_id=operation.id,
+        )
+        self.assertFalse(control.exists())
+        self.assertFalse(witnesses[0].exists())
+
+    def test_rollback_preserves_controls_before_rejecting_non_directory_root(self):
+        self._assert_rollback_rejects_control_redirection(symlink=False)
+
+    @unittest.skipIf(uninstall_module.os.name == "nt", "requires portable symlink creation")
+    def test_rollback_preserves_controls_before_rejecting_symlink_root(self):
+        self._assert_rollback_rejects_control_redirection(symlink=True)
+
+    def test_prepared_rollback_removes_only_controls_and_is_idempotent(self):
+        operation = self._pending_operation(self._plan())
+        control = uninstall_module.uninstall_control_root(self.layout)
+        state = uninstall_module._state_descriptor_path(self.layout, operation.id)
+        user_file = self.layout.data / "user.txt"
+        software_file = self.layout.root / "app" / "software.txt"
+        self.assertTrue(control.is_dir())
+        self.assertTrue(state.is_file())
+        before = (user_file.read_bytes(), software_file.read_bytes())
+        for operation_id in (operation.id, operation.id, "never-prepared"):
+            uninstall_module.rollback_prepared_uninstall(
+                layout=self.layout,
+                operation_id=operation_id,
+            )
+            self.assertFalse(control.exists())
+            self.assertFalse(state.exists())
+            self.assertEqual((user_file.read_bytes(), software_file.read_bytes()), before)
 
     def test_quarantine_cleanup_retries_when_a_child_disappears(self):
         quarantine = Path(self.temporary.name) / "quarantine-race"

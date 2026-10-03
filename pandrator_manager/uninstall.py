@@ -658,6 +658,7 @@ def rollback_prepared_uninstall(
     operation_id: str,
 ) -> None:
     operation_id = _validated_operation_id(operation_id)
+    control = _safe_control_root(layout)
     for path in (
         _state_descriptor_path(layout, operation_id),
         _external_descriptor_path(layout, operation_id),
@@ -670,7 +671,6 @@ def rollback_prepared_uninstall(
             path.unlink()
         except FileNotFoundError:
             pass
-    control = _safe_control_root(layout)
     try:
         control.rmdir()
     except OSError:
