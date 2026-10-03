@@ -3780,6 +3780,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             except ValueError as error:
                 abandon_generation_reservation()
                 return error_response("generation_unavailable", str(error), 409)
+            except Exception:
+                abandon_generation_reservation()
+                raise
 
             try:
                 with database.immediate_session() as db_session:

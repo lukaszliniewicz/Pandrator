@@ -23,6 +23,8 @@ from pandrator.web.models import (
     AuditEvent,
     Document,
     DocumentRevision,
+    GenerationPlan,
+    GenerationPlanRevision,
     GenerationRun,
     Job,
     OutputAssembly,
@@ -90,6 +92,7 @@ class AutomationSecurityTests(unittest.TestCase):
             response.get_data(as_text=True),
         )
         self.assertIsNotNone(nonce_match)
+        assert nonce_match is not None
         approval = self.client.post(
             "/api/v1/auth/automation/authorize",
             data={
@@ -947,6 +950,87 @@ class AutomationSecurityTests(unittest.TestCase):
             headers={**headers, "Idempotency-Key": "prepare-failure-run"},
         )
         self.assertEqual(202, retried.status_code, retried.get_json())
+
+    def test_generation_unexpected_preparation_failure_allows_immediate_retry(self):
+        headers = self._automation_headers("app.read", "app.write", "app.run")
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Unexpected preparation failure", "workflow_kind": "audiobook"},
+            headers={**headers, "Idempotency-Key": "unexpected-preparation-session"},
+        )
+        self.assertEqual(201, created.status_code, created.get_json())
+        session_id = created.get_json()["id"]
+        generation = self.extension["generation"]
+        generation.create_plan(
+            session_id, source_revision_id=None, segments=[{"text": "Prepare again."}]
+        )
+        request_headers = {**headers, "Idempotency-Key": "unexpected-preparation-run"}
+        url = f"/api/v1/sessions/{session_id}/generation-runs"
+
+        def plan_state():
+            with self.extension["database"].session() as db_session:
+                plans = db_session.query(GenerationPlan).filter_by(session_id=session_id).all()
+                revisions = (
+                    db_session.query(GenerationPlanRevision)
+                    .join(GenerationPlan)
+                    .filter(GenerationPlan.session_id == session_id)
+                    .order_by(GenerationPlanRevision.revision_number)
+                    .all()
+                )
+                return (
+                    [(plan.id, plan.active_revision_id) for plan in plans],
+                    [(row.id, row.content_hash, row.settings_json) for row in revisions],
+                )
+
+        prepared_plans = []
+        native_prepare = generation.prepare_start
+
+        def fail_after_preparation(*args, **kwargs):
+            native_prepare(*args, **kwargs)
+            prepared_plans.append(plan_state())
+            raise OSError("injected post-preparation failure")
+
+        with (
+            mock.patch.object(generation, "prepare_start", side_effect=fail_after_preparation),
+            self.assertRaisesRegex(OSError, "injected post-preparation failure"),
+        ):
+            self.client.post(url, json={}, headers=request_headers)
+        self.assertEqual(prepared_plans, [plan_state()])
+        with self.extension["database"].session() as db_session:
+            self.assertEqual(
+                0, db_session.query(GenerationRun).filter_by(session_id=session_id).count()
+            )
+            self.assertEqual(0, db_session.query(Job).filter_by(session_id=session_id).count())
+            unfinished = (
+                db_session.query(ApiIdempotency)
+                .filter_by(idempotency_key="unexpected-preparation-run")
+                .count()
+            )
+
+        retried = self.client.post(url, json={}, headers=request_headers)
+        self.assertEqual(202, retried.status_code, retried.get_json())
+        self.assertEqual(0, unfinished)
+        replayed = self.client.post(url, json={}, headers=request_headers)
+        self.assertEqual(202, replayed.status_code, replayed.get_json())
+        self.assertEqual(retried.get_json(), replayed.get_json())
+        self.assertEqual("true", replayed.headers["Idempotency-Replayed"])
+        with self.extension["database"].session() as db_session:
+            self.assertEqual(
+                1, db_session.query(GenerationRun).filter_by(session_id=session_id).count()
+            )
+            self.assertEqual(1, db_session.query(Job).filter_by(session_id=session_id).count())
+            run = db_session.query(GenerationRun).filter_by(session_id=session_id).one()
+            job = db_session.query(Job).filter_by(session_id=session_id).one()
+            self.assertEqual(retried.get_json()["id"], run.id)
+            self.assertEqual(run.job_id, job.id)
+            self.assertEqual(("queued", session_id), (job.status, job.session_id))
+            receipt = (
+                db_session.query(ApiIdempotency)
+                .filter_by(idempotency_key="unexpected-preparation-run")
+                .one()
+            )
+            self.assertEqual(("completed", 202), (receipt.state, receipt.status_code))
+            self.assertEqual(retried.get_json()["id"], receipt.resource_id)
 
     def test_workflow_plan_and_execute_scopes_match_the_mcp_contract(self):
         read_headers = self._automation_headers("app.read")
