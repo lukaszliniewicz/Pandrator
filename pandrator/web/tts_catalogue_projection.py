@@ -458,6 +458,79 @@ def _mark_live_language_catalog(
     return model_catalog
 
 
+def _classify_voice_metadata_models(
+    service: Mapping[str, Any],
+    declared_models: set[str],
+) -> dict[Any, set[str] | None]:
+    """Return eligible model sets for raw keys; None marks shared global voices."""
+    metadata = service.get("voice_metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    voice_lists = [service.get("voices")]
+    catalogues = service.get("voice_catalogues")
+    if isinstance(catalogues, dict):
+        voice_lists.extend(catalogues.values())
+    known_voices = {
+        voice
+        for voices in voice_lists
+        if isinstance(voices, list)
+        for voice in voices
+        if isinstance(voice, str) and voice
+    }
+    associations: dict[Any, set[str] | None] = {}
+    identity_models: set[str] = set()
+    # Keys are unescaped: match the exact voice suffix rather than a colon position.
+    # Row model fields are not authoritative for existing keyed metadata lookups.
+    for key, item in metadata.items():
+        if not isinstance(item, dict):
+            continue
+        voice_id = item.get("voice_id")
+        if not isinstance(voice_id, str) or not voice_id:
+            voice_id = item.get("id")
+        if not isinstance(voice_id, str) or not voice_id:
+            continue
+        identities = [voice_id]
+        stripped_id = voice_id.strip()
+        if stripped_id and stripped_id != voice_id:
+            identities.append(stripped_id)
+        raw_key = str(key)
+        for identity in identities:
+            if raw_key == identity:
+                associations[key] = None
+                break
+            suffix = f":{identity}"
+            if raw_key.endswith(suffix):
+                model_id = raw_key[:-len(suffix)]
+                if model_id:
+                    associations[key] = {model_id}
+                    identity_models.add(model_id)
+                    break
+    # Freeze identity-backed models across all rows before classifying sparse rows,
+    # so their associations do not depend on metadata row order.
+    known_models = frozenset(declared_models | identity_models)
+    for key in metadata:
+        if key in associations:
+            continue
+        raw_key = str(key)
+        if raw_key in known_voices:
+            associations[key] = None
+            continue
+        # Sparse raw keys can collide across model prefixes, so retain every match.
+        # Use the legacy split only when stronger identity/model evidence is absent.
+        models = {
+            model_id
+            for model_id in known_models
+            if raw_key.startswith(f"{model_id}:")
+            and len(raw_key) > len(model_id) + 1
+        }
+        if not models:
+            prefix, _, suffix = raw_key.partition(":")
+            if prefix and suffix:
+                models.add(prefix)
+        associations[key] = models
+    return associations
+
+
 def _filter_service_models(
     service: dict[str, Any],
     selected: Sequence[str],
@@ -485,14 +558,13 @@ def _filter_service_models(
             known.update(str(model_id) for model_id in value)
         elif isinstance(value, list):
             known.update(str(model_id) for model_id in value if str(model_id).strip())
-    voice_metadata_known = service.get("voice_metadata")
-    if isinstance(voice_metadata_known, dict):
-        known.update(
-            str(key).split(":", 1)[0] for key in voice_metadata_known if str(key).strip()
-        )
     default_model = str(service.get("default_model") or "")
     if default_model:
         known.add(default_model)
+    metadata_models = _classify_voice_metadata_models(service, known)
+    for associated_models in metadata_models.values():
+        if associated_models is not None:
+            known.update(associated_models)
     missing = [model_id for model_id in selected if model_id not in known]
     if missing:
         raise TtsCatalogueModelNotFoundError(service_id, missing)
@@ -514,7 +586,8 @@ def _filter_service_models(
         service["voice_metadata"] = {
             key: item
             for key, item in voice_metadata.items()
-            if str(key).split(":", 1)[0] in wanted
+            if (associated_models := metadata_models[key]) is None
+            or associated_models & wanted
         }
     model_voice_modes = service.get("model_voice_modes")
     if isinstance(model_voice_modes, dict):
