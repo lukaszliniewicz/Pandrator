@@ -1994,6 +1994,89 @@ class PDFIngestionCacheTests(unittest.TestCase):
             self.assertEqual(warm.to_dict(), reused.to_dict())
             self.assertEqual(warm.to_dict(), repeated.to_dict())
 
+    def _assert_malformed_cache_rebuilt(
+        self,
+        bad_value: list[object] | int | str | None,
+        *,
+        bad_ingestion: bool = False,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cropped.pdf"
+            self._write_native_pdf(source)
+            sidecar = self._sidecar(source)
+            original_bytes = source.read_bytes()
+            original_sidecar_bytes = sidecar.read_bytes()
+            fingerprint = self._fingerprint(source)
+            cache_dir = root / "warm-cache"
+            warm = self._ingest(source, cache_dir)
+            fresh = self._ingest(source, root / "fresh-cache")
+            self.assertEqual(warm.to_dict(), fresh.to_dict())
+
+            if bad_ingestion:
+                payload = warm.to_dict()
+                payload["attributes"]["pdf_ingestion"] = bad_value
+            else:
+                payload = bad_value
+            cache_path = cache_dir / "source_document.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            stored = json.loads(cache_path.read_text(encoding="utf-8"))
+            shape = stored["attributes"]["pdf_ingestion"] if bad_ingestion else stored
+            self.assertEqual(bad_value, shape)
+            self.assertIs(type(bad_value), type(shape))
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+
+            repaired = self._ingest(source, cache_dir)
+
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(original_sidecar_bytes, sidecar.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+            self.assertEqual(str(source.resolve()), repaired.source_path)
+            self.assertEqual(source.name, repaired.filename)
+            self.assertEqual(
+                fresh.attributes["pycroppdf_provenance"],
+                repaired.attributes["pycroppdf_provenance"],
+            )
+            self.assertEqual(fresh.warnings, repaired.warnings)
+            self.assertEqual(self._rows(fresh), self._rows(repaired))
+            self.assertEqual(fresh.to_dict(), repaired.to_dict())
+            self.assertEqual(
+                repaired.to_dict(), json.loads(cache_path.read_text(encoding="utf-8"))
+            )
+
+            messages: list[str] = []
+            reused = self._ingest(source, cache_dir, messages=messages)
+            self.assertIn("Using cached structured PDF ingestion.", messages)
+            self.assertEqual(repaired.to_dict(), reused.to_dict())
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(original_sidecar_bytes, sidecar.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+
+    def test_list_cache_root_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt([])
+
+    def test_integer_cache_root_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt(7)
+
+    def test_null_cache_root_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt(None)
+
+    def test_string_cache_root_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt("bad-cache-root")
+
+    def test_list_ingestion_metadata_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt([], bad_ingestion=True)
+
+    def test_integer_ingestion_metadata_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt(7, bad_ingestion=True)
+
+    def test_null_ingestion_metadata_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt(None, bad_ingestion=True)
+
+    def test_string_ingestion_metadata_is_rebuilt(self) -> None:
+        self._assert_malformed_cache_rebuilt("bad-ingestion", bad_ingestion=True)
+
 
 if __name__ == "__main__":
     unittest.main()

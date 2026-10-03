@@ -39,8 +39,12 @@ def _load_cached_document(
     try:
         with open(cache_path, "r", encoding="utf-8") as file_handle:
             payload = json.load(file_handle)
+        if not isinstance(payload, dict):
+            return None
         document = SourceDocument.from_dict(payload)
         ingestion = document.attributes.get("pdf_ingestion", {})
+        if not isinstance(ingestion, dict):
+            return None
         if ingestion.get("version") != PDF_INGESTION_VERSION:
             return None
         if ingestion.get("source_fingerprint") != source_fingerprint:
