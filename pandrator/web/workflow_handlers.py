@@ -6892,7 +6892,10 @@ class WorkflowHandlers:
         )
 
     def apply_pdf_edits(self, payload, progress, cancel_event):
+        import tempfile
+
         from .pdf_editor import PdfEditPlan, apply_pdf_edit_plan
+        from .pdf_publication import publish_pdf_edit
 
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
@@ -6906,38 +6909,35 @@ class WorkflowHandlers:
             self._session_dir(session_id) if session_id else self.paths.artifacts
         )
         output_path = output_dir / f"{source_path.stem}_edited.pdf"
-        suffix = 2
-        while output_path.exists():
-            output_path = output_dir / f"{source_path.stem}_edited_{suffix}.pdf"
-            suffix += 1
         progress(0.1, "Validating PDF edit plan")
         plan = PdfEditPlan.from_value(dict(payload.get("plan") or {}))
         if cancel_event.is_set():
             return {}
-        destination, manifest, provenance = apply_pdf_edit_plan(
-            source_path,
-            output_path,
-            plan,
-            parent_artifact_id=source_artifact.id,
-        )
-        progress(0.85, "Registering edited PDF")
-        output_artifact = self.artifacts.register(
-            destination,
-            kind="pdf",
-            role="pdf_edited",
-            session_id=session_id,
-            parent_ids=[source_artifact.id],
-            metadata={
-                "provenance_manifest": self.paths.relative_managed_path(manifest)
-            },
-        )
-        manifest_artifact = self.artifacts.register(
-            manifest,
-            kind="json",
-            role="provenance",
-            session_id=session_id,
-            parent_ids=[source_artifact.id, output_artifact.id],
-        )
+        job_id = str(payload.get("_job_id") or "").strip() or None
+        raw_generation = payload.get("_lease_generation")
+        lease_generation = int(raw_generation) if raw_generation is not None else None
+        with tempfile.TemporaryDirectory(prefix=".pdf-edit-", dir=output_dir) as directory:
+            destination, manifest, provenance = apply_pdf_edit_plan(
+                source_path,
+                Path(directory) / output_path.name,
+                plan,
+                parent_artifact_id=source_artifact.id,
+            )
+            progress(0.85, "Registering edited PDF")
+            output_artifact, manifest_artifact = publish_pdf_edit(
+                self.database,
+                self.paths,
+                self.artifacts,
+                destination,
+                manifest,
+                provenance,
+                output_path,
+                source_artifact_id=source_artifact.id,
+                session_id=session_id,
+                cancel_event=cancel_event,
+                job_id=job_id,
+                lease_generation=lease_generation,
+            )
         progress(1.0, "Edited PDF ready")
         return {
             "artifact_id": output_artifact.id,
