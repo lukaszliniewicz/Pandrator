@@ -4,6 +4,10 @@ Packaged Manager releases are the easiest way to use Pandrator. A source
 checkout is for development, debugging, and deliberately managed deployments.
 The repository uses Pixi to lock Python and Node tooling consistently.
 
+The supported application on `main` is the Python backend with the Svelte
+frontend in `web/`. Qt application and installer interfaces are retired.
+Legacy workspace import code handles older data formats without a Qt runtime.
+
 ## Install environments
 
 Install [Pixi](https://pixi.sh/), clone the repository, and use the committed

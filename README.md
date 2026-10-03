@@ -14,6 +14,10 @@ Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
+The main application uses a Python backend and a Svelte frontend. The Qt
+desktop interface is retired; Pandrator Manager opens the current interface
+in your browser. Older workspace data can still be imported.
+
 [![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.11.0/PandratorManager-0.9.28-windows-x86_64.exe)
 [![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.11.0/PandratorManager-0.9.28-x86_64.AppImage)
 

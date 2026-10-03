@@ -15,6 +15,10 @@ Do not change generated files without changing their source. Do not treat a
 local model/provider assumption as universal; Pandrator supports several
 compute and deployment paths.
 
+The supported interface is Svelte over the Python backend. Keep new features
+on this path; do not add Qt dependencies or restore the retired desktop UI.
+Preserve legacy workspace import compatibility when changing older data formats.
+
 ## Code quality
 
 - Support the Python versions declared by the affected package.

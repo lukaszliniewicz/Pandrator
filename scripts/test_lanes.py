@@ -51,7 +51,6 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_passive_prompt_manifests.py",
         "tests/test_dubbing_llm_translation.py",
         "tests/test_dubbing_manual_timing.py",
-        "tests/test_dubbing_run_usage.py",
         "tests/test_dubbing_settings.py",
         "tests/test_dubbing_speech_blocks_integration.py",
         "tests/test_dubbing_subtitle_logic.py",
@@ -193,7 +192,6 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_soundtrack_export.py",
         "tests/test_media_edit_video_muxing.py",
         "tests/test_phase0_baseline.py",
-        "tests/test_state_db_handler.py",
     ),
     "web-01-serial": (
         "tests/test_audio_cpp_job_resources.py",
