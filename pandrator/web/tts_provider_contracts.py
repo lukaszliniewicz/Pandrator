@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 from pydub import AudioSegment
 
@@ -152,3 +153,18 @@ class TtsProviderAdapter(Protocol):
     ) -> bool: ...
 
 
+class TtsBatchSynthesizer(Protocol):
+    """Optional batch hook whose implementation owns its signature and result contract."""
+
+    def __call__(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]: ...
+
+
+def _is_tts_batch_synthesizer(method: object) -> TypeGuard[TtsBatchSynthesizer]:
+    """Check only callability; implementations own the hook signature and result contract."""
+    return callable(method)

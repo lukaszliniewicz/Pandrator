@@ -79,6 +79,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_transcript_normalization.py",
         "tests/test_tts_endpoint_discovery.py",
         "tests/test_tts_handler.py",
+        "tests/test_kobold_qwen_batch_contracts.py",
         "tests/test_tts_language_projection.py",
         "tests/test_tts_language_support.py",
         "tests/test_tts_language_preflight.py",

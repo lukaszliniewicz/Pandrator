@@ -21,6 +21,7 @@ from pandrator.web.tts_providers import (
     AudioCppAdapter,
     LegacyTtsAdapter,
     TtsBatchItem,
+    TtsBatchResult,
     TtsProviderAdapter,
     TtsProviderError,
     TtsProviderRegistry,
@@ -731,4 +732,119 @@ def test_serial_batch_fallback_close_stops_remaining_items(monkeypatch):
         assert list(stream) == []
     finally:
         stream.close()
+        registry.close()
+
+
+@pytest.mark.parametrize("kind", ["function", "callable", "descriptor"])
+def test_optional_batch_hook_keeps_one_lookup_and_return_identity(monkeypatch, kind):
+    registry = TtsProviderRegistry()
+    audio = AudioSegment.silent(duration=20)
+    stream = iter([TtsBatchResult("one", audio=audio)])
+    lookups = []
+    calls = []
+
+    def single(*_args, **_options):
+        pytest.fail("A callable batch hook must retain its own dispatch")
+
+    def batch(items, *, batch_size, **options):
+        calls.append((items, batch_size, options))
+        return stream
+
+    if kind == "descriptor":
+
+        class DescriptorAdapter(SimpleNamespace):
+            @property
+            def synthesize_batch(self):
+                lookups.append("lookup")
+                return batch
+
+        adapter = DescriptorAdapter(**vars(_single_only_adapter(single)))
+    else:
+        adapter = _single_only_adapter(single)
+        if kind == "callable":
+
+            class Hook:
+                def __call__(self, items, *, batch_size, **options):
+                    return batch(items, batch_size=batch_size, **options)
+
+            adapter.synthesize_batch = Hook()
+        else:
+            adapter.synthesize_batch = batch
+    assert isinstance(adapter, TtsProviderAdapter)
+    registry.replace(adapter)
+    settings = {"service": "xtts"}
+    items = [TtsBatchItem("one", "First", settings)]
+    options = {"opaque_option": object()}
+    try:
+        result = registry.synthesize_batch(items, batch_size=3, **options)
+        assert result is stream
+        assert calls == [(items, 3, options)]
+        assert calls[0][0] is items
+        assert lookups == (["lookup"] if kind == "descriptor" else [])
+        assert next(result).audio is audio
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("hook", [None, 42, "disabled"])
+def test_noncallable_optional_batch_hook_keeps_selected_serial_fallback(hook):
+    registry = TtsProviderRegistry()
+    audio = AudioSegment.silent(duration=20)
+    calls = []
+
+    def single(text, settings, **options):
+        calls.append((text, settings, options))
+        return audio
+
+    adapter = _single_only_adapter(single)
+    adapter.synthesize_batch = hook
+    registry.replace(adapter)
+    settings = {"service": "xtts"}
+    try:
+        results = list(
+            registry.synthesize_batch([TtsBatchItem("one", "First", settings)], batch_size=1)
+        )
+        assert results[0].id == "one" and results[0].audio is audio
+        assert calls == [("First", settings, {})]
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("returned", [None, object()])
+def test_optional_hook_contract_does_not_add_runtime_result_validation(returned):
+    registry = TtsProviderRegistry()
+    adapter = _single_only_adapter(lambda *_args, **_options: pytest.fail("Unexpected fallback"))
+    adapter.synthesize_batch = lambda *_args, **_options: returned
+    registry.replace(adapter)
+    try:
+        assert (
+            registry.synthesize_batch(
+                [TtsBatchItem("one", "First", {"service": "xtts"})], batch_size=1
+            )
+            is returned
+        )
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("broken", ["arity", "none_call"])
+def test_malformed_callable_batch_hooks_keep_the_existing_call_error(broken):
+    registry = TtsProviderRegistry()
+    adapter = _single_only_adapter(lambda *_args, **_options: pytest.fail("Unexpected fallback"))
+    if broken == "none_call":
+
+        class BrokenHook:
+            __call__ = None
+
+        adapter.synthesize_batch = BrokenHook()
+    else:
+        adapter.synthesize_batch = lambda: None
+    assert callable(adapter.synthesize_batch)
+    registry.replace(adapter)
+    try:
+        with pytest.raises(TypeError):
+            registry.synthesize_batch(
+                [TtsBatchItem("one", "First", {"service": "xtts"})], batch_size=1
+            )
+    finally:
         registry.close()

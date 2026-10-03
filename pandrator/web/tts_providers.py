@@ -192,6 +192,7 @@ from .tts_provider_contracts import (
 from .tts_provider_contracts import (
     TtsRetryPolicy as TtsRetryPolicy,
 )
+from .tts_provider_contracts import _is_tts_batch_synthesizer
 
 
 def _synthesize_serial_batch(
@@ -1267,7 +1268,7 @@ class TtsProviderRegistry:
                 **options,
             )
         batch_method = getattr(adapter, "synthesize_batch", None)
-        if callable(batch_method):
+        if _is_tts_batch_synthesizer(batch_method):
             return batch_method(
                 items,
                 batch_size=batch_size,

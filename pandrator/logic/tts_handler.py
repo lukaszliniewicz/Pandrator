@@ -10,7 +10,7 @@ import os
 import re
 import time
 import wave
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from contextlib import ExitStack, contextmanager
 from queue import Queue
@@ -33,6 +33,11 @@ from ..constants import (
 )
 from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .audio_cpp_parameters import validate_audio_cpp_model_options
+from .kobold_qwen_contracts import (
+    KoboldQwenBatchAudioEvent,
+    KoboldQwenBatchCapabilities,
+    KoboldQwenBatchMessage,
+)
 from .retry_utils import (
     retry_after_seconds,
     retry_delay_seconds,
@@ -7142,10 +7147,10 @@ def get_kobold_qwen_batch_capabilities(
     base_url: str = KOBOLD_QWEN_API_BASE_URL,
     *,
     api_key: str = "",
-) -> dict[str, object]:
+) -> KoboldQwenBatchCapabilities:
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
     headers = _openai_auth_headers(api_key or _resolve_kobold_qwen_api_key())
-    fallback = {
+    fallback: KoboldQwenBatchCapabilities = {
         "supported": False,
         "streaming": False,
         "default_batch_size": 1,
@@ -7194,7 +7199,7 @@ def _iter_kobold_qwen_batch_audio_http(
     api_key: str = "",
     stop_event: Event | None = None,
     cancel_event: Event | None = None,
-):
+) -> Iterator[KoboldQwenBatchAudioEvent]:
     if not items:
         return
     normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
@@ -7309,12 +7314,12 @@ def iter_kobold_qwen_batch_audio(
     base_url: str = KOBOLD_QWEN_API_BASE_URL,
     api_key: str = "",
     cancel_event: Event | None = None,
-):
+) -> Iterator[KoboldQwenBatchAudioEvent]:
     """Read the batch stream ahead so inference overlaps local take handling."""
     if not items:
         return
     stop_event = Event()
-    messages: Queue[tuple[str, object]] = Queue(maxsize=len(items) + 2)
+    messages: Queue[KoboldQwenBatchMessage] = Queue(maxsize=len(items) + 2)
 
     def read_stream() -> None:
         try:
@@ -7339,14 +7344,15 @@ def iter_kobold_qwen_batch_audio(
     worker.start()
     try:
         while True:
-            kind, payload = messages.get()
-            if kind == "done":
+            message = messages.get()
+            if message[0] == "done":
                 return
-            if kind == "error":
+            if message[0] == "error":
+                payload = message[1]
                 if isinstance(payload, BaseException):
                     raise payload
                 raise RuntimeError(str(payload))
-            yield payload
+            yield message[1]
     finally:
         stop_event.set()
 
