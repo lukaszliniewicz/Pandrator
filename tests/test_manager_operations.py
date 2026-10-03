@@ -85,6 +85,7 @@ def _wait(application, operation_id: str, timeout: float = 30):
             return operation
         time.sleep(0.02)
     faulthandler.dump_traceback()
+    operation = application.store.get_operation(operation_id)
     raise AssertionError(
         f"Operation {operation_id} did not finish within {timeout}s: "
         f"state={operation.state}, current_task={operation.current_task_id}."
@@ -170,6 +171,7 @@ class OperationEngineTests(unittest.TestCase):
             "fixture",
         )
         self.assertIsNotNone(active)
+        assert active is not None
         self.assertEqual((active / "marker.txt").read_text(encoding="utf-8"), "one")
 
     def test_install_checks_out_pinned_source_revision(self):
@@ -206,6 +208,7 @@ class OperationEngineTests(unittest.TestCase):
         self.assertEqual(completed.state, OperationState.SUCCEEDED)
         active = active_component_path(application.context.layout, "fixture")
         self.assertIsNotNone(active)
+        assert active is not None
         self.assertEqual((active / "marker.txt").read_text(encoding="utf-8"), "one")
 
     def test_retry_rechecks_pinned_revision_on_reused_staging(self):
@@ -314,9 +317,9 @@ class OperationEngineTests(unittest.TestCase):
             kind=OperationKind.INSTALL,
             desired={"fixture": DesiredComponentState()},
         )
-        self.application.context.environment["REQUESTS_CA_BUNDLE"] = str(
-            self.base / "missing-ca.pem"
-        )
+        environment = self.application.context.environment
+        assert isinstance(environment, dict)
+        environment["REQUESTS_CA_BUNDLE"] = str(self.base / "missing-ca.pem")
         engine = OperationEngine(
             self.application.context,
             self.application.store,
@@ -545,6 +548,7 @@ class OperationEngineTests(unittest.TestCase):
             "fixture",
         )
         self.assertEqual(restored, previous)
+        assert restored is not None
         self.assertEqual(
             (restored / "marker.txt").read_text(encoding="utf-8"),
             "one",
@@ -613,6 +617,7 @@ class OperationEngineTests(unittest.TestCase):
             self.assertEqual(completed.state, OperationState.RECOVERY_REQUIRED)
             active = active_component_path(application.context.layout, "fixture")
             self.assertIsNotNone(active)
+            assert active is not None
             self.assertTrue(active.is_dir())
             self.assertEqual(
                 (active / "marker.txt").read_text(encoding="utf-8"),
@@ -1119,6 +1124,7 @@ class OperationEngineTests(unittest.TestCase):
             "fixture",
         )
         self.assertIsNotNone(restored)
+        assert restored is not None
         self.assertEqual(
             (restored / "marker.txt").read_text(encoding="utf-8"),
             "one",
