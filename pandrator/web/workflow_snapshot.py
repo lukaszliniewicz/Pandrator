@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from .database import Database
@@ -91,6 +91,68 @@ class WorkflowSnapshotContext:
     correction_output_descends_from: CorrectionAncestryProtocol
     job_run_metrics: Callable[[Job], dict[str, Any]]
     subtitle_source_status_in_session: SubtitleReadinessProtocol
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotStageRead:
+    definition: StageDefinition
+    effective_definition: StageDefinition
+    history: dict[str, Any] | None
+    artifact: Artifact | None
+    active: Job | None
+    agent_kind: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _AgentRunState:
+    id: str
+    status: str
+
+
+def _latest_stage_agent_states(
+    session: Session, session_id: str, stages: list[_SnapshotStageRead]
+) -> dict[int, _AgentRunState]:
+    requests = []
+    for index, stage_read in enumerate(stages, start=1):
+        if stage_read.agent_kind is None:
+            continue
+        links = []
+        if stage_read.artifact is not None:
+            links.append(AgentRun.result_artifact_id == stage_read.artifact.id)
+        if stage_read.active is not None:
+            links.append(AgentRun.job_id == stage_read.active.id)
+        if not links:
+            continue
+        winner = (
+            select(AgentRun.id)
+            .where(
+                AgentRun.session_id == session_id,
+                AgentRun.kind == stage_read.agent_kind,
+                or_(*links),
+            )
+            .order_by(AgentRun.updated_at.desc())
+            .limit(1)
+            .correlate(None)
+            .scalar_subquery()
+        )
+        requests.append(
+            select(
+                literal(index).label("stage_number"),
+                winner.label("agent_run_id"),
+            )
+        )
+    if not requests:
+        return {}
+    winners = union_all(*requests).subquery()
+    rows = session.execute(
+        select(winners.c.stage_number, AgentRun.id, AgentRun.status).join(
+            AgentRun, AgentRun.id == winners.c.agent_run_id
+        )
+    ).all()
+    return {
+        int(stage_number): _AgentRunState(agent_run_id, status)
+        for stage_number, agent_run_id, status in rows
+    }
 
 
 def build_workflow_snapshot(
@@ -306,17 +368,6 @@ def build_workflow_snapshot(
             }
             for job in latest_jobs
         )
-        agent_runs = (
-            list(
-                session.scalars(
-                    select(AgentRun)
-                    .where(AgentRun.session_id == session_id)
-                    .order_by(AgentRun.updated_at.desc())
-                ).all()
-            )
-            if needs_agent_run_status
-            else []
-        )
         roles: dict[str, Artifact] = {}
         artifact: Artifact | None
         for artifact in selections.values():
@@ -441,7 +492,8 @@ def build_workflow_snapshot(
         visible_definitions = tuple(
             item for item in definitions if item.key != "optimize_document"
         )
-        for index, definition in enumerate(visible_definitions, start=1):
+        stage_reads: list[_SnapshotStageRead] = []
+        for definition in visible_definitions:
             effective_definition = (
                 document_definition
                 if definition.key == "optimize_tts"
@@ -473,21 +525,28 @@ def build_workflow_snapshot(
                 "translate": "translation",
                 "optimize_tts": "tts_optimization",
             }.get(definition.key)
-            agent_run = next(
-                (
-                    run
-                    for run in agent_runs
-                    if run.kind == agent_kind
-                    and (
-                        (
-                            artifact is not None
-                            and run.result_artifact_id == artifact.id
-                        )
-                        or (active is not None and run.job_id == active.id)
-                    )
-                ),
-                None,
+            stage_reads.append(
+                _SnapshotStageRead(
+                    definition,
+                    effective_definition,
+                    history,
+                    artifact,
+                    active,
+                    agent_kind,
+                )
             )
+        agent_runs = (
+            _latest_stage_agent_states(session, session_id, stage_reads)
+            if needs_agent_run_status
+            else {}
+        )
+        for index, stage_read in enumerate(stage_reads, start=1):
+            definition = stage_read.definition
+            effective_definition = stage_read.effective_definition
+            history = stage_read.history
+            artifact = stage_read.artifact
+            active = stage_read.active
+            agent_run = agent_runs.get(index)
             artifact_agent_run_id = str(
                 (
                     (artifact.metadata_json or {}) if artifact is not None else {}
