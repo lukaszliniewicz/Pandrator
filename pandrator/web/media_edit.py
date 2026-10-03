@@ -1090,14 +1090,14 @@ class MediaEditService:
             seen.add(key)
             start_evidence = (
                 BoundaryEvidence(0, 0, 1.0, "media_start")
-                if start_at_media_start
+                if start_cue is None
                 else refine_cue_boundary(start_cue, start_cue.start_ms, side="start")
             )
             end_evidence = (
                 BoundaryEvidence(
                     active.duration_ms, active.duration_ms, 1.0, "media_end"
                 )
-                if end_at_media_end
+                if end_cue is None
                 else refine_cue_boundary(end_cue, end_cue.end_ms, side="end")
             )
             if end_evidence.refined_ms <= start_evidence.refined_ms:
