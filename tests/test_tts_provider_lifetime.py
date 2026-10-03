@@ -22,6 +22,7 @@ from pandrator.web.tts_providers import (
     LegacyTtsAdapter,
     TtsBatchItem,
     TtsProviderAdapter,
+    TtsProviderError,
     TtsProviderRegistry,
 )
 
@@ -583,3 +584,151 @@ def test_worker_cli_retires_owned_registry_on_constructor_and_runner_exit(
     finally:
         providers.close()
         original_dispose()
+
+
+def _single_only_adapter(synthesize):
+    metadata = LegacyTtsAdapter("xtts")
+    return SimpleNamespace(
+        service_id="xtts",
+        capabilities=metadata.capabilities,
+        health=metadata.health,
+        enrich_catalog=metadata.enrich_catalog,
+        synthesize=synthesize,
+        upload_voice=metadata.upload_voice,
+        delete_voice=metadata.delete_voice,
+    )
+
+
+@pytest.mark.parametrize("outcome", ["audio", "none", "provider_error", "other_error"])
+def test_serial_batch_fallback_uses_selected_adapter_and_projects_results(monkeypatch, outcome):
+    registry = TtsProviderRegistry()
+    audio = AudioSegment.silent(duration=20)
+    calls = []
+    failure = TtsProviderError("xtts", "synthesize", "controlled failure", retryable=False)
+
+    def legacy(*_args, **_options):
+        pytest.fail("Legacy synthesis bypassed selected adapter")
+
+    monkeypatch.setattr(tts_handler, "text_to_audio", legacy)
+
+    def synthesize(text, settings, **options):
+        calls.append((text, settings, options))
+        if text == "Second":
+            if outcome == "provider_error":
+                raise failure
+            if outcome == "other_error":
+                raise RuntimeError("controlled failure")
+            if outcome == "none":
+                return None
+        return audio
+
+    adapter = _single_only_adapter(synthesize)
+    assert isinstance(adapter, TtsProviderAdapter)
+    assert not hasattr(adapter, "synthesize_batch")
+    assert not hasattr(adapter, "close")
+    registry.replace(adapter)
+    settings = {"service": "xtts"}
+    options = {"opaque_option": object()}
+    items = [
+        TtsBatchItem(str(index), text, settings)
+        for index, text in enumerate(("First", "Second", "Third"))
+    ]
+    try:
+        stream = registry.synthesize_batch(items, batch_size=1, **options)
+        assert calls == []
+        results = list(stream)
+        assert [result.id for result in results] == ["0", "1", "2"]
+        assert calls == [(item.text, settings, options) for item in items]
+        assert all(row[1] is settings for row in calls)
+        assert results[0].audio is results[2].audio is audio
+        assert results[0].error is results[2].error is None
+        if outcome == "provider_error":
+            assert results[1].error is failure
+            assert results[1].audio is None
+        elif outcome == "other_error":
+            error = results[1].error
+            assert isinstance(error, TtsProviderError)
+            assert (error.service_id, error.operation, str(error), error.retryable) == (
+                "xtts",
+                "synthesize",
+                "controlled failure",
+                True,
+            )
+            assert results[1].audio is None
+        else:
+            assert results[1].error is None
+            assert results[1].audio is (None if outcome == "none" else audio)
+    finally:
+        registry.close()
+
+
+@pytest.mark.parametrize("retire", ["close", "replace"])
+def test_serial_batch_fallback_keeps_selected_adapter_across_retirement(monkeypatch, retire):
+    registry = TtsProviderRegistry()
+    audio = AudioSegment.silent(duration=20)
+    calls = []
+    monkeypatch.setattr(
+        tts_handler,
+        "text_to_audio",
+        lambda *_args, **_options: pytest.fail("Legacy synthesis bypassed selected adapter"),
+    )
+
+    def synthesize(text, _settings, **_options):
+        calls.append(text)
+        return audio
+
+    registry.replace(_single_only_adapter(synthesize))
+    settings = {"service": "xtts"}
+    stream = registry.synthesize_batch(
+        [TtsBatchItem("one", "First", settings), TtsBatchItem("two", "Second", settings)],
+        batch_size=1,
+    )
+    try:
+        assert next(stream).audio is audio
+        if retire == "close":
+            registry.close()
+        else:
+            registry.replace(
+                _single_only_adapter(
+                    lambda *_args, **_options: pytest.fail(
+                        "Replacement adapter must not take over admitted batch"
+                    )
+                )
+            )
+        result = next(stream)
+        assert result.id == "two" and result.audio is audio
+        assert calls == ["First", "Second"]
+        assert list(stream) == []
+    finally:
+        stream.close()
+        registry.close()
+
+
+def test_serial_batch_fallback_close_stops_remaining_items(monkeypatch):
+    registry = TtsProviderRegistry()
+    audio = AudioSegment.silent(duration=20)
+    calls = []
+    monkeypatch.setattr(
+        tts_handler,
+        "text_to_audio",
+        lambda *_args, **_options: pytest.fail("Legacy synthesis bypassed selected adapter"),
+    )
+
+    def synthesize(text, _settings, **_options):
+        calls.append(text)
+        return audio
+
+    registry.replace(_single_only_adapter(synthesize))
+    settings = {"service": "xtts"}
+    stream = registry.synthesize_batch(
+        [TtsBatchItem("one", "First", settings), TtsBatchItem("two", "Second", settings)],
+        batch_size=1,
+    )
+    try:
+        assert next(stream).audio is audio
+        stream.close()
+        assert calls == ["First"]
+        assert list(stream) == []
+    finally:
+        stream.close()
+        registry.close()

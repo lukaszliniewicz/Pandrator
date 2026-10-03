@@ -194,6 +194,35 @@ from .tts_provider_contracts import (
 )
 
 
+def _synthesize_serial_batch(
+    adapter: TtsProviderAdapter,
+    items: list[TtsBatchItem],
+    **options: Any,
+) -> Iterator[TtsBatchResult]:
+    for item in items:
+        try:
+            yield TtsBatchResult(
+                id=item.id,
+                audio=adapter.synthesize(
+                    item.text,
+                    item.settings,
+                    **options,
+                ),
+            )
+        except Exception as error:  # noqa: BLE001 - stable result boundary
+            projected = (
+                error
+                if isinstance(error, TtsProviderError)
+                else TtsProviderError(
+                    adapter.service_id,
+                    "synthesize",
+                    str(error),
+                    retryable=True,
+                )
+            )
+            yield TtsBatchResult(id=item.id, error=projected)
+
+
 class LegacyTtsAdapter:
     """Adapter for the stable function-based provider implementation."""
 
@@ -278,28 +307,7 @@ class LegacyTtsAdapter:
         **options: Any,
     ) -> Iterator[TtsBatchResult]:
         del batch_size
-        for item in items:
-            try:
-                yield TtsBatchResult(
-                    id=item.id,
-                    audio=self.synthesize(
-                        item.text,
-                        item.settings,
-                        **options,
-                    ),
-                )
-            except Exception as error:  # noqa: BLE001 - stable result boundary
-                projected = (
-                    error
-                    if isinstance(error, TtsProviderError)
-                    else TtsProviderError(
-                        self.service_id,
-                        "synthesize",
-                        str(error),
-                        retryable=True,
-                    )
-                )
-                yield TtsBatchResult(id=item.id, error=projected)
+        yield from _synthesize_serial_batch(self, items, **options)
 
     def upload_voice(
         self,
@@ -1265,11 +1273,7 @@ class TtsProviderRegistry:
                 batch_size=batch_size,
                 **options,
             )
-        return LegacyTtsAdapter(service_id).synthesize_batch(
-            items,
-            batch_size=1,
-            **options,
-        )
+        return _synthesize_serial_batch(adapter, items, **options)
 
     def _synthesize_parallel_batch(
         self,
