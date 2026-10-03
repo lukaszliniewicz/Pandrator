@@ -37,7 +37,8 @@ from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
 from .startup import StartupMaintenance
 from .subtitle_evidence import SubtitleEvidenceService
 from .subtitle_review import SubtitleReviewService
-from .tts_providers import TtsCatalogueService, TtsProviderRegistry
+from .tts_catalogue_service import TtsCatalogueService
+from .tts_providers import TtsProviderRegistry
 from .uploads import ChunkUploadService
 from .work import WorkService
 from .workflow_handlers import WorkflowHandlers

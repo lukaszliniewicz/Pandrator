@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
+from urllib.parse import urlparse
 
 from pandrator.logic.tts_language_support import tts_language_support
 from pandrator.logic.tts_provider_profiles import AUDIO_CPP_MODEL_CATALOG
@@ -639,5 +640,36 @@ def _audio_cpp_static_model_catalog(service: dict[str, Any]) -> list[dict[str, A
             continue
         result.append({**builtins.get(model_id, {}), **item, "id": model_id})
     return result
+
+
+def _supports_parallel_cloud_synthesis(service: Mapping[str, Any]) -> bool:
+    """Keep local compatible servers serial; enable known cloud transports."""
+    adapter = normalize_service_id(service.get("adapter"))
+    service_id = normalize_service_id(service.get("id") or service.get("name"))
+    cloud_ids = {"openai", "gemini", "vertex_ai", "elevenlabs"}
+    if adapter in {"azure_speech", "elevenlabs_native"}:
+        return True
+    if adapter and adapter != "openai_compatible":
+        return False
+    if service_id in cloud_ids:
+        return True
+    if adapter == "openai_compatible":
+        host = (
+            urlparse(
+                str(service.get("api_base") or service.get("base_url") or "")
+            ).hostname
+            or ""
+        ).lower()
+        return host == "api.openai.com" or any(
+            host.endswith(suffix)
+            for suffix in (
+                ".openai.azure.com",
+                ".cognitiveservices.azure.com",
+                ".services.ai.azure.com",
+                ".inference.ai.azure.com",
+                ".models.ai.azure.com",
+            )
+        )
+    return False
 
 
