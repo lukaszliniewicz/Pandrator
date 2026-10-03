@@ -561,3 +561,69 @@ def test_invalid_upload_paths_raise_before_http(tmp_path, key_resolver, upload_t
 
     assert records.calls == []
     assert key_resolver == [((), {})]
+
+
+def test_connection_looks_up_voice_candidates_after_resolving_credentials(monkeypatch):
+    calls = []
+
+    def catalogue_urls(base):
+        calls.append(("catalogue", base))
+        return [f"{base}/late-voices"]
+
+    def resolve():
+        monkeypatch.setattr(tts_handler, "_openai_voice_catalog_urls", catalogue_urls)
+        return RESOLVED_KEY
+
+    def get(url, **options):
+        calls.append(("get", url, options))
+        return _response(200 if url.endswith("late-voices") else 404)
+
+    monkeypatch.setattr(tts_handler, "_resolve_kobold_qwen_api_key", resolve)
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    assert tts_handler.check_kobold_qwen_connection(BASE_URL)
+    assert calls[0] == ("catalogue", ORIGIN)
+    assert [call[1] for call in calls[1:]] == [
+        f"{ORIGIN}/{path}" for path in ["health", "v1/models", "models", "late-voices"]
+    ]
+
+
+def test_models_look_up_parser_merge_and_preferred_list_when_used(monkeypatch, key_resolver):
+    calls = []
+    payload = {"data": [{"id": "provider:late"}]}
+
+    def merge(preferred, discovered):
+        calls.append(("merge", preferred, discovered))
+        return preferred + discovered
+
+    def parse(received):
+        assert received == payload
+        calls.append(("parse", received))
+        monkeypatch.setattr(tts_handler, "_merge_catalog_with_discovered", merge)
+        monkeypatch.setattr(tts_handler, "KOBOLD_QWEN_TTS_MODELS", ["configured:late"])
+        return ["parsed:late"]
+
+    def get(*_args, **_options):
+        monkeypatch.setattr(tts_handler, "_extract_models_from_openai_payload", parse)
+        return _response(payload=payload)
+
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    assert tts_handler.get_kobold_qwen_models(BASE_URL) == ["configured:late", "parsed:late"]
+    assert calls == [("parse", payload), ("merge", ["configured:late"], ["parsed:late"])]
+    assert key_resolver == [((), {})]
+
+
+def test_catalogue_keeps_provider_seeds_live_after_http(monkeypatch, key_resolver):
+    def get(*_args, **_options):
+        monkeypatch.setattr(tts_handler, "KOBOLD_QWEN_TTS_VOICES", ["Late:Preset", "Seed:Only"])
+        monkeypatch.setattr(tts_handler, "KOBOLD_QWEN_DEFAULT_MODEL", "late/default")
+        monkeypatch.setattr(tts_handler, "KOBOLD_QWEN_SAMPLE_VOICE", "late:sample")
+        return _response(payload={"data": [{"id": "Late:Preset"}, {"id": "opaque/voice"}]})
+
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    assert tts_handler.get_kobold_qwen_voice_catalog(BASE_URL) == [
+        {"id": "Late:Preset", "type": "preset", "model": ""},
+        {"id": "opaque/voice", "type": "cloned", "model": ""},
+        {"id": "Seed:Only", "type": "preset", "model": "late/default"},
+        {"id": "late:sample", "type": "cloned", "model": "Voice Cloning"},
+    ]
+    assert key_resolver == [((), {})]

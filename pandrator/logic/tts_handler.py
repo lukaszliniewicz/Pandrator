@@ -4368,137 +4368,41 @@ def get_chatterbox_voices(base_url: str = CHATTERBOX_API_BASE_URL) -> list[str]:
 
 def check_kobold_qwen_connection(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> bool:
     """Checks if the Qwen3 TTS server is reachable."""
-    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
-    api_key = _resolve_kobold_qwen_api_key()
-    probe_urls = [
-        f"{normalized_base_url}/health",
-        *_openai_models_urls(normalized_base_url),
-        *_openai_voice_catalog_urls(normalized_base_url),
-        *_openai_files_urls(normalized_base_url),
-    ]
-
-    for probe_url in _dedupe_ordered(probe_urls):
-        try:
-            response = requests.get(
-                probe_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=4,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _kobold_qwen_http.check_kobold_qwen_connection(
+        base_url,
+        resolve_api_key=lambda: _resolve_kobold_qwen_api_key(),
+        voice_catalog_urls=lambda base_url: _openai_voice_catalog_urls(base_url),
+        dedupe_ordered=lambda items: _dedupe_ordered(items),
+    )
 
 
 def get_kobold_qwen_models(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str]:
     """Fetches available Qwen3 TTS models from server."""
-    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
-    api_key = _resolve_kobold_qwen_api_key()
-
-    discovered_models: list[str] = []
-    for models_url in _openai_models_urls(normalized_base_url):
-        try:
-            response = requests.get(
-                models_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=8,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-
-            response.raise_for_status()
-            discovered_models = _extract_models_from_openai_payload(response.json())
-            if discovered_models:
-                break
-        except (requests.exceptions.RequestException, ValueError) as e:
-            logging.error("Failed to list Qwen3 TTS models from %s: %s", models_url, e)
-            continue
-
-    return _merge_catalog_with_discovered(KOBOLD_QWEN_TTS_MODELS, discovered_models)
+    return _kobold_qwen_http.get_kobold_qwen_models(
+        base_url,
+        resolve_api_key=lambda: _resolve_kobold_qwen_api_key(),
+        extract_models=lambda payload: _extract_models_from_openai_payload(payload),
+        merge_catalog=lambda preferred, discovered: _merge_catalog_with_discovered(
+            preferred, discovered
+        ),
+        preferred_models=lambda: KOBOLD_QWEN_TTS_MODELS,
+    )
 
 
 def get_kobold_qwen_voice_catalog(
     base_url: str = KOBOLD_QWEN_API_BASE_URL, api_key: str = ""
 ) -> list[dict[str, str]]:
     """Fetch Qwen voices while retaining the API's cloned/preset model metadata."""
-    normalized_base_url = _normalize_base_url(base_url, KOBOLD_QWEN_API_BASE_URL)
-    api_key = str(api_key or "").strip() or _resolve_kobold_qwen_api_key()
-
-    discovered: list[dict[str, str]] = []
-    voice_urls = _dedupe_ordered(
-        _openai_voice_catalog_urls(normalized_base_url)
-        + _openai_files_urls(normalized_base_url)
+    return _kobold_qwen_http.get_kobold_qwen_voice_catalog(
+        base_url,
+        api_key,
+        resolve_api_key=lambda: _resolve_kobold_qwen_api_key(),
+        voice_catalog_urls=lambda base_url: _openai_voice_catalog_urls(base_url),
+        dedupe_ordered=lambda items: _dedupe_ordered(items),
+        preset_voices=lambda: KOBOLD_QWEN_TTS_VOICES,
+        default_model=lambda: KOBOLD_QWEN_DEFAULT_MODEL,
+        sample_voice=lambda: KOBOLD_QWEN_SAMPLE_VOICE,
     )
-
-    for voices_url in voice_urls:
-        try:
-            response = requests.get(
-                voices_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=8,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, list):
-                candidates = payload
-            elif isinstance(payload, dict):
-                candidates = []
-                for key in ("data", "voices", "items"):
-                    value = payload.get(key)
-                    if isinstance(value, list):
-                        candidates = value
-                        break
-            else:
-                candidates = []
-            for item in candidates:
-                if isinstance(item, dict):
-                    voice_id = str(
-                        item.get("voice_id") or item.get("id") or item.get("name") or ""
-                    ).strip()
-                    if not voice_id:
-                        continue
-                    voice_type = str(item.get("type") or "").strip().lower()
-                    model = str(item.get("model") or "").strip()
-                    if not voice_type:
-                        voice_type = (
-                            "preset"
-                            if voice_id.lower()
-                            in {voice.lower() for voice in KOBOLD_QWEN_TTS_VOICES}
-                            else "cloned"
-                        )
-                    discovered.append(
-                        {"id": voice_id, "type": voice_type, "model": model}
-                    )
-                else:
-                    voice_id = str(item or "").strip()
-                    if voice_id:
-                        discovered.append(
-                            {"id": voice_id, "type": "cloned", "model": "Voice Cloning"}
-                        )
-            if discovered:
-                break
-        except (requests.exceptions.RequestException, ValueError) as e:
-            logging.debug("Could not list Qwen3 TTS voices from %s: %s", voices_url, e)
-            continue
-
-    by_id = {item["id"].lower(): item for item in discovered}
-    for voice_id in KOBOLD_QWEN_TTS_VOICES:
-        by_id.setdefault(
-            voice_id.lower(),
-            {"id": voice_id, "type": "preset", "model": KOBOLD_QWEN_DEFAULT_MODEL},
-        )
-    by_id.setdefault(
-        KOBOLD_QWEN_SAMPLE_VOICE,
-        {"id": KOBOLD_QWEN_SAMPLE_VOICE, "type": "cloned", "model": "Voice Cloning"},
-    )
-    return list(by_id.values())
 
 
 def get_kobold_qwen_voices(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> list[str]:
