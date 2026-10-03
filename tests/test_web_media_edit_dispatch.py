@@ -163,6 +163,43 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
         self.assertEqual(200, replay_status)
         self.assertEqual(result, replay)
 
+    def test_proposal_preserves_pinned_manual_cuts_labels_and_replays(self):
+        media_edit, dispatch = self._prepared()
+        prior = media_edit.update(
+            self.fixture.session_id, 1,
+            keep_ranges=[
+                {"start_ms": 0, "end_ms": 500, "label": "Opening"},
+                {"start_ms": 4500, "end_ms": 5000, "label": "Closing"},
+            ], reviewed=True,
+        )["plan"]
+        _run, claim = self._create_and_claim(dispatch, revision=2, suffix="keep")
+        cue_id = claim["batch"]["cues"][0]["id"]
+        proposed = {"kind": "media_edit", "cuts": [{
+            "start_cue_id": cue_id, "end_cue_id": cue_id,
+            "reason": "Remove speech already outside retained ranges.",
+        }]}
+        with self.fixture.database.immediate_session() as session:
+            result, status = dispatch.submit_in_session(
+                session, batch_id=claim["batch_id"], lease_token=claim["lease_token"],
+                submission_key="submit-keep", result=proposed,
+            )
+        self.assertEqual(200, status)
+        final = media_edit.revision(self.fixture.session_id, result["result_revision"])
+        assert final is not None
+        self.assertEqual(prior["keep_ranges"], final["keep_ranges"])
+        self.assertFalse(final["reviewed"])
+        self.assertEqual(prior["revision_id"], final["parent_revision_id"])
+        source = media_edit.revision(self.fixture.session_id, 2)
+        assert source is not None
+        self.assertEqual(prior["keep_ranges"], source["keep_ranges"])
+        with self.fixture.database.immediate_session() as session:
+            replay, replay_status = dispatch.submit_in_session(
+                session, batch_id=claim["batch_id"], lease_token=claim["lease_token"],
+                submission_key="submit-keep", result=proposed,
+            )
+        self.assertEqual((result, status), (replay, replay_status))
+        self.assertIn("Existing cuts are retained", claim["task"]["instructions"])
+
     def test_nonempty_result_refines_and_records_passive_provenance(self):
         _media_edit, dispatch = self._prepared()
         run, claim = self._create_and_claim(dispatch, suffix="2")

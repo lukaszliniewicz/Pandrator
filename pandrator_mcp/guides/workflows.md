@@ -94,6 +94,11 @@ remain compatible. It uses the installed audio.cpp CLI and a pinned, SHA-256-ver
 bounded audio/transcript pairs share a model load. Rejected cues retain original
 timing. Select the source/audio language, not the translation target.
 
+New proposals retain earlier cuts and their reasons, adding removals to the
+current retained timeline. An empty proposal keeps the existing cuts. To restore
+removed material, explicitly update the keep ranges before requesting another
+proposal.
+
 The passive proposal is never auto-approved. First call
 `pandrator_list_media_edit_cuts` with the returned session and revision, then
 call `pandrator_inspect_media_edit_boundary` for each relevant start/end edge.

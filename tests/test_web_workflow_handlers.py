@@ -99,6 +99,7 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             "plan_id": "plan-id",
             "revision_id": "revision-id",
             "revision": 4,
+            "keep_ranges": [{"id": "keep-1", "start_ms": 0, "end_ms": 500}],
             "cues": [
                 {
                     "id": "cue-000001",
@@ -145,6 +146,10 @@ class WebWorkflowHandlerTests(unittest.TestCase):
             )
 
         self.assertEqual(0, result["cut_count"])
+        assert completion.call_args is not None
+        messages = completion.call_args.kwargs["messages"]
+        self.assertEqual(revision["keep_ranges"], json.loads(messages[1]["content"])["keep_ranges"])
+        self.assertIn("Existing cuts are retained", messages[0]["content"])
         llm_settings = completion.call_args.kwargs["llm_settings"]
         self.assertEqual(provider_configs, llm_settings.provider_configs)
         self.assertEqual(model, llm_settings.default_model)

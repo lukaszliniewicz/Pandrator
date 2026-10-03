@@ -7,9 +7,11 @@ from typing import Any, Literal
 
 from .media_edit import (
     BoundaryEvidence,
+    KeepRange,
     MediaCue,
     MediaWord,
     keep_ranges_from_cuts,
+    normalize_keep_ranges,
     refine_boundary,
 )
 
@@ -43,6 +45,36 @@ def boundary_payload(evidence: BoundaryEvidence) -> dict[str, Any]:
     }
 
 
+def _retain_previous_ranges(
+    proposed: tuple[KeepRange, ...],
+    previous: list[dict[str, Any]],
+    duration_ms: int,
+) -> tuple[KeepRange, ...]:
+    """Intersect a proposal with the retained timeline, preserving its labels."""
+    previous_ranges = normalize_keep_ranges(
+        [
+            KeepRange(
+                str(item["id"]), int(item["start_ms"]), int(item["end_ms"]),
+                item.get("label"),
+            )
+            for item in previous
+        ],
+        duration_ms,
+    )
+    retained = [
+        KeepRange(
+            "pending", max(prior.start_ms, new.start_ms),
+            min(prior.end_ms, new.end_ms), prior.label,
+        )
+        for prior in previous_ranges
+        for new in proposed
+        if min(prior.end_ms, new.end_ms) > max(prior.start_ms, new.start_ms)
+    ]
+    if not retained:
+        raise ValueError("The proposal would remove the entire recording.")
+    return normalize_keep_ranges(retained, duration_ms)
+
+
 def prepare_media_edit_proposal(
     *,
     cues: list[MediaCue],
@@ -55,6 +87,7 @@ def prepare_media_edit_proposal(
     proposal_instructions: str | None = None,
     reject_duplicate_pairs: bool = False,
 ) -> ProposedMediaEdit:
+    """Add removal spans to existing cuts without restoring removed material."""
     normalized_cuts: list[
         tuple[int, int, str, str, str, tuple[BoundaryEvidence, BoundaryEvidence], bool, bool]
     ] = []
@@ -179,6 +212,7 @@ def prepare_media_edit_proposal(
         )
         if not keep_ranges:
             raise ValueError("The proposal would remove the entire recording.")
+        keep_ranges = _retain_previous_ranges(keep_ranges, previous_keep_ranges, duration_ms)
         normalized_ranges = [keep_range_payload(item) for item in keep_ranges]
     else:
         normalized_ranges = list(previous_keep_ranges)
@@ -224,7 +258,16 @@ def prepare_media_edit_proposal(
         if cue.timing_confidence is not None and cue.timing_confidence < 0.5:
             warnings.append(f"Low-confidence timing for cue {cue.id}.")
     evidence["warnings"] = list(dict.fromkeys(str(item) for item in warnings))
-    evidence["agent_proposal"] = {"cuts": boundary_records}
+    previous_proposal = evidence.get("agent_proposal")
+    retained_records = (
+        [item for item in previous_proposal.get("cuts") or [] if isinstance(item, dict)]
+        if isinstance(previous_proposal, dict)
+        else []
+    )
+    for record in boundary_records:
+        if record not in retained_records:
+            retained_records.append(record)
+    evidence["agent_proposal"] = {"cuts": retained_records}
     operation = {
         "type": "agent_proposal",
         "cuts": boundary_records,

@@ -336,7 +336,8 @@ class MediaEditDispatchRunService:
                 "kind": "media_edit",
                 "instructions": (
                     "Reason globally over the complete recording and return only "
-                    "whole-cue removal spans. The packet omits transcript cues wholly "
+                    "whole-cue removal spans. Existing cuts are retained; propose only "
+                    "additional removals. The packet omits transcript cues wholly "
                     "outside the source-media duration. Do not return word arrays, "
                     "revised transcript text, or provider/model data. Use "
                     "start_at_media_start=true for captionless material before the "

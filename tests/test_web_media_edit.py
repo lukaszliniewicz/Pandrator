@@ -882,6 +882,97 @@ class MediaEditServiceTests(unittest.TestCase):
             self.assertEqual("stale", session.get(Artifact, subtitles.id).state)
             self.assertEqual("stale", session.get(Artifact, correction.id).state)
 
+    def test_successive_proposals_preserve_cuts_labels_reasons_and_history(self):
+        media = self._register("media.mp4", "upload", b"media", "video")
+        self._attach(media, "primary", "video")
+        captions = self._register(
+            "captions.vtt", "captions",
+            "WEBVTT\n\n00:00:01.000 --> 00:00:01.500\nfirst\n\n"
+            "00:00:03.000 --> 00:00:03.500\nsecond\n", "vtt",
+        )
+        self._attach(captions, "transcript", "vtt")
+        service = self._service()
+        service.prepare(self.session_id)
+        service.update(
+            self.session_id, 1,
+            keep_ranges=[{"start_ms": 0, "end_ms": 5000, "label": "Original"}],
+            reviewed=True,
+        )
+        first = service.apply_proposal(self.session_id, 2, [{
+            "start_cue_id": "cue-000001", "end_cue_id": "cue-000001",
+            "reason": "First removal.",
+        }])["plan"]
+        old_revisions = [service.revision(self.session_id, i) for i in (1, 2, 3)]
+        source_bytes = self.paths.managed_path(media.relative_path).read_bytes()
+        rendered = self._register("edited.mp4", "media_edit_media", b"edited", "video")
+        derived = self._register(
+            "edited.srt", "media_edit_subtitles", "subtitles", "srt",
+            parent_ids=[rendered.id],
+        )
+        second = service.apply_proposal(self.session_id, 3, [{
+            "start_cue_id": "cue-000002", "end_cue_id": "cue-000002",
+            "reason": "Second removal.",
+        }])["plan"]
+        self.assertEqual(
+            [(0, 1000), (1500, 3000), (3500, 5000)],
+            [(r["start_ms"], r["end_ms"]) for r in second["keep_ranges"]],
+        )
+        self.assertEqual(["Original"] * 3, [r["label"] for r in second["keep_ranges"]])
+        self.assertFalse(second["reviewed"])
+        self.assertEqual(first["revision_id"], second["parent_revision_id"])
+        self.assertEqual(
+            [["First removal."], ["Second removal."]],
+            [cut["reasons"] for cut in service.list_cuts(self.session_id)["cuts"]],
+        )
+        with self.database.immediate_session() as session:
+            empty = service.apply_proposal_in_session(
+                session, session_id=self.session_id, expected_revision=4,
+                cuts=[], allow_empty=True,
+            )["plan"]
+        self.assertEqual(second["keep_ranges"], empty["keep_ranges"])
+        self.assertEqual(
+            [["First removal."], ["Second removal."]],
+            [cut["reasons"] for cut in service.list_cuts(self.session_id)["cuts"]],
+        )
+        self.assertEqual(old_revisions, [service.revision(self.session_id, i) for i in (1, 2, 3)])
+        self.assertEqual(source_bytes, self.paths.managed_path(media.relative_path).read_bytes())
+        with self.database.session() as session:
+            for artifact_id in (rendered.id, derived.id):
+                artifact = session.get(Artifact, artifact_id)
+                assert artifact is not None
+                self.assertEqual("stale", artifact.state)
+        self.assertEqual(b"edited", self.paths.managed_path(rendered.relative_path).read_bytes())
+        # An explicit manual timeline edit can still restore removed material.
+        restored = service.update(
+            self.session_id, 5, keep_ranges=[{"start_ms": 0, "end_ms": 5000}],
+        )["plan"]
+        self.assertEqual([(0, 5000)], [(r["start_ms"], r["end_ms"]) for r in restored["keep_ranges"]])
+        self.assertEqual([], service.list_cuts(self.session_id)["cuts"])
+
+    def test_cumulative_proposal_cannot_remove_the_remaining_recording(self):
+        media = self._register("media.mp4", "upload", b"media", "video")
+        self._attach(media, "primary", "video")
+        captions = self._register(
+            "captions.vtt", "captions",
+            "WEBVTT\n\n00:00:01.000 --> 00:00:01.500\nfirst\n\n"
+            "00:00:01.500 --> 00:00:02.000\nsecond\n", "vtt",
+        )
+        self._attach(captions, "transcript", "vtt")
+        service = self._service()
+        service.prepare(self.session_id)
+        service.apply_proposal(self.session_id, 1, [{
+            "start_at_media_start": True, "end_cue_id": "cue-000001",
+            "reason": "Remove leading material.",
+        }])
+        before = service.state(self.session_id)
+        with self.assertRaisesRegex(ValueError, "remove the entire recording"):
+            service.apply_proposal(self.session_id, 2, [{
+                "start_cue_id": "cue-000002", "end_at_media_end": True,
+                "reason": "Remove remaining material.",
+            }])
+        self.assertEqual(before, service.state(self.session_id))
+        self.assertIsNone(service.revision(self.session_id, 3))
+
     def test_proposal_preserves_caption_boundary_without_reliable_asr_alignment(self):
         media = self._register("media.mp4", "upload", b"media", "video")
         self._attach(media, "primary", "video")

@@ -4162,6 +4162,7 @@ class WorkflowHandlers:
         )
         request_payload = {
             "instructions": instructions,
+            "keep_ranges": revision.get("keep_ranges") or [],
             "cues": cues,
         }
         messages = [
@@ -4169,6 +4170,7 @@ class WorkflowHandlers:
                 "role": "system",
                 "content": (
                     "Review this immutable transcript for removal-only video edits. "
+                    "Existing cuts are retained; propose only additional removals. "
                     "Return JSON only, with exactly this shape: "
                     '{"cuts":[{"start_cue_id":"cue-...",'
                     '"end_cue_id":"cue-...","reason":"..."}]}. '
