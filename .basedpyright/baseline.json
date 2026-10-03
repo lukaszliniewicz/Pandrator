@@ -3110,24 +3110,6 @@
                 }
             }
         ],
-        "./pandrator/web/workflows.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 34,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 34,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/workspace.py": [
             {
                 "code": "reportArgumentType",

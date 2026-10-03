@@ -561,7 +561,10 @@ class WorkflowService:
         # DocumentRevision. Older in-flight artifacts still carry enough
         # immutable plan identity to recognize the exact edit revision.
         try:
-            revision_number = int(metadata.get("revision"))
+            revision_value = metadata.get("revision")
+            if revision_value is None:
+                return False
+            revision_number = int(revision_value)
         except (TypeError, ValueError):
             return False
         return bool(
