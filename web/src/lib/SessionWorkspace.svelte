@@ -487,6 +487,13 @@
   let xttsModelsCompatibility = $state('');
   let deletingXttsModelId = $state('');
   let speechCataloguesLoaded = false;
+  let speechCatalogueError = $state('');
+  let speechCatalogueRequest = 0;
+  let settingsOpening = 0;
+  let ttsSelectionRequest = 0;
+  let speechRefreshRequest = 0;
+  let disposed = false;
+  const speechDiscoveryRequests = new Map<string, number>();
   let llmModelsLoaded = false;
   let workflowTour = $state(false);
   const workflowTourSteps = [
@@ -1022,6 +1029,9 @@
     })[key] ?? 'text';
 
   async function openSettings(stage: Stage) {
+    const opening = ++settingsOpening;
+    invalidateSpeechRequests();
+    const isCurrent = () => !disposed && opening === settingsOpening;
     ttsSwitchSource = null;
     ttsSwitchReviewed = false;
     if (stage.key === 'export' && session.workflow_kind === 'audiobook') {
@@ -1053,7 +1063,9 @@
       dependencies.push(loadSpeechCatalogues());
     try {
       await Promise.all(dependencies);
+      if (!isCurrent()) return;
     } catch (caught) {
+      if (!isCurrent()) return;
       settingsLoading = false;
       error = errorMessage(caught);
       return;
@@ -1065,12 +1077,14 @@
         session.id,
         stageSection(stage.key)
       );
+      if (!isCurrent()) return;
       storedSettings = stored;
       saved = { ...stored.effective, ...saved };
       stageSettings[stage.key] = saved;
     } catch {
       /* use stage-local values */
     }
+    if (!isCurrent()) return;
     targetLanguage = String(
       (stage.key === 'generate_audio'
         ? saved.language
@@ -1193,14 +1207,17 @@
     let subtitleSettings: Record<string, unknown> = {};
     subtitleSettingsPayload = null;
     try {
-      subtitleSettingsPayload = await sessionApi.settings(
+      const subtitlePayload = await sessionApi.settings(
         session.id,
         'subtitles'
       );
+      if (!isCurrent()) return;
+      subtitleSettingsPayload = subtitlePayload;
       subtitleSettings = subtitleSettingsPayload.effective;
     } catch {
       /* Stage snapshots still work when the settings request fails. */
     }
+    if (!isCurrent()) return;
     const legacyCustomSubtitleLimits =
       saved.subtitle_language_defaults == null &&
       ((saved.subtitle_max_chars_per_line != null &&
@@ -1245,6 +1262,7 @@
         0.25
     );
     await passageSettingsLoad;
+    if (!isCurrent()) return;
     correctionStyle =
       String(saved.correction_style ?? 'publishable') === 'faithful'
         ? 'faithful'
@@ -1376,6 +1394,7 @@
     subtitleFormat = String(saved.subtitle_format ?? 'srt');
     if (stage.key === 'generate_audio' && activeService)
       await discoverTtsService(activeService);
+    if (!isCurrent()) return;
     if (stage.key === 'generate_audio' && selectedTtsService) {
       ttsService = String(selectedTtsService.id ?? selectedTtsService.name);
       ttsModel =
@@ -1494,11 +1513,56 @@
     );
   }
 
+  function invalidateSpeechRequests() {
+    speechCatalogueRequest++;
+    ttsSelectionRequest++;
+    speechRefreshRequest++;
+    speechDiscoveryRequests.clear();
+    refreshingTtsServices = false;
+  }
+
+  function closeStageSettings() {
+    settingsOpening++;
+    invalidateSpeechRequests();
+    settingsLoading = false;
+    settingsStage = null;
+  }
+
+  onDestroy(() => {
+    disposed = true;
+    closeStageSettings();
+  });
+
+  function captureTtsSelection() {
+    const opening = settingsOpening;
+    const request = ttsSelectionRequest;
+    const selected = {
+      service: ttsService,
+      model: ttsModel,
+      voice: voiceName,
+      language: targetLanguage,
+      prompt: generationPrompt
+    };
+    return () =>
+      !disposed &&
+      opening === settingsOpening &&
+      request === ttsSelectionRequest &&
+      selected.service === ttsService &&
+      selected.model === ttsModel &&
+      selected.voice === voiceName &&
+      selected.language === targetLanguage &&
+      selected.prompt === generationPrompt;
+  }
+
   async function loadSpeechCatalogues(
     preserveSelection = false,
     force = false
   ) {
     if (speechCataloguesLoaded && !force) return;
+    const request = ++speechCatalogueRequest;
+    const isCurrent = () => !disposed && request === speechCatalogueRequest;
+    const selectionIsCurrent = captureTtsSelection();
+    speechCatalogueError = '';
     const previousService = ttsService;
     const previousModel = ttsModel;
     const previousVoice = voiceName;
@@ -1507,6 +1571,7 @@
         getTtsCompactCatalogue(true, force),
         getVoiceLibrary(force)
       ]);
+      if (!isCurrent()) return;
       ttsCatalogue = services;
       libraryVoices = voices.items ?? [];
       const catalogue = services.services ?? [];
@@ -1523,12 +1588,21 @@
             String(value ?? '').toLowerCase() === previousService.toLowerCase()
         )
       );
+      const preserveDraft = !selectionIsCurrent();
       const active =
+        (preserveDraft
+          ? catalogue.find((item) =>
+              [item.id, item.name].some(
+                (value) =>
+                  String(value ?? '').toLowerCase() === ttsService.toLowerCase()
+              )
+            )
+          : null) ??
         (preserveSelection ? preserved : null) ??
         (configured?.available ? configured : preferredTtsService(catalogue)) ??
         configured ??
         catalogue[0];
-      if (active) {
+      if (active && !preserveDraft) {
         ttsService = String(active.id ?? active.name);
         ttsModel =
           preserveSelection && preserved
@@ -1547,24 +1621,25 @@
                   active.default_voice ??
                   ''
               );
-        await discoverTtsService(active);
       }
+      if (active) await discoverTtsService(active);
+      if (!isCurrent()) return;
       speechCataloguesLoaded = true;
       if (String(active?.id ?? '').toLowerCase() === 'xtts')
         await loadXttsModels();
-    } catch {
-      ttsCatalogue = { services: [] };
-      libraryVoices = [];
+    } catch (caught) {
+      if (isCurrent()) speechCatalogueError = errorMessage(caught);
     }
   }
 
   async function refreshSpeechServices() {
+    const request = ++speechRefreshRequest;
     refreshingTtsServices = true;
     error = '';
     try {
       await loadSpeechCatalogues(true, true);
     } finally {
-      refreshingTtsServices = false;
+      if (request === speechRefreshRequest) refreshingTtsServices = false;
     }
   }
 
@@ -1770,12 +1845,24 @@
     service: TtsService | undefined = selectedTtsService
   ) {
     if (!service?.api_base) return;
+    const catalogueRequest = speechCatalogueRequest;
+    const request = (speechDiscoveryRequests.get(service.id) ?? 0) + 1;
+    speechDiscoveryRequests.set(service.id, request);
     try {
       const discovered = await sessionApi.discoverTts(
         service.api_base,
         service.id
       );
-      if (!discovered?.success) return;
+      if (
+        !discovered?.success ||
+        disposed ||
+        catalogueRequest !== speechCatalogueRequest ||
+        speechDiscoveryRequests.get(service.id) !== request ||
+        !ttsCatalogue.services.some(
+          (item) => item.id === service.id && item.api_base === service.api_base
+        )
+      )
+        return;
       const services = ttsCatalogue.services.map((item) =>
         item.id === service.id
           ? {
@@ -1799,6 +1886,7 @@
   }
 
   async function chooseTtsService(value: string) {
+    ttsSelectionRequest++;
     const previous = selectedTtsService;
     const previousModel = ttsModel;
     const previousVoice = voiceName;
@@ -1812,7 +1900,9 @@
       (item) => String(item.id) === value
     );
     ttsModel = String(service?.default_model ?? service?.models?.[0] ?? '');
+    const isCurrent = captureTtsSelection();
     await discoverTtsService(service);
+    if (!isCurrent()) return;
     if (switching && previous) {
       const live =
         ttsCatalogue.services.find((item) => item.id === value) ?? service;
@@ -1844,6 +1934,7 @@
     }
     if (String(service?.id ?? '').toLowerCase() === 'xtts')
       await loadXttsModels();
+    if (!isCurrent()) return;
     voiceName =
       service?.model_voice_modes?.[ttsModel] === 'optional_cloning'
         ? ''
@@ -1856,6 +1947,7 @@
   }
 
   function chooseTtsModel(value: string) {
+    ttsSelectionRequest++;
     ttsModel = value;
     const service = selectedTtsService;
     const modelVoices = service?.voice_catalogues?.[value] ?? [];
@@ -1901,8 +1993,9 @@
   async function usePublishedVoice(providerVoiceId: string) {
     voiceName = providerVoiceId;
     voiceLibraryOpen = false;
+    const isCurrent = captureTtsSelection();
     await loadSpeechCatalogues(true, true);
-    voiceName = providerVoiceId;
+    if (isCurrent()) voiceName = providerVoiceId;
   }
 
   async function waitForVoiceJob(id: string) {
@@ -2912,7 +3005,7 @@
       }
       if (mode === 'session') {
         await load();
-        settingsStage = null;
+        closeStageSettings();
         if (runAfterSave) {
           const refreshed = workflowStore.snapshot?.stages.find(
             (item) => item.key === stage.key
@@ -3338,10 +3431,10 @@
     class="fixed inset-0 z-[60] grid place-items-center bg-black/35 p-5 backdrop-blur-sm"
     role="presentation"
     onclick={(event) =>
-      event.target === event.currentTarget && (settingsStage = null)}
+      event.target === event.currentTarget && closeStageSettings()}
   >
     <div
-      use:modalFocus={{ onclose: () => (settingsStage = null) }}
+      use:modalFocus={{ onclose: () => closeStageSettings() }}
       class="surface flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[1.7rem]"
       role="dialog"
       aria-modal="true"
@@ -3356,7 +3449,7 @@
             </h2>
           </div>
           <button
-            onclick={() => (settingsStage = null)}
+            onclick={() => closeStageSettings()}
             aria-label="Close stage settings"
             class="rounded-lg p-2"><X size={19} /></button
           >
@@ -4989,6 +5082,12 @@
                 >
               </div>
             {/if}
+            {#if speechCatalogueError}<p
+                role="alert"
+                class="text-sm text-red-600"
+              >
+                Could not refresh speech services: {speechCatalogueError}
+              </p>{/if}
             <div class="grid gap-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="text-sm font-semibold">TTS service</span><button
@@ -5813,7 +5912,7 @@
             class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
             ><Save size={15} /> Save as defaults</button
           ><button
-            onclick={() => (settingsStage = null)}
+            onclick={() => closeStageSettings()}
             class="rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
             >Cancel</button
           ><button
