@@ -12,6 +12,7 @@ from unittest import mock
 
 from dulwich import porcelain
 
+import pandrator_manager.operations.handlers as handlers_module
 from pandrator_manager.application import create_application
 from pandrator_manager.components import ComponentRegistry
 from pandrator_manager.components.builtin import MarkerComponentDriver
@@ -311,6 +312,121 @@ class OperationEngineTests(unittest.TestCase):
         self.assertTrue(result["reused"])
         self.assertEqual(result["revision"], self.first_revision)
         reset.assert_not_called()
+
+    def test_shared_source_helpers_preserve_subclasses_and_fresh_facade_bindings(self):
+        _commit(self.repository, "two")
+        application = create_application(
+            self.base / "source-helper-workspace",
+            registry=_registry(self.repository, source_revision=self.first_revision),
+        )
+        plan = application.plan(
+            kind=OperationKind.INSTALL,
+            desired={"fixture": DesiredComponentState()},
+        )
+        operation, created = application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(item.key for item in plan.confirmations),
+            idempotency_key=str(uuid.uuid4()),
+        )
+        self.assertTrue(created)
+        execution = OperationTaskContext(
+            context=application.context,
+            store=application.store,
+            registry=application.registry,
+            supervisor=None,
+            operation=operation,
+            plan=plan,
+            prior_results={},
+            cancellation=application.context.cancellation,
+        )
+        stage = next(task for task in plan.tasks if task.kind == "stage_component")
+        verify = next(task for task in plan.tasks if task.kind == "verify_component")
+        calls: list[str] = []
+
+        class ObservingHandler(FilesystemTaskHandler):
+            @staticmethod
+            def _definition(execution, task):
+                calls.append("definition")
+                return FilesystemTaskHandler._definition(execution, task)
+
+            def _staging_source(self, execution, component_id):
+                calls.append("staging_source")
+                return super()._staging_source(execution, component_id)
+
+            @staticmethod
+            def _revision(repository):
+                calls.append("revision")
+                return FilesystemTaskHandler._revision(repository)
+
+            @staticmethod
+            def _markers_present(root, markers):
+                calls.append("markers_present")
+                return FilesystemTaskHandler._markers_present(root, markers)
+
+            @staticmethod
+            def _source_markers(execution, definition):
+                calls.append("source_markers")
+                return FilesystemTaskHandler._source_markers(execution, definition)
+
+            def _stage_result(self, execution, component_id):
+                calls.append("stage_result")
+                return super()._stage_result(execution, component_id)
+
+        handler = ObservingHandler()
+        native_writer = handlers_module._atomic_text
+        with mock.patch.object(handlers_module.porcelain, "clone", wraps=porcelain.clone) as clone:
+            for attempt, content in enumerate(("# first adapter\n", "# rebound adapter\n")):
+                with (
+                    mock.patch.object(
+                        handlers_module,
+                        "generated_runtime_files",
+                        return_value={"fixture_adapter.py": content},
+                    ) as generator,
+                    mock.patch.object(handlers_module, "_atomic_text", wraps=native_writer) as writer,
+                ):
+                    result = handler.execute(execution, stage)
+                target = Path(result["staged_path"])
+                self.assertEqual(result["reused"], bool(attempt))
+                self.assertEqual(result["revision"], self.first_revision)
+                self.assertEqual((target / "marker.txt").read_text(), "one")
+                self.assertEqual((target / "fixture_adapter.py").read_text(), content)
+                generator.assert_called_once_with("fixture")
+                writer.assert_called_once_with(target / "fixture_adapter.py", content)
+                execution.prior_results[stage.id] = result
+                verified = handler.execute(execution, verify)
+                self.assertEqual(verified["verified_path"], str(target))
+                self.assertEqual(verified["revision"], self.first_revision)
+            clone.assert_called_once()
+        self.assertTrue(
+            {
+                "definition",
+                "staging_source",
+                "revision",
+                "markers_present",
+                "source_markers",
+                "stage_result",
+            }.issubset(calls)
+        )
+        # Fresh clone reset checks must call cls._revision on the subclass.
+        self.assertGreaterEqual(calls.count("revision"), 5)
+        target = Path(execution.prior_results[stage.id]["staged_path"])
+        shutil.rmtree(target)
+        rejected = ManagerError("fixture_source_rejected", "Current facade error helper.")
+        clone_error = RuntimeError("fixture clone denial")
+        with (
+            mock.patch.object(handlers_module.porcelain, "clone", side_effect=clone_error),
+            mock.patch.object(
+                handlers_module, "_source_acquisition_error", return_value=rejected
+            ) as translate,
+            self.assertRaises(ManagerError) as caught,
+        ):
+            handler.execute(execution, stage)
+        self.assertIs(caught.exception, rejected)
+        self.assertIs(caught.exception.__cause__, clone_error)
+        translate.assert_called_once()
+        self.assertIs(translate.call_args.kwargs["error"], clone_error)
+        self.assertEqual(translate.call_args.kwargs["repo_url"], str(self.repository))
 
     def test_execution_rechecks_preflight_before_staging(self):
         plan = self.application.plan(
