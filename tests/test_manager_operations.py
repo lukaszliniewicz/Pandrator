@@ -670,6 +670,96 @@ class OperationEngineTests(unittest.TestCase):
             "one",
         )
 
+    def test_service_update_rollback_restores_native_spec_and_running_intent(self):
+        application = create_application(
+            self.base / "service-rollback-workspace",
+            registry=_registry(self.repository, service_key="fixture.service"),
+        )
+        supervisor = ProcessSupervisor(
+            application.context,
+            application.store,
+            manager_instance_id="service-rollback-test",
+        )
+        self.addCleanup(supervisor.shutdown, stop_children=True)
+
+        def service_spec_factory(component_id, _resolved):
+            active = active_component_path(application.context.layout, component_id)
+            self.assertIsNotNone(active)
+            return ManagedProcessSpec(
+                service_id="fixture.service",
+                component_id=component_id,
+                label="Fixture service",
+                executable=sys.executable,
+                arguments=("-c", "import time; time.sleep(60)"),
+                cwd=str(active),
+                startup_timeout_seconds=3,
+                shutdown_timeout_seconds=1,
+            )
+
+        def fail_after_update_validation(operation, task, _result):
+            if operation.kind == OperationKind.UPDATE and task.kind == "validate_service":
+                raise RuntimeError("injected failure after native service validation")
+
+        engine = OperationEngine(
+            application.context,
+            application.store,
+            application.registry,
+            supervisor=supervisor,
+            service_spec_factory=service_spec_factory,
+            fault_injector=fail_after_update_validation,
+        )
+        application.attach_operation_queue(engine)
+        engine.start()
+        self.addCleanup(engine.shutdown)
+
+        def submit(kind, desired):
+            plan = application.plan(kind=kind, desired={"fixture": desired})
+            operation, created = application.submit_operation(
+                plan_id=plan.id,
+                plan_digest=plan.digest,
+                accepted_confirmations=tuple(item.key for item in plan.confirmations),
+                idempotency_key=str(uuid.uuid4()),
+            )
+            self.assertTrue(created)
+            return operation
+
+        installed = submit(
+            OperationKind.INSTALL,
+            DesiredComponentState(options={"start_after_install": True}),
+        )
+        self.assertEqual(_wait(application, installed.id).state, OperationState.SUCCEEDED)
+        previous = active_component_path(application.context.layout, "fixture")
+        previous_spec = supervisor.spec("fixture.service")
+        previous_process = supervisor._runtime["fixture.service"].process
+        self.assertIsNotNone(previous_process)
+        assert previous_process is not None
+        self.assertIsNone(previous_process.poll())
+
+        _commit(self.repository, "two")
+        updated = submit(OperationKind.UPDATE, DesiredComponentState())
+        self.assertEqual(_wait(application, updated.id).state, OperationState.FAILED)
+        records = {item.task.kind: item for item in application.store.operation_tasks(updated.id)}
+        stopped = records["stop_service"]
+        validated = records["validate_service"]
+        self.assertEqual(stopped.state, TaskState.ROLLED_BACK)
+        self.assertTrue(stopped.result["was_running"])
+        self.assertTrue(stopped.result["desired_running"])
+        self.assertEqual(validated.state, TaskState.ROLLED_BACK)
+        self.assertTrue(validated.result["kept_running"])
+        self.assertIsNotNone(previous_spec)
+        assert previous_spec is not None
+        self.assertEqual(validated.result["previous_spec"], previous_spec.model_dump(mode="json"))
+        self.assertEqual(supervisor.spec("fixture.service"), previous_spec)
+        self.assertEqual(active_component_path(application.context.layout, "fixture"), previous)
+        self.assertIsNotNone(previous_process.poll())
+        restored_process = supervisor._runtime["fixture.service"].process
+        self.assertIsNotNone(restored_process)
+        assert restored_process is not None
+        self.assertIsNone(restored_process.poll())
+        self.assertIsNot(restored_process, previous_process)
+        self.assertTrue(supervisor.snapshot()[0].desired_running)
+        self.assertEqual(application.store.configuration_revision(), 1)
+
     def test_failed_validation_stop_preserves_live_slot_for_recovery(self):
         application = create_application(
             self.base / "service-workspace",
