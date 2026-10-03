@@ -52,6 +52,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "lease_conflict",
         "lease_expired",
         "materialization_failed",
+        "materialization_rejected",
         "not_found",
         "plan_consumed",
         "plan_digest_mismatch",

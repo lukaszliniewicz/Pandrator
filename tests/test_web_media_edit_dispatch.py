@@ -5,16 +5,50 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.dispatch import DispatchError
 from pandrator.web.media_edit_dispatch import MediaEditDispatchRunService
 from pandrator.web.models import (
+    Artifact,
+    ArtifactEdge,
     MediaEditDispatchBatch,
     MediaEditDispatchRun,
+    MediaEditPlan,
     MediaEditPlanRevision,
 )
+from pandrator_mcp.clients.application import ApplicationClient
+from pandrator_mcp.credentials import CredentialResolver
+from pandrator_mcp.errors import PandratorMcpError, ToolFailure
+from tests import test_mcp_application_client as _client_fixture
 from tests import test_web_media_edit as _media_edit_fixture
+
+
+def _materialization_snapshot(fixture):
+    """Read all columns of the four tables materialization can mutate."""
+    with fixture.database.session() as session:
+        return {
+            model.__tablename__: sorted(
+                [dict(row) for row in session.execute(select(model.__table__)).mappings()],
+                key=lambda row: json.dumps(row, default=str, sort_keys=True),
+            )
+            for model in (Artifact, ArtifactEdge, MediaEditPlan, MediaEditPlanRevision)
+        }
+
+
+def _rendered_pair(fixture):
+    rendered = fixture._register("edited.mp4", "media_edit_media", b"edited", "video")
+    derived = fixture._register(
+        "edited.srt",
+        "media_edit_subtitles",
+        "subtitles",
+        "srt",
+        parent_ids=[rendered.id],
+    )
+    return rendered, derived
 
 
 class MediaEditDispatchServiceTests(unittest.TestCase):
@@ -321,6 +355,118 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
             self.assertEqual("failed", saved_run.status)
             self.assertEqual("completed", saved_batch.status)
 
+    def test_partial_sql_failure_preserves_acceptance_and_exact_retry_materializes_once(self):
+        media_edit, dispatch = self._prepared()
+        run, claim = self._create_and_claim(dispatch, suffix="sql")
+        rendered, derived = _rendered_pair(self.fixture)
+        before = _materialization_snapshot(self.fixture)
+        files = {
+            self.fixture.paths.managed_path(item.relative_path): self.fixture.paths.managed_path(
+                item.relative_path
+            ).read_bytes()
+            for item in (rendered, derived)
+        }
+        original_state = media_edit._state_in_session
+        observed = {}
+
+        def violate_revision_uniqueness(session, session_id):
+            state = original_state(session, session_id)
+            self.assertEqual(2, state["plan"]["revision"])
+            revision = session.get(MediaEditPlanRevision, state["plan"]["revision_id"])
+            assert revision is not None
+            observed["attempt_id"] = revision.id
+            for artifact_id in (rendered.id, derived.id):
+                artifact = session.get(Artifact, artifact_id)
+                assert artifact is not None
+                self.assertEqual("stale", artifact.state)
+            session.add(
+                MediaEditPlanRevision(
+                    plan_id=revision.plan_id,
+                    parent_revision_id=revision.parent_revision_id,
+                    revision_number=revision.revision_number,
+                    source_media_artifact_id=revision.source_media_artifact_id,
+                    editorial_transcript_artifact_id=revision.editorial_transcript_artifact_id,
+                    timing_artifact_id=revision.timing_artifact_id,
+                    duration_ms=revision.duration_ms,
+                    instructions=revision.instructions,
+                    keep_ranges_json=list(revision.keep_ranges_json),
+                    cues_json=list(revision.cues_json),
+                    evidence_json=dict(revision.evidence_json),
+                    operation_json=dict(revision.operation_json),
+                    reviewed=revision.reviewed,
+                    content_hash=revision.content_hash,
+                )
+            )
+            try:
+                session.flush()
+            except IntegrityError:
+                observed["constraint_failure"] = True
+                raise
+            self.fail("The duplicate plan revision should violate its SQL constraint.")
+
+        result = {"kind": "media_edit", "cuts": []}
+        with (
+            patch.object(media_edit, "_state_in_session", side_effect=violate_revision_uniqueness),
+            self.fixture.database.immediate_session() as session,
+        ):
+            accepted, status = dispatch.submit_in_session(
+                session,
+                batch_id=claim["batch_id"],
+                lease_token=claim["lease_token"],
+                submission_key="submit-sql",
+                result=result,
+            )
+        self.assertTrue(observed["constraint_failure"])
+        self.assertEqual(202, status)
+        self.assertTrue(accepted["accepted"])
+        self.assertFalse(accepted["finalized"])
+        self.assertEqual("finalizing", accepted["status"])
+        self.assertEqual("materialization_failed", accepted["error_code"])
+        self.assertEqual(before, _materialization_snapshot(self.fixture))
+        with self.fixture.database.session() as session:
+            saved_batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+            saved_run = session.get(MediaEditDispatchRun, run["id"])
+            assert saved_batch is not None and saved_run is not None
+            self.assertEqual("completed", saved_batch.status)
+            self.assertEqual("submit-sql", saved_batch.submission_key)
+            self.assertIsNone(saved_batch.lease_expires_at)
+            self.assertIsNone(saved_run.result_revision_id)
+            self.assertIsNone(session.get(MediaEditPlanRevision, observed["attempt_id"]))
+            accepted_hash = saved_batch.output_hash
+        with self.fixture.database.immediate_session() as session:
+            completed, completed_status = dispatch.submit_in_session(
+                session,
+                batch_id=claim["batch_id"],
+                lease_token="retired-token",
+                submission_key="submit-sql",
+                result=result,
+            )
+        self.assertEqual(200, completed_status)
+        self.assertTrue(completed["accepted"] and completed["finalized"])
+        self.assertEqual(2, completed["result_revision"])
+        with patch.object(dispatch, "_materialize", wraps=dispatch._materialize) as materialize:
+            with self.fixture.database.immediate_session() as session:
+                replay, replay_status = dispatch.submit_in_session(
+                    session,
+                    batch_id=claim["batch_id"],
+                    lease_token="retired-token",
+                    submission_key="submit-sql",
+                    result=result,
+                )
+            materialize.assert_not_called()
+        self.assertEqual((completed, completed_status), (replay, replay_status))
+        with self.fixture.database.session() as session:
+            revisions = session.scalars(select(MediaEditPlanRevision)).all()
+            self.assertEqual([1, 2], sorted(r.revision_number for r in revisions))
+            saved_batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+            assert saved_batch is not None
+            self.assertEqual(accepted_hash, saved_batch.output_hash)
+            for artifact_id in (rendered.id, derived.id):
+                artifact = session.get(Artifact, artifact_id)
+                assert artifact is not None
+                self.assertEqual("stale", artifact.state)
+        self.assertTrue(all(path.read_bytes() == content for path, content in files.items()))
+
     def test_renew_release_and_expired_lease_reclaim(self):
         _media_edit, dispatch = self._prepared()
         run, claim = self._create_and_claim(dispatch, suffix="4")
@@ -358,6 +504,137 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
 
 
 class MediaEditDispatchRouteTests(unittest.TestCase):
+    def test_post_write_rejection_is_durable_and_mcp_preserves_acceptance_details(self):
+        fixture = _media_edit_fixture.MediaEditServiceTests()
+        fixture.setUp()
+        app = None
+        try:
+            bootstrap = BootstrapTokenStore()
+            token = bootstrap.issue()
+            app = create_app(
+                data_root=str(fixture.paths.root),
+                testing=True,
+                bootstrap_tokens=bootstrap,
+            )
+            http = app.test_client()
+            csrf = http.post("/api/v1/auth/bootstrap", json={"token": token}).get_json()["csrf_token"]
+            services = app.extensions["pandrator"]
+            fixture.database.dispose()
+            fixture.database = services["database"]
+            fixture.artifacts = services["artifacts"]
+            fixture.session_id = (
+                services["sessions"]
+                .create(
+                    "Failure receipt",
+                    workflow_kind="media_edit",
+                )
+                .id
+            )
+            fixture._seed_external()
+            fixture._service().prepare(fixture.session_id)
+            rendered, derived = _rendered_pair(fixture)
+            media_edit = services["media_edit"]
+            dispatch = services["media_edit_dispatch"]
+            response = http.post(
+                f"/api/v1/sessions/{fixture.session_id}/media-edit-dispatch-runs",
+                json={"revision": 1, "instructions": "trim"},
+                headers={"X-CSRF-Token": csrf, "Idempotency-Key": "create-receipt"},
+            )
+            self.assertEqual(201, response.status_code)
+            run_id = response.get_json()["id"]
+            response = http.post(
+                f"/api/v1/media-edit-dispatch-runs/{run_id}/claim",
+                json={"lease_seconds": 30},
+                headers={"X-CSRF-Token": csrf, "Idempotency-Key": "claim-receipt"},
+            )
+            self.assertEqual(200, response.status_code)
+            claim = response.get_json()
+            before = _materialization_snapshot(fixture)
+            original_state = media_edit._state_in_session
+            observed = {}
+
+            def reject_after_adoption(session, session_id):
+                state = original_state(session, session_id)
+                self.assertEqual(2, state["plan"]["revision"])
+                observed["attempt_id"] = state["plan"]["revision_id"]
+                for artifact_id in (rendered.id, derived.id):
+                    artifact = session.get(Artifact, artifact_id)
+                    assert artifact is not None
+                    self.assertEqual("stale", artifact.state)
+                raise ValueError("Injected rejection after revision adoption.")
+
+            path = f"/api/v1/media-edit-dispatch-batches/{claim['batch_id']}/submit"
+            headers = {"X-CSRF-Token": csrf, "Idempotency-Key": "submit-receipt"}
+            payload = {
+                "lease_token": claim["lease_token"],
+                "result": {"kind": "media_edit", "cuts": []},
+            }
+            with patch.object(media_edit, "_state_in_session", side_effect=reject_after_adoption):
+                rejection = http.post(path, json=payload, headers=headers)
+            self.assertEqual(422, rejection.status_code)
+            error = rejection.get_json()["error"]
+            self.assertEqual("materialization_rejected", error["code"])
+            self.assertEqual(
+                {"batch_accepted": True, "run_id": run_id, "retryable": False}, error["details"]
+            )
+            self.assertEqual(before, _materialization_snapshot(fixture))
+            with fixture.database.session() as session:
+                saved_run = session.get(MediaEditDispatchRun, run_id)
+                saved_batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+                assert saved_run is not None and saved_batch is not None
+                self.assertEqual("failed", saved_run.status)
+                self.assertEqual("completed", saved_batch.status)
+                self.assertIsNone(saved_run.result_revision_id)
+                self.assertIsNone(session.get(MediaEditPlanRevision, observed["attempt_id"]))
+            with patch.object(dispatch, "_materialize", wraps=dispatch._materialize) as materialize:
+                replay = http.post(path, json=payload, headers=headers)
+                materialize.assert_not_called()
+            self.assertEqual(202, replay.status_code)
+            self.assertEqual("failed", replay.get_json()["status"])
+            self.assertTrue(replay.get_json()["accepted"])
+            self.assertFalse(replay.get_json()["finalized"])
+            self.assertEqual(before, _materialization_snapshot(fixture))
+
+            transport = _client_fixture.FakeSession(
+                [
+                    _client_fixture.FakeResponse(rejection.status_code, rejection.get_json()),
+                ]
+            )
+            client = ApplicationClient(
+                _client_fixture.local_registry("http://127.0.0.1:8097").bind("local"),
+                CredentialResolver(()),
+                session=transport,
+                local_bootstrap=lambda _target, _session: "csrf-value",
+            )
+            with self.assertRaises(PandratorMcpError) as failure:
+                client.submit_media_edit_dispatch_batch(
+                    claim["batch_id"],
+                    lease_token=claim["lease_token"],
+                    result=payload["result"],
+                    idempotency_key="submit-receipt",
+                )
+            assert failure.exception.code == "materialization_rejected"
+            self.assertEqual(
+                {"batch_accepted": True, "run_id": run_id, "retryable": False, "status": 422},
+                failure.exception.details,
+            )
+            typed = ToolFailure(
+                code=failure.exception.code,
+                message=str(failure.exception),
+                request_id="receipt-proof",
+                details=failure.exception.details,
+            )
+            self.assertEqual("materialization_rejected", typed.model_dump()["code"])
+            self.assertEqual(1, len(transport.calls))
+            self.assertEqual(b"edited", fixture.paths.managed_path(rendered.relative_path).read_bytes())
+            self.assertEqual(
+                b"subtitles", fixture.paths.managed_path(derived.relative_path).read_bytes()
+            )
+        finally:
+            if app is not None:
+                app.extensions["pandrator"]["database"].dispose()
+            fixture.tearDown()
+
     def test_create_route_is_strict_and_wires_run_service(self):
         temporary = tempfile.TemporaryDirectory()
         bootstrap = BootstrapTokenStore()

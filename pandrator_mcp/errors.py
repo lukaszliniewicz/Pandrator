@@ -45,6 +45,7 @@ FailureCode = Literal[
     "lease_conflict",
     "lease_expired",
     "materialization_failed",
+    "materialization_rejected",
     "precondition_required",
     "preparation_conflict",
     "result_kind_mismatch",
