@@ -18,15 +18,17 @@ from pandrator.logic.dubbing.transcript_normalization import load_transcript
 from pandrator.logic.media_edit import (
     DEFAULT_ALIGNMENT_PADDING_MS,
     MAX_ALIGNMENT_WORD_SPAN_MS,
-    BoundaryEvidence,
     KeepRange,
     MediaCue,
     MediaWord,
     align_cues_to_words,
-    keep_ranges_from_cuts,
     normalize_keep_ranges,
     parse_caption_text,
-    refine_boundary,
+)
+from pandrator.logic.media_edit_proposals import (
+    boundary_payload,
+    keep_range_payload,
+    prepare_media_edit_proposal,
 )
 
 from .artifacts import ArtifactService
@@ -334,14 +336,7 @@ class MediaEditService:
             item.get("label"),
         )
 
-    @staticmethod
-    def _keep_range_payload(item: Any) -> dict[str, Any]:
-        return {
-            "id": str(getattr(item, "id", "")),
-            "start_ms": int(getattr(item, "start_ms", 0)),
-            "end_ms": int(getattr(item, "end_ms", 0)),
-            "label": getattr(item, "label", None),
-        }
+    _keep_range_payload = staticmethod(keep_range_payload)
 
     @staticmethod
     def _content_hash(snapshot: dict[str, Any]) -> str:
@@ -998,188 +993,21 @@ class MediaEditService:
                 active.revision_number if active else None,
             )
 
-        normalized_cuts: list[
-            tuple[int, int, str, str, str, tuple[Any, Any], bool, bool]
-        ] = []
-        cues = [self._cue_from_payload(item) for item in active.cues_json or []]
-        cue_by_id = {cue.id: (index, cue) for index, cue in enumerate(cues)}
-        trustworthy_words: list[MediaWord] = []
-        word_keys: set[tuple[str, int, int, float | None]] = set()
-        for cue in cues:
-            if (
-                cue.timing_source not in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}
-                or cue.timing_confidence is None
-                or cue.timing_confidence < 0.5
-            ):
-                continue
-            for word in cue.words:
-                key = (word.text, word.start_ms, word.end_ms, word.confidence)
-                if key not in word_keys:
-                    word_keys.add(key)
-                    trustworthy_words.append(word)
-
-        def refine_cue_boundary(
-            cue: MediaCue, boundary_ms: int, *, side: Literal["start", "end"]
-        ) -> BoundaryEvidence:
-            if (
-                cue.timing_source in {"asr_alignment", "ctc_alignment", "qwen3_alignment"}
-                and cue.timing_confidence is not None
-                and cue.timing_confidence >= 0.5
-                and cue.words
-            ):
-                return refine_boundary(boundary_ms, trustworthy_words, side=side)
-            return BoundaryEvidence(
-                original_ms=boundary_ms,
-                refined_ms=boundary_ms,
-                confidence=0.0,
-                method="caption_boundary",
-                warnings=(
-                    (
-                        "caption boundary preserved because no reliable ASR word "
-                        "alignment was available"
-                    ),
-                ),
-            )
-
-        seen: set[tuple[str, str]] = set()
-        for item in cuts:
-            if not isinstance(item, dict):
-                raise TypeError("Each proposal cut must be an object.")
-            start_at_media_start = bool(item.get("start_at_media_start", False))
-            end_at_media_end = bool(item.get("end_at_media_end", False))
-            start_value = item.get("start_cue_id")
-            end_value = item.get("end_cue_id")
-            if (start_value is not None) == start_at_media_start:
-                raise ValueError(
-                    "Exactly one of start_cue_id or start_at_media_start=true is required."
-                )
-            if (end_value is not None) == end_at_media_end:
-                raise ValueError(
-                    "Exactly one of end_cue_id or end_at_media_end=true is required."
-                )
-            start_id = str(start_value or "")
-            end_id = str(end_value or "")
-            reason_value = item.get("reason")
-            if not isinstance(reason_value, str):
-                raise TypeError("Proposal cut reason must be a string.")
-            reason = reason_value.strip()
-            if not start_at_media_start and start_id not in cue_by_id:
-                raise ValueError("Proposal cut references an unknown cue ID.")
-            if not end_at_media_end and end_id not in cue_by_id:
-                raise ValueError("Proposal cut references an unknown cue ID.")
-            start_index, start_cue = (
-                cue_by_id[start_id] if not start_at_media_start else (-1, None)
-            )
-            end_index, end_cue = (
-                cue_by_id[end_id] if not end_at_media_end else (len(cues), None)
-            )
-            if end_index < start_index:
-                raise ValueError("Proposal cut cue IDs are out of order.")
-            if not reason:
-                raise ValueError("Proposal cut reasons must not be empty.")
-            if len(reason) > 500:
-                raise ValueError("Proposal cut reasons must be at most 500 characters.")
-            key = (
-                "__media_start__" if start_at_media_start else start_id,
-                "__media_end__" if end_at_media_end else end_id,
-            )
-            if key in seen:
-                if reject_duplicate_pairs:
-                    raise ValueError("Proposal cut cue IDs must be unique.")
-                continue
-            seen.add(key)
-            start_evidence = (
-                BoundaryEvidence(0, 0, 1.0, "media_start")
-                if start_cue is None
-                else refine_cue_boundary(start_cue, start_cue.start_ms, side="start")
-            )
-            end_evidence = (
-                BoundaryEvidence(
-                    active.duration_ms, active.duration_ms, 1.0, "media_end"
-                )
-                if end_cue is None
-                else refine_cue_boundary(end_cue, end_cue.end_ms, side="end")
-            )
-            if end_evidence.refined_ms <= start_evidence.refined_ms:
-                raise ValueError(
-                    "Proposal cut boundaries do not form a positive interval."
-                )
-            normalized_cuts.append(
-                (
-                    start_evidence.refined_ms,
-                    end_evidence.refined_ms,
-                    start_id,
-                    end_id,
-                    reason,
-                    (start_evidence, end_evidence),
-                    start_at_media_start,
-                    end_at_media_end,
-                )
-            )
-
-        if normalized_cuts:
-            keep_ranges = keep_ranges_from_cuts(
-                [(item[0], item[1]) for item in normalized_cuts], active.duration_ms
-            )
-            if not keep_ranges:
-                raise ValueError("The proposal would remove the entire recording.")
-            normalized_ranges = [self._keep_range_payload(item) for item in keep_ranges]
-        else:
-            normalized_ranges = list(active.keep_ranges_json or [])
-
-        next_instructions = (
-            active.instructions
-            if proposal_instructions is None
-            else proposal_instructions.strip()
+        proposal = prepare_media_edit_proposal(
+            cues=[self._cue_from_payload(item) for item in active.cues_json or []],
+            duration_ms=active.duration_ms,
+            previous_keep_ranges=active.keep_ranges_json or [],
+            previous_instructions=active.instructions,
+            previous_evidence=active.evidence_json or {},
+            cuts=cuts,
+            provenance=provenance,
+            proposal_instructions=proposal_instructions,
+            reject_duplicate_pairs=reject_duplicate_pairs,
         )
-        if proposal_instructions is not None and not next_instructions:
-            raise ValueError("Proposal instructions must not be empty.")
-
-        evidence = dict(active.evidence_json or {})
-        warnings = list(evidence.get("warnings") or [])
-        boundary_records: list[dict[str, Any]] = []
-        for (
-            start_ms,
-            end_ms,
-            start_id,
-            end_id,
-            reason,
-            boundaries,
-            start_at_media_start,
-            end_at_media_end,
-        ) in normalized_cuts:
-            start_evidence, end_evidence = boundaries
-            boundary_records.append(
-                {
-                    "start_cue_id": None if start_at_media_start else start_id,
-                    "start_at_media_start": start_at_media_start,
-                    "end_cue_id": None if end_at_media_end else end_id,
-                    "end_at_media_end": end_at_media_end,
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "reason": reason,
-                    "start": self._boundary_payload(start_evidence),
-                    "end": self._boundary_payload(end_evidence),
-                }
-            )
-            warnings.extend(start_evidence.warnings)
-            warnings.extend(end_evidence.warnings)
-        for cue in cues:
-            if cue.timing_confidence is not None and cue.timing_confidence < 0.5:
-                warnings.append(f"Low-confidence timing for cue {cue.id}.")
-        evidence["warnings"] = list(dict.fromkeys(str(item) for item in warnings))
-        evidence["agent_proposal"] = {"cuts": boundary_records}
-        operation = {
-            "type": "agent_proposal",
-            "cuts": boundary_records,
-        }
-        if provenance:
-            operation = {
-                "type": "passive_dispatch",
-                **provenance,
-                "cuts": boundary_records,
-            }
-            evidence["passive_dispatch"] = dict(provenance)
+        next_instructions = proposal.instructions
+        normalized_ranges = proposal.keep_ranges
+        evidence = proposal.evidence
+        operation = proposal.operation
         snapshot = {
             **self._revision_snapshot(active),
             "instructions": next_instructions,
@@ -1375,15 +1203,7 @@ class MediaEditService:
             timing_source=str(item.get("timing_source") or "caption"),
         )
 
-    @staticmethod
-    def _boundary_payload(evidence) -> dict[str, Any]:
-        return {
-            "original_ms": evidence.original_ms,
-            "refined_ms": evidence.refined_ms,
-            "confidence": evidence.confidence,
-            "method": evidence.method,
-            "warnings": list(evidence.warnings),
-        }
+    _boundary_payload = staticmethod(boundary_payload)
 
     @staticmethod
     def _cut_reason_records(revision: MediaEditPlanRevision) -> list[dict[str, Any]]:
