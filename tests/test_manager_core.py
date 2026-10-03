@@ -1542,6 +1542,47 @@ class CoreAdapterTests(unittest.TestCase):
             self.assertTrue(result.output_truncated)
             self.assertLessEqual(len(result.stdout.encode("utf-8")), 1024)
 
+    def test_timeout_streams_preserve_captured_bytes_and_stdout_alias(self):
+        payloads = (
+            ("streams", "Łódź 你好\n".encode("utf-8") + b"bad:\xff\n", b"stderr:\xfe\n"),
+            ("empty", b"", b""),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for label, stdout, stderr in payloads:
+                with self.subTest(label=label):
+                    marker = Path(directory) / f"{label}.pid"
+                    write_streams = f"os.write(1,{stdout!r});os.write(2,{stderr!r});"
+                    code = (
+                        "import os,time,pathlib;"
+                        f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid()));"
+                        + write_streams
+                        + "time.sleep(60)"
+                    )
+                    runner = CommandRunner()
+                    with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                        runner.run(
+                            CommandSpec(
+                                argv=(sys.executable, "-c", code),
+                                timeout_seconds=1.0,
+                                label=f"timeout-{label}",
+                            )
+                        )
+                    error = raised.exception
+                    assert isinstance(error.output, bytes)
+                    assert isinstance(error.stderr, bytes)
+                    self.assertEqual(error.output, stdout)
+                    self.assertEqual(error.stderr, stderr)
+                    self.assertIs(error.stdout, error.output)
+                    self.assertFalse(psutil.pid_exists(int(marker.read_text())))
+
+                    result = runner.run(
+                        CommandSpec(
+                            argv=(sys.executable, "-c", "import os;" + write_streams),
+                        )
+                    )
+                    self.assertEqual(result.stdout, stdout.decode("utf-8", errors="replace"))
+                    self.assertEqual(result.stderr, stderr.decode("utf-8", errors="replace"))
+
     def test_cancelled_command_never_starts(self):
         cancellation = CancellationToken()
         cancellation.request()

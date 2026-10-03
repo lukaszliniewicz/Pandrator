@@ -7356,16 +7356,6 @@
                 }
             }
         ],
-        "./pandrator_manager/processes/runner.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator_manager/releases/discovery.py": [
             {
                 "code": "reportPossiblyUnboundVariable",

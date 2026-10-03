@@ -72,10 +72,12 @@ class _BoundedOutput:
                 self._size -= len(removed)
                 self.truncated = True
 
-    def text(self) -> str:
+    def raw(self) -> bytes:
         with self._lock:
-            payload = b"".join(self._chunks)
-        return payload.decode("utf-8", errors="replace")
+            return b"".join(self._chunks)
+
+    def text(self) -> str:
+        return self.raw().decode("utf-8", errors="replace")
 
 
 class CommandRunner:
@@ -212,8 +214,8 @@ class CommandRunner:
         stderr = stderr_buffer.text()
         duration = time.monotonic() - started
         if isinstance(failure, subprocess.TimeoutExpired):
-            failure.output = stdout
-            failure.stderr = stderr
+            failure.output = stdout_buffer.raw()
+            failure.stderr = stderr_buffer.raw()
             raise failure
         if failure is not None:
             raise failure
