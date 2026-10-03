@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 from unittest import mock
 
 from pandrator.web.tts_providers import (
@@ -13,6 +16,31 @@ from pandrator.web.tts_providers import (
 
 def _models_by_id(service: dict) -> dict[str, dict]:
     return {item["id"]: item for item in service["model_catalog"]}
+
+
+def test_catalogue_projections_import_without_provider_runtime():
+    script = """
+import sys
+from pandrator.web import tts_catalogue_projection as projection
+
+assert projection._slim_model_catalog({
+    "models": ["custom"], "model_voice_modes": {"custom": "cloning"}
+}) == [{"id": "custom", "voice_mode": "cloning"}]
+assert projection._project_compact_service({
+    "id": "custom", "api_key": "fixture-private"
+}) == {"id": "custom"}
+for module in (
+    "pandrator.web.tts_providers", "pandrator.logic.tts_handler",
+    "pandrator.web.database", "pandrator.web.credentials", "requests",
+):
+    assert module not in sys.modules, module
+"""
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        timeout=30,
+    )
 
 
 def test_native_live_catalogue_languages_override_static_support_in_both_views():
