@@ -1501,12 +1501,25 @@ def build_openapi_document() -> dict:
                 },
                 "post": {
                     "operationId": "uploadVoiceSample",
+                    "description": (
+                        "Provide the current voice revision as multipart expected_revision or If-Match. "
+                        "A parseable expected_revision takes precedence; if it is missing or cannot be "
+                        "parsed as an integer, If-Match is used. Missing or invalid revision inputs return "
+                        "428; a revision that no longer matches returns 409."
+                    ),
                     "requestBody": {
                         "required": True,
                         "content": {"multipart/form-data": {"schema": {
                             "type": "object", "required": ["file"],
                             "properties": {
                                 "file": {"type": "string", "format": "binary"},
+                                "expected_revision": {
+                                    "type": "integer",
+                                    "description": (
+                                        "Current voice revision. A parseable value "
+                                        "takes precedence over If-Match; if absent or unparseable, the header is used."
+                                    ),
+                                },
                                 "noise_reduction": {"type": "string", "enum": ["none", "deepfilternet2"], "default": "none", "description": "Optional local microphone cleanup before normalization. The selected model downloads on first use; the original recording is retained."},
                             },
                         }}},
@@ -1515,13 +1528,18 @@ def build_openapi_document() -> dict:
                         {
                             "name": "If-Match",
                             "in": "header",
-                            "required": True,
+                            "required": False,
                             "schema": {"type": "string"},
+                            "description": (
+                                "Current voice revision, used when multipart expected_revision is absent or "
+                                "cannot be parsed as an integer."
+                            ),
                         }
                     ],
                     "responses": {
                         "202": {"description": "Queued"},
                         "409": {"description": "Revision conflict"},
+                        "428": {"description": "A parseable current voice revision is required in expected_revision or If-Match."},
                     },
                 },
             },
@@ -1565,6 +1583,11 @@ def build_openapi_document() -> dict:
             "/api/v1/voices/{voiceId}/samples/{sampleId}/replace": {
                 "post": {
                     "operationId": "replaceVoiceSample",
+                    "description": (
+                        "If-Match must contain the current voice revision. Multipart expected_revision "
+                        "is not used for replacement. Missing or invalid If-Match returns 428; a revision "
+                        "that no longer matches returns 409."
+                    ),
                     "requestBody": {
                         "required": True,
                         "content": {"multipart/form-data": {"schema": {
@@ -1586,6 +1609,7 @@ def build_openapi_document() -> dict:
                     "responses": {
                         "202": {"description": "Replacement queued"},
                         "409": {"description": "Revision conflict or bundled voice"},
+                        "428": {"description": "If-Match must contain a parseable current voice revision."},
                     },
                 }
             },

@@ -3941,6 +3941,7 @@ export interface paths {
         };
         get: operations["listVoiceSamples"];
         put?: never;
+        /** @description Provide the current voice revision as multipart expected_revision or If-Match. A parseable expected_revision takes precedence; if it is missing or cannot be parsed as an integer, If-Match is used. Missing or invalid revision inputs return 428; a revision that no longer matches returns 409. */
         post: operations["uploadVoiceSample"];
         delete?: never;
         options?: never;
@@ -4005,6 +4006,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description If-Match must contain the current voice revision. Multipart expected_revision is not used for replacement. Missing or invalid If-Match returns 428; a revision that no longer matches returns 409. */
         post: operations["replaceVoiceSample"];
         delete?: never;
         options?: never;
@@ -17622,8 +17624,9 @@ export interface operations {
     uploadVoiceSample: {
         parameters: {
             query?: never;
-            header: {
-                "If-Match": string;
+            header?: {
+                /** @description Current voice revision, used when multipart expected_revision is absent or cannot be parsed as an integer. */
+                "If-Match"?: string;
             };
             path: {
                 voiceId: string;
@@ -17633,6 +17636,8 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": {
+                    /** @description Current voice revision. A parseable value takes precedence over If-Match; if absent or unparseable, the header is used. */
+                    expected_revision?: number;
                     /** Format: binary */
                     file: string;
                     /**
@@ -17654,6 +17659,13 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A parseable current voice revision is required in expected_revision or If-Match. */
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17783,6 +17795,13 @@ export interface operations {
             };
             /** @description Revision conflict or bundled voice */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description If-Match must contain a parseable current voice revision. */
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
