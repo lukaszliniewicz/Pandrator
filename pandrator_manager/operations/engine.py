@@ -581,7 +581,11 @@ class OperationEngine:
         rollback_errors: list[dict] = []
         for record in reversed(self.store.operation_tasks(operation.id)):
             # A task can change files before its terminal result is persisted.
-            if record.state not in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.RUNNING}:
+            # Startup requeues interrupted tasks as PENDING with their prior
+            # attempt count. Cancellation before retry must still undo them.
+            if record.state not in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.RUNNING} and not (
+                record.state == TaskState.PENDING and record.attempt > 0
+            ):
                 continue
             try:
                 self.task_handler.rollback(

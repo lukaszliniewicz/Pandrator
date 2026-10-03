@@ -83,6 +83,60 @@ class ActivationTests(unittest.TestCase):
         operation = application.store.get_operation(operation_id)
         raise AssertionError(f"Activation {operation_id} timed out in {operation.state}")
 
+    def test_cancel_after_recovery_rolls_back_interrupted_activation(self) -> None:
+        class FixtureStop(BaseException):
+            pass
+
+        class InterruptedHandler(FilesystemTaskHandler):
+            def _execute_activate_component(self, execution, task):
+                super()._execute_activate_component(execution, task)
+                raise FixtureStop()
+
+        _plan, submitted = self._submit()
+        engine = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.registry,
+            task_handler=InterruptedHandler(),
+        )
+        self.addCleanup(engine.shutdown)
+        with self.assertRaises(FixtureStop):
+            engine._execute(submitted.id)
+        active = active_component_path(self.application.context.layout, "fixture")
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertTrue(active.is_dir())
+        restarted = OperationEngine(
+            self.application.context,
+            self.application.store,
+            self.registry,
+        )
+        self.addCleanup(restarted.shutdown)
+        restarted._recover_interrupted()
+        interrupted = next(
+            record
+            for record in self.application.store.operation_tasks(submitted.id)
+            if record.task.kind == "activate_component"
+        )
+        self.assertEqual(interrupted.state, TaskState.PENDING)
+        self.assertEqual(interrupted.attempt, 1)
+        self.assertEqual(interrupted.result, {})
+        self.assertTrue(self.application.store.request_cancellation(submitted.id))
+        restarted._execute(submitted.id)
+        self.assertEqual(
+            self.application.store.get_operation(submitted.id).state, OperationState.CANCELLED
+        )
+        self.assertIsNone(active_component_path(self.application.context.layout, "fixture"))
+        self.assertFalse(active.exists())
+        self.assertEqual(self.application.store.configuration_revision(), 0)
+        activation = next(
+            record
+            for record in self.application.store.operation_tasks(submitted.id)
+            if record.task.kind == "activate_component"
+        )
+        self.assertEqual(activation.state, TaskState.ROLLED_BACK)
+        self.assertEqual(activation.result, {})
+
     def test_restart_retries_activation_after_effects_before_receipt_save(self) -> None:
         class FixtureStop(BaseException):
             pass

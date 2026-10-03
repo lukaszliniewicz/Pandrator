@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 from ..models import ManagedProcessSpec, TaskSpec
 from ..network import load_network_configuration
 from ..runtime_specs import (
@@ -12,6 +16,7 @@ from ..runtime_specs import (
 )
 from .contracts import OperationTaskContext, UnsupportedTask
 from .source_tasks import ComponentSourceTasks
+from .task_files import _atomic_json
 
 
 class ServiceTasks(ComponentSourceTasks):
@@ -191,13 +196,83 @@ class ServiceTasks(ComponentSourceTasks):
             if execution.supervisor.spec(service_id) is not None:
                 execution.supervisor.stop(service_id)
 
+    @staticmethod
+    def _service_stop_journal_path(
+        execution: OperationTaskContext,
+        task: TaskSpec,
+    ) -> Path:
+        layout = execution.context.layout
+        staging = layout.require_within(layout.staging, roots=(layout.root,))
+        operation_staging = layout.require_within(
+            staging / execution.operation.id,
+            roots=(staging,),
+        )
+        filename = hashlib.sha256(task.id.encode("utf-8")).hexdigest() + ".json"
+        return layout.require_within(
+            operation_staging / "service-stops" / filename,
+            roots=(operation_staging,),
+        )
+
+    @staticmethod
+    def _load_service_stop_receipt(
+        execution: OperationTaskContext,
+        task: TaskSpec,
+        *,
+        component_id: str,
+        service_id: str,
+    ) -> dict | None:
+        try:
+            path = ServiceTasks._service_stop_journal_path(execution, task)
+            journal = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError) as error:
+            raise RuntimeError(
+                "The service stop journal is invalid or does not match this operation task."
+            ) from error
+        if (
+            not isinstance(journal, dict)
+            or type(journal.get("schema_version")) is not int
+            or journal.get("schema_version") != 1
+            or journal.get("operation_id") != execution.operation.id
+            or journal.get("task_id") != task.id
+            or journal.get("component_id") != component_id
+            or journal.get("service_id") != service_id
+            or type(journal.get("was_running")) is not bool
+            or type(journal.get("desired_running")) is not bool
+        ):
+            raise RuntimeError(
+                "The service stop journal is invalid or does not match this operation task."
+            )
+        return {
+            "service_id": journal["service_id"],
+            "was_running": journal["was_running"],
+            "desired_running": journal["desired_running"],
+        }
+
     def _execute_stop_service(
         self,
         execution: OperationTaskContext,
         task: TaskSpec,
     ) -> dict:
         definition = self._definition(execution, task)
-        if not definition.service_key or execution.supervisor is None:
+        if not definition.service_key:
+            return {
+                "service_id": None,
+                "was_running": False,
+                "desired_running": False,
+            }
+        result = self._load_service_stop_receipt(
+            execution,
+            task,
+            component_id=definition.id,
+            service_id=definition.service_key,
+        )
+        if execution.supervisor is None:
+            if result is not None:
+                raise RuntimeError(
+                    "The process supervisor is unavailable for service stop recovery."
+                )
             return {
                 "service_id": None,
                 "was_running": False,
@@ -205,15 +280,25 @@ class ServiceTasks(ComponentSourceTasks):
             }
         snapshots = {service.id: service for service in execution.supervisor.snapshot()}
         previous = snapshots.get(definition.service_key)
-        was_running = bool(previous is not None and previous.process is not None)
-        desired_running = bool(previous is not None and previous.desired_running)
+        if result is None:
+            result = {
+                "service_id": definition.service_key,
+                "was_running": bool(previous is not None and previous.process is not None),
+                "desired_running": bool(previous is not None and previous.desired_running),
+            }
+            _atomic_json(
+                ServiceTasks._service_stop_journal_path(execution, task),
+                {
+                    "schema_version": 1,
+                    "operation_id": execution.operation.id,
+                    "task_id": task.id,
+                    "component_id": definition.id,
+                    **result,
+                },
+            )
         if previous is not None:
             execution.supervisor.stop(definition.service_key)
-        return {
-            "service_id": definition.service_key,
-            "was_running": was_running,
-            "desired_running": desired_running,
-        }
+        return result
 
     def _rollback_stop_service(
         self,
@@ -221,9 +306,22 @@ class ServiceTasks(ComponentSourceTasks):
         task: TaskSpec,
         result: dict,
     ) -> None:
+        if not result:
+            definition = self._definition(execution, task)
+            if not definition.service_key:
+                return
+            result = self._load_service_stop_receipt(
+                execution,
+                task,
+                component_id=definition.id,
+                service_id=definition.service_key,
+            ) or {}
         if (
             (result.get("was_running") or result.get("desired_running"))
             and result.get("service_id")
-            and execution.supervisor is not None
         ):
+            if execution.supervisor is None:
+                raise RuntimeError(
+                    "The process supervisor is unavailable for service rollback."
+                )
             execution.supervisor.start(str(result["service_id"]))

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import TypedDict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FAST_LANE = "fast-xdist"
@@ -125,6 +126,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_manager_launcher.py",
         "tests/test_manager_network.py",
         "tests/test_manager_operations.py",
+        "tests/test_manager_service_recovery.py",
         "tests/test_manager_provider_policy.py",
         "tests/test_manager_releases.py",
         "tests/test_manager_supervisor_persistence.py",
@@ -366,6 +368,11 @@ class TestLaneUsageError(ValueError):
     """The selected lanes cannot safely run in one pytest invocation."""
 
 
+class _LaneMetadata(TypedDict):
+    name: str
+    files: list[str]
+
+
 def discover_test_files(repo_root: Path = REPO_ROOT) -> set[str]:
     """Return tracked-by-convention test paths relative to ``repo_root``."""
     return {
@@ -411,7 +418,7 @@ def validate_manifest(
 
 def lane_payload(
     manifest: Mapping[str, Sequence[str]] = TEST_LANES,
-) -> dict[str, list[dict[str, object]]]:
+) -> dict[str, list[_LaneMetadata]]:
     """Return lane metadata in manifest order for human and machine consumers."""
     return {
         "lanes": [

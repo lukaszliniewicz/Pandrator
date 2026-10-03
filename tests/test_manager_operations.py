@@ -538,12 +538,14 @@ class OperationEngineTests(unittest.TestCase):
         ]
         execution = mock.Mock()
         execution.supervisor = supervisor
+        execution.context.layout = self.application.context.layout
+        execution.operation.id = str(uuid.uuid4())
         definition = mock.Mock(
             id="fixture",
             label="Fixture component",
             service_key="fixture.service",
         )
-        task = mock.Mock(component_id="fixture")
+        task = mock.Mock(component_id="fixture", id="fixture:stop")
         with mock.patch.object(handler, "_definition", return_value=definition):
             stopped = handler._execute_stop_service(execution, task)
 
