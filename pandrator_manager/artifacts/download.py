@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from ..context import CancellationToken
+from ..context import CancellationSignal, CancellationToken
 from ..tls import select_ca_bundle
 
 
@@ -37,7 +37,7 @@ class ArtifactDownloader:
     def __init__(
         self,
         *,
-        cancellation: CancellationToken | None = None,
+        cancellation: CancellationSignal | None = None,
         session: requests.Session | None = None,
         environment: Mapping[str, str] | None = None,
         maximum_bytes: int = 32 * 1024 * 1024 * 1024,

@@ -10,6 +10,7 @@ from _thread import RLock as RLockType
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ..components import ComponentRegistry
 from ..context import ManagerContext
@@ -607,9 +608,9 @@ class OperationEngine:
         )
 
     @staticmethod
-    def _error_payload(error: Exception) -> dict:
+    def _error_payload(error: Exception) -> dict[str, Any]:
         if isinstance(error, ManagerError):
-            payload = {
+            payload: dict[str, Any] = {
                 "code": error.code,
                 "message": error.message[:2000],
             }

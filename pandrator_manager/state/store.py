@@ -902,6 +902,7 @@ class ManagerStore:
                     now,
                 ),
             ).lastrowid
+            assert cursor is not None
             cutoff = connection.execute(
                 """
                 SELECT cursor FROM events ORDER BY cursor DESC LIMIT 1 OFFSET ?

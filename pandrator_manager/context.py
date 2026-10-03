@@ -52,6 +52,15 @@ class NullEventSink:
         del event_type, payload, operation_id, component_id, service_id
 
 
+class CancellationSignal(Protocol):
+    """Cancellation checks consumed by operation collaborators."""
+
+    @property
+    def requested(self) -> bool: ...
+
+    def raise_if_requested(self) -> None: ...
+
+
 class CancellationToken:
     """Thread-safe cooperative cancellation shared by operation tasks."""
 

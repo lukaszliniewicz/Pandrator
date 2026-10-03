@@ -14,7 +14,7 @@ from typing import BinaryIO, Mapping
 
 import psutil
 
-from ..context import CancellationToken
+from ..context import CancellationSignal, CancellationToken
 from ..errors import CancellationRequested
 
 
@@ -82,7 +82,7 @@ class CommandRunner:
     def __init__(
         self,
         *,
-        cancellation: CancellationToken | None = None,
+        cancellation: CancellationSignal | None = None,
         base_environment: Mapping[str, str] | None = None,
     ) -> None:
         self.cancellation = cancellation or CancellationToken()

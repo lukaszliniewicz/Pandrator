@@ -36,7 +36,7 @@ from ..components.slots import (
     component_container,
     component_pointer,
 )
-from ..context import ManagerContext
+from ..context import CancellationSignal, ManagerContext
 from ..environments import PIXI_VERSION, PixiBootstrapper
 from ..errors import ManagerError
 from ..legacy_data import (
@@ -157,7 +157,7 @@ class OperationTaskContext:
     operation: OperationRecord
     plan: OperationPlan
     prior_results: dict[str, dict]
-    cancellation: object
+    cancellation: CancellationSignal
     release_authority: ReleaseAuthority | None = None
     service_spec_factory: Callable[[str, object], ManagedProcessSpec | None] | None = None
 
@@ -613,7 +613,7 @@ class FilesystemTaskHandler:
         raw_assets = task.inputs.get("assets")
         if not isinstance(raw_assets, list) or not raw_assets:
             raise UnsupportedTask("The audio.cpp runtime asset contract is missing.")
-        specifications: list[tuple[dict, ArtifactSpec]] = []
+        specifications: list[tuple[dict, str, ArtifactSpec]] = []
         try:
             for raw_asset in raw_assets:
                 if not isinstance(raw_asset, dict):
@@ -623,6 +623,7 @@ class FilesystemTaskHandler:
                 specifications.append(
                     (
                         raw_asset,
+                        filename,
                         ArtifactSpec(
                             url=str(raw_asset["url"]),
                             sha256=str(raw_asset["sha256"]),
@@ -691,10 +692,10 @@ class FilesystemTaskHandler:
                 "requires an online fetch."
             )
         selected_assets: list[str] = []
-        for raw_asset, specification in specifications:
+        for raw_asset, filename, specification in specifications:
             execution.check_cancelled()
             cache_path = (
-                execution.context.layout.cache / "artifacts" / "audio_cpp" / specification.filename
+                execution.context.layout.cache / "artifacts" / "audio_cpp" / filename
             )
             selected = ArtifactDownloader(
                 cancellation=execution.cancellation,
