@@ -2,7 +2,6 @@ import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import select
@@ -89,7 +88,7 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
         run, claim = self._create_and_claim(dispatch)
         with self.fixture.database.session() as session:
             batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
-            self.assertIsNotNone(batch)
+            assert batch is not None
             self.assertEqual("remove silence", run["instructions"])
             self.assertEqual(1, run["batch_count"])
             self.assertGreaterEqual(len(batch.input_json["cues"]), 1)
@@ -107,7 +106,7 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
 
     def test_cue_packet_omits_cues_wholly_outside_media(self):
         cues = MediaEditDispatchRunService._cue_evidence(
-            SimpleNamespace(
+            MediaEditPlanRevision(
                 duration_ms=1_000,
                 cues_json=[
                     {"id": "inside", "start_ms": 900, "end_ms": 1_100, "text": "last"},
@@ -160,11 +159,13 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
                 )
             self.assertEqual(422, raised.exception.status)
             batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+            assert batch is not None
             self.assertEqual("leased", batch.status)
             self.assertEqual(claim["lease_token"], batch.lease_token)
 
         with self.fixture.database.session() as session:
             source = session.get(MediaEditPlanRevision, run["source_revision_id"])
+            assert source is not None
             source_ranges = source.keep_ranges_json
         with self.fixture.database.immediate_session() as session:
             result, status = dispatch.submit_in_session(
@@ -180,7 +181,9 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
         self.assertEqual(2, result["result_revision"])
         with self.fixture.database.session() as session:
             run_record = session.get(MediaEditDispatchRun, run["id"])
+            assert run_record is not None
             revision = session.get(MediaEditPlanRevision, result["result_revision_id"])
+            assert revision is not None
             self.assertEqual("completed", run_record.status)
             self.assertFalse(revision.reviewed)
             self.assertEqual(source_ranges, revision.keep_ranges_json)
@@ -258,16 +261,14 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
         self.assertEqual(200, status)
         with self.fixture.database.session() as session:
             revision = session.get(MediaEditPlanRevision, result["result_revision_id"])
+            assert revision is not None
             self.assertFalse(revision.reviewed)
             self.assertEqual("passive_dispatch", revision.operation_json["type"])
             self.assertEqual(run["id"], revision.operation_json["dispatch_run_id"])
             self.assertEqual("remove silence", revision.instructions)
-            self.assertNotEqual(
-                revision.keep_ranges_json,
-                session.get(
-                    MediaEditPlanRevision, run["source_revision_id"]
-                ).keep_ranges_json,
-            )
+            source = session.get(MediaEditPlanRevision, run["source_revision_id"])
+            assert source is not None
+            self.assertNotEqual(revision.keep_ranges_json, source.keep_ranges_json)
 
     def test_passive_result_can_remove_captionless_leading_media(self):
         _media_edit, dispatch = self._prepared()
@@ -295,6 +296,7 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
         self.assertEqual(200, status)
         with self.fixture.database.session() as session:
             revision = session.get(MediaEditPlanRevision, result["result_revision_id"])
+            assert revision is not None
             cut = revision.operation_json["cuts"][0]
             self.assertEqual(0, cut["start_ms"])
             self.assertTrue(cut["start_at_media_start"])
@@ -321,7 +323,9 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
             self.assertTrue(raised.exception.details["batch_accepted"])
         with self.fixture.database.session() as session:
             saved_run = session.get(MediaEditDispatchRun, run["id"])
+            assert saved_run is not None
             saved_batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+            assert saved_batch is not None
             self.assertEqual("failed", saved_run.status)
             self.assertEqual("completed", saved_batch.status)
             self.assertIsNone(saved_run.result_revision_id)
@@ -351,7 +355,9 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
             self.assertEqual(422, raised.exception.status)
         with self.fixture.database.session() as session:
             saved_run = session.get(MediaEditDispatchRun, run["id"])
+            assert saved_run is not None
             saved_batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+            assert saved_batch is not None
             self.assertEqual("failed", saved_run.status)
             self.assertEqual("completed", saved_batch.status)
 
@@ -492,6 +498,7 @@ class MediaEditDispatchServiceTests(unittest.TestCase):
                 lease_seconds=30,
             )
             batch = session.get(MediaEditDispatchBatch, claim["batch_id"])
+            assert batch is not None
             batch.lease_expires_at = datetime(2000, 1, 1, tzinfo=UTC)
         with self.fixture.database.immediate_session() as session:
             expired_reclaimed = dispatch.claim_in_session(
