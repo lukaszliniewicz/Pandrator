@@ -388,6 +388,7 @@ def apply_cleaning_operations(
         )
         if (
             not is_chapter
+            and not last_output_was_chapter
             and continuation_from
             and continuation_from == last_output_block_id
             and cleaned_lines

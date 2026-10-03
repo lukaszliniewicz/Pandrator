@@ -2510,6 +2510,62 @@ class SourceCleaningTests(unittest.TestCase):
         )
         self.assertEqual(epub_result.report["layout_continuation_join_count"], 0)
 
+    def test_page_continuation_respects_a_reviewed_chapter_boundary(self):
+        cases = (
+            ("space", "A paragraph begins here", "and continues on the next page.",
+             "A paragraph begins here and continues on the next page."),
+            ("remove_hyphen", "An inter-", "national example continues here.",
+             "An international example continues here."),
+            ("keep_hyphen", "A well-", "known example continues here.",
+             "A well-known example continues here."),
+        )
+        for mode, previous_text, continuation_text, joined_text in cases:
+            with self.subTest(mode=mode):
+                previous = SourceBlock(
+                    block_id="pdf:1:1", text=previous_text,
+                    line_start=1, line_end=1, page=1,
+                )
+                continuation = SourceBlock(
+                    block_id="pdf:2:1", text=continuation_text,
+                    line_start=2, line_end=2, page=2,
+                    attributes={
+                        "continuation_from_block_id": previous.block_id,
+                        "continuation_join": mode,
+                    },
+                )
+                document = SourceDocument(
+                    source_type="pdf_structured", source_path="fixture.pdf",
+                    filename="fixture.pdf", blocks=[previous, continuation],
+                )
+                original = document.to_dict()
+                control = apply_cleaning_operations(document, [])
+                self.assertEqual(control.cleaned_text, joined_text)
+                self.assertEqual(control.report["page_continuation_join_count"], 1)
+
+                mark = {
+                    "op": "mark_chapter", "block_id": previous.block_id,
+                    "title": "Chapter One",
+                }
+                result = apply_cleaning_operations(document, [mark])
+                self.assertEqual(
+                    result.cleaned_text,
+                    f"[[Chapter]]Chapter One\n\n{continuation_text}",
+                )
+                self.assertEqual(result.report["page_continuation_join_count"], 0)
+                self.assertEqual(result.report["chapter_count"], 1)
+                self.assertEqual(result.report["cleaned_block_count"], 2)
+                self.assertEqual(len(result.applied_operations), 1)
+                self.assertEqual(result.skipped_operations, [])
+
+                unmarked = apply_cleaning_operations(
+                    document,
+                    [mark, {"op": "unmark_chapter", "block_id": previous.block_id}],
+                )
+                self.assertEqual(unmarked.cleaned_text, joined_text)
+                self.assertEqual(unmarked.report["page_continuation_join_count"], 1)
+                self.assertEqual(unmarked.report["chapter_count"], 0)
+                self.assertEqual(document.to_dict(), original)
+
     def test_apply_cleaning_operations_writes_artifacts_and_diff(self):
         document = build_source_document_from_text(
             "\n".join(
