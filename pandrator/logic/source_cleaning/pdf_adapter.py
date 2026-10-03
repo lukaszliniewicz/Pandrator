@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -10,15 +9,20 @@ import statistics
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from itertools import pairwise
 from typing import Any
 
 from .models import SourceBlock, SourceDocument
+from .pdf_cache import PDF_INGESTION_VERSION as PDF_INGESTION_VERSION
+from .pdf_cache import PDFIngestionConfig as PDFIngestionConfig
+from .pdf_cache import _load_cached_document as _load_cached_document
+from .pdf_cache import _provenance_fingerprint as _provenance_fingerprint
+from .pdf_cache import _source_fingerprint as _source_fingerprint
+from .pdf_cache import _write_json as _write_json
 from .pdf_text_adapter import _front_matter_metadata, _metadata_from_filename
 
 ProgressCallback = Callable[[str], None]
-PDF_INGESTION_VERSION = 12
 _LATIN_V6_LANGUAGES = {
     "auto", "latin", "en", "af", "az", "bs", "ca", "cs", "cy", "da", "de", "es",
     "et", "eu", "fi", "fr", "ga", "gl", "hr", "hu", "id", "is", "it", "ku", "la",
@@ -86,26 +90,6 @@ _LATIN_LANGUAGE_STOPWORDS = {
         "sind", "mit", "von", "zu", "auf", "für", "nicht", "ein", "eine", "einer", "als", "auch",
     },
 }
-
-
-@dataclass
-class PDFIngestionConfig:
-    ocr_mode: str = "auto"
-    ocr_language: str = "auto"
-    ocr_dpi: int = 200
-    use_cache: bool = True
-
-    def normalized(self) -> PDFIngestionConfig:
-        mode = str(self.ocr_mode or "auto").lower()
-        mode = {"always": "force", "never": "off"}.get(mode, mode)
-        if mode not in {"auto", "off", "force"}:
-            mode = "auto"
-        return PDFIngestionConfig(
-            ocr_mode=mode,
-            ocr_language=str(self.ocr_language or "auto").lower(),
-            ocr_dpi=max(120, min(400, int(self.ocr_dpi or 200))),
-            use_cache=bool(self.use_cache),
-        )
 
 
 class PaddleOCRMediumEngine:
@@ -2350,55 +2334,6 @@ def _is_probable_running_header(
     )
 
 
-def _load_cached_document(
-    cache_path: str, source_fingerprint: dict[str, Any], config: PDFIngestionConfig
-) -> SourceDocument | None:
-    try:
-        with open(cache_path, "r", encoding="utf-8") as file_handle:
-            payload = json.load(file_handle)
-        document = SourceDocument.from_dict(payload)
-        ingestion = document.attributes.get("pdf_ingestion", {})
-        if ingestion.get("version") != PDF_INGESTION_VERSION:
-            return None
-        if ingestion.get("source_fingerprint") != source_fingerprint:
-            return None
-        if ingestion.get("config") != asdict(config):
-            return None
-        return document
-    except (OSError, ValueError, TypeError):
-        return None
-
-
-def _source_fingerprint(path: str) -> dict[str, Any]:
-    stat = os.stat(path)
-    digest = hashlib.sha256()
-    with open(path, "rb") as file_handle:
-        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {
-        "path": os.path.abspath(path),
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
-        "sha256": digest.hexdigest(),
-        "provenance_fingerprint": _provenance_fingerprint(path),
-    }
-
-
-def _provenance_fingerprint(path: str) -> dict[str, str] | None:
-    provenance_path = f"{path}.pycroppdf.json"
-    if not os.path.isfile(provenance_path):
-        return None
-    try:
-        digest = hashlib.sha256()
-        with open(provenance_path, "rb") as file_handle:
-            for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return {"sha256": digest.hexdigest()}
-    except OSError as error:
-        # Let the existing manifest loader retain its warning fallback.
-        return {"error": str(error)}
-
-
 def _normalized_marginal_key(text: str) -> str:
     normalized = _normalize_space(text).casefold()
     normalized = re.sub(r"\d+", "#", normalized)
@@ -2440,12 +2375,6 @@ def _bbox_area(value: Iterable[float]) -> float:
 def _normalize_space(text: str) -> str:
     without_controls = re.sub(r"[\x00-\x1f\x7f]+", " ", str(text or ""))
     return re.sub(r"\s+", " ", without_controls).strip()
-
-
-def _write_json(path: str, payload: Any) -> None:
-    with open(path, "w", encoding="utf-8", newline="\n") as file_handle:
-        json.dump(payload, file_handle, indent=2, ensure_ascii=False)
-        file_handle.write("\n")
 
 
 def _emit(callback: ProgressCallback | None, message: str) -> None:
