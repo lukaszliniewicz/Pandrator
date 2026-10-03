@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import socket
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
+from threading import Lock, RLock
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
@@ -1013,6 +1016,9 @@ class AudioCppAdapter(LegacyTtsAdapter):
         super().__init__(service_id)
         self._session_pool = EndpointSessionPool()
 
+    def close(self) -> None:
+        self._session_pool.close()
+
     def _session_for_base_url(self, base_url: str) -> requests.Session:
         key = tts_handler._audio_cpp_endpoint_key(base_url)
         return self._session_pool.session_for_key(key, create_session=requests.Session)
@@ -1043,9 +1049,12 @@ class AudioCppAdapter(LegacyTtsAdapter):
         settings: dict[str, Any],
         **options: Any,
     ) -> AudioSegment | None:
-        if "request_session" not in options:
-            options["request_session"] = self._session_for(self._endpoint_settings(settings, options))
-        return super().synthesize(text, settings, **options)
+        with (
+            nullcontext() if "request_session" in options else self._session_pool.operation()
+        ):
+            if "request_session" not in options:
+                options["request_session"] = self._session_for(self._endpoint_settings(settings, options))
+            return super().synthesize(text, settings, **options)
 
     def capabilities(
         self,
@@ -1064,22 +1073,32 @@ class AudioCppAdapter(LegacyTtsAdapter):
         base_url = str(service.get("api_base") or "").strip().rstrip("/")
         if not base_url:
             return TtsHealth(False, False, "audio.cpp API base is not configured")
-        try:
-            session = self._session_for_base_url(base_url)
-            with tts_handler._audio_cpp_endpoint_lock_for(base_url):
-                response = session.get(f"{base_url}/health", timeout=2)
-                response.raise_for_status()
-                payload = response.json()
-        except (requests.exceptions.RequestException, ValueError) as error:
-            return TtsHealth(False, False, f"audio.cpp health check failed: {error}")
-        ready = isinstance(payload, dict) and payload.get("status") == "ok"
-        return TtsHealth(
-            ready,
-            ready,
-            "" if ready else "audio.cpp returned an invalid health response",
-        )
+        with self._session_pool.operation():
+            try:
+                session = self._session_for_base_url(base_url)
+                with tts_handler._audio_cpp_endpoint_lock_for(base_url):
+                    response = session.get(f"{base_url}/health", timeout=2)
+                    response.raise_for_status()
+                    payload = response.json()
+            except (requests.exceptions.RequestException, ValueError) as error:
+                return TtsHealth(False, False, f"audio.cpp health check failed: {error}")
+            ready = isinstance(payload, dict) and payload.get("status") == "ok"
+            return TtsHealth(
+                ready,
+                ready,
+                "" if ready else "audio.cpp returned an invalid health response",
+            )
 
     def enrich_catalog(
+        self,
+        service: dict[str, Any],
+        *,
+        api_key: str = "",
+    ) -> dict[str, Any]:
+        with self._session_pool.operation():
+            return self._enrich_catalog(service, api_key=api_key)
+
+    def _enrich_catalog(
         self,
         service: dict[str, Any],
         *,
@@ -1229,6 +1248,18 @@ class AudioCppAdapter(LegacyTtsAdapter):
     ) -> Iterator[TtsBatchResult]:
         if not items:
             return
+        with (
+            nullcontext() if "request_session" in options else self._session_pool.operation()
+        ):
+            yield from self._synthesize_batch(items, batch_size=batch_size, **options)
+
+    def _synthesize_batch(
+        self,
+        items: list[TtsBatchItem],
+        *,
+        batch_size: int,
+        **options: Any,
+    ) -> Iterator[TtsBatchResult]:
         batch_settings = self._endpoint_settings(items[0].settings, options)
         batch_key = self._batch_key(batch_settings)
         if any(
@@ -1599,6 +1630,9 @@ class TtsProviderRegistry:
     )
 
     def __init__(self) -> None:
+        self._adapters_guard = Lock()
+        self._lifecycle_guard = RLock()
+        self._closed = False
         self._adapters: dict[str, TtsProviderAdapter] = {}
         for service_id in self.BUILTIN_SERVICE_IDS:
             self.register(LegacyTtsAdapter(service_id))
@@ -1612,32 +1646,79 @@ class TtsProviderRegistry:
         service_id = normalize_service_id(adapter.service_id)
         if not service_id:
             raise ValueError("TTS adapter service ID must not be empty.")
-        if service_id in self._adapters:
-            raise ValueError(f"TTS adapter '{service_id}' is already registered.")
-        self._adapters[service_id] = adapter
+        with self._lifecycle_guard:
+            with self._adapters_guard:
+                if self._closed:
+                    raise RuntimeError("The TTS provider registry is closed.")
+            if isinstance(adapter, AudioCppAdapter) and adapter._session_pool.closed:
+                raise RuntimeError("Cannot register a retired audio.cpp adapter.")
+            with self._adapters_guard:
+                if service_id in self._adapters:
+                    raise ValueError(f"TTS adapter '{service_id}' is already registered.")
+                self._adapters[service_id] = adapter
 
     def replace(self, adapter: TtsProviderAdapter) -> None:
         service_id = normalize_service_id(adapter.service_id)
         if not service_id:
             raise ValueError("TTS adapter service ID must not be empty.")
-        self._adapters[service_id] = adapter
+        with self._lifecycle_guard:
+            with self._adapters_guard:
+                if self._closed:
+                    raise RuntimeError("The TTS provider registry is closed.")
+                previous = self._adapters.get(service_id)
+                if previous is adapter:
+                    return
+            if isinstance(adapter, AudioCppAdapter) and adapter._session_pool.closed:
+                raise RuntimeError("Cannot register a retired audio.cpp adapter.")
+            with self._adapters_guard:
+                self._adapters[service_id] = adapter
+                retire_previous = previous is not None and not any(
+                    current is previous for current in self._adapters.values()
+                )
+            if retire_previous and previous is not None:
+                self._retire_adapter(previous)
+
+    @staticmethod
+    def _retire_adapter(adapter: TtsProviderAdapter) -> None:
+        try:
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            logging.exception("Could not close a TTS provider adapter")
+
+    def close(self) -> None:
+        with self._lifecycle_guard:
+            with self._adapters_guard:
+                self._closed = True
+                adapters = list(
+                    {id(adapter): adapter for adapter in self._adapters.values()}.values()
+                )
+                self._adapters.clear()
+            for adapter in adapters:
+                self._retire_adapter(adapter)
 
     def get(self, service_id: str) -> TtsProviderAdapter:
         normalized = normalize_service_id(service_id)
-        adapter = self._adapters.get(normalized)
-        if adapter is not None:
-            return adapter
-        # Custom OpenAI-compatible profiles share the stable legacy adapter.
-        return self._adapters["openai_compatible"]
+        with self._adapters_guard:
+            if self._closed:
+                raise RuntimeError("The TTS provider registry is closed.")
+            adapter = self._adapters.get(normalized)
+            if adapter is not None:
+                return adapter
+            # Custom OpenAI-compatible profiles share the stable legacy adapter.
+            return self._adapters["openai_compatible"]
 
     def service_ids(self) -> tuple[str, ...]:
-        return tuple(self._adapters)
+        with self._adapters_guard:
+            return tuple(self._adapters)
 
     def service_id_for_settings(self, settings: dict[str, Any]) -> str:
+        service_ids = self.service_ids()
         explicit = normalize_service_id(
             settings.get("preview_service_id") or settings.get("service_id")
         )
-        if explicit in self._adapters:
+        if explicit in service_ids:
             return explicit
         service_name = normalize_service_id(
             settings.get("service") or settings.get("tts_service")
@@ -1646,7 +1727,7 @@ class TtsProviderRegistry:
             adapter_id = normalize_service_id(
                 tts_handler.resolve_custom_tts_adapter_id(settings)
             )
-            if adapter_id in self._adapters:
+            if adapter_id in service_ids:
                 return adapter_id
         if explicit:
             return explicit
@@ -1958,7 +2039,7 @@ class TtsProviderRegistry:
 
     def _service_adapter_id(self, service: dict[str, Any]) -> str:
         adapter_id = normalize_service_id(service.get("adapter"))
-        if adapter_id in self._adapters:
+        if adapter_id in self.service_ids():
             return adapter_id
         return normalize_service_id(service.get("id") or service.get("name"))
 

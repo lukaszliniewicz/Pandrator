@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from threading import Event, Lock, RLock
+from threading import Event, Lock, RLock, local
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -79,16 +80,68 @@ def endpoint_lock_guard(
 
 
 class EndpointSessionPool:
-    """Create one caller-supplied HTTP session for each endpoint key."""
+    """Own reusable HTTP sessions and defer cleanup until admitted work finishes."""
 
     def __init__(self) -> None:
         self._sessions_guard = Lock()
         self._sessions: dict[str, requests.Session] = {}
+        self._closed = False
+        self._active_operations = 0
+        self._operation_state = local()
+
+    @property
+    def closed(self) -> bool:
+        with self._sessions_guard:
+            return self._closed
+
+    @staticmethod
+    def _close_sessions(sessions: list[requests.Session]) -> None:
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                logging.exception("Could not close an audio.cpp HTTP session")
+
+    @contextmanager
+    def operation(self) -> Iterator[None]:
+        """Admit work that retains pooled sessions on this thread until exit."""
+        with self._sessions_guard:
+            if self._closed:
+                raise RuntimeError("The audio.cpp HTTP session pool is closed.")
+            self._active_operations += 1
+        self._operation_state.depth = getattr(self._operation_state, "depth", 0) + 1
+        try:
+            yield
+        finally:
+            sessions: list[requests.Session] = []
+            with self._sessions_guard:
+                self._operation_state.depth -= 1
+                self._active_operations -= 1
+                if self._closed and self._active_operations == 0:
+                    sessions = list(
+                        {id(session): session for session in self._sessions.values()}.values()
+                    )
+                    self._sessions.clear()
+            self._close_sessions(sessions)
+
+    def close(self) -> None:
+        """Fence new operations; the final borrower closes any retained sessions."""
+        sessions: list[requests.Session] = []
+        with self._sessions_guard:
+            self._closed = True
+            if self._active_operations == 0:
+                sessions = list(
+                    {id(session): session for session in self._sessions.values()}.values()
+                )
+                self._sessions.clear()
+        self._close_sessions(sessions)
 
     def session_for_key(
         self, key: str, *, create_session: Callable[[], requests.Session]
     ) -> requests.Session:
         with self._sessions_guard:
+            if self._closed and not getattr(self._operation_state, "depth", 0):
+                raise RuntimeError("The audio.cpp HTTP session pool is closed.")
             session = self._sessions.get(key)
             if session is None:
                 session = create_session()

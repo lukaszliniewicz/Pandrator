@@ -478,7 +478,8 @@ class PandratorServeNetworkTests(unittest.TestCase):
         database = mock.Mock()
         authentication = mock.Mock()
         authentication.initialized.return_value = False
-        application = object()
+        providers = mock.Mock()
+        application = SimpleNamespace(extensions={"pandrator": {"tts_providers": providers}})
         with (
             mock.patch.dict(
                 os.environ,
@@ -514,6 +515,7 @@ class PandratorServeNetworkTests(unittest.TestCase):
             create_app.call_args.kwargs["trusted_hosts"],
         )
         serve.assert_called_once()
+        providers.close.assert_called_once_with()
 
 
 class RecoveryNetworkAssetTests(unittest.TestCase):

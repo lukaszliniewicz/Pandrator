@@ -48,6 +48,7 @@ from .openapi import build_openapi_document
 from .process_guard import WorkerPresence
 from .sessions import SessionService
 from .subtitle_review import SubtitleReviewService
+from .tts_providers import TtsProviderRegistry
 from .workflow_handlers import WorkflowHandlers
 from .workflows import WorkflowService
 
@@ -444,24 +445,28 @@ def command_serve(args) -> int:
         bootstrap_tokens=bootstrap,
         public_origin=network.browser_url,
     )
-    if args.open_browser:
-        token = bootstrap.issue()
-        webbrowser.open(f"{network.browser_url}/#bootstrap={token}")
-    print(
-        f"Pandrator API listening on http://{args.host}:{args.port}"
-        + (
-            f" (public URL: {network.browser_url})"
-            if network.public_url
-            else ""
+    try:
+        if args.open_browser:
+            token = bootstrap.issue()
+            webbrowser.open(f"{network.browser_url}/#bootstrap={token}")
+        print(
+            f"Pandrator API listening on http://{args.host}:{args.port}"
+            + (
+                f" (public URL: {network.browser_url})"
+                if network.public_url
+                else ""
+            )
         )
-    )
-    waitress_serve(
-        app,
-        host=args.host,
-        port=args.port,
-        threads=max(6, args.threads),
-        url_scheme="http",
-    )
+        waitress_serve(
+            app,
+            host=args.host,
+            port=args.port,
+            threads=max(6, args.threads),
+            url_scheme="http",
+        )
+    finally:
+        # Waitress can return with requests active; the pool drains its borrowers.
+        app.extensions["pandrator"]["tts_providers"].close()
     return 0
 
 
@@ -484,6 +489,7 @@ def command_worker(args) -> int:
         progress(1.0, "Artifact hash updated")
         return {"artifact_id": artifact_id, "sha256": digest}
 
+    tts_providers: TtsProviderRegistry | None = None
     try:
         with WorkerPresence(paths.worker_presence, worker_id) as presence:
             if presence.conflict:
@@ -502,7 +508,8 @@ def command_worker(args) -> int:
                 hash_artifact,
                 domain="artifacts",
             )
-            workflow_handlers = WorkflowHandlers(database, paths)
+            tts_providers = TtsProviderRegistry()
+            workflow_handlers = WorkflowHandlers(database, paths, tts_providers=tts_providers)
             for registration in workflow_handlers.handler_registry.registrations():
                 handler_registry.register(
                     registration.kind,
@@ -519,7 +526,11 @@ def command_worker(args) -> int:
             except KeyboardInterrupt:
                 worker.stop()
     finally:
-        database.dispose()
+        try:
+            if tts_providers is not None:
+                tts_providers.close()
+        finally:
+            database.dispose()
     return 0
 
 
