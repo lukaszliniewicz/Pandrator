@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import requests
+
 from pandrator.logic import audio_cpp_execution, tts_handler, tts_provider_profiles
 
 
@@ -1685,6 +1687,29 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual("ndjson-v1", capabilities["protocol"])
         self.assertEqual(10, capabilities["default_batch_size"])
         self.assertEqual(32, capabilities["max_batch_size"])
+
+    def test_kobold_qwen_nonfinite_batch_sizes_use_capability_fallback(self):
+        for field in ("default_batch_size", "max_batch_size", "parallelism"):
+            with self.subTest(field=field):
+                response = requests.Response()
+                response.status_code = 200
+                response.headers["Content-Type"] = "application/json"
+                # A syntactically valid JSON number exceeds the float range.
+                response._content = (
+                    '{"batch_synthesis":{"supported":true,"streaming":true,'
+                    '"protocol":"ndjson-v1","' + field + '":1e309}}'
+                ).encode()
+                with patch.object(tts_handler.requests, "get", return_value=response):
+                    capabilities = tts_handler.get_kobold_qwen_batch_capabilities(
+                        "http://fixture.invalid", api_key="fixture-key",
+                    )
+                self.assertEqual(
+                    {
+                        "supported": False, "streaming": False,
+                        "default_batch_size": 1, "max_batch_size": 1,
+                    },
+                    capabilities,
+                )
 
     def test_kobold_qwen_batch_stream_returns_completed_and_failed_items(self):
         response = MagicMock(status_code=200)

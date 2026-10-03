@@ -7173,7 +7173,7 @@ def get_kobold_qwen_batch_capabilities(
                 default_size, min(32, int(batch.get("max_batch_size") or default_size))
             )
             parallelism = max(1, int(batch.get("parallelism") or 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return fallback
         return {
             "supported": bool(batch.get("supported")),
