@@ -49,18 +49,13 @@
   } from '@lucide/svelte';
   import { onMount, tick, untrack } from 'svelte';
   import { appState } from './app-state.svelte';
-  import {
-    generationApi,
-    sessionApi,
-    type GenerationSegmentChanges
-  } from './domain-api';
+  import { generationApi, type GenerationSegmentChanges } from './domain-api';
   import type {
     AudioTake,
     GenerationRun,
     GenerationSegment,
     SpeechPlan,
-    TtsCatalogue,
-    VoiceRecord
+    TtsCatalogue
   } from './api-models';
   import {
     GenerationStore,
@@ -90,10 +85,7 @@
     languagesForService,
     type VoiceDescriptor
   } from './voice-catalog';
-  import {
-    getTtsCompactCatalogue,
-    getVoiceLibrary
-  } from './tts-catalogue-cache';
+  import { GenerationSpeechOptionsState } from './generation-speech-options.svelte';
   import type {
     ComparisonDecisionRow,
     PlayableTake,
@@ -419,15 +411,8 @@
     }
     return params;
   });
-  let speechOptionsLoading = $state(false);
-  let speechOptionsError = $state('');
-  let speechOptionsRequest = 0;
-  let disposed = false;
   let topologyBusy = $state(false);
   let supportingOptionsStarted = false;
-  let ttsSettings = $state<Record<string, unknown>>({});
-  let ttsCatalogue = $state<TtsCatalogue>({ services: [] });
-  let libraryVoices = $state<VoiceRecord[]>([]);
   let alternateOpen = $state(false);
   let pendingSegmentUpdates = $state(0);
   const editQueue = new GenerationEditQueue();
@@ -442,6 +427,10 @@
       .trim()
       .toLowerCase()
       .replaceAll('-', '_');
+  const speechOptions = new GenerationSpeechOptionsState(
+    () => sessionId,
+    normalizeId
+  );
   const progressPercent = (value: unknown) => {
     const numeric = Number(value ?? 0);
     return Math.round(
@@ -452,17 +441,17 @@
     const saved = settingsSourceRun?.settings_snapshot?.tts;
     return saved && typeof saved === 'object'
       ? (saved as Record<string, unknown>)
-      : ttsSettings;
+      : speechOptions.settings;
   });
   const selectedTtsService = $derived.by(() => {
     const configured = String(
       inheritedTtsSettings.service ??
         inheritedTtsSettings.tts_service ??
-        ttsCatalogue.default_service ??
+        speechOptions.catalogue.default_service ??
         ''
     );
     return (
-      ttsCatalogue.services.find((service) =>
+      speechOptions.catalogue.services.find((service) =>
         [service.id, service.name].some(
           (value) => normalizeId(value) === normalizeId(configured)
         )
@@ -506,7 +495,7 @@
     const providerVoicesAllowed =
       !service.supports_prebuilt_voices || modelUsesReferences;
     const published = providerVoicesAllowed
-      ? libraryVoices.flatMap((voice) => {
+      ? speechOptions.voices.flatMap((voice) => {
           const registration =
             voice?.metadata_json?.providers?.[selectedTtsServiceId];
           return registration?.status === 'ready' && registration?.voice_id
@@ -515,7 +504,7 @@
         })
       : [];
     const managedRegistrations = new Map(
-      libraryVoices.flatMap((voice) => {
+      speechOptions.voices.flatMap((voice) => {
         const registration =
           voice.metadata_json?.providers?.[selectedTtsServiceId];
         return registration?.voice_id
@@ -599,7 +588,7 @@
       alternateTts.service ?? alternateTts.tts_service ?? ''
     );
     return (
-      ttsCatalogue.services.find((service) =>
+      speechOptions.catalogue.services.find((service) =>
         [service.id, service.name].some(
           (value) => normalizeId(value) === normalizeId(configured)
         )
@@ -641,7 +630,7 @@
       ? catalogue
       : Array.from(service.voices ?? []).map(String);
     const managed = alternateUsesManagedReferences(service, model)
-      ? libraryVoices.flatMap((voice) => {
+      ? speechOptions.voices.flatMap((voice) => {
           const registration =
             voice.metadata_json?.providers?.[normalizeId(service.id)];
           return registration?.status === 'ready' && registration?.voice_id
@@ -715,7 +704,7 @@
       alternateTts.language ?? alternateTts.target_language ?? ''
     );
     const managed = alternateUsesManagedReferences(service, model)
-      ? libraryVoices.flatMap((voice) => {
+      ? speechOptions.voices.flatMap((voice) => {
           const registration = voice.metadata_json?.providers?.[serviceId];
           return registration?.status === 'ready' && registration?.voice_id
             ? [[String(registration.voice_id), voice.name] as const]
@@ -972,77 +961,6 @@
       language,
       ...(voiceIsIncompatible ? { voice: null } : {})
     });
-  }
-
-  async function loadSpeechOptions() {
-    const request = ++speechOptionsRequest;
-    const scope = sessionId;
-    const isCurrent = () =>
-      !disposed && request === speechOptionsRequest && scope === sessionId;
-    speechOptionsLoading = true;
-    try {
-      const [settings, services, voices] = await Promise.all([
-        sessionApi.settings(sessionId, 'tts'),
-        getTtsCompactCatalogue(true),
-        getVoiceLibrary()
-      ]);
-      if (!isCurrent()) return;
-      speechOptionsError = '';
-      ttsSettings = settings.effective ?? {};
-      ttsCatalogue = services;
-      libraryVoices = voices.items ?? [];
-
-      const service = services.services.find((candidate) =>
-        [candidate.id, candidate.name].some(
-          (value) =>
-            normalizeId(value) ===
-            normalizeId(
-              ttsSettings.service ??
-                ttsSettings.tts_service ??
-                services.default_service
-            )
-        )
-      );
-      if (service?.api_base && service.online !== false) {
-        try {
-          const discovered = await sessionApi.discoverTts(
-            service.api_base,
-            service.id
-          );
-          if (!isCurrent()) return;
-          if (discovered?.success) {
-            const refreshed = ttsCatalogue.services.map((candidate) =>
-              candidate.id === service.id
-                ? {
-                    ...candidate,
-                    models: Array.from(
-                      new Set([
-                        ...(candidate.models ?? []),
-                        ...(discovered.models ?? [])
-                      ])
-                    ),
-                    voices: Array.from(
-                      new Set([
-                        ...(candidate.voices ?? []),
-                        ...(discovered.voices ?? [])
-                      ])
-                    ),
-                    live_voices: Array.from(new Set(discovered.voices ?? [])),
-                    online: true
-                  }
-                : candidate
-            );
-            ttsCatalogue = { ...ttsCatalogue, services: refreshed };
-          }
-        } catch {
-          // The saved catalogue remains useful when a backend has no discovery route.
-        }
-      }
-    } catch (caught) {
-      if (isCurrent()) speechOptionsError = errorMessage(caught);
-    } finally {
-      if (isCurrent()) speechOptionsLoading = false;
-    }
   }
 
   async function load(reset = true, preserveLoaded = reset) {
@@ -1467,7 +1385,7 @@
     const sourceTts =
       snapshot.tts && typeof snapshot.tts === 'object'
         ? (snapshot.tts as Record<string, unknown>)
-        : ttsSettings;
+        : speechOptions.settings;
     const sourceRvc =
       snapshot.rvc && typeof snapshot.rvc === 'object'
         ? (snapshot.rvc as Record<string, unknown>)
@@ -1481,8 +1399,8 @@
     const service = String(
       sourceTts.service ??
         sourceTts.tts_service ??
-        ttsSettings.service ??
-        ttsCatalogue.default_service ??
+        speechOptions.settings.service ??
+        speechOptions.catalogue.default_service ??
         ''
     );
     const model = String(
@@ -1497,7 +1415,7 @@
         inheritedLanguage ??
         'en'
     );
-    const matchingService = ttsCatalogue.services.find((item) =>
+    const matchingService = speechOptions.catalogue.services.find((item) =>
       [item.id, item.name].some(
         (value) => normalizeId(value) === normalizeId(service)
       )
@@ -1563,7 +1481,7 @@
   async function loadSupportingOptions() {
     if (supportingOptionsStarted) return;
     supportingOptionsStarted = true;
-    await Promise.all([loadRvc(), loadSpeechOptions()]);
+    await Promise.all([loadRvc(), speechOptions.load()]);
   }
 
   async function action(name: 'pause' | 'resume' | 'cancel') {
@@ -2190,8 +2108,7 @@
       applyLoadResult
     );
     return () => {
-      disposed = true;
-      speechOptionsRequest++;
+      speechOptions.dispose();
       disconnect();
       disconnectPlanEditor();
       if (timer) window.clearTimeout(timer);
@@ -2957,17 +2874,17 @@
         {#if error}<p class="p-3 text-sm text-red-500" role="alert">
             {error}
           </p>{/if}
-        {#if speechOptionsError}
+        {#if speechOptions.error}
           <div
             class="flex flex-wrap items-center gap-3 p-3 text-sm text-red-500"
             role="alert"
           >
-            <p>Could not refresh speech options: {speechOptionsError}</p>
+            <p>Could not refresh speech options: {speechOptions.error}</p>
             <button
               type="button"
               class="action"
-              disabled={speechOptionsLoading}
-              onclick={() => loadSpeechOptions()}>Retry speech options</button
+              disabled={speechOptions.loading}
+              onclick={() => speechOptions.load()}>Retry speech options</button
             >
           </div>
         {/if}
@@ -3035,7 +2952,7 @@
               {pendingGeneration}
               {selectedRows}
               {loading}
-              {speechOptionsLoading}
+              speechOptionsLoading={speechOptions.loading}
               selectedTtsServiceName={selectedTtsService?.name}
               {selectedTtsModel}
               {inheritedVoice}
@@ -3365,7 +3282,7 @@
             value={String(alternateTts.service ?? '')}
             onchange={(event) => {
               const service = event.currentTarget.value;
-              const next = ttsCatalogue.services.find(
+              const next = speechOptions.catalogue.services.find(
                 (item) => item.id === service
               );
               const language = String(
@@ -3391,7 +3308,7 @@
             }}
           >
             <option value="">Choose a service</option>
-            {#each selectableTtsServices(ttsCatalogue.services, alternateTts.service) as service}
+            {#each selectableTtsServices(speechOptions.catalogue.services, alternateTts.service) as service}
               <option value={service.id} disabled={service.online === false}
                 >{service.name ?? service.id}{service.online === false
                   ? ' · unavailable'
@@ -3651,7 +3568,7 @@
 {#if ttsServicesOpen}<TtsServicesModal
     onclose={() => {
       ttsServicesOpen = false;
-      loadSpeechOptions();
+      speechOptions.load();
     }}
   />{/if}
 {#if comparisonItem}
