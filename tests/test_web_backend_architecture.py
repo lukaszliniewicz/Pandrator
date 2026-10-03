@@ -1,5 +1,7 @@
 import inspect
 import re
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -22,6 +24,41 @@ from pandrator.web.tts_providers import (
     TtsRetryPolicy,
     _audio_cpp_static_model_catalog,
 )
+
+
+def test_provider_contracts_import_without_provider_runtime():
+    script = """
+import sys
+from typing import get_type_hints
+from pandrator.web import tts_provider_contracts as contracts
+
+assert contracts.TtsHealth(True, False).reason == ""
+error = contracts.TtsProviderConfigurationError("XTTS", "synthesis", "invalid voice")
+assert isinstance(error, contracts.TtsProviderError)
+assert error.service_id == "xtts" and not error.retryable
+assert contracts.TtsRetryPolicy.from_settings({"max_attempts": 100}).max_attempts == 20
+assert get_type_hints(contracts.TtsBatchResult)["error"] == contracts.TtsProviderError | None
+for module in (
+    "pandrator.web.tts_providers", "pandrator.logic.tts_handler",
+    "pandrator.web.database", "pandrator.web.credentials", "requests",
+):
+    assert module not in sys.modules, module
+
+from pandrator.web import tts_providers as facade
+for name in (
+    "TtsHealth", "TtsCapabilities", "TtsBatchItem", "TtsBatchResult",
+    "TtsRetryPolicy", "TtsProviderError", "TtsProviderConfigurationError",
+    "TtsProviderAdapter",
+):
+    assert getattr(facade, name) is getattr(contracts, name), name
+assert isinstance(facade.LegacyTtsAdapter("xtts"), contracts.TtsProviderAdapter)
+"""
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        timeout=30,
+    )
 
 
 class BackendArchitectureTests(unittest.TestCase):
