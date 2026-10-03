@@ -200,3 +200,24 @@ def test_empty_reader_does_not_start_a_worker_or_request(monkeypatch, reader_thr
     monkeypatch.setattr(tts_handler.requests, "post", request)
     assert list(tts_handler.iter_kobold_qwen_batch_audio([])) == []
     assert reader_threads == []
+
+
+def test_native_reader_http_error_closes_its_unconsumed_response(monkeypatch, reader_threads):
+    response = CountingResponse([])
+    response.status_code = 500
+    response.reason = "controlled server failure"
+    response.url = "http://qwen.invalid:8042/v1/audio/speech/batch"
+    monkeypatch.setattr(tts_handler.requests, "post", lambda *_args, **_options: response)
+    try:
+        with pytest.raises(requests.HTTPError) as caught:
+            list(
+                tts_handler.iter_kobold_qwen_batch_audio(
+                    _items(1), base_url="http://qwen.invalid:8042", api_key="fixture-key"
+                )
+            )
+        assert caught.value.response is response
+        assert response.close_count == 1
+        assert response.raw.closed
+    finally:
+        # Keep the intentionally failing pre-fix probe from retaining its own stream.
+        response.raw.close()

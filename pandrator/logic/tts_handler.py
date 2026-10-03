@@ -7246,8 +7246,8 @@ def _iter_kobold_qwen_batch_audio_http(
             response.close()
             last_response = response
             continue
-        response.raise_for_status()
         with response:
+            response.raise_for_status()
             for raw_line in response.iter_lines(decode_unicode=True):
                 if stop_event is not None and stop_event.is_set():
                     return
