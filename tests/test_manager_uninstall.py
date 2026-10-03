@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import pandrator_manager.operations.handlers as handlers_module
+import pandrator_manager.operations.uninstall_tasks as uninstall_tasks_module
 import pandrator_manager.uninstall as uninstall_module
 from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
@@ -19,8 +20,10 @@ from pandrator_manager.models import (
     HealthState,
     ManagedService,
     OperationState,
+    TaskState,
 )
 from pandrator_manager.operations import OperationEngine
+from pandrator_manager.operations.contracts import OperationTaskContext
 from pandrator_manager.operations.handlers import FilesystemTaskHandler
 from pandrator_manager.state import ManagerStore
 from pandrator_manager.supervisor import ProcessSupervisor
@@ -208,6 +211,254 @@ class ManagerUninstallTests(unittest.TestCase):
         self.assertEqual(inspected, [self.layout.data / "user.txt"] * 2)
         self.assertEqual((self.layout.data / "user.txt").read_text(), "preserve me")
         self.assertEqual((self.layout.root / "app" / "software.txt").read_text(), "owned")
+
+    def _run_export_receipt_or_replacement_failure(self, mode):
+        destination = Path(self.temporary.name) / f"{mode}.zip"
+        plan = self._plan(export_data=str(destination))
+        operation, created = self.application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(item.key for item in plan.confirmations),
+            idempotency_key=f"uninstall-{plan.id}",
+        )
+        self.assertTrue(created)
+        published: list[bytes] = []
+        native_update = self.application.store.update_operation_task
+
+        def save(operation_id, task_id, **kwargs):
+            if (
+                mode == "receipt"
+                and task_id == "uninstall:export-data"
+                and kwargs.get("state") == TaskState.SUCCEEDED
+                and not published
+            ):
+                published.append(destination.read_bytes())
+                raise OSError("fixture rejects one completed export receipt")
+            return native_update(operation_id, task_id, **kwargs)
+
+        def reject_after_export(_operation, task, _result):
+            if mode == "replacement" and task.kind == "export_uninstall_data":
+                published.append(destination.read_bytes())
+                destination.write_bytes(b"new user replacement")
+                raise RuntimeError("fixture fails after destination replacement")
+
+        with mock.patch.object(self.application.store, "update_operation_task", side_effect=save):
+            engine = OperationEngine(
+                self.application.context,
+                self.application.store,
+                self.application.registry,
+                supervisor=self.supervisor,
+                fault_injector=reject_after_export,
+            )
+            engine._execute(operation.id)
+        final = self.application.store.get_operation(operation.id)
+        task = next(
+            item for item in self.application.store.operation_tasks(operation.id)
+            if item.task.kind == "export_uninstall_data"
+        )
+        self.assertEqual(len(published), 1)
+        self.assertEqual((self.layout.data / "user.txt").read_text(), "preserve me")
+        self.assertEqual((self.layout.root / "app" / "software.txt").read_text(), "owned")
+        self.assertEqual(self.supervisor.started, ["fixture.service"])
+        self.assertEqual(pending_uninstalls(self.layout), ())
+        return final, task, plan, destination, published[0]
+
+    def test_export_receipt_failure_cleans_owned_zip_and_allows_same_destination_retry(self):
+        final, task, _plan, destination, _published = self._run_export_receipt_or_replacement_failure("receipt")
+        self.assertFalse(destination.exists())
+        self.assertEqual(final.state, OperationState.FAILED)
+        self.assertEqual(final.recovery["rollback_errors"], [])
+        self.assertEqual(task.state, TaskState.ROLLED_BACK)
+        self.assertEqual(task.result, {})
+        self.assertFalse((self.layout.staging / final.id).exists())
+        retry = self._pending_operation(self._plan(export_data=str(destination)))
+        self.assertTrue(destination.is_file())
+        with zipfile.ZipFile(destination) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertEqual(archive.read("data/user.txt"), b"preserve me")
+        self.assertEqual(read_uninstall_handoff(self.layout, retry.id)[0].payload.operation_id, retry.id)
+
+    def test_export_rollback_preserves_replaced_file_and_recovery_witness(self):
+        final, task, plan, destination, published = self._run_export_receipt_or_replacement_failure("replacement")
+        self.assertTrue(destination.is_file())
+        self.assertEqual(destination.read_bytes(), b"new user replacement")
+        self.assertEqual(final.state, OperationState.RECOVERY_REQUIRED)
+        self.assertEqual(final.recovery["rollback_errors"][0]["error"]["code"], "uninstall_export_changed")
+        self.assertEqual(task.state, TaskState.FAILED)
+        journal = self.layout.staging / final.id / "uninstall-export.json"
+        witness = json.loads(journal.read_text())
+        self.assertEqual(witness["operation_id"], final.id)
+        self.assertEqual(witness["task_id"], task.task.id)
+        self.assertEqual(witness["sha256"], hashlib.sha256(published).hexdigest())
+        self.assertEqual(witness["inode"], destination.stat().st_ino)
+        execution = OperationTaskContext(
+            context=self.application.context,
+            store=self.application.store,
+            registry=self.application.registry,
+            supervisor=self.supervisor,
+            operation=final,
+            plan=plan,
+            prior_results={},
+            cancellation=self.application.context.cancellation,
+        )
+        handler = FilesystemTaskHandler()
+        journal.write_text(json.dumps({**witness, "operation_id": "unrelated-operation"}))
+        with self.assertRaises(ManagerError) as invalid:
+            handler.rollback(execution, task.task, task.result)
+        self.assertEqual(invalid.exception.code, "invalid_uninstall_export_journal")
+        self.assertEqual(destination.read_bytes(), b"new user replacement")
+        journal.write_text(json.dumps(witness))
+        held = destination.with_suffix(".held")
+        destination.rename(held)
+        destination.write_bytes(published)
+        with self.assertRaises(ManagerError) as changed:
+            handler.rollback(execution, task.task, task.result)
+        self.assertEqual(changed.exception.code, "uninstall_export_changed")
+        self.assertEqual(destination.read_bytes(), published)
+        destination.unlink()
+        held.rename(destination)
+        destination.write_bytes(published)
+        handler.rollback(execution, task.task, task.result)
+        self.assertFalse(destination.exists())
+        self.assertFalse(journal.exists())
+        handler.rollback(execution, task.task, task.result)
+
+    def test_export_publication_refuses_a_destination_created_after_review(self):
+        destination = Path(self.temporary.name) / "collision.zip"
+        plan = self._plan(export_data=str(destination))
+        operation, created = self.application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(item.key for item in plan.confirmations),
+            idempotency_key=f"uninstall-{plan.id}",
+        )
+        self.assertTrue(created)
+        native_replace = uninstall_module.os.replace
+        native_link = uninstall_module.os.link
+        native_publish = getattr(FilesystemTaskHandler, "_publish_export", None)
+        collisions: list[Path] = []
+
+        def publish(source, target, native, **kwargs):
+            if Path(target) == destination and not collisions:
+                destination.write_bytes(b"external file wins publication race")
+                collisions.append(destination)
+            return native(source, target, **kwargs)
+
+        def reject_after_export(_operation, task, _result):
+            if task.kind == "export_uninstall_data":
+                raise RuntimeError("fixture after export")
+
+        def publish_export(source, target):
+            assert native_publish is not None
+            return publish(source, target, native_publish)
+
+        with (
+            mock.patch.object(FilesystemTaskHandler, "_publish_export", side_effect=publish_export, create=True),
+            mock.patch.object(uninstall_module.os, "replace", side_effect=lambda source, target, **kwargs: publish(source, target, native_replace, **kwargs)),
+            mock.patch.object(uninstall_module.os, "link", side_effect=lambda source, target, **kwargs: publish(source, target, native_link, **kwargs)),
+        ):
+            engine = OperationEngine(
+                self.application.context,
+                self.application.store,
+                self.application.registry,
+                supervisor=self.supervisor,
+                fault_injector=reject_after_export,
+            )
+            engine._execute(operation.id)
+        self.assertEqual(collisions, [destination])
+        self.assertTrue(destination.is_file())
+        self.assertEqual(destination.read_bytes(), b"external file wins publication race")
+        failed = self.application.store.get_operation(operation.id)
+        self.assertEqual(failed.state, OperationState.FAILED)
+        self.assertEqual(failed.error_code, "export_destination_exists")
+        self.assertEqual(failed.recovery["rollback_errors"], [])
+        self.assertFalse((self.layout.staging / operation.id).exists())
+        self.assertEqual((self.layout.data / "user.txt").read_text(), "preserve me")
+
+    def test_export_rollback_without_journal_preserves_unverified_destination(self):
+        destination = Path(self.temporary.name) / "legacy-export.zip"
+        plan = self._plan(export_data=str(destination))
+        operation, _created = self.application.submit_operation(
+            plan_id=plan.id,
+            plan_digest=plan.digest,
+            accepted_confirmations=tuple(item.key for item in plan.confirmations),
+            idempotency_key=f"uninstall-{plan.id}",
+        )
+        task = next(item for item in plan.tasks if item.kind == "export_uninstall_data")
+        execution = OperationTaskContext(
+            context=self.application.context,
+            store=self.application.store,
+            registry=self.application.registry,
+            supervisor=self.supervisor,
+            operation=operation,
+            plan=plan,
+            prior_results={},
+            cancellation=self.application.context.cancellation,
+        )
+        destination.write_bytes(b"unverified external contents")
+        handler = FilesystemTaskHandler()
+        handler.rollback(execution, task, {})
+        self.assertEqual(destination.read_bytes(), b"unverified external contents")
+        receipt = {"created": True, "destination": str(destination)}
+        with self.assertRaises(ManagerError) as unverified:
+            handler.rollback(execution, task, receipt)
+        self.assertEqual(unverified.exception.code, "uninstall_export_ownership_unverified")
+        self.assertEqual(destination.read_bytes(), b"unverified external contents")
+        destination.unlink()
+        handler.rollback(execution, task, receipt)
+        handler.rollback(execution, task, {})
+
+    def test_export_native_publication_preserves_identity_and_refuses_existing_file(self):
+        source = Path(self.temporary.name) / "native-source.zip"
+        destination = Path(self.temporary.name) / "native-destination.zip"
+        source.write_bytes(b"verified ZIP candidate")
+        witness = source.stat()
+        FilesystemTaskHandler._publish_export(source, destination)
+        self.assertEqual(destination.read_bytes(), b"verified ZIP candidate")
+        self.assertEqual((destination.stat().st_dev, destination.stat().st_ino), (witness.st_dev, witness.st_ino))
+        if source.exists():
+            source.unlink()
+        source.write_bytes(b"another candidate")
+        with self.assertRaises(FileExistsError):
+            FilesystemTaskHandler._publish_export(source, destination)
+        self.assertEqual(destination.read_bytes(), b"verified ZIP candidate")
+        self.assertEqual(source.read_bytes(), b"another candidate")
+
+    @unittest.skipUnless(uninstall_module.sys.platform.startswith("linux"), "Linux publication fallback")
+    def test_export_publication_fallback_remains_exclusive(self):
+        for mode in ("missing_symbol", "unsupported_flag"):
+            with self.subTest(mode=mode):
+                source = Path(self.temporary.name) / f"{mode}-source.zip"
+                destination = Path(self.temporary.name) / f"{mode}-destination.zip"
+                source.write_bytes(b"fallback candidate")
+                library = object() if mode == "missing_symbol" else mock.Mock(renameat2=mock.Mock(return_value=-1))
+                with (
+                    mock.patch.object(uninstall_tasks_module.ctypes, "CDLL", return_value=library),
+                    mock.patch.object(uninstall_tasks_module.ctypes, "get_errno", return_value=uninstall_module.errno.EINVAL),
+                ):
+                    FilesystemTaskHandler._publish_export(source, destination)
+                    self.assertEqual(destination.read_bytes(), b"fallback candidate")
+                    self.assertEqual(destination.stat().st_ino, source.stat().st_ino)
+                    with self.assertRaises(FileExistsError):
+                        FilesystemTaskHandler._publish_export(source, destination)
+                    self.assertEqual(destination.read_bytes(), b"fallback candidate")
+
+    @unittest.skipUnless(uninstall_module.sys.platform.startswith("linux"), "Linux publication errors")
+    def test_export_publication_propagates_native_denial_without_fallback(self):
+        source = Path(self.temporary.name) / "denied-source.zip"
+        destination = Path(self.temporary.name) / "denied-destination.zip"
+        source.write_bytes(b"preserve denied candidate")
+        library = mock.Mock(renameat2=mock.Mock(return_value=-1))
+        with (
+            mock.patch.object(uninstall_tasks_module.ctypes, "CDLL", return_value=library),
+            mock.patch.object(uninstall_tasks_module.ctypes, "get_errno", return_value=uninstall_module.errno.EACCES),
+            mock.patch.object(uninstall_tasks_module.os, "link") as link,
+        ):
+            with self.assertRaises(PermissionError):
+                FilesystemTaskHandler._publish_export(source, destination)
+        link.assert_not_called()
+        self.assertFalse(destination.exists())
+        self.assertEqual(source.read_bytes(), b"preserve denied candidate")
 
     def test_default_plan_preserves_data_and_purge_needs_second_confirmation(self):
         preserved = self._plan()

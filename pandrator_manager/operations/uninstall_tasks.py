@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
+import json
 import os
+import re
+import stat
+import sys
 import tempfile
 import zipfile
 from collections.abc import Mapping
@@ -12,8 +18,9 @@ from typing import Any
 from ..context import WorkspaceLayout
 from ..errors import ManagerError
 from ..models import TaskSpec
+from ..releases.slots import _atomic_json
 from ..state import ManagerStore
-from ..uninstall import prepare_uninstall_handoff, rollback_prepared_uninstall
+from ..uninstall import _file_sha256, prepare_uninstall_handoff, rollback_prepared_uninstall
 from .contracts import OperationTaskContext
 
 
@@ -115,6 +122,45 @@ class UninstallTasks:
         junction = getattr(path, "is_junction", None)
         return path.is_symlink() or bool(junction is not None and junction())
 
+    @staticmethod
+    def _export_journal(execution: OperationTaskContext) -> Path:
+        layout = execution.context.layout
+        return layout.require_within(
+            layout.staging / execution.operation.id / "uninstall-export.json",
+            roots=(layout.staging,),
+        )
+
+    @staticmethod
+    def _publish_export(temporary: Path, destination: Path) -> None:
+        if os.name == "nt":
+            os.rename(temporary, destination)
+            return
+        if sys.platform.startswith("linux"):
+            libc = ctypes.CDLL(None, use_errno=True)
+            rename = getattr(libc, "renameat2", None)
+            if rename is not None:
+                rename.argtypes = [
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_uint,
+                ]
+                rename.restype = ctypes.c_int
+                result = rename(
+                    -100,
+                    os.fsencode(temporary),
+                    -100,
+                    os.fsencode(destination),
+                    1,
+                )
+                if result == 0:
+                    return
+                error_code = ctypes.get_errno()
+                if error_code not in {errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP}:
+                    raise OSError(error_code, os.strerror(error_code), str(destination))
+        os.link(temporary, destination)
+
     def _execute_export_uninstall_data(
         self,
         execution: OperationTaskContext,
@@ -147,6 +193,15 @@ class UninstallTasks:
                 "export_destination_exists",
                 "The data export destination now exists and will not be overwritten.",
                 {"path": str(destination)},
+                409,
+            )
+        journal = self._export_journal(execution)
+        if os.path.lexists(journal):
+            raise ManagerError(
+                "uninstall_export_recovery_pending",
+                "A previous data export needs recovery. Resolve its journal before "
+                "retrying; the recovery evidence will not be overwritten.",
+                {"path": str(journal)},
                 409,
             )
         destination.parent.mkdir(parents=False, exist_ok=True)
@@ -197,7 +252,30 @@ class UninstallTasks:
                 bad_member = verification.testzip()
                 if bad_member is not None:
                     raise RuntimeError(f"Export verification failed at {bad_member}.")
-            os.replace(temporary, destination)
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            temporary_stat = temporary.stat()
+            _atomic_json(
+                journal,
+                {
+                    "schema_version": 1,
+                    "operation_id": execution.operation.id,
+                    "task_id": task.id,
+                    "destination": str(destination),
+                    "sha256": _file_sha256(temporary),
+                    "device": temporary_stat.st_dev,
+                    "inode": temporary_stat.st_ino,
+                },
+            )
+            try:
+                self._publish_export(temporary, destination)
+            except FileExistsError:
+                journal.unlink()
+                raise ManagerError(
+                    "export_destination_exists",
+                    "The data export destination now exists and will not be overwritten.",
+                    {"path": str(destination)},
+                    409,
+                ) from None
         finally:
             try:
                 temporary.unlink()
@@ -216,19 +294,99 @@ class UninstallTasks:
         task: TaskSpec,
         result: dict,
     ) -> None:
-        del task
-        if not result.get("created"):
+        journal = self._export_journal(execution)
+        journal_exists = os.path.lexists(journal)
+        if not journal_exists and not result.get("created"):
             return
-        destination_value = result.get("destination")
-        if not isinstance(destination_value, str):
-            return
-        destination = Path(destination_value).expanduser().resolve(strict=False)
+        invalid_journal = ManagerError(
+            "invalid_uninstall_export_journal",
+            "The data export recovery journal does not match the reviewed operation. "
+            "The destination and journal have been preserved for recovery.",
+            {"path": str(journal)},
+            409,
+        )
         impact = execution.plan.impacts.get("uninstall")
-        if isinstance(impact, dict) and impact.get("export_data") == str(destination):
-            try:
-                destination.unlink()
-            except FileNotFoundError:
-                pass
+        destination_value = task.inputs.get("destination")
+        if (
+            not isinstance(impact, dict)
+            or not isinstance(destination_value, str)
+            or not isinstance(impact.get("export_data"), str)
+            or impact.get("export_data") != destination_value
+        ):
+            raise invalid_journal
+        try:
+            destination = Path(destination_value).expanduser().resolve(strict=False)
+        except (OSError, ValueError):
+            raise invalid_journal from None
+        if not journal_exists:
+            if not os.path.lexists(destination):
+                return
+            raise ManagerError(
+                "uninstall_export_ownership_unverified",
+                "The data export ownership journal is missing. The destination "
+                "has been preserved and needs recovery before rollback can continue.",
+                {"path": str(destination)},
+                409,
+            )
+        try:
+            evidence = json.loads(journal.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            raise invalid_journal from None
+        if not isinstance(evidence, dict):
+            raise invalid_journal
+        digest = evidence.get("sha256")
+        device = evidence.get("device")
+        inode = evidence.get("inode")
+        if (
+            type(evidence.get("schema_version")) is not int
+            or evidence.get("schema_version") != 1
+            or evidence.get("operation_id") != execution.operation.id
+            or evidence.get("task_id") != task.id
+            or evidence.get("destination") != str(destination)
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or type(device) is not int
+            or device < 0
+            or type(inode) is not int
+            or inode <= 0
+        ):
+            raise invalid_journal
+        if not os.path.lexists(destination):
+            journal.unlink()
+            return
+        changed = ManagerError(
+            "uninstall_export_changed",
+            "The data export destination has changed since publication. Its contents "
+            "and ownership journal have been preserved for recovery.",
+            {"path": str(destination)},
+            409,
+        )
+        try:
+            before_hash = destination.lstat()
+            if (
+                not stat.S_ISREG(before_hash.st_mode)
+                or before_hash.st_dev != device
+                or before_hash.st_ino != inode
+            ):
+                raise changed
+            actual_digest = _file_sha256(destination)
+            after_hash = destination.lstat()
+        except OSError:
+            raise changed from None
+        if actual_digest != digest or (
+            after_hash.st_dev,
+            after_hash.st_ino,
+            after_hash.st_size,
+            after_hash.st_mtime_ns,
+        ) != (
+            before_hash.st_dev,
+            before_hash.st_ino,
+            before_hash.st_size,
+            before_hash.st_mtime_ns,
+        ):
+            raise changed
+        destination.unlink()
+        journal.unlink()
 
     def _execute_prepare_uninstall_handoff(
         self,
