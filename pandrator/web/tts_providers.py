@@ -261,11 +261,8 @@ def _slim_model_catalog(service: Mapping[str, Any]) -> list[dict[str, Any]]:
             *records,
         ]
     )
-    voice_modes = (
-        service.get("model_voice_modes")
-        if isinstance(service.get("model_voice_modes"), dict)
-        else {}
-    )
+    raw_voice_modes = service.get("model_voice_modes")
+    voice_modes = raw_voice_modes if isinstance(raw_voice_modes, dict) else {}
     builtin_light: dict[str, dict[str, Any]] = {}
     if normalize_service_id(service.get("adapter")) == "audio_cpp":
         for item in AUDIO_CPP_MODEL_CATALOG:
