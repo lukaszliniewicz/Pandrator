@@ -125,7 +125,7 @@ def extract_text_from_epub(epub_path: str, remove_footnotes: bool = False, filte
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """Returns a page-delimited native-text fallback using PyMuPDF."""
-    import fitz
+    import pymupdf as fitz
 
     document = fitz.open(pdf_path)
     try:

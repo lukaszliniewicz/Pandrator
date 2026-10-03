@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from pandrator.logic.source_cleaning import (
     PDFIngestionConfig,

@@ -40,7 +40,7 @@ _MAJOR_SECTION_RE = re.compile(
 
 
 def _extract_native_lines(page: Any) -> list[dict[str, Any]]:
-    import fitz
+    import pymupdf as fitz
 
     lines: list[dict[str, Any]] = []
     rotation_matrix = page.rotation_matrix

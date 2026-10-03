@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf as fitz
 
 PROVENANCE_SCHEMA = "pandrator.pdf-edit"
 PROVENANCE_VERSION = 1

@@ -1980,7 +1980,7 @@ class ComponentOperationsMixin:
             'python',
             '-c',
             (
-                'import fitz, numpy, onnxruntime; '
+                'import pymupdf, numpy, onnxruntime; '
                 'from paddleocr import PaddleOCR; '
                 'model = PaddleOCR('
                 'text_detection_model_name="PP-OCRv6_medium_det", '

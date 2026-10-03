@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import fitz
+import pymupdf as fitz
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

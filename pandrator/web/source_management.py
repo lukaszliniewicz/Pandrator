@@ -354,7 +354,7 @@ def _validate_source(services, session, source_asset_id: str | None, role: str):
                 "The replacement contains no usable audio or video stream."
             )
     elif asset.kind.lower().lstrip(".") == "pdf":
-        import fitz
+        import pymupdf as fitz
 
         try:
             with fitz.open(path) as document:

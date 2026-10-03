@@ -120,8 +120,8 @@ class PaddleOCRMediumEngine:
         self._engines: dict[tuple[str, str], Any] = {}
 
     def recognize(self, page: Any, language: str, dpi: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        import fitz
         import numpy as np
+        import pymupdf as fitz
 
         engine, engine_name = self._get_engine(language)
         pixmap = page.get_pixmap(dpi=dpi, colorspace=fitz.csRGB, alpha=False)
@@ -219,7 +219,7 @@ def build_source_document(
     progress_callback: ProgressCallback | None = None,
     ocr_engine: Any | None = None,
 ) -> SourceDocument:
-    import fitz
+    import pymupdf as fitz
 
     resolved = (config or PDFIngestionConfig()).normalized()
     normalized_path = os.path.abspath(pdf_path)

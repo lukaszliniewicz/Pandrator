@@ -743,7 +743,7 @@ class PixiEnvironmentMixin:
         seen = set()
         import_aliases = {
             'google-genai': 'google.genai',
-            'pymupdf': 'fitz',
+            'pymupdf': 'pymupdf',
             'ffmpeg-python': 'ffmpeg',
             'beautifulsoup4': 'bs4',
             'pillow': 'PIL',

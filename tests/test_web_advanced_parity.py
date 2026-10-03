@@ -296,7 +296,7 @@ class TrainingHandlerTests(unittest.TestCase):
 
 class AgenticCleaningTests(unittest.TestCase):
     def test_pdf_cleaning_applies_saved_ocr_configuration(self):
-        import fitz
+        import pymupdf as fitz
 
         with tempfile.TemporaryDirectory() as directory:
             paths = prepare_web_test_data_root(directory)
@@ -527,7 +527,7 @@ class AgenticCleaningTests(unittest.TestCase):
                 database.dispose()
 
     def test_agentic_pdf_exposes_deterministic_operations_to_pipeline_review(self):
-        import fitz
+        import pymupdf as fitz
 
         from pandrator.logic.source_cleaning.models import PipelineResult
 
