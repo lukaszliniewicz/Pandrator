@@ -26,7 +26,9 @@ from pandrator_manager.errors import ConflictError, ManagerError
 from pandrator_manager.models import (
     HealthResult,
     HealthState,
+    ManagedService,
     OperationState,
+    ProcessIdentity,
     TaskState,
 )
 from pandrator_manager.operations import OperationEngine
@@ -44,6 +46,7 @@ from pandrator_manager.releases.handoff import (
 )
 from pandrator_manager.releases.models import ReleaseArtifact
 from pandrator_manager.runtime_specs import pandrator_runtime_specs
+from pandrator_manager.supervisor import ProcessSupervisor
 
 
 def _public(private: Ed25519PrivateKey) -> str:
@@ -125,7 +128,7 @@ def _release_bundle(
     return hashlib.sha256(payload).hexdigest(), len(payload)
 
 
-class _ReleaseSupervisor:
+class _ReleaseSupervisor(ProcessSupervisor):
     def __init__(
         self,
         specs,
@@ -141,9 +144,20 @@ class _ReleaseSupervisor:
 
     def snapshot(self):
         return [
-            SimpleNamespace(
+            ManagedService(
                 id=service_id,
-                process=(object() if service_id in self.running else None),
+                component_id=self.specs[service_id].component_id,
+                service_key=service_id,
+                process=(
+                    ProcessIdentity(
+                        pid=999_999,
+                        create_time=1.0,
+                        executable="fixture-service",
+                        manager_instance_id="fixture-manager",
+                    )
+                    if service_id in self.running
+                    else None
+                ),
                 desired_running=service_id in self.desired,
             )
             for service_id in self.specs
@@ -156,7 +170,11 @@ class _ReleaseSupervisor:
     def stop(self, service_id):
         self.running.discard(service_id)
         self.desired.discard(service_id)
-        return SimpleNamespace(id=service_id)
+        return ManagedService(
+            id=service_id,
+            component_id=self.specs[service_id].component_id,
+            service_key=service_id,
+        )
 
     def start(self, service_id):
         spec = self.specs[service_id]
@@ -167,7 +185,11 @@ class _ReleaseSupervisor:
             raise RuntimeError("new application health failed")
         self.running.add(service_id)
         self.desired.add(service_id)
-        return SimpleNamespace(
+        return ManagedService(
+            id=service_id,
+            component_id=spec.component_id,
+            service_key=service_id,
+            desired_running=True,
             health=HealthResult(
                 state=HealthState.HEALTHY,
                 service_id=service_id,
@@ -727,7 +749,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         plan, operation, supervisor = self._execute(fail_new_health=False)
         self.assertEqual(operation.state, OperationState.SUCCEEDED)
         release = self.application.store.accepted_release("pandrator")
-        self.assertIsNotNone(release)
+        assert release is not None
         self.assertEqual(release["version"], "1.0.0")
         self.assertEqual(release["sequence"], 1)
         self.assertEqual(
@@ -915,7 +937,9 @@ class DurableApplicationReleaseTests(unittest.TestCase):
     def test_exact_signed_replay_is_a_no_mutation_plan(self):
         plan, operation, _supervisor = self._execute(fail_new_health=False)
         self.assertEqual(operation.state, OperationState.SUCCEEDED)
-        envelope = self.application.store.accepted_release("pandrator")["envelope"]
+        accepted = self.application.store.accepted_release("pandrator")
+        assert accepted is not None
+        envelope = accepted["envelope"]
         replay = self.application.release_plan(
             envelope,
             expected_revision=self.application.store.configuration_revision(),
@@ -1052,6 +1076,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             getattr(error, "code", None),
             "external_manager_update_required",
         )
+        assert error.details is not None
         self.assertIn(
             "pipx upgrade pandrator-manager",
             error.details["commands"],
@@ -1642,6 +1667,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         completed = self.application.store.get_operation(operation.id)
         self.assertEqual(completed.state, OperationState.SUCCEEDED)
         accepted = self.application.store.accepted_release("pandrator-manager")
+        assert accepted is not None
         self.assertEqual(accepted["version"], "1.0.0")
         self.assertEqual(
             accepted["manifest_digest"],
