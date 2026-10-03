@@ -76,10 +76,10 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(second)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("chapter01.xhtml", "Rozdzial pierwszy", "chapter01"),
             epub.Link("chapter02.xhtml", "Drugi rozdzial", "chapter02"),
-        )
+        ]
         book.spine = ["nav", chapter, second]
 
         epub.write_epub(epub_path, book)
@@ -289,7 +289,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(chapter)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("body.xhtml", "本文", "body"),)
+        book.toc = [epub.Link("body.xhtml", "本文", "body"),]
         book.spine = ["nav", chapter]
 
         epub.write_epub(epub_path, book)
@@ -325,7 +325,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(chapter)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("opening.xhtml", "Opening", "opening"),)
+        book.toc = [epub.Link("opening.xhtml", "Opening", "opening"),]
         book.spine = ["nav", chapter]
 
         epub.write_epub(epub_path, book)
@@ -394,10 +394,10 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(toc)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("body.xhtml#c1", "Chapter One", "chapter-one"),
             epub.Link("body.xhtml#c2", "Chapter Two", "chapter-two"),
-        )
+        ]
         book.spine = ["nav", toc, chapter]
 
         epub.write_epub(epub_path, book)
@@ -430,7 +430,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(body)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("body.xhtml", "Chapter One", "chapter-one"),)
+        book.toc = [epub.Link("body.xhtml", "Chapter One", "chapter-one"),]
         book.spine = ["nav", body]
 
         epub.write_epub(epub_path, book)
@@ -488,7 +488,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(body)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = tuple(
+        book.toc = list(
             [epub.Link("chapter01.xhtml", "Chapter One", "chapter-one")]
             + [
                 epub.Link(
@@ -533,7 +533,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(body)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("body.xhtml", "Chapter One", "chapter-one"),)
+        book.toc = [epub.Link("body.xhtml", "Chapter One", "chapter-one"),]
         book.spine = ["nav", body]
 
         epub.write_epub(epub_path, book)
@@ -570,7 +570,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(body)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("body.xhtml", "Body", "body"),)
+        book.toc = [epub.Link("body.xhtml", "Body", "body"),]
         book.spine = ["nav", body]
         epub.write_epub(epub_path, book)
 
@@ -635,11 +635,11 @@ class SourceCleaningTests(unittest.TestCase):
             book.add_item(chapter)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("chapter01.xhtml#chapter-one", "I", "chapter-one"),
             epub.Link("chapter02.xhtml", "II", "chapter-two"),
             epub.Link("chapter07.xhtml", "7", "chapter-seven"),
-        )
+        ]
         book.spine = ["nav", first, second, numeric]
 
         epub.write_epub(epub_path, book)
@@ -686,11 +686,11 @@ class SourceCleaningTests(unittest.TestCase):
             book.add_item(item)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("body.xhtml", "Chapter One", "chapter-one"),
             epub.Link("notes-start.xhtml", "ENDNOTES", "endnotes"),
             epub.Link("further.xhtml", "Further Reading", "further"),
-        )
+        ]
         book.spine = ["nav", body, note_start, note_one, note_two, further]
 
         epub.write_epub(epub_path, book)
@@ -722,10 +722,10 @@ class SourceCleaningTests(unittest.TestCase):
             book.add_item(item)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("body.xhtml", "Chapter One", "chapter-one"),
             epub.Link("notes.xhtml", "Notes", "notes"),
-        )
+        ]
         book.spine = ["nav", body, notes]
 
         epub.write_epub(epub_path, book)
@@ -772,7 +772,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(body)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("body.xhtml#edition-note", "There are several editions of this ebook in the Project Gutenberg collection.", "edition-note"),
             epub.Link("body.xhtml#titlepage", "A Christmas Carol", "titlepage"),
             epub.Link("body.xhtml#intro", "INTRODUCTION", "intro"),
@@ -782,7 +782,7 @@ class SourceCleaningTests(unittest.TestCase):
             epub.Link("body.xhtml#stave1", "STAVE ONE", "stave1"),
             epub.Link("body.xhtml#marley", "MARLEY'S GHOST", "marley"),
             epub.Link("body.xhtml#license", "THE FULL PROJECT GUTENBERG LICENSE", "license"),
-        )
+        ]
         book.spine = ["nav", body]
 
         epub.write_epub(epub_path, book)
@@ -815,7 +815,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(body)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("body.xhtml#chapter-1", "Chapter One", "chapter-one"),)
+        book.toc = [epub.Link("body.xhtml#chapter-1", "Chapter One", "chapter-one"),]
         book.spine = ["nav", body]
 
         epub.write_epub(epub_path, book)
@@ -900,13 +900,13 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(toc)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("body.xhtml#page-one", "11", "page-one"),
             epub.Link("body.xhtml#chapter-1-title", "Signals and Structure", "chapter-one"),
             epub.Link("body.xhtml#chapter-1-section-1", "A nested section", "chapter-one-section"),
             epub.Link("body.xhtml#chapter-2-title", "The Next Signal", "chapter-two"),
             epub.Link("body.xhtml#chapter-2-section-1", "Another nested section", "chapter-two-section"),
-        )
+        ]
         book.spine = ["nav", toc, body]
 
         epub.write_epub(epub_path, book)
@@ -934,7 +934,7 @@ class SourceCleaningTests(unittest.TestCase):
 
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = tuple(epub.Link(document.file_name, document.title, document.file_name) for document in documents)
+        book.toc = list(epub.Link(document.file_name, document.title, document.file_name) for document in documents)
         book.spine = ["nav", *documents]
         epub.write_epub(epub_path, book)
         return epub_path
@@ -970,10 +970,10 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(toc)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (
+        book.toc = [
             epub.Link("body.xhtml#chapter-one", "Chapter One", "chapter-one"),
             epub.Link("body.xhtml#scene-one", "1", "scene-one"),
-        )
+        ]
         book.spine = ["nav", toc, body]
         epub.write_epub(epub_path, book)
         return epub_path
@@ -995,7 +995,7 @@ class SourceCleaningTests(unittest.TestCase):
         book.add_item(toc)
         book.add_item(epub.EpubNcx())
         book.add_item(epub.EpubNav())
-        book.toc = (epub.Link("recipe.xhtml#recipe-one", "Recipe One", "recipe-one"),)
+        book.toc = [epub.Link("recipe.xhtml#recipe-one", "Recipe One", "recipe-one"),]
         book.spine = ["nav", toc, body]
         epub.write_epub(epub_path, book)
         return epub_path
@@ -2020,6 +2020,8 @@ class SourceCleaningTests(unittest.TestCase):
 
         prose = soup.find("p")
         toc_item = soup.find("li")
+        assert prose is not None
+        assert toc_item is not None
         prose_roles = _infer_role_candidates(prose, prose.get_text(" ", strip=True), "chapter.xhtml")
         toc_roles = _infer_role_candidates(toc_item, toc_item.get_text(" ", strip=True), "nav.xhtml")
 
@@ -3096,6 +3098,7 @@ class SourceCleaningTests(unittest.TestCase):
 
         self.assertEqual(result.content, "hello")
         self.assertEqual(result.usage["total_tokens"], 15)
+        assert result.cost is not None
         self.assertAlmostEqual(result.cost, 0.0123)
         self.assertEqual(result.cost_source, "litellm_hidden_params")
 
@@ -3351,7 +3354,7 @@ class SourceCleaningTests(unittest.TestCase):
         self.assertTrue(len(doc.blocks) > 0)
         # Find chapter block
         chapter_block = next((b for b in doc.blocks if b.tag == "h1"), None)
-        self.assertIsNotNone(chapter_block)
+        assert chapter_block is not None
         self.assertIn("deterministic_chapter", chapter_block.role_candidates)
 
 if __name__ == "__main__":

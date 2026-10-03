@@ -1434,7 +1434,7 @@ def _ends_with_sentence_terminal(text: str) -> bool:
 def _dominant_latin_language(text: str) -> str:
     """Return a language only when simple stop-word evidence is decisive.
 
-    It is intentionally limited to English/French: those can share the same
+    It is intentionally limited to English/French/German: those can share the same
     page geometry in bilingual source editions, while a weak guess must never
     suppress a valid continuation.
     """
