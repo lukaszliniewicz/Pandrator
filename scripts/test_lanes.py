@@ -207,6 +207,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     "web-02-serial": (
         "tests/test_web_foundation.py",
         "tests/test_web_artifact_selection.py",
+        "tests/test_web_workflow_selection_concurrency.py",
         "tests/test_web_credentials.py",
         "tests/test_web_manager_proxy.py",
         "tests/test_web_workflow_plans.py",

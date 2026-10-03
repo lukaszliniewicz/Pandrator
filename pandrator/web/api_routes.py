@@ -4612,7 +4612,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 428,
             )
         try:
-            with database.session() as db_session:
+            with database.immediate_session() as db_session:
                 history = stage_history(db_session, session_id, stage_key)
                 if int(history["revision"]) != expected:
                     return error_response(
