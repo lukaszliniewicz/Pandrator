@@ -180,6 +180,11 @@ from .video_previews import VideoPreviewService, VideoPreviewUnsupported
 from .voice_routes import register_voice_routes
 from .workflow_improvements_routes import register_workflow_improvements_routes
 from .workflow_plan_routes import register_workflow_plan_routes
+from .workflow_routes import (
+    WorkflowRouteContext,
+    register_workflow_job_routes,
+    register_workflow_session_routes,
+)
 
 XTTS_MODEL_BUNDLE_FILENAMES = (
     "config.json",
@@ -4518,137 +4523,35 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 {"retryable": True},
             )
 
-    @app.get("/api/v1/sessions/<session_id>/workflow")
-    @require_auth
-    def workflow_get(session_id: str):
-        try:
-            return jsonify(workflows.snapshot(session_id))
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-
-    @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/artifacts")
-    @require_auth
-    def workflow_stage_artifacts(session_id: str, stage_key: str):
-        try:
-            sessions.get(session_id)
-            with database.session() as db_session:
-                return jsonify(
-                    stage_history(
-                        db_session,
-                        session_id,
-                        stage_key,
-                        limit=request.args.get("limit", 50, type=int),
-                        before_version=request.args.get(
-                            "before_version",
-                            type=int,
-                        ),
-                    )
-                )
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-        except ValueError as error:
-            return error_response("stage_unavailable", str(error), 409)
-
-    @app.delete(
-        "/api/v1/sessions/<session_id>/stages/<stage_key>/artifacts/<artifact_id>"
+    workflow_route_context = WorkflowRouteContext(
+        database=database,
+        sessions=sessions,
+        workflows=workflows,
+        workflow_handlers=workflow_handlers,
+        require_auth=require_auth,
+        error_response=error_response,
+        inline_credential_error=inline_credential_error,
+        jsonify=lambda value: jsonify(value),
+        request=lambda: request,
+        stage_history=lambda session, session_id, stage_key, **kwargs: stage_history(
+            session, session_id, stage_key, **kwargs
+        ),
+        trash_stage_artifact=lambda session, session_id, stage_key, artifact_id: (
+            trash_stage_artifact(session, session_id, stage_key, artifact_id)
+        ),
+        rerun_impact=lambda session, session_id, stage_key: rerun_impact(
+            session, session_id, stage_key
+        ),
+        choose_artifact=lambda session, session_id, stage_key, artifact_id: (
+            choose_artifact(session, session_id, stage_key, artifact_id)
+        ),
+        clear_selection=lambda session, session_id, stage_key: clear_selection(
+            session, session_id, stage_key
+        ),
+        selection_update_type=lambda: StageSelectionUpdate,
+        job_payload=lambda job: _job_payload(job),
     )
-    @require_auth
-    def workflow_stage_artifact_delete(
-        session_id: str,
-        stage_key: str,
-        artifact_id: str,
-    ):
-        try:
-            with database.session() as db_session:
-                return jsonify(
-                    trash_stage_artifact(
-                        db_session,
-                        session_id,
-                        stage_key,
-                        artifact_id,
-                    )
-                )
-        except KeyError:
-            return error_response("not_found", "Session or artifact not found.", 404)
-        except ValueError as error:
-            return error_response("artifact_in_use", str(error), 409)
-
-    @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/impact")
-    @require_auth
-    def workflow_stage_impact(session_id: str, stage_key: str):
-        try:
-            sessions.get(session_id)
-            with database.session() as db_session:
-                return jsonify(rerun_impact(db_session, session_id, stage_key))
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-        except ValueError as error:
-            return error_response("stage_unavailable", str(error), 409)
-
-    @app.get("/api/v1/sessions/<session_id>/stages/<stage_key>/settings-mismatches")
-    @require_auth
-    def workflow_stage_settings_mismatches(session_id: str, stage_key: str):
-        try:
-            sessions.get(session_id)
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-        return jsonify(
-            {"mismatches": workflow_handlers.settings_mismatches(session_id, stage_key)}
-        )
-
-    @app.put("/api/v1/sessions/<session_id>/stages/<stage_key>/selection")
-    @require_auth
-    def workflow_stage_selection(session_id: str, stage_key: str):
-        payload = StageSelectionUpdate.model_validate(
-            request.get_json(silent=True) or {}
-        )
-        raw_etag = request.headers.get("If-Match", "").strip('W/" ')
-        try:
-            expected = int(raw_etag)
-        except ValueError:
-            return error_response(
-                "precondition_required",
-                "If-Match must contain the current selection revision.",
-                428,
-            )
-        try:
-            with database.immediate_session() as db_session:
-                history = stage_history(db_session, session_id, stage_key)
-                if int(history["revision"]) != expected:
-                    return error_response(
-                        "revision_conflict",
-                        "The selected stage artifact changed in another client.",
-                        409,
-                    )
-                if payload.artifact_id:
-                    result = choose_artifact(
-                        db_session, session_id, stage_key, payload.artifact_id
-                    )
-                else:
-                    result = clear_selection(db_session, session_id, stage_key)
-            return jsonify(result)
-        except KeyError:
-            return error_response("not_found", "Session or artifact not found.", 404)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-
-    @app.post("/api/v1/sessions/<session_id>/stages/<stage_key>/run")
-    @require_auth
-    def workflow_run_stage(session_id: str, stage_key: str):
-        settings = request.get_json(silent=True) or {}
-        if not isinstance(settings, dict):
-            return error_response(
-                "validation_error", "Stage settings must be an object.", 422
-            )
-        if rejected := inline_credential_error(settings):
-            return rejected
-        try:
-            job = workflows.run_stage(session_id, stage_key, settings)
-        except KeyError:
-            return error_response("not_found", "Session not found.", 404)
-        except ValueError as error:
-            return error_response("stage_unavailable", str(error), 409)
-        return jsonify(_job_payload(job)), 202
+    register_workflow_session_routes(app, workflow_route_context)
 
     @app.get("/api/v1/sessions/<session_id>/subtitles")
     @require_auth
@@ -4994,19 +4897,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         g.audit_resource_id = evidence_id
         return jsonify(result)
 
-    @app.post("/api/v1/jobs/<job_id>/video-tail-decision")
-    @require_auth
-    def job_video_tail_decision(job_id: str):
-        body = request.get_json(silent=True)
-        if not isinstance(body, dict) or body.get("action") not in ("stop", "extend"):
-            return error_response("validation_error", "Choose stop or extend.", 422)
-        try:
-            job = workflows.decide_video_tail(job_id, body["action"])
-        except KeyError:
-            return error_response("not_found", "Job not found.", 404)
-        except ValueError as error:
-            return error_response("export_conflict", str(error), 409)
-        return jsonify(_job_payload(job)), 200 if body["action"] == "stop" else 202
+    register_workflow_job_routes(app, workflow_route_context)
 
     @app.post("/api/v1/jobs/<job_id>/cancel")
     @require_auth
