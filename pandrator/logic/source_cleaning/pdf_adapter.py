@@ -2375,7 +2375,28 @@ def _source_fingerprint(path: str) -> dict[str, Any]:
     with open(path, "rb") as file_handle:
         for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": digest.hexdigest()}
+    return {
+        "path": os.path.abspath(path),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": digest.hexdigest(),
+        "provenance_fingerprint": _provenance_fingerprint(path),
+    }
+
+
+def _provenance_fingerprint(path: str) -> dict[str, str] | None:
+    provenance_path = f"{path}.pycroppdf.json"
+    if not os.path.isfile(provenance_path):
+        return None
+    try:
+        digest = hashlib.sha256()
+        with open(provenance_path, "rb") as file_handle:
+            for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {"sha256": digest.hexdigest()}
+    except OSError as error:
+        # Let the existing manifest loader retain its warning fallback.
+        return {"error": str(error)}
 
 
 def _normalized_marginal_key(text: str) -> str:

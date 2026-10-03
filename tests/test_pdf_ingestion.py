@@ -1,7 +1,10 @@
+import hashlib
 import json
 import os
+import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 import fitz
 
@@ -1764,6 +1767,232 @@ class PDFIngestionTests(unittest.TestCase):
             roman = next(block for block in structured.blocks if block.text == "III")
 
             self.assertLess(roman.role_score("page_number"), 0.98)
+
+
+class PDFIngestionCacheTests(unittest.TestCase):
+    def _write_native_pdf(self, path: Path) -> None:
+        document = fitz.open()
+        try:
+            page = document.new_page(width=500, height=700)
+            page.insert_text((72, 130), "Native narration remains identical across cache reads.")
+            document.save(path)
+        finally:
+            document.close()
+
+    def _fingerprint(self, path: Path) -> tuple[int, int, str]:
+        stat = path.stat()
+        return stat.st_size, stat.st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _sidecar(self, path: Path, original_page: int = 3) -> Path:
+        sidecar = Path(f"{path}.pycroppdf.json")
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "schema": "pycroppdf.provenance",
+                    "source": {"path": "original.pdf", "sha256": "a" * 64},
+                    "page_map": [{"output_page": 1, "original_page": original_page}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return sidecar
+
+    def _ingest(
+        self,
+        path: Path,
+        cache_dir: Path,
+        *,
+        use_cache: bool = True,
+        messages: list[str] | None = None,
+    ) -> SourceDocument:
+        return build_source_document(
+            str(path),
+            pdf_config=PDFIngestionConfig(ocr_mode="off", use_cache=use_cache),
+            artifact_dir=str(cache_dir),
+            progress_callback=messages.append if messages is not None else None,
+        )
+
+    def _rows(self, document: SourceDocument) -> list[tuple[str, int | None, str]]:
+        return [(block.block_id, block.page, block.text) for block in document.blocks]
+
+    def _observe(self, case: str, **documents: SourceDocument) -> None:
+        print(
+            "PDF_CACHE_OBSERVATION "
+            + json.dumps(
+                {
+                    "case": case,
+                    "documents": {
+                        name: {
+                            "source_path": document.source_path,
+                            "filename": document.filename,
+                            "metadata_candidates": document.metadata_candidates,
+                            "provenance": document.attributes.get("pycroppdf_provenance"),
+                            "warnings": document.warnings,
+                            "blocks": self._rows(document),
+                        }
+                        for name, document in documents.items()
+                    },
+                },
+                sort_keys=True,
+            )
+        )
+
+    def test_identical_copy_uses_current_source_path_filename_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_a = root / "Alpha_Author_2020_Original_Title.pdf"
+            source_b = root / "Beta_Author_2025_Alternate_Title.pdf"
+            self._write_native_pdf(source_a)
+            original_bytes = source_a.read_bytes()
+            shutil.copy2(source_a, source_b)
+            fingerprint = self._fingerprint(source_a)
+            self.assertEqual(fingerprint, self._fingerprint(source_b))
+            self.assertEqual(original_bytes, source_b.read_bytes())
+
+            warm = self._ingest(source_a, root / "shared-cache")
+            reused = self._ingest(source_b, root / "shared-cache")
+            fresh = self._ingest(source_b, root / "fresh-b-cache", use_cache=False)
+            self._observe("identical_copy", warm=warm, reused=reused, fresh=fresh)
+
+            self.assertEqual(original_bytes, source_a.read_bytes())
+            self.assertEqual(original_bytes, source_b.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source_a))
+            self.assertEqual(fingerprint, self._fingerprint(source_b))
+            self.assertEqual(self._rows(warm), self._rows(reused))
+            self.assertEqual(self._rows(fresh), self._rows(reused))
+            self.assertEqual(str(source_b.resolve()), fresh.source_path)
+            self.assertEqual(source_b.name, fresh.filename)
+            self.assertNotEqual(warm.metadata_candidates, fresh.metadata_candidates)
+            self.assertEqual(str(source_b.resolve()), reused.source_path)
+            self.assertEqual(source_b.name, reused.filename)
+            self.assertEqual(fresh.metadata_candidates, reused.metadata_candidates)
+
+    def test_changed_sidecar_uses_current_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cropped.pdf"
+            self._write_native_pdf(source)
+            self._sidecar(source)
+            original_bytes = source.read_bytes()
+            fingerprint = self._fingerprint(source)
+            warm = self._ingest(source, root / "shared-cache")
+            self._sidecar(source, original_page=7)
+
+            reused = self._ingest(source, root / "shared-cache")
+            fresh = self._ingest(source, root / "fresh-cache", use_cache=False)
+            self._observe("changed_sidecar", warm=warm, reused=reused, fresh=fresh)
+
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+            self.assertEqual(self._rows(warm), self._rows(reused))
+            self.assertEqual(self._rows(fresh), self._rows(reused))
+            self.assertEqual(
+                7, fresh.attributes["pycroppdf_provenance"]["page_map"][0]["original_page"]
+            )
+            self.assertEqual(
+                fresh.attributes["pycroppdf_provenance"],
+                reused.attributes.get("pycroppdf_provenance"),
+            )
+
+    def test_added_sidecar_uses_current_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cropped.pdf"
+            self._write_native_pdf(source)
+            original_bytes = source.read_bytes()
+            fingerprint = self._fingerprint(source)
+            warm = self._ingest(source, root / "shared-cache")
+            self.assertNotIn("pycroppdf_provenance", warm.attributes)
+            self._sidecar(source)
+
+            reused = self._ingest(source, root / "shared-cache")
+            fresh = self._ingest(source, root / "fresh-cache", use_cache=False)
+            self._observe("added_sidecar", warm=warm, reused=reused, fresh=fresh)
+
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+            self.assertEqual(self._rows(warm), self._rows(reused))
+            self.assertEqual(self._rows(fresh), self._rows(reused))
+            self.assertIn("pycroppdf_provenance", fresh.attributes)
+            self.assertEqual(
+                fresh.attributes["pycroppdf_provenance"],
+                reused.attributes.get("pycroppdf_provenance"),
+            )
+
+    def test_removed_sidecar_does_not_retain_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cropped.pdf"
+            self._write_native_pdf(source)
+            sidecar = self._sidecar(source)
+            original_bytes = source.read_bytes()
+            fingerprint = self._fingerprint(source)
+            warm = self._ingest(source, root / "shared-cache")
+            self.assertIn("pycroppdf_provenance", warm.attributes)
+            sidecar.unlink()
+
+            reused = self._ingest(source, root / "shared-cache")
+            fresh = self._ingest(source, root / "fresh-cache", use_cache=False)
+            self._observe("removed_sidecar", warm=warm, reused=reused, fresh=fresh)
+
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+            self.assertEqual(self._rows(warm), self._rows(reused))
+            self.assertEqual(self._rows(fresh), self._rows(reused))
+            self.assertNotIn("pycroppdf_provenance", fresh.attributes)
+            self.assertNotIn("pycroppdf_provenance", reused.attributes)
+
+    def test_malformed_sidecar_reports_current_warning_without_old_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cropped.pdf"
+            self._write_native_pdf(source)
+            sidecar = self._sidecar(source)
+            original_bytes = source.read_bytes()
+            fingerprint = self._fingerprint(source)
+            warm = self._ingest(source, root / "shared-cache")
+            sidecar.write_text('{"schema":', encoding="utf-8")
+
+            reused = self._ingest(source, root / "shared-cache")
+            fresh = self._ingest(source, root / "fresh-cache", use_cache=False)
+            self._observe("malformed_sidecar", warm=warm, reused=reused, fresh=fresh)
+
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+            self.assertEqual(self._rows(warm), self._rows(reused))
+            self.assertEqual(self._rows(fresh), self._rows(reused))
+            self.assertNotIn("pycroppdf_provenance", fresh.attributes)
+            warning_prefix = "Could not read PyCropPDF provenance manifest:"
+            self.assertTrue(any(warning.startswith(warning_prefix) for warning in fresh.warnings))
+            self.assertNotIn("pycroppdf_provenance", reused.attributes)
+            self.assertEqual(fresh.warnings, reused.warnings)
+
+    def test_unchanged_source_and_sidecar_reuse_complete_cached_document(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "cropped.pdf"
+            self._write_native_pdf(source)
+            sidecar = self._sidecar(source)
+            original_bytes = source.read_bytes()
+            original_sidecar_bytes = sidecar.read_bytes()
+            fingerprint = self._fingerprint(source)
+            cache_dir = root / "shared-cache"
+            warm = self._ingest(source, cache_dir)
+            messages: list[str] = []
+            reused = self._ingest(source, cache_dir, messages=messages)
+            repeat_messages: list[str] = []
+            repeated = self._ingest(source, cache_dir, messages=repeat_messages)
+            self._observe("unchanged_control", warm=warm, reused=reused, repeated=repeated)
+            print("PDF_CACHE_HIT_MESSAGES " + json.dumps([messages, repeat_messages]))
+
+            self.assertEqual(original_bytes, source.read_bytes())
+            self.assertEqual(original_sidecar_bytes, sidecar.read_bytes())
+            self.assertEqual(fingerprint, self._fingerprint(source))
+            self.assertTrue((cache_dir / "source_document.json").is_file())
+            self.assertIn("Using cached structured PDF ingestion.", messages)
+            self.assertIn("Using cached structured PDF ingestion.", repeat_messages)
+            self.assertEqual(warm.to_dict(), reused.to_dict())
+            self.assertEqual(warm.to_dict(), repeated.to_dict())
 
 
 if __name__ == "__main__":
