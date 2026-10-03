@@ -14970,7 +14970,10 @@ export interface operations {
     selectStageArtifact: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description Current selection revision from the stage artifacts response, optionally quoted. */
+                "If-Match": string;
+            };
             path: {
                 sessionId: string;
                 stageKey: string;
@@ -14992,6 +14995,13 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description If-Match must contain a parseable current selection revision. */
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

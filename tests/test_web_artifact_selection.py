@@ -1,8 +1,15 @@
+import json
 import tempfile
 import unittest
 
+from sqlalchemy import select
+
+from pandrator.runtime import DataPaths
 from pandrator.web.api import create_app
-from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.auth import AuthService, BootstrapTokenStore
+from pandrator.web.database import Database
+from pandrator.web.models import Artifact, ArtifactEdge, Job, SessionStageSelection
+from pandrator.web.openapi import build_openapi_document
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -328,6 +335,183 @@ class WebArtifactSelectionTests(unittest.TestCase):
         by_key = {item["key"]: item for item in workflow["stages"]}
         self.assertEqual(first_transcript.id, by_key["transcribe"]["selected_artifact_id"])
         self.assertEqual(first_translation.id, by_key["translate"]["selected_artifact_id"])
+
+    def test_selection_authentication_and_scope_precede_revision_admission(self) -> None:
+        path = f"/api/v1/sessions/{self.session_id}/stages/correct/selection"
+        anonymous = self.app.test_client()
+        response = anonymous.put(path, json={"artifact_id": None})
+        self.assertEqual(401, response.status_code, response.get_json())
+        response = self.client.put(path, json={"artifact_id": None})
+        self.assertEqual(403, response.status_code, response.get_json())
+        self.assertEqual("csrf_failed", response.get_json()["error"]["code"])
+        auth = self.app.extensions["pandrator"]["auth"]
+        assert isinstance(auth, AuthService)
+        for scope, status, code in (
+            ("app.read", 403, "scope_denied"),
+            ("app.write", 428, "precondition_required"),
+        ):
+            with self.subTest(scope=scope):
+                _record, token = auth.create_api_token("Selection contract", scopes=[scope])
+                response = anonymous.put(
+                    path,
+                    json={"artifact_id": None},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                self.assertEqual(status, response.status_code, response.get_json())
+                self.assertEqual(code, response.get_json()["error"]["code"])
+                if scope == "app.read":
+                    self.assertEqual(
+                        ["app.write"], response.get_json()["error"]["details"]["required_scopes"]
+                    )
+        document = self.client.get("/api/v1/openapi.json").get_json()
+        self.assertEqual(build_openapi_document(), document)
+
+    def test_rejected_selection_revisions_preserve_lineage_rows_and_files(self) -> None:
+        names = (
+            "revision-source.mp4",
+            "revision-transcript.srt",
+            "revision-correction-a.srt",
+            "revision-correction-b.srt",
+            "revision-translation.srt",
+        )
+        source = self.artifact(names[0], "upload", "media")
+        transcript = self.artifact(names[1], "transcription", "one", [source.id])
+        correction_a = self.artifact(names[2], "correction", "one A", [transcript.id])
+        correction_b = self.artifact(names[3], "correction", "one B", [transcript.id])
+        self.artifact(names[4], "translation", "uno", [correction_b.id])
+        history_response = self.client.get(
+            f"/api/v1/sessions/{self.session_id}/stages/correct/artifacts"
+        )
+        self.assertEqual(200, history_response.status_code, history_response.get_json())
+        history = history_response.get_json()
+        assert isinstance(history, dict)
+        revision = history["revision"]
+        assert isinstance(revision, int)
+        self.assertEqual(correction_b.id, history["selected_artifact_id"])
+        database = self.app.extensions["pandrator"]["database"]
+        paths = self.paths
+        assert isinstance(database, Database)
+        assert isinstance(paths, DataPaths)
+
+        def capture_rows() -> dict[str, list[dict[str, object]]]:
+            tables = (
+                ("artifacts", Artifact.__table__),
+                ("artifact_edges", ArtifactEdge.__table__),
+                ("selections", SessionStageSelection.__table__),
+                ("jobs", Job.__table__),
+            )
+            with database.session() as db_session:
+                return {
+                    name: [
+                        dict(row)
+                        for row in db_session.execute(
+                            select(table).order_by(*table.primary_key)
+                        ).mappings()
+                    ]
+                    for name, table in tables
+                }
+
+        def capture_files() -> dict[str, bytes]:
+            return {name: (paths.sessions / name).read_bytes() for name in names}
+
+        before_rows = capture_rows()
+        before_files = capture_files()
+        self.assertEqual(5, len(before_rows["artifacts"]))
+        self.assertTrue(before_rows["artifact_edges"])
+        self.assertTrue(before_rows["selections"])
+        self.assertEqual([], before_rows["jobs"])
+        for action, artifact_id in (("choose", correction_a.id), ("clear", None)):
+            for label, header, expected_status, expected_code in (
+                ("missing", None, 428, "precondition_required"),
+                ("malformed", "not-a-revision", 428, "precondition_required"),
+                ("stale", f'"{revision - 1}"', 409, "revision_conflict"),
+            ):
+                with self.subTest(action=action, revision_header=label):
+                    headers = dict(self.headers)
+                    if header is not None:
+                        headers["If-Match"] = header
+                    response = self.client.put(
+                        f"/api/v1/sessions/{self.session_id}/stages/correct/selection",
+                        json={"artifact_id": artifact_id},
+                        headers=headers,
+                    )
+                    payload = response.get_json()
+                    assert isinstance(payload, dict)
+                    error = payload["error"]
+                    assert isinstance(error, dict)
+                    after_rows = capture_rows()
+                    after_files = capture_files()
+                    print(
+                        "SELECTION_REVISION_OBSERVATION "
+                        + json.dumps(
+                            {
+                                "action": action,
+                                "header_case": label,
+                                "if_match": header,
+                                "original_revision": revision,
+                                "status": response.status_code,
+                                "error_code": error["code"],
+                                "rows_unchanged": after_rows == before_rows,
+                                "files_unchanged": after_files == before_files,
+                                "artifact_count": len(after_rows["artifacts"]),
+                                "edge_count": len(after_rows["artifact_edges"]),
+                                "selection_count": len(after_rows["selections"]),
+                                "job_count": len(after_rows["jobs"]),
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                    self.assertEqual(expected_status, response.status_code, payload)
+                    self.assertEqual(expected_code, error["code"], payload)
+                    self.assertEqual(before_rows, after_rows)
+                    self.assertEqual(before_files, after_files)
+                    self.assertEqual([], after_rows["jobs"])
+
+
+class WebArtifactSelectionOpenApiTests(unittest.TestCase):
+    def test_selection_put_requires_selection_revision_header(self) -> None:
+        operation = build_openapi_document()["paths"][
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection"
+        ]["put"]
+        self.assertEqual("selectStageArtifact", operation["operationId"])
+        self.assertTrue(operation["requestBody"]["required"])
+        self.assertEqual(
+            "#/components/schemas/StageSelectionUpdate",
+            operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        )
+        headers = [
+            parameter
+            for parameter in operation.get("parameters", [])
+            if parameter.get("name") == "If-Match"
+        ]
+        self.assertEqual(1, len(headers))
+        header = headers[0]
+        self.assertEqual("header", header["in"])
+        self.assertIs(True, header["required"])
+        self.assertEqual("string", header["schema"]["type"])
+        self.assertIn("selection revision", header["description"].lower())
+
+    def test_selection_put_documents_authentication_and_write_scope(self) -> None:
+        operation = build_openapi_document()["paths"][
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection"
+        ]["put"]
+        self.assertEqual(
+            [
+                {"cookieAuth": []},
+                {"bearerToken": []},
+                {"nativeOAuth": ["app.write"]},
+            ],
+            operation.get("security"),
+        )
+
+    def test_selection_put_documents_selection_revision_precondition(self) -> None:
+        responses = build_openapi_document()["paths"][
+            "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection"
+        ]["put"]["responses"]
+        self.assertIn("200", responses)
+        self.assertIn("409", responses)
+        self.assertIn("428", responses)
+        self.assertIn("selection revision", responses["428"]["description"].lower())
 
 
 if __name__ == "__main__":

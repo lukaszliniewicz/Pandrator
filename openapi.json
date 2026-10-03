@@ -19865,6 +19865,15 @@
         "operationId": "selectStageArtifact",
         "parameters": [
           {
+            "description": "Current selection revision from the stage artifacts response, optionally quoted.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -19897,8 +19906,24 @@
           },
           "409": {
             "description": "Revision conflict"
+          },
+          "428": {
+            "description": "If-Match must contain a parseable current selection revision."
           }
-        }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sessions/{sessionId}/stages/{stageKey}/settings-mismatches": {

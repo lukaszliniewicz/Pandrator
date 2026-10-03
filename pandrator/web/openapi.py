@@ -1119,6 +1119,20 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/stages/{stageKey}/selection": {
                 "put": {
                     "operationId": "selectStageArtifact",
+                    "security": [
+                        {"cookieAuth": []},
+                        {"bearerToken": []},
+                        {"nativeOAuth": ["app.write"]},
+                    ],
+                    "parameters": [
+                        {
+                            "name": "If-Match",
+                            "in": "header",
+                            "required": True,
+                            "description": "Current selection revision from the stage artifacts response, optionally quoted.",
+                            "schema": {"type": "string"},
+                        }
+                    ],
                     "requestBody": {
                         "required": True,
                         "content": {
@@ -1132,6 +1146,7 @@ def build_openapi_document() -> dict:
                     "responses": {
                         "200": {"description": "Stage selection updated"},
                         "409": {"description": "Revision conflict"},
+                        "428": {"description": "If-Match must contain a parseable current selection revision."},
                     },
                 }
             },
