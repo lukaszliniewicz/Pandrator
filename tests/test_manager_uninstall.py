@@ -20,6 +20,8 @@ from pandrator_manager.models import (
     OperationState,
 )
 from pandrator_manager.operations import OperationEngine
+from pandrator_manager.state import ManagerStore
+from pandrator_manager.supervisor import ProcessSupervisor
 from pandrator_manager.uninstall import (
     clear_uninstall_status,
     pending_uninstalls,
@@ -28,8 +30,8 @@ from pandrator_manager.uninstall import (
 )
 
 
-class _UninstallSupervisor:
-    def __init__(self, store):
+class _UninstallSupervisor(ProcessSupervisor):
+    def __init__(self, store: ManagerStore) -> None:
         self.store = store
         self.services = {
             "fixture.service": ManagedService(
@@ -44,15 +46,15 @@ class _UninstallSupervisor:
             )
         }
         self.store.save_service(self.services["fixture.service"])
-        self.started = []
+        self.started: list[str] = []
 
-    def snapshot(self):
+    def snapshot(self) -> list[ManagedService]:
         return [
             service.model_copy(deep=True)
             for service in self.services.values()
         ]
 
-    def stop_all(self):
+    def stop_all(self) -> list[ManagedService]:
         stopped = []
         for service in self.services.values():
             if service.desired_running or service.process is not None:
@@ -66,7 +68,7 @@ class _UninstallSupervisor:
                 stopped.append(service.model_copy(deep=True))
         return stopped
 
-    def start(self, service_id):
+    def start(self, service_id: str) -> ManagedService:
         service = self.services[service_id]
         service.desired_running = True
         service.health = HealthResult(
@@ -403,6 +405,7 @@ class ManagerUninstallTests(unittest.TestCase):
 
         status = clear_uninstall_status(self.layout, operation_id)
 
+        assert status is not None
         self.assertEqual(status["status"], "succeeded")
         self.assertIsNone(status["cleanup_residue"])
         self.assertFalse(quarantine.exists())
@@ -434,6 +437,7 @@ class ManagerUninstallTests(unittest.TestCase):
 
         status = clear_uninstall_status(self.layout, operation_id)
 
+        assert status is not None
         self.assertEqual(
             status["status"],
             "succeeded_with_cleanup_residue",
@@ -483,6 +487,7 @@ class ManagerUninstallTests(unittest.TestCase):
         ):
             status = clear_uninstall_status(self.layout, operation_id)
 
+        assert status is not None
         self.assertEqual(status["status"], "succeeded")
         self.assertEqual(attempts, 2)
         sleep.assert_called_once()
@@ -524,6 +529,7 @@ class ManagerUninstallTests(unittest.TestCase):
         ):
             status = clear_uninstall_status(self.layout, operation_id)
 
+        assert status is not None
         self.assertEqual(status["status"], "succeeded")
         self.assertTrue(status_path.is_file())
         self.assertTrue(log.is_file())
@@ -569,6 +575,7 @@ class ManagerUninstallTests(unittest.TestCase):
         self.assertTrue((self.layout.data / "user.txt").is_file())
         self.assertFalse(self.layout.state.exists())
         status = read_uninstall_status(self.layout, operation.id)
+        assert status is not None
         self.assertEqual(status["status"], "succeeded")
         self.assertEqual(status["preserved_data"], str(self.layout.data))
         clear_uninstall_status(self.layout, operation.id)
@@ -657,6 +664,7 @@ class ManagerUninstallTests(unittest.TestCase):
         unknown = self.layout.root / "personal-notes.txt"
         unknown.write_text("keep", encoding="utf-8")
         report = self.application.legacy_report()
+        assert report is not None
         self.application.import_legacy(
             source_digest=report.source_digest,
             confirmed=True,

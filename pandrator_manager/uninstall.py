@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 import psutil
 from pydantic import Field
@@ -59,6 +59,11 @@ from .releases.trust import canonical_json
 from .state import ManagerStore
 
 _CONTROL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+class _DetachedProcessOptions(TypedDict, total=False):
+    creationflags: int
+    start_new_session: bool
 
 
 class UninstallHandoffPayload(StrictModel):
@@ -487,19 +492,19 @@ def _safe_targets(
     if purge_data:
         candidates.append(layout.data)
     for record in store.owned_paths():
-        selected = Path(str(record["path"])).resolve(strict=False)
-        if selected == root or not layout.contains(root, selected):
+        owned_path = Path(str(record["path"])).resolve(strict=False)
+        if owned_path == root or not layout.contains(root, owned_path):
             raise ManagerError(
                 "unsafe_ownership_manifest",
                 "Uninstall refuses an ownership record outside the managed root.",
-                {"path": str(selected)},
+                {"path": str(owned_path)},
                 409,
             )
         if not purge_data and (
-            selected == data or layout.contains(data, selected)
+            owned_path == data or layout.contains(data, owned_path)
         ):
             continue
-        candidates.append(selected)
+        candidates.append(owned_path)
     for candidate in candidates:
         if os.path.lexists(candidate) and _is_link_or_junction(candidate):
             raise ManagerError(
@@ -698,14 +703,14 @@ class UninstallHandoffCoordinator:
         protect_path(control, directory=True)
         log = log_path.open("ab", buffering=0)
         options = (
-            {
-                "creationflags": (
+            _DetachedProcessOptions(
+                creationflags=(
                     subprocess.CREATE_NEW_PROCESS_GROUP
                     | subprocess.CREATE_NO_WINDOW
                 )
-            }
+            )
             if os.name == "nt"
-            else {"start_new_session": True}
+            else _DetachedProcessOptions(start_new_session=True)
         )
         try:
             process = subprocess.Popen(
@@ -976,14 +981,14 @@ def _mark_failed(
 
 def _restart_previous_manager(payload: UninstallHandoffPayload) -> None:
     options = (
-        {
-            "creationflags": (
+        _DetachedProcessOptions(
+            creationflags=(
                 subprocess.CREATE_NEW_PROCESS_GROUP
                 | subprocess.CREATE_NO_WINDOW
             )
-        }
+        )
         if os.name == "nt"
-        else {"start_new_session": True}
+        else _DetachedProcessOptions(start_new_session=True)
     )
     command = (
         [
