@@ -2328,57 +2328,67 @@
       return;
     }
     if (publishingLibraryVoiceId) return;
+    const serviceId = selectedTtsServiceId;
+    const serviceName = selectedTtsService?.name ?? serviceId;
+    const modelId = ttsModel;
+    const linked = audioCppLinkedReferences;
+    const opening = settingsOpening;
+    const isCurrent = () => !disposed && opening === settingsOpening;
+    const selectionIsCurrent = captureTtsSelection();
     publishingLibraryVoiceId = voice.id;
-    voicePublishStatus = audioCppLinkedReferences
-      ? `Linking ${voice.name} to ${selectedTtsService?.name ?? selectedTtsServiceId}…`
-      : `Uploading ${voice.name} to ${selectedTtsService?.name ?? selectedTtsServiceId}…`;
+    voicePublishStatus = linked
+      ? `Linking ${voice.name} to ${serviceName}…`
+      : `Uploading ${voice.name} to ${serviceName}…`;
     error = '';
     try {
       const queued = await voiceApi.publish(
         voice.id,
-        selectedTtsServiceId,
+        serviceId,
         voice.revision
       );
-      const completed = await waitForVoiceJob(queued.id);
+      let completed: Awaited<ReturnType<typeof waitForVoiceJob>> | undefined;
+      let jobFailure: unknown;
+      try {
+        completed = await waitForVoiceJob(queued.id);
+      } catch (caught) {
+        jobFailure = caught;
+      }
+      if (!isCurrent()) return;
+      // A canceled job can still have saved a provider copy. Read the current
+      // registration rather than inferring readiness or revision from its result.
+      const voices = await speechCatalogues.reloadVoices();
+      if (!isCurrent()) return;
+      if (!voices) {
+        voicePublishStatus =
+          'The voice library changed. Refresh it to check the publication.';
+        return;
+      }
+      if (jobFailure) throw jobFailure;
+      if (
+        completed?.result_json?.voice_id !== voice.id ||
+        completed.result_json.service_id !== serviceId
+      )
+        throw new Error(
+          'The publication result did not match the requested voice and service.'
+        );
       const providerVoiceId = String(
-        completed.result_json?.provider_voice_id ?? ''
+        completed.result_json.provider_voice_id ?? ''
       );
       if (!providerVoiceId)
         throw new Error('The provider did not return a usable voice ID.');
-      const nextRevision = Number(
-        completed.result_json?.voice_revision ?? voice.revision + 1
-      );
-      speechCatalogues.voices = speechCatalogues.voices.map((item) =>
-        item.id === voice.id
-          ? {
-              ...item,
-              revision: nextRevision,
-              metadata_json: {
-                ...(item.metadata_json ?? {}),
-                providers: {
-                  ...(item.metadata_json?.providers ?? {}),
-                  [selectedTtsServiceId]: {
-                    ...(item.metadata_json?.providers?.[selectedTtsServiceId] ??
-                      {}),
-                    voice_id: providerVoiceId,
-                    status: 'ready',
-                    managed_by: 'pandrator',
-                    ...(audioCppLinkedReferences
-                      ? {
-                          resource_kind: 'linked_reference',
-                          protocol: 'pandrator-linked-voices-v1'
-                        }
-                      : {})
-                  }
-                }
-              }
-            }
-          : item
-      );
+      const registration = voices.find((item) => item.id === voice.id)
+        ?.metadata_json?.providers?.[serviceId];
+      if (
+        registration?.status !== 'ready' ||
+        registration.voice_id !== providerVoiceId
+      ) {
+        voicePublishStatus = `${voice.name} needs a fresh provider registration. Review it in the Voice Library.`;
+        return;
+      }
       speechCatalogues.catalogue = {
         ...speechCatalogues.catalogue,
         services: speechCatalogues.catalogue.services.map((service) =>
-          service.id === selectedTtsService?.id
+          service.id === serviceId
             ? {
                 ...service,
                 voices: Array.from(
@@ -2389,9 +2399,9 @@
                 ),
                 voice_catalogues: {
                   ...(service.voice_catalogues ?? {}),
-                  [ttsModel]: Array.from(
+                  [modelId]: Array.from(
                     new Set([
-                      ...(service.voice_catalogues?.[ttsModel] ?? []),
+                      ...(service.voice_catalogues?.[modelId] ?? []),
                       providerVoiceId
                     ])
                   )
@@ -2400,15 +2410,22 @@
             : service
         )
       };
-      voiceName = providerVoiceId;
-      voicePublishStatus = audioCppLinkedReferences
-        ? `${voice.name} is linked and selected.`
-        : `${voice.name} is ready and selected.`;
+      if (selectionIsCurrent()) {
+        voiceName = providerVoiceId;
+        voicePublishStatus = linked
+          ? `${voice.name} is linked and selected.`
+          : `${voice.name} is ready and selected.`;
+      } else {
+        voicePublishStatus = `${voice.name} is ${linked ? 'linked' : 'ready'} in ${serviceName}.`;
+      }
     } catch (caught) {
-      voicePublishStatus = '';
-      error = `Could not prepare ${voice.name}: ${errorMessage(caught)}`;
+      if (isCurrent()) {
+        voicePublishStatus = '';
+        error = `Could not prepare ${voice.name}: ${errorMessage(caught)}`;
+      }
     } finally {
       publishingLibraryVoiceId = '';
+      if (!isCurrent()) voicePublishStatus = '';
     }
   }
 

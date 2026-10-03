@@ -21,7 +21,7 @@ const services = ['a', 'b'].map((suffix) => ({
   }
 }));
 
-async function fixture(page: Page) {
+async function fixture(page: Page, publication = false) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in' }).click();
@@ -70,7 +70,53 @@ async function fixture(page: Page) {
   let delayedCatalogue: Route | undefined;
   let holdDiscovery = false;
   let holdCatalogue = false;
-  const body = { view: 'compact', services, default_service: 'provider_b' };
+  const body = {
+    view: 'compact',
+    services: publication
+      ? services.map((service) => ({
+          ...service,
+          supports_voice_cloning: true,
+          model_voice_modes: Object.fromEntries(
+            service.models.map((model) => [model, 'hybrid'])
+          )
+        }))
+      : services,
+    default_service: 'provider_b'
+  };
+  const localVoice = {
+    id: 'local-publication-voice',
+    name: 'Publication narrator',
+    language: 'en',
+    revision: 1,
+    available_sample_count: 1,
+    metadata_json: { providers: {} }
+  };
+  let library: unknown[] = publication ? [localVoice] : [];
+  let libraryFailure = false;
+  let holdReadback = false;
+  let delayedReadback: Route | undefined;
+  let delayedJob: Route | undefined;
+  let submittedService = '';
+  if (publication) {
+    await page.route(
+      '**/api/v1/voices/local-publication-voice/providers/*',
+      async (route) => {
+        expect(route.request().method()).toBe('POST');
+        expect(route.request().headers()['if-match']).toBe('"1"');
+        submittedService = route.request().url().split('/').at(-1) ?? '';
+        await route.fulfill({
+          json: {
+            id: 'controlled-publication-job',
+            kind: 'voice.publish',
+            status: 'queued'
+          }
+        });
+      }
+    );
+    await page.route('**/api/v1/jobs/controlled-publication-job', (route) => {
+      delayedJob = route;
+    });
+  }
   await page.route('**/api/v1/services/tts?*', async (route) => {
     if (holdCatalogue) {
       delayedCatalogue = route;
@@ -78,9 +124,20 @@ async function fixture(page: Page) {
     }
     await route.fulfill({ json: body });
   });
-  await page.route('**/api/v1/voices', (route) =>
-    route.fulfill({ json: { items: [] } })
-  );
+  await page.route('**/api/v1/voices', async (route) => {
+    if (holdReadback) {
+      delayedReadback = route;
+      return;
+    }
+    await route.fulfill(
+      libraryFailure
+        ? {
+            status: 503,
+            json: { error: { message: 'Controlled voice readback outage' } }
+          }
+        : { json: { items: library } }
+    );
+  });
   await page.route('**/api/v1/services/tts/discover', async (route) => {
     if (
       holdDiscovery &&
@@ -123,6 +180,80 @@ async function fixture(page: Page) {
   return {
     dialog,
     open,
+    delayVoiceReadback() {
+      holdReadback = true;
+    },
+    async waitForVoiceReadback() {
+      await expect.poll(() => Boolean(delayedReadback)).toBe(true);
+    },
+    async releaseVoiceReadback() {
+      holdReadback = false;
+      if (delayedReadback) {
+        const route = delayedReadback;
+        delayedReadback = undefined;
+        await settleResponse(route, { json: { items: library } });
+      }
+    },
+    async publishVoice() {
+      await dialog
+        .locator('summary')
+        .filter({ hasText: 'Available from your Voice Library' })
+        .click();
+      await dialog
+        .getByRole('button', { name: 'Upload & use', exact: true })
+        .click();
+      await expect.poll(() => Boolean(delayedJob)).toBe(true);
+      expect(submittedService).toBe('provider_b');
+    },
+    async releasePublication(
+      status: 'ready' | 'stale' | 'canceled' | 'readback-failure' = 'ready'
+    ) {
+      if (!delayedJob) return;
+      libraryFailure = status === 'readback-failure';
+      library = [
+        {
+          ...localVoice,
+          revision: 7,
+          metadata_json: {
+            providers: {
+              provider_b: {
+                voice_id: 'published-b',
+                status: status === 'stale' ? 'stale' : 'ready',
+                managed_by: 'pandrator',
+                protocol: 'pandrator-voices-v1',
+                resource_kind: 'uploaded_reference',
+                stale_reason:
+                  status === 'stale'
+                    ? 'Reference changed during upload.'
+                    : undefined
+              }
+            }
+          }
+        }
+      ];
+      const route = delayedJob;
+      delayedJob = undefined;
+      await settleResponse(route, {
+        json: {
+          id: 'controlled-publication-job',
+          kind: 'voice.publish',
+          status: status === 'canceled' ? 'canceled' : 'succeeded',
+          error_message:
+            status === 'canceled'
+              ? 'Controlled cancellation after upload.'
+              : undefined,
+          result_json:
+            status === 'canceled'
+              ? null
+              : {
+                  voice_id: localVoice.id,
+                  service_id: 'provider_b',
+                  provider_voice_id: 'published-b',
+                  voice_revision: 2
+                }
+        }
+      });
+    },
     async delayDiscovery() {
       holdDiscovery = true;
       await dialog.getByLabel('TTS service').selectOption('provider_a');
@@ -160,7 +291,7 @@ async function fixture(page: Page) {
             : {
                 json: {
                   ...body,
-                  services: services.map((service) => ({
+                  services: body.services.map((service) => ({
                     ...service,
                     models: [...service.models, `fresh-${service.id}`]
                   }))
@@ -302,5 +433,208 @@ test('a discovery response from a closed settings dialog cannot modify its repla
     ).toHaveValue('voice-b');
   } finally {
     await data.releaseDiscovery();
+  }
+});
+
+for (const edit of ['provider', 'model', 'voice'] as const) {
+  test(`a late voice publication preserves a newer ${edit} choice`, async ({
+    page
+  }) => {
+    const data = await fixture(page, true);
+    try {
+      await data.publishVoice();
+      if (edit === 'provider')
+        await data.dialog.getByLabel('TTS service').selectOption('provider_a');
+      if (edit === 'model')
+        await data.dialog.getByLabel('TTS model').selectOption('model-b-2');
+      if (edit === 'voice')
+        await data.dialog
+          .getByRole('combobox', { name: 'Voice', exact: true })
+          .selectOption('custom-b');
+      await data.releasePublication();
+      await expect(
+        data.dialog.getByRole('button', { name: /Uploading…/ })
+      ).toHaveCount(0);
+      await expect(data.dialog.getByLabel('TTS service')).toHaveValue(
+        edit === 'provider' ? 'provider_a' : 'provider_b'
+      );
+      await expect(data.dialog.getByLabel('TTS model')).toHaveValue(
+        edit === 'model'
+          ? 'model-b-2'
+          : edit === 'provider'
+            ? 'model-a'
+            : 'model-b'
+      );
+      await expect(
+        data.dialog.getByRole('combobox', { name: 'Voice', exact: true })
+      ).toHaveValue(
+        edit === 'voice'
+          ? 'custom-b'
+          : edit === 'provider'
+            ? 'voice-a'
+            : 'voice-b-2'
+      );
+      if (edit === 'provider') {
+        // Provider B's upload must not create a registration for A.
+        await expect(
+          data.dialog.getByRole('button', { name: 'Upload & use', exact: true })
+        ).toBeVisible();
+        await data.dialog.getByLabel('TTS service').selectOption('provider_b');
+        await expect(
+          data.dialog.getByRole('button', { name: 'Use', exact: true })
+        ).toBeVisible();
+      }
+    } finally {
+      await data.releasePublication();
+    }
+  });
+}
+
+test('a completed voice publication selects its current ready registration', async ({
+  page
+}) => {
+  const data = await fixture(page, true);
+  try {
+    await data.publishVoice();
+    await data.releasePublication();
+    await expect(
+      data.dialog.getByRole('button', { name: 'Selected', exact: true })
+    ).toBeVisible();
+    await expect(
+      data.dialog.getByRole('combobox', { name: 'Voice', exact: true })
+    ).toHaveValue('published-b');
+  } finally {
+    await data.releasePublication();
+  }
+});
+
+for (const result of ['stale', 'canceled', 'readback-failure'] as const) {
+  test(`a ${result} voice publication does not invent a ready selection`, async ({
+    page
+  }, info) => {
+    const data = await fixture(page, true);
+    try {
+      await data.publishVoice();
+      await data.releasePublication(result);
+      await expect(
+        data.dialog.getByRole('button', { name: /Uploading…/ })
+      ).toHaveCount(0);
+      await expect(
+        data.dialog.getByRole('combobox', { name: 'Voice', exact: true })
+      ).toHaveValue('voice-b');
+      if (result === 'stale') {
+        await expect(
+          data.dialog.getByRole('button', { name: 'Update & use', exact: true })
+        ).toBeVisible();
+        await expect(
+          data.dialog
+            .getByRole('status')
+            .filter({ hasText: 'Publication narrator' })
+        ).toContainText('needs');
+        await page.setViewportSize({ width: 390, height: 844 });
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth
+          )
+        ).toBe(true);
+        await data.dialog.screenshot({
+          path: info.outputPath('voice-publication-stale-narrow.png')
+        });
+      }
+      if (result === 'canceled')
+        await expect(
+          data.dialog.getByRole('button', { name: 'Use', exact: true })
+        ).toBeVisible();
+      if (result === 'readback-failure')
+        await expect(data.dialog).toContainText(
+          'Controlled voice readback outage'
+        );
+    } finally {
+      await data.releasePublication();
+    }
+  });
+}
+
+test('a voice publication cannot change a reopened settings draft', async ({
+  page
+}) => {
+  const data = await fixture(page, true);
+  try {
+    await data.publishVoice();
+    await data.dialog
+      .getByRole('button', { name: 'Close stage settings' })
+      .click();
+    const reopened = await data.open();
+    await data.releasePublication();
+    await expect(
+      reopened.getByRole('button', { name: /Uploading…/ })
+    ).toHaveCount(0);
+    await expect(
+      reopened.getByRole('combobox', { name: 'Voice', exact: true })
+    ).toHaveValue('voice-b');
+  } finally {
+    await data.releasePublication();
+  }
+});
+
+test('a catalogue refresh cannot replace a newer publication registration', async ({
+  page
+}, info) => {
+  const data = await fixture(page, true);
+  try {
+    await data.publishVoice();
+    await data.delayRefresh();
+    await data.releasePublication();
+    await expect(
+      data.dialog.getByRole('button', { name: 'Selected', exact: true })
+    ).toBeVisible();
+    await data.releaseRefresh();
+    await expect(
+      data.dialog
+        .getByLabel('TTS model')
+        .locator('option[value="fresh-provider_b"]')
+    ).toHaveCount(1);
+    await expect(
+      data.dialog.getByRole('button', { name: 'Selected', exact: true })
+    ).toBeVisible();
+    await expect(
+      data.dialog.getByRole('combobox', { name: 'Voice', exact: true })
+    ).toHaveValue('published-b');
+    await data.dialog.screenshot({
+      path: info.outputPath('voice-publication-refreshed.png')
+    });
+  } finally {
+    await data.releasePublication();
+    await data.releaseRefresh();
+  }
+});
+
+test('a voice readback from a closed settings dialog cannot update its replacement', async ({
+  page
+}) => {
+  const data = await fixture(page, true);
+  try {
+    await data.publishVoice();
+    data.delayVoiceReadback();
+    await data.releasePublication();
+    await data.waitForVoiceReadback();
+    await data.dialog
+      .getByRole('button', { name: 'Close stage settings' })
+      .click();
+    const reopened = await data.open();
+    await data.releaseVoiceReadback();
+    await expect(
+      reopened.getByRole('combobox', { name: 'Voice', exact: true })
+    ).toHaveValue('voice-b');
+    await reopened
+      .locator('summary')
+      .filter({ hasText: 'Available from your Voice Library' })
+      .click();
+    await expect(
+      reopened.getByRole('button', { name: 'Upload & use', exact: true })
+    ).toBeVisible();
+  } finally {
+    await data.releasePublication();
+    await data.releaseVoiceReadback();
   }
 });

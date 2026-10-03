@@ -20,6 +20,7 @@ export class TtsCatalogueState {
   error = $state('');
   private loaded = false;
   private request = 0;
+  private voiceRequest = 0;
   private disposed = false;
   private discoveryRequests = new Map<string, number>();
 
@@ -35,6 +36,7 @@ export class TtsCatalogueState {
   async load(force = false): Promise<CatalogueLoad | undefined> {
     if (this.loaded && !force) return;
     const request = ++this.request;
+    const voiceRequest = ++this.voiceRequest;
     const isCurrent = () => !this.disposed && request === this.request;
     this.error = '';
     try {
@@ -44,10 +46,27 @@ export class TtsCatalogueState {
       ]);
       if (!isCurrent()) return;
       this.catalogue = services;
-      this.voices = voices.items ?? [];
+      if (voiceRequest === this.voiceRequest) this.voices = voices.items ?? [];
       return { catalogue: services, current: isCurrent };
     } catch (caught) {
       if (isCurrent()) this.error = errorMessage(caught);
+    }
+  }
+
+  async reloadVoices() {
+    const catalogueRequest = this.request;
+    const request = ++this.voiceRequest;
+    const isCurrent = () =>
+      !this.disposed &&
+      catalogueRequest === this.request &&
+      request === this.voiceRequest;
+    try {
+      const voices = await getVoiceLibrary(true);
+      if (!isCurrent()) return;
+      this.voices = voices.items ?? [];
+      return this.voices;
+    } catch (caught) {
+      if (isCurrent()) throw caught;
     }
   }
 
