@@ -269,10 +269,16 @@ class FilesystemTaskHandler(ReleaseTasks, UninstallTasks, ComponentSourceTasks):
         staging_root.mkdir(parents=True, exist_ok=True)
 
         cache_path = execution.context.layout.cache / "artifacts" / "crispasr" / filename
+        # Persisted plans from before the explicit flag retain it in resolved options.
+        resolved = task.inputs.get("resolved")
+        options = resolved.get("options") if isinstance(resolved, dict) else None
+        offline = bool(task.inputs.get("offline")) or (
+            isinstance(options, dict) and bool(options.get("offline"))
+        )
         selected = ArtifactDownloader(
             cancellation=execution.cancellation,
             environment=execution.context.environment,
-        ).download(specification, cache_path)
+        ).download(specification, cache_path, offline=offline)
         unpacked = staging_root / "unpacked"
         SafeExtractor().extract(selected, unpacked)
         executable = next(

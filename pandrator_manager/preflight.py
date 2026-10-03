@@ -372,9 +372,46 @@ class HostPreflight:
                 task
                 for task in tasks
                 if task.component_id == component_id
-                and task.kind in {"stage_component", "stage_audio_cpp"}
+                and task.kind in {"stage_component", "stage_audio_cpp", "stage_crispasr"}
             )
             if not component_tasks:
+                continue
+            if component_id == "crispasr":
+                raw_asset = component_tasks[0].inputs.get("asset")
+                cached = False
+                if isinstance(raw_asset, dict):
+                    try:
+                        filename = str(raw_asset["filename"])
+                        specification = ArtifactSpec(
+                            url=str(raw_asset["url"]),
+                            sha256=str(raw_asset["sha256"]),
+                            filename=filename,
+                        )
+                        if (
+                            filename
+                            and filename not in {".", ".."}
+                            and "/" not in filename
+                            and "\\" not in filename
+                            and Path(filename).name == filename
+                        ):
+                            candidate = (
+                                self.context.layout.cache / "artifacts" / "crispasr" / filename
+                            )
+                            cached = ArtifactDownloader.matches(candidate, specification)
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                checks.append(
+                    PreflightCheck(
+                        code="offline.crispasr",
+                        status="pass" if cached else "error",
+                        message=(
+                            "The exact CrispASR runtime is available in the manager cache."
+                            if cached
+                            else "Offline CrispASR installation requires the exact verified "
+                            "runtime in the manager cache."
+                        ),
+                    )
+                )
                 continue
             if component_id != "audio_cpp":
                 checks.append(

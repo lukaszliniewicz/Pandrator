@@ -454,6 +454,7 @@ class CrispASRComponentDriver(MarkerComponentDriver):
                 "requested_compute": desired.compute.value,
                 "effective_compute": effective.value,
                 "resolved": resolved.model_dump(mode="json"),
+                "offline": bool(desired.options.get("offline")),
             },
             expected_outputs=definition.owned_paths,
         )
