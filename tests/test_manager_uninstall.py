@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
+import pandrator_manager.operations.handlers as handlers_module
 import pandrator_manager.uninstall as uninstall_module
 from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
@@ -20,6 +21,7 @@ from pandrator_manager.models import (
     OperationState,
 )
 from pandrator_manager.operations import OperationEngine
+from pandrator_manager.operations.handlers import FilesystemTaskHandler
 from pandrator_manager.state import ManagerStore
 from pandrator_manager.supervisor import ProcessSupervisor
 from pandrator_manager.uninstall import (
@@ -132,6 +134,80 @@ class ManagerUninstallTests(unittest.TestCase):
         pending = self.application.store.get_operation(operation.id)
         self.assertEqual(pending.state, OperationState.HANDOFF_PENDING)
         return operation
+
+    def test_uninstall_task_overrides_and_fresh_handoff_bindings_survive_rollback(self):
+        inspected: list[Path] = []
+
+        class ObservingHandler(FilesystemTaskHandler):
+            @staticmethod
+            def _link_like(path: Path) -> bool:
+                inspected.append(path)
+                return FilesystemTaskHandler._link_like(path)
+
+        handler = ObservingHandler()
+        native_prepare = uninstall_module.prepare_uninstall_handoff
+        native_rollback = uninstall_module.rollback_prepared_uninstall
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                destination = Path(self.temporary.name) / f"export-{attempt}.zip"
+                plan = self._plan(export_data=str(destination))
+                operation, created = self.application.submit_operation(
+                    plan_id=plan.id,
+                    plan_digest=plan.digest,
+                    accepted_confirmations=tuple(
+                        confirmation.key for confirmation in plan.confirmations
+                    ),
+                    idempotency_key=f"uninstall-{plan.id}",
+                )
+                self.assertTrue(created)
+
+                def reject_after_preparation(**kwargs):
+                    result = native_prepare(**kwargs)
+                    operation_id = kwargs["operation_id"]
+                    envelope, _ = read_uninstall_handoff(self.layout, operation_id)
+                    self.assertEqual(envelope.payload.operation_id, operation_id)
+                    self.assertTrue(Path(result["handoff_descriptor"]).is_file())
+                    raise RuntimeError("fixture rejects after genuine preparation")
+
+                with (
+                    mock.patch.object(
+                        handlers_module,
+                        "prepare_uninstall_handoff",
+                        side_effect=reject_after_preparation,
+                    ) as prepare,
+                    mock.patch.object(
+                        handlers_module,
+                        "rollback_prepared_uninstall",
+                        wraps=native_rollback,
+                    ) as rollback,
+                ):
+                    engine = OperationEngine(
+                        self.application.context,
+                        self.application.store,
+                        self.application.registry,
+                        supervisor=self.supervisor,
+                        task_handler=handler,
+                    )
+                    engine._execute(operation.id)
+                prepare.assert_called_once()
+                self.assertEqual(prepare.call_args.kwargs["operation_id"], operation.id)
+                rollback.assert_called_once_with(
+                    layout=self.layout,
+                    operation_id=operation.id,
+                )
+                failed = self.application.store.get_operation(operation.id)
+                self.assertEqual(failed.state, OperationState.FAILED)
+                self.assertEqual(failed.recovery["rollback_errors"], [])
+                self.assertFalse(destination.exists())
+                self.assertEqual(pending_uninstalls(self.layout), ())
+                self.assertTrue(self.supervisor.services["fixture.service"].desired_running)
+                self.assertEqual(
+                    self.supervisor.started,
+                    ["fixture.service"] * (attempt + 1),
+                )
+        self.assertEqual(inspected, [self.layout.data / "user.txt"] * 2)
+        self.assertEqual((self.layout.data / "user.txt").read_text(), "preserve me")
+        self.assertEqual((self.layout.root / "app" / "software.txt").read_text(), "owned")
 
     def test_default_plan_preserves_data_and_purge_needs_second_confirmation(self):
         preserved = self._plan()
