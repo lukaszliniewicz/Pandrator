@@ -49,6 +49,7 @@ from .process_guard import WorkerPresence
 from .sessions import SessionService
 from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsProviderRegistry
+from .worker_shutdown import worker_termination
 from .workflow_handlers import WorkflowHandlers
 from .workflows import WorkflowService
 
@@ -518,13 +519,14 @@ def command_worker(args) -> int:
                     payload_contract=registration.payload_contract,
                 )
             worker = Worker(queue, worker_id, handler_registry)
-            try:
-                if args.once:
-                    worker.run_once()
-                else:
-                    worker.run_forever(args.poll_interval)
-            except KeyboardInterrupt:
-                worker.stop()
+            with worker_termination(worker.stop):
+                try:
+                    if args.once:
+                        worker.run_once()
+                    else:
+                        worker.run_forever(args.poll_interval)
+                except KeyboardInterrupt:
+                    worker.stop()
     finally:
         try:
             if tts_providers is not None:
