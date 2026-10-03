@@ -11,7 +11,7 @@ from dulwich.repo import Repo
 from ..components.audiocpp import source_markers_for
 from ..components.runtime_bootstrap import generated_runtime_files
 from ..errors import ManagerError
-from ..models import TaskSpec
+from ..models import ComponentDefinition, TaskSpec
 from ..tls import CABundleSelection, dulwich_config_with_ca
 from .contracts import OperationTaskContext, UnsupportedTask
 from .source_errors import _source_acquisition_error
@@ -37,7 +37,9 @@ class ComponentSourceTasks:
         )
 
     @staticmethod
-    def _definition(execution: OperationTaskContext, task: TaskSpec):
+    def _definition(
+        execution: OperationTaskContext, task: TaskSpec
+    ) -> ComponentDefinition:
         if not task.component_id:
             raise ValueError(f"Task {task.id} has no component owner.")
         return execution.registry.definition(task.component_id)
@@ -124,7 +126,9 @@ class ComponentSourceTasks:
             _atomic_text(target / relative, content)
 
     @classmethod
-    def _ensure_source_revision(cls, target: Path, definition) -> None:
+    def _ensure_source_revision(
+        cls, target: Path, definition: ComponentDefinition
+    ) -> None:
         """Ensure a reusable Git source tree is at its requested revision."""
 
         requested = definition.source_revision
@@ -150,7 +154,9 @@ class ComponentSourceTasks:
             )
 
     @staticmethod
-    def _source_markers(execution: OperationTaskContext, definition) -> tuple[str, ...]:
+    def _source_markers(
+        execution: OperationTaskContext, definition: ComponentDefinition
+    ) -> tuple[str, ...]:
         if definition.id == "audio_cpp":
             return source_markers_for(execution.context.system)
         return definition.source_markers
