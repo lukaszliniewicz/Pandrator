@@ -1289,6 +1289,18 @@ class FilesystemTaskHandler:
         result: dict,
     ) -> None:
         del task
+        slots = ReleaseSlotManager(execution.context.layout, execution.store)
+        journal = result.get("journal")
+        if not isinstance(journal, dict):
+            journal = None
+        if (
+            not journal
+            and not slots.activation_journal(
+                execution.operation.id,
+                "pandrator",
+            ).is_file()
+        ):
+            return
         supervisor = execution.supervisor
         if supervisor is not None:
             snapshots = {service.id: service for service in supervisor.snapshot()}
@@ -1298,13 +1310,10 @@ class FilesystemTaskHandler:
                     selected.process is not None or selected.desired_running
                 ):
                     supervisor.stop(service_id)
-        ReleaseSlotManager(
-            execution.context.layout,
-            execution.store,
-        ).rollback_activation(
+        slots.rollback_activation(
             operation_id=execution.operation.id,
             product="pandrator",
-            result=(result.get("journal") if isinstance(result.get("journal"), dict) else None),
+            result=journal,
         )
         if supervisor is None:
             return

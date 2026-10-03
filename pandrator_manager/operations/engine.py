@@ -523,7 +523,8 @@ class OperationEngine:
         )
         rollback_errors: list[dict] = []
         for record in reversed(self.store.operation_tasks(operation.id)):
-            if record.state not in {TaskState.SUCCEEDED, TaskState.FAILED}:
+            # A task can change files before its terminal result is persisted.
+            if record.state not in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.RUNNING}:
                 continue
             try:
                 self.task_handler.rollback(
@@ -553,19 +554,21 @@ class OperationEngine:
                         "error": self._error_payload(rollback_error),
                     }
                 )
-        try:
-            self.task_handler.finalize(execution, succeeded=False)
-        except Exception as cleanup_error:
-            logging.exception(
-                "Rollback finalization failed for operation %s",
-                operation.id,
-            )
-            rollback_errors.append(
-                {
-                    "task_id": "finalize",
-                    "error": self._error_payload(cleanup_error),
-                }
-            )
+        # Failed rollback still needs its staging journals and backup material.
+        if not rollback_errors:
+            try:
+                self.task_handler.finalize(execution, succeeded=False)
+            except Exception as cleanup_error:
+                logging.exception(
+                    "Rollback finalization failed for operation %s",
+                    operation.id,
+                )
+                rollback_errors.append(
+                    {
+                        "task_id": "finalize",
+                        "error": self._error_payload(cleanup_error),
+                    }
+                )
         operation.current_task_id = None
         operation.finished_at = self._now()
         operation.updated_at = operation.finished_at

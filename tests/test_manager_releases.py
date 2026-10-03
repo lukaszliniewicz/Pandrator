@@ -795,6 +795,123 @@ class DurableApplicationReleaseTests(unittest.TestCase):
             {"pandrator.api", "pandrator.worker"},
         )
 
+    def _assert_activation_task_write_failure_rolls_back(self, *, fail_new_health):
+        old_pointer = json.loads(self.pointer.read_text())
+        old_source = (self.old_slot / "old.txt").read_bytes()
+        store = self.application.store
+        original_update = store.update_operation_task
+        target = TaskState.FAILED if fail_new_health else TaskState.SUCCEEDED
+        observed = []
+
+        def fail_activation_write(operation_id, task_id, **kwargs):
+            if task_id == "release:activate" and kwargs["state"] == target and not observed:
+                self.assertEqual(json.loads(self.pointer.read_text())["version"], "1.0.0")
+                journal = (
+                    self.layout.staging / operation_id / "release" / "pandrator-activation.json"
+                )
+                self.assertTrue(journal.is_file())
+                observed.append(operation_id)
+                raise sqlite3.OperationalError("injected activation task journal write failure")
+            return original_update(operation_id, task_id, **kwargs)
+
+        with mock.patch.object(store, "update_operation_task", side_effect=fail_activation_write):
+            _plan, operation, supervisor = self._execute(fail_new_health=fail_new_health)
+
+        self.assertEqual(observed, [operation.id])
+        self.assertEqual(operation.state, OperationState.FAILED)
+        activation = next(
+            task
+            for task in store.operation_tasks(operation.id)
+            if task.task.id == "release:activate"
+        )
+        self.assertEqual(activation.state, TaskState.ROLLED_BACK)
+        self.assertEqual(json.loads(self.pointer.read_text()), old_pointer)
+        self.assertEqual(self._database_value(self.database), "old")
+        self.assertEqual((self.old_slot / "old.txt").read_bytes(), old_source)
+        self.assertFalse((self.layout.app_versions / "1.0.0").exists())
+        self.assertIsNone(store.accepted_release("pandrator"))
+        self.assertEqual(store.configuration_revision(), 0)
+        self.assertEqual(store.owned_paths(), [])
+        self.assertEqual(operation.recovery["rollback_errors"], [])
+        self.assertEqual(supervisor.specs["pandrator.api"].readiness.expected_json, {})
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker"})
+
+    def test_successful_activation_task_write_failure_rolls_back(self):
+        self._assert_activation_task_write_failure_rolls_back(fail_new_health=False)
+
+    def test_failed_activation_task_write_failure_rolls_back(self):
+        self._assert_activation_task_write_failure_rolls_back(fail_new_health=True)
+
+    def test_activation_not_started_does_not_replace_service_specs_during_rollback(self):
+        old_pointer = self.pointer.read_bytes()
+        original_event = OperationEngine._event
+        observed = []
+
+        def fail_before_handler(engine, operation, event_type, payload, **kwargs):
+            if event_type == "operation.task_started" and payload["task_id"] == "release:activate":
+                observed.append(operation.id)
+                raise sqlite3.OperationalError("injected task-start event failure")
+            return original_event(engine, operation, event_type, payload, **kwargs)
+
+        with (
+            mock.patch.object(
+                OperationEngine, "_event", autospec=True, side_effect=fail_before_handler
+            ),
+            mock.patch.object(_ReleaseSupervisor, "unregister", autospec=True) as unregister,
+            mock.patch.object(_ReleaseSupervisor, "register", autospec=True) as register,
+        ):
+            _plan, operation, supervisor = self._execute(fail_new_health=False)
+
+        self.assertEqual(observed, [operation.id])
+        self.assertEqual(operation.state, OperationState.FAILED)
+        unregister.assert_not_called()
+        register.assert_not_called()
+        self.assertEqual(self.pointer.read_bytes(), old_pointer)
+        self.assertEqual(self._database_value(self.database), "old")
+        self.assertFalse((self.layout.app_versions / "1.0.0").exists())
+        self.assertEqual(supervisor.specs["pandrator.api"].readiness.expected_json, {})
+        self.assertEqual(supervisor.running, {"pandrator.api", "pandrator.worker"})
+
+    def test_failed_activation_rollback_retains_usable_journal_and_backup(self):
+        old_pointer = json.loads(self.pointer.read_text())
+        old_source = (self.old_slot / "old.txt").read_bytes()
+        with mock.patch.object(
+            ReleaseSlotManager,
+            "rollback_activation",
+            side_effect=RuntimeError("injected activation rollback failure"),
+        ) as rollback:
+            _plan, operation, _supervisor = self._execute(fail_new_health=True)
+
+        rollback.assert_called_once()
+        self.assertEqual(operation.state, OperationState.RECOVERY_REQUIRED)
+        self.assertTrue(
+            any(
+                item["task_id"] == "release:activate"
+                for item in operation.recovery["rollback_errors"]
+            )
+        )
+        journal = self.layout.staging / operation.id / "release" / "pandrator-activation.json"
+        backup = self.layout.backups / operation.id / "release" / "database.sqlite3"
+        self.assertTrue(journal.is_file())
+        self.assertTrue(backup.is_file())
+        self.assertEqual(json.loads(journal.read_text())["previous_pointer"], old_pointer)
+        self.assertEqual(self._database_value(backup), "old")
+        self.assertEqual(self._database_value(self.database), "migrated")
+        self.assertEqual((self.old_slot / "old.txt").read_bytes(), old_source)
+        self.assertIsNone(self.application.store.accepted_release("pandrator"))
+        self.assertEqual(self.application.store.configuration_revision(), 0)
+
+        # Exercise the retained journal's real restoration path after the fault ends.
+        ReleaseSlotManager(self.layout, self.application.store).rollback_activation(
+            operation_id=operation.id,
+            product="pandrator",
+        )
+        self.assertEqual(json.loads(self.pointer.read_text()), old_pointer)
+        self.assertEqual(self._database_value(self.database), "old")
+        self.assertFalse((self.layout.app_versions / "1.0.0").exists())
+        self.assertTrue(journal.is_file())
+        self.assertTrue(backup.is_file())
+
     def test_exact_signed_replay_is_a_no_mutation_plan(self):
         plan, operation, _supervisor = self._execute(fail_new_health=False)
         self.assertEqual(operation.state, OperationState.SUCCEEDED)
