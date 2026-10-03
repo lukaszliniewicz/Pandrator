@@ -293,6 +293,7 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(revision, 1)
             self.assertEqual(reopened.schema_version(), 6)
             self.assertEqual(reopened.configuration_revision(), 1)
+            assert desired is not None
             self.assertEqual(desired.compute, ComputeVariant.CPU)
             self.assertEqual(persisted.component_id, "fish_speech")
 
@@ -642,6 +643,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(qwen)
+        assert qwen is not None
         self.assertEqual(
             "customvoice",
             qwen.arguments[qwen.arguments.index("--initial-model") + 1],
@@ -655,6 +657,7 @@ class RegistryAndPlanningTests(unittest.TestCase):
             qwen.arguments[qwen.arguments.index("--quantization") + 1],
         )
         self.assertIsNotNone(fish)
+        assert fish is not None
         self.assertEqual("q3_k", fish.environment["FISHS2_MODEL_QUANT"])
         self.assertEqual("vulkan", fish.environment["FISHS2_BACKEND"])
 
@@ -1133,6 +1136,7 @@ class LegacyImporterTests(unittest.TestCase):
             importer = LegacyImporter(context, store, builtin_registry())
 
             report = importer.inspect()
+            assert report is not None
 
             self.assertTrue(report.valid)
             self.assertEqual(
@@ -1177,6 +1181,7 @@ class LegacyImporterTests(unittest.TestCase):
             )
 
             report = importer.inspect()
+            assert report is not None
 
             self.assertIsNotNone(report)
             self.assertNotIn("sessions", report.unknown_paths)
@@ -1297,6 +1302,7 @@ class LegacyImporterTests(unittest.TestCase):
             )
 
             report = importer.inspect()
+            assert report is not None
 
             self.assertIn("fish_speech", report.positively_identified)
             self.assertIn("fish_speech", report.desired)
@@ -1314,12 +1320,15 @@ class LegacyImporterTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "changed"):
                 importer.apply(report, confirmed=True)
+            changed_report = importer.inspect()
+            assert changed_report is not None
             self.assertNotEqual(
                 reviewed_digest,
-                importer.inspect().source_digest,
+                changed_report.source_digest,
             )
 
             current = importer.inspect()
+            assert current is not None
             importer.apply(current, confirmed=True)
             records = {
                 Path(record["path"]).name: record for record in store.owned_paths()
@@ -1355,6 +1364,7 @@ class LegacyImporterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             report = application.legacy_report()
+            assert report is not None
             self.assertIsNotNone(report)
             self.assertTrue(report.valid)
 
@@ -1408,6 +1418,7 @@ class LegacyImporterTests(unittest.TestCase):
                 application.registry,
             )
             report = importer.inspect()
+            assert report is not None
             self.assertFalse(report.valid)
             self.assertFalse((application.context.layout.state / "quarantine").exists())
             with self.assertRaisesRegex(ValueError, "confirmation"):
@@ -1440,6 +1451,7 @@ class CoreAdapterTests(unittest.TestCase):
                 ),
             )
             self.assertIsNotNone(spec)
+            assert spec is not None
             self.assertIn(str(script), spec.arguments)
             self.assertIn("--pixi-path", spec.arguments)
             self.assertIn(
