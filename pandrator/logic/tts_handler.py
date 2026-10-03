@@ -60,6 +60,45 @@ from .tts_endpoint_transport import (
     endpoint_lock_key,
     endpoint_lock_urls,
 )
+from .tts_openai_http_policy import (
+    OPENAI_CANDIDATE_FALLBACK_STATUS_CODES as OPENAI_CANDIDATE_FALLBACK_STATUS_CODES,
+)
+from .tts_openai_http_policy import (
+    XTTS_OPENAI_PLACEHOLDER_API_KEY as XTTS_OPENAI_PLACEHOLDER_API_KEY,
+)
+from .tts_openai_http_policy import (
+    _normalize_base_url as _normalize_base_url,
+)
+from .tts_openai_http_policy import (
+    _openai_audio_speech_batch_urls as _openai_audio_speech_batch_urls,
+)
+from .tts_openai_http_policy import (
+    _openai_audio_speech_urls as _openai_audio_speech_urls,
+)
+from .tts_openai_http_policy import (
+    _openai_audio_voices_urls as _openai_audio_voices_urls,
+)
+from .tts_openai_http_policy import (
+    _openai_auth_headers as _openai_auth_headers,
+)
+from .tts_openai_http_policy import (
+    _openai_capabilities_urls as _openai_capabilities_urls,
+)
+from .tts_openai_http_policy import (
+    _openai_files_urls as _openai_files_urls,
+)
+from .tts_openai_http_policy import (
+    _openai_models_urls as _openai_models_urls,
+)
+from .tts_openai_http_policy import (
+    _openai_url_candidates as _openai_url_candidates,
+)
+from .tts_openai_http_policy import (
+    _openai_voices_urls as _openai_voices_urls,
+)
+from .tts_openai_http_policy import (
+    _should_try_next_openai_candidate as _should_try_next_openai_candidate,
+)
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     AUDIO_CPP_MODEL_VOICE_MODES,
@@ -204,7 +243,6 @@ TTS_GENERATION_TIMEOUT_SECONDS = 300
 # for that one-time preparation instead of failing at the normal TTS timeout.
 KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS = 1800
 
-XTTS_OPENAI_PLACEHOLDER_API_KEY = "sk-placeholder"
 XTTS_DEFAULT_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 XTTS_UPLOAD_FILE_PURPOSE = "user_data"
 XTTS_DISCOVERABLE_FILE_PURPOSES = ("user_data", "assistants")
@@ -1948,17 +1986,6 @@ def remove_custom_provider(
     return True, updated_provider_configs, ""
 
 
-def _normalize_base_url(base_url: str | None, fallback: str) -> str:
-    normalized = (base_url or fallback).strip().rstrip("/")
-    return normalized or fallback
-
-
-def _openai_auth_headers(
-    api_key: str = XTTS_OPENAI_PLACEHOLDER_API_KEY,
-) -> dict[str, str]:
-    return {"Authorization": f"Bearer {api_key}"}
-
-
 def _configured_endpoint_url(base_url: str, path: str) -> str:
     normalized_path = str(path or "").strip()
     if not normalized_path:
@@ -2654,60 +2681,10 @@ def _merge_catalog_with_discovered(
     return _dedupe_ordered(preferred + discovered)
 
 
-OPENAI_CANDIDATE_FALLBACK_STATUS_CODES = {404, 405, 501}
-
-
-def _should_try_next_openai_candidate(status_code: int) -> bool:
-    return int(status_code) in OPENAI_CANDIDATE_FALLBACK_STATUS_CODES
-
-
-def _openai_url_candidates(base_url: str, suffix: str) -> list[str]:
-    normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1"):
-        candidates = [f"{normalized}/{suffix}"]
-    else:
-        candidates = [
-            f"{normalized}/v1/{suffix}",
-            f"{normalized}/{suffix}",
-        ]
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for url in candidates:
-        if url not in seen:
-            deduped.append(url)
-            seen.add(url)
-    return deduped
-
-
-def _openai_models_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "models")
-
-
-def _openai_voices_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "voices")
-
-
-def _openai_audio_voices_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "audio/voices")
-
-
 def _openai_voice_catalog_urls(base_url: str) -> list[str]:
     return _dedupe_ordered(
         _openai_audio_voices_urls(base_url) + _openai_voices_urls(base_url)
     )
-
-
-def _openai_audio_speech_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "audio/speech")
-
-
-def _openai_audio_speech_batch_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "audio/speech/batch")
-
-
-def _openai_capabilities_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "capabilities")
 
 
 def _configured_openai_urls(
@@ -2720,10 +2697,6 @@ def _configured_openai_urls(
         else []
     )
     return _dedupe_ordered(configured_urls + fallback_urls)
-
-
-def _openai_files_urls(base_url: str) -> list[str]:
-    return _openai_url_candidates(base_url, "files")
 
 
 def _voxtral_models_urls(base_url: str) -> list[str]:
