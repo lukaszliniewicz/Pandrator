@@ -223,7 +223,7 @@ class ProcessSupervisor:
             ),
             None,
         )
-        if existing is None:
+        if existing is None or existing.process is None:
             return
         adopted_identity: ProcessIdentity | None = None
         try:
@@ -334,6 +334,8 @@ class ProcessSupervisor:
                 service_id=spec.service_id,
             )
         if probe.kind == "tcp":
+            # HealthProbeSpec validates the target for each probe kind.
+            assert probe.port is not None
             try:
                 with socket.create_connection(
                     (probe.host, int(probe.port)),
@@ -344,6 +346,7 @@ class ProcessSupervisor:
                 state = HealthState.UNHEALTHY
             return HealthResult(state=state, service_id=spec.service_id)
 
+        assert probe.url is not None
         try:
             with urlopen(probe.url, timeout=probe.timeout_seconds) as response:
                 if not 200 <= int(response.status) < 300:
