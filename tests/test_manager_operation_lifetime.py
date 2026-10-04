@@ -1,16 +1,31 @@
 """Operation-worker completion and daemon workspace ownership."""
 
 import logging
+import socket
 import tempfile
 import threading
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol, cast
 from unittest import mock
 
+from waitress import wasyncore
+from waitress.adjustments import Adjustments
+from waitress.channel import HTTPChannel
+from waitress.task import Task, ThreadedTaskDispatcher
+
 from pandrator_manager import daemon
+from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.components import ComponentRegistry
 from pandrator_manager.operations import OperationEngine
+
+
+class _BackpressureChannel(Protocol):
+    """The native Waitress testing hook is absent from its public stubs."""
+
+    def _flush_outbufs_below_high_watermark(self) -> None: ...
 
 
 class OperationLifetimeTests(unittest.TestCase):
@@ -131,22 +146,148 @@ class OperationLifetimeTests(unittest.TestCase):
         self.assertTrue(self.engine.shutdown(timeout=5))
         self._join_worker()
 
+    def test_shutdown_closes_event_stream_without_waiting_for_heartbeat(self) -> None:
+        stop = threading.Event()
+        self.application.context.event_sink.emit("fixture.ready", {})
+        api = create_api(
+            self.application,
+            mock.Mock(),
+            client_secret="fixture-secret",
+            shutdown_event=stop,
+        )
+        with api.test_client() as client:
+            response = client.get(
+                "/v1/events",
+                headers={"Authorization": "Bearer fixture-secret"},
+                buffered=False,
+            )
+            try:
+                self.assertEqual(response.status_code, 200)
+                chunks = iter(response.response)
+                self.assertIn(b"fixture.ready", next(chunks))
+                stop.set()
+                with self.assertRaises(StopIteration):
+                    next(chunks)
+            finally:
+                stop.set()
+                response.close()
+
+    def test_channel_close_wakes_a_backpressured_response_writer(self) -> None:
+        ready = threading.Event()
+        channels: dict[int, wasyncore.dispatcher] = {}
+        server = mock.Mock()
+        server.active_channels = {}
+        server.pull_trigger.side_effect = ready.set
+        left, right = socket.socketpair()
+        # Waitress's map annotation describes sockets, while runtime stores channels.
+        channel = HTTPChannel(
+            server,
+            left,
+            ("127.0.0.1", 0),
+            Adjustments(outbuf_high_watermark=1),
+            map=cast(dict[int, socket.socket], channels),
+        )
+        channel.outbufs[0].append(b"held-response")
+        channel.total_outbufs_len = len(b"held-response")
+        with mock.patch.object(channel, "_flush_some", return_value=False):
+            # This native private hook is absent from Waitress's public stubs.
+            flush = cast(_BackpressureChannel, channel)._flush_outbufs_below_high_watermark
+            writer = threading.Thread(target=flush)
+            try:
+                writer.start()
+                self.assertTrue(ready.wait(5))
+                close = cast(
+                    Callable[[dict[int, wasyncore.dispatcher]], None],
+                    getattr(daemon, "_close_api_connections", wasyncore.close_all),
+                )
+                close(channels)
+                writer.join(timeout=1)
+                self.assertFalse(writer.is_alive())
+                self.assertFalse(channel.connected)
+            finally:
+                channel.handle_close()
+                writer.join(timeout=5)
+                right.close()
+                self.assertFalse(writer.is_alive())
+
     def test_daemon_retains_workspace_until_operation_worker_finishes(self) -> None:
+        self._assert_daemon_retains_workspace("operation")
+
+    def test_daemon_retains_workspace_until_restoration_finishes(self) -> None:
+        self._assert_daemon_retains_workspace("restoration")
+
+    def test_daemon_retains_workspace_until_request_handlers_finish(self) -> None:
+        self._assert_daemon_retains_workspace("request")
+
+    def test_failed_request_drain_does_not_retire_supervisor_or_ownership(self) -> None:
+        self._assert_daemon_retains_workspace("request", fail_drain=True)
+
+    def _assert_daemon_retains_workspace(self, owner: str, *, fail_drain: bool = False) -> None:
         ready, release, finished, shutdown_entered, daemon_done = (
             threading.Event() for _ in range(5)
         )
         engines: list[OperationEngine] = []
+        action_threads: list[threading.Thread] = []
         failures: list[BaseException] = []
         cleanup_completion: list[bool] = []
         layout = self.application.context.layout
         witness = Path(self.temporary.name) / "operation-finished.txt"
         supervisor = mock.Mock()
-        supervisor.restore_desired.return_value = {}
         supervisor.shutdown.side_effect = lambda **_kwargs: cleanup_completion.append(
             finished.is_set()
         )
         server = mock.Mock()
         server.effective_port = 12345
+        server._map = {}
+
+        def action() -> None:
+            action_threads.append(threading.current_thread())
+            ready.set()
+            if not release.wait(5):
+                raise RuntimeError("Fixture release timed out")
+            witness.write_text("finished", encoding="utf-8")
+            finished.set()
+
+        def restore() -> dict[str, str]:
+            if owner == "restoration":
+                action()
+            return {}
+
+        supervisor.restore_desired.side_effect = restore
+        dispatcher = ThreadedTaskDispatcher() if owner == "request" else None
+        # Waitress is untyped: default5 infers int, but native deadline accepts floats.
+        original_dispatcher_shutdown = (
+            cast(Callable[[bool, float], bool], dispatcher.shutdown)
+            if dispatcher is not None
+            else None
+        )
+        canceled: list[bool] = []
+
+        class ControlledTask(Task):
+            def __init__(self) -> None:
+                # This transport-free task exercises only dispatcher ownership.
+                pass
+
+            def service(self) -> None:
+                action()
+
+            def cancel(self) -> None:
+                canceled.append(True)
+
+        if dispatcher is not None:
+            assert original_dispatcher_shutdown is not None
+
+            def drain(cancel_pending: bool = True, timeout: float = 5) -> bool:
+                if fail_drain:
+                    raise RuntimeError("Fixture request drain failed")
+                # Accelerate only the old finite timeout, exercising real workers.
+                assert original_dispatcher_shutdown is not None
+                return original_dispatcher_shutdown(
+                    cancel_pending, 0.01 if timeout == 5 else timeout
+                )
+
+            dispatcher.shutdown = drain
+            server.task_dispatcher = dispatcher
 
         def engine_factory(*args, **kwargs) -> OperationEngine:
             engine = OperationEngine(*args, **kwargs)
@@ -155,11 +296,7 @@ class OperationLifetimeTests(unittest.TestCase):
 
             def execute(operation_id: str) -> None:
                 with engine.lifecycle_lock:
-                    ready.set()
-                    if not release.wait(5):
-                        raise RuntimeError("Fixture release timed out")
-                    witness.write_text("finished", encoding="utf-8")
-                    finished.set()
+                    action()
 
             def shutdown(*, timeout: float | None = 0.01) -> bool:
                 # Shorten the old bounded default; preserve an explicit full drain.
@@ -171,7 +308,11 @@ class OperationLifetimeTests(unittest.TestCase):
             return engine
 
         def run_server() -> None:
-            engines[0].enqueue("controlled-action")
+            if owner == "operation":
+                engines[0].enqueue("controlled-action")
+            if dispatcher is not None:
+                dispatcher.set_thread_count(1)
+                dispatcher.add_task(ControlledTask())
             if not ready.wait(5):
                 raise RuntimeError("Fixture operation did not start")
 
@@ -206,7 +347,10 @@ class OperationLifetimeTests(unittest.TestCase):
             try:
                 worker.start()
                 self.assertTrue(shutdown_entered.wait(5))
-                self.assertFalse(daemon_done.wait(0.1))
+                if fail_drain:
+                    self.assertTrue(daemon_done.wait(5))
+                else:
+                    self.assertFalse(daemon_done.wait(0.1))
                 self.assertTrue(layout.instance_lock.is_file())
                 self.assertTrue(layout.descriptor.is_file())
                 self.assertFalse(witness.exists())
@@ -220,15 +364,32 @@ class OperationLifetimeTests(unittest.TestCase):
                 release.set()
                 worker.join(timeout=5)
                 self.assertFalse(worker.is_alive())
+                if dispatcher is not None:
+                    assert original_dispatcher_shutdown is not None
+                    original_dispatcher_shutdown(True, 5)
+                    with dispatcher.lock:
+                        self.assertFalse(dispatcher.threads)
+                for thread in action_threads:
+                    thread.join(timeout=5)
+                    self.assertFalse(thread.is_alive())
                 for engine in engines:
                     engine.shutdown(timeout=5)
                     thread = engine._thread
                     assert thread is not None
                     thread.join(timeout=5)
                     self.assertFalse(thread.is_alive())
+        self.assertEqual(canceled, [])
+        self.assertEqual(witness.read_text(encoding="utf-8"), "finished")
+        if fail_drain:
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(str(failures[0]), "Fixture request drain failed")
+            self.assertEqual(cleanup_completion, [])
+            server.close.assert_not_called()
+            self.assertTrue(layout.instance_lock.exists())
+            self.assertTrue(layout.descriptor.exists())
+            return
         self.assertEqual(failures, [])
         self.assertEqual(cleanup_completion, [True])
-        self.assertEqual(witness.read_text(encoding="utf-8"), "finished")
         self.assertFalse(layout.instance_lock.exists())
         self.assertFalse(layout.descriptor.exists())
         successor = daemon.ManagerInstanceLock(layout.instance_lock)

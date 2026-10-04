@@ -150,6 +150,7 @@ def create_api(
     client_secret: str,
     recovery_sessions: RecoverySessionManager | None = None,
     shutdown_callback: Callable[[], None] | None = None,
+    shutdown_event: threading.Event | None = None,
     manager_exposure: EndpointExposure | None = None,
     application_exposure: EndpointExposure | None = None,
     application_environment: dict[str, str] | None = None,
@@ -200,6 +201,7 @@ def create_api(
         sessions = recovery_sessions
     recovery_static = Path(__file__).resolve().parent.parent / "recovery_ui" / "static"
     mutation_lock = threading.Lock()
+    api_shutdown = shutdown_event if shutdown_event is not None else threading.Event()
     automation = ManagerAutomationService(
         application.store,
         manager_instance_id=str(application.instance_id or ""),
@@ -1773,7 +1775,7 @@ def create_api(
         def stream():
             current = cursor
             heartbeat = time.monotonic()
-            while True:
+            while not api_shutdown.is_set():
                 rows = application.store.events_after(current, limit=100)
                 if rows:
                     for event in rows:
@@ -1787,7 +1789,7 @@ def create_api(
                 elif time.monotonic() - heartbeat >= 15:
                     yield ": heartbeat\n\n"
                     heartbeat = time.monotonic()
-                time.sleep(0.5)
+                api_shutdown.wait(0.5)
 
         return Response(
             stream(),

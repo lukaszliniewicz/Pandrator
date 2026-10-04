@@ -6360,30 +6360,6 @@
                     "endColumn": 34,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 33,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 65,
-                    "endColumn": 69,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 33,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
             }
         ],
         "./pandrator_manager/doctor.py": [

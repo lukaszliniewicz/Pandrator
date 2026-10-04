@@ -13,11 +13,14 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import cast
 
 import psutil
-from waitress import create_server
+from waitress import create_server, wasyncore
+from waitress.channel import HTTPChannel
 
 from . import __version__
 from .api import create_api
@@ -63,6 +66,17 @@ from .uninstall import (
 
 class ManagerAlreadyRunning(RuntimeError):
     pass
+
+
+def _close_api_connections(channels: dict[int, wasyncore.dispatcher]) -> None:
+    # HTTPChannel.close() does not wake writers waiting on the output condition.
+    # Notify them before closing the remaining listener/trigger descriptors.
+    for channel in list(channels.values()):
+        if isinstance(channel, HTTPChannel):
+            channel.handle_close()
+    # Waitress's stubs describe sockets here; its native map holds dispatchers.
+    close_all = cast(Callable[[dict[int, wasyncore.dispatcher]], None], wasyncore.close_all)
+    close_all(channels)
 
 
 class ManagerInstanceLock:
@@ -298,6 +312,8 @@ def run_daemon(
     server = None
     supervisor = None
     operation_engine = None
+    restoration_thread: threading.Thread | None = None
+    api_shutdown = threading.Event()
     try:
         secret = ensure_client_secret(layout.credential)
         ensure_client_secret(layout.mcp_credential)
@@ -337,13 +353,13 @@ def run_daemon(
             supervisor.register(silero_runtime_spec(layout))
         supervisor.validate_complete()
         supervisor.start_monitoring()
-        server_box: dict[str, object] = {}
         shutdown_started = threading.Event()
 
         def request_shutdown() -> None:
-            selected = server_box.get("server")
+            selected = server
             if selected is not None and not shutdown_started.is_set():
                 shutdown_started.set()
+                api_shutdown.set()
 
                 def close_server() -> None:
                     # Let the stop response flush, then close keep-alive
@@ -353,7 +369,7 @@ def run_daemon(
                     time.sleep(0.2)
 
                     def close_in_event_loop() -> None:
-                        selected.asyncore.close_all(map=selected._map)
+                        _close_api_connections(selected._map)
 
                     try:
                         selected.trigger.pull_trigger(close_in_event_loop)
@@ -407,6 +423,7 @@ def run_daemon(
             supervisor,
             client_secret=secret,
             shutdown_callback=request_shutdown,
+            shutdown_event=api_shutdown,
             manager_exposure=manager_exposure,
             application_exposure=network.application,
             application_environment=application_environment,
@@ -419,7 +436,6 @@ def run_daemon(
             threads=8,
             channel_timeout=120,
         )
-        server_box["server"] = server
         effective_port = int(server.effective_port)
         descriptor_host = (
             "[::1]" if ":" in manager_exposure.probe_host else "127.0.0.1"
@@ -445,11 +461,12 @@ def run_daemon(
                     message,
                 )
 
-        threading.Thread(
+        restoration_thread = threading.Thread(
             target=restore_desired_services,
             name="manager-restore-desired-services",
             daemon=True,
-        ).start()
+        )
+        restoration_thread.start()
 
         def signal_shutdown(_signum, _frame) -> None:
             request_shutdown()
@@ -471,21 +488,32 @@ def run_daemon(
         server.run()
         return 0
     finally:
+        api_shutdown.set()
+        if server is not None:
+            # The event loop has returned, including on errors or interrupts.
+            # Disconnect clients and wake output writers before draining tasks.
+            _close_api_connections(server._map)
         if operation_engine is not None:
             # The worker can still be executing tasks, rollback or finalization.
             # Keep its supervisor and workspace ownership until it has finished.
             operation_engine.shutdown(timeout=None)
-        if supervisor is not None:
-            supervisor.shutdown(stop_children=False)
+        if restoration_thread is not None and restoration_thread.ident is not None:
+            restoration_thread.join()
         if server is not None:
+            # Waitress polls its deadline and does not accept timeout=None.
+            # A finite wait can report success with live request handlers; they
+            # still own the application/store/supervisor until they return.
+            # If draining fails, retain ownership instead of retiring resources.
+            server.task_dispatcher.shutdown(
+                cancel_pending=True,
+                timeout=float("inf"),
+            )
             try:
-                server.task_dispatcher.shutdown(
-                    cancel_pending=True,
-                    timeout=5,
-                )
                 server.close()
             except Exception:
                 logging.exception("Could not close manager API server")
+        if supervisor is not None:
+            supervisor.shutdown(stop_children=False)
         _remove_descriptor(layout.descriptor, lock.instance_id)
         lock.release()
 

@@ -1599,6 +1599,33 @@ class ManagerLockTests(unittest.TestCase):
 
 
 class DaemonClientIntegrationTests(unittest.TestCase):
+    def test_manager_stops_with_a_connected_event_stream(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            client = ManagerClient.ensure_running(directory, timeout_seconds=20)
+            owner = psutil.Process(client.descriptor.pid)
+            response = None
+            try:
+                application = create_application(client.layout.workspace)
+                application.context.event_sink.emit("fixture.ready", {})
+                response = client.request(
+                    "GET", "/v1/events", stream=True, timeout=(3, 5)
+                )
+                first_line = next(response.iter_lines(chunk_size=1))
+                self.assertTrue(first_line.startswith(b"id: "))
+                client.stop_manager()
+                owner.wait(timeout=10)
+                self.assertFalse(client.layout.descriptor.exists())
+                self.assertFalse(client.layout.instance_lock.exists())
+                content = (client.layout.logs / "manager.log").read_text(encoding="utf-8")
+                self.assertNotIn("Bad file descriptor", content)
+                self.assertNotIn("Traceback", content)
+            finally:
+                if response is not None:
+                    response.close()
+                if client.layout.descriptor.exists():
+                    client.stop_manager()
+                owner.wait(timeout=10)
+
     def test_client_bootstraps_and_stops_manager_without_tray(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             client = ManagerClient.ensure_running(directory, timeout_seconds=20)
