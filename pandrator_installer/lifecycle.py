@@ -598,16 +598,12 @@ def command_update(args) -> int:
         try:
             database_path = data_root / "pandrator.sqlite3"
             if database_path.is_file():
-                deadline = time.monotonic() + max(0.0, float(args.drain_timeout))
-                while True:
-                    running = prepare_job_drain(database_path, cancel_running=args.cancel_running)
-                    if not running:
-                        break
-                    if time.monotonic() >= deadline:
-                        if not args.cancel_running:
-                            raise RuntimeError("Running jobs did not drain before the update timeout; retry with --cancel-running to request cancellation.")
-                        break
-                    time.sleep(0.5)
+                prepare_job_drain(
+                    database_path,
+                    python=python,
+                    cancel_running=args.cancel_running,
+                    drain_timeout=float(args.drain_timeout),
+                )
 
             if runtime_state.is_file():
                 snapshot = read_runtime_metadata(runtime_state)

@@ -270,6 +270,38 @@ class InstallerUpdateAdmissionTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(path)) as connection:
             self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone(), ("running",))
 
+    def test_pending_cancellation_is_not_drained(self) -> None:
+        path = self.job_database()
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("INSERT INTO jobs(status) VALUES ('cancel_requested')")
+        self.arguments += ["--drain-timeout", "0"]
+        message = self.assert_job_preflight_refused(self.stopped_supervisor())
+        self.assertIn("did not drain", message)
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT status FROM jobs").fetchone(), ("cancel_requested",)
+            )
+
+    def test_cancel_flag_cannot_bypass_drain_timeout(self) -> None:
+        path = self.job_database()
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("INSERT INTO jobs(status) VALUES ('running')")
+        self.arguments += ["--cancel-running", "--drain-timeout", "0"]
+        message = self.assert_job_preflight_refused(self.stopped_supervisor())
+        self.assertIn("did not drain", message)
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone(), ("running",))
+
+    def test_nonfinite_job_drain_refuses_before_supervisor_stop(self) -> None:
+        self.job_database()
+        supervisor = self.stopped_supervisor()
+        original_arguments = list(self.arguments)
+        for timeout in ("nan", "inf", "-inf"):
+            with self.subTest(timeout=timeout):
+                self.arguments = original_arguments + [f"--drain-timeout={timeout}"]
+                message = self.assert_job_preflight_refused(supervisor)
+                self.assertIn("timeout must be finite", message)
+
     def test_job_inspection_connections_are_closed_before_activation(self) -> None:
         self.job_database()
         connections: list[sqlite3.Connection] = []
