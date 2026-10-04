@@ -55,9 +55,18 @@ class InstallerUninstallTests(unittest.TestCase):
             code = main(["uninstall", "--workspace", str(workspace), "--json", *options])
         return code, output.getvalue(), error.getvalue()
 
-    def test_live_external_supervisor_blocks_both_uninstall_modes_before_mutation(self):
-        for options in (("--yes",), ("--yes", "--purge-data")):
-            with self.subTest(options=options), tempfile.TemporaryDirectory() as directory:
+    def test_live_or_uncertain_runtime_blocks_both_uninstall_modes_before_mutation(self):
+        native_create_time = psutil.Process.create_time
+        cases = (
+            (options, variant)
+            for options in (("--yes",), ("--yes", "--purge-data"))
+            for variant in ("complete", "missing-lock", "malformed-state", "inspection-denied")
+        )
+        for options, variant in cases:
+            with (
+                self.subTest(options=options, variant=variant),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 workspace = Path(directory)
                 root = _populate(workspace)
                 token = uuid.uuid4().hex
@@ -84,13 +93,31 @@ class InstallerUninstallTests(unittest.TestCase):
                         ),
                         encoding="utf-8",
                     )
+                    if variant == "missing-lock":
+                        (root / "pandrator.instance.lock").unlink()
+                    elif variant == "malformed-state":
+                        (root / "runtime-processes.json").write_bytes(b"{")
                     before = _witness(root)
+
+                    def inspect_time(
+                        process: psutil.Process,
+                        *,
+                        deny: bool = variant == "inspection-denied",
+                        owned_pid: int = child.pid,
+                    ) -> float:
+                        if deny and process.pid == owned_pid:
+                            raise psutil.AccessDenied(process.pid)
+                        return native_create_time(process)
+
                     # Exercise durable ownership even when the executable is outside
                     # the installation and no host-wide process inventory is available.
-                    with patch("psutil.process_iter", return_value=iter(())):
+                    with (
+                        patch.object(psutil.Process, "create_time", inspect_time),
+                        patch("psutil.process_iter", return_value=iter(())),
+                    ):
                         code, _output, error = self.invoke(workspace, *options)
                     self.assertEqual(code, 2, error)
-                    self.assertIn("still running", error)
+                    self.assertIn("before uninstalling", error)
                     self.assertIsNone(child.poll())
                     self.assertTrue(root.is_dir())
                     self.assertFalse((root / "preserved-data").exists())
@@ -124,7 +151,10 @@ class InstallerUninstallTests(unittest.TestCase):
             workspace = Path(directory)
             root = _populate(workspace)
             before = _witness(root)
-            with patch.object(HeadlessInstaller, "get_running_installation_processes") as inventory:
+            with (
+                patch.object(HeadlessInstaller, "get_running_installation_processes") as inventory,
+                patch("pandrator_installer.lifecycle.uninstall_runtime_may_be_active") as metadata,
+            ):
                 code, output, error = self.invoke(workspace, "--dry-run", "--purge-data")
                 self.assertEqual(code, 0, error)
                 self.assertTrue(json.loads(output)["dry_run"])
@@ -132,6 +162,7 @@ class InstallerUninstallTests(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertIn("requires --yes", error)
                 inventory.assert_not_called()
+                metadata.assert_not_called()
             self.assertEqual(_witness(root), before)
 
     def test_stopped_installation_preserves_data_by_default(self):

@@ -34,6 +34,7 @@ from .process_identity import (
     identity_from_mapping,
     validated_process,
 )
+from .runtime_metadata import uninstall_runtime_may_be_active
 from .runtime_metadata_files import discard_runtime_metadata, read_runtime_metadata
 from .service import HeadlessInstaller
 from .supervisor import ManagedProcessSpec, ProcessSupervisor
@@ -718,6 +719,10 @@ def command_uninstall(args) -> int:
         return 0
     if not args.yes:
         raise RuntimeError("Uninstall requires --yes. User data is preserved unless --purge-data is also supplied.")
+    if uninstall_runtime_may_be_active(paths.install_root):
+        raise RuntimeError(
+            "Pandrator may still be running. Stop it and check its runtime metadata before uninstalling."
+        )
     installer = HeadlessInstaller(working_dir=str(paths.workspace))
     if installer.get_running_installation_processes(str(paths.install_root)):
         raise RuntimeError("Pandrator is still running. Stop it before uninstalling.")

@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 
 import psutil
 
@@ -95,3 +96,63 @@ def remove_stale_runtime_metadata(pandrator_path: str | os.PathLike[str]) -> Non
     lock_payload = lock_snapshot.payload if lock_snapshot is not None else None
     if not _metadata_record_is_live(lock_payload):
         _remove_file(lock_snapshot)
+
+
+def uninstall_runtime_may_be_active(root: str | os.PathLike[str]) -> bool:
+    """Read one-time uninstall evidence without preventing a concurrent launch."""
+
+    def record_may_be_active(
+        record: object,
+        *,
+        pid_key: str = "pid",
+        create_time_key: str = "process_create_time",
+        executable_key: str = "executable",
+    ) -> bool:
+        if not isinstance(record, dict):
+            return True
+        try:
+            raw_pid = int(record.get(pid_key) or 0)
+        except (OverflowError, TypeError, ValueError):
+            return True
+        if raw_pid <= 0:
+            return True
+        return _metadata_record_is_live(
+            record,
+            pid_key=pid_key,
+            create_time_key=create_time_key,
+            executable_key=executable_key,
+            require_instance_id=True,
+        )
+
+    metadata_root = Path(root)
+    for name in ("runtime-processes.json", "pandrator.instance.lock"):
+        path = metadata_root / name
+        snapshot = read_runtime_metadata(path)
+        if snapshot is None:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+            return True
+        payload = snapshot.payload
+        if snapshot.parse_error is not None or not isinstance(payload, dict):
+            return True
+        if name == "runtime-processes.json":
+            if record_may_be_active(
+                payload,
+                pid_key="supervisor_pid",
+                create_time_key="supervisor_create_time",
+                executable_key="supervisor_executable",
+            ):
+                return True
+            processes = payload.get("processes", {})
+            if not isinstance(processes, dict):
+                return True
+            for record in processes.values():
+                if record_may_be_active(record):
+                    return True
+        elif record_may_be_active(payload):
+            return True
+    return False
