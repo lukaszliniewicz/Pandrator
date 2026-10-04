@@ -22,6 +22,7 @@ from typing import Any
 import psutil
 
 from .catalog import COMPONENTS
+from .lifecycle_guard import LIFECYCLE_GUARD_NAME, installation_lifecycle_guard
 from .models import (
     DEFAULT_QWEN_MODEL_SIZE,
     InstallSelection,
@@ -35,7 +36,11 @@ from .process_identity import (
     validated_process,
 )
 from .runtime_metadata import uninstall_runtime_may_be_active
-from .runtime_metadata_files import discard_runtime_metadata, read_runtime_metadata
+from .runtime_metadata_files import (
+    discard_runtime_metadata,
+    read_runtime_metadata,
+    runtime_metadata_guard,
+)
 from .service import HeadlessInstaller
 from .supervisor import ManagedProcessSpec, ProcessSupervisor
 from .update import (
@@ -366,38 +371,43 @@ def command_service(args) -> int:
     if args.component not in SERVICE_HEALTH_URLS:
         raise ValueError(f"Unsupported supervised service: {args.component}")
     paths = _workspace(args)
-    installer = HeadlessInstaller(working_dir=str(paths.workspace))
-    stop_requested = False
+    with installation_lifecycle_guard(paths.install_root, shared=True):
+        installer = HeadlessInstaller(working_dir=str(paths.workspace))
+        stop_requested = False
 
-    def request_stop(_signum, _frame):
-        nonlocal stop_requested
-        stop_requested = True
+        def request_stop(_signum, _frame):
+            nonlocal stop_requested
+            stop_requested = True
 
-    previous = {}
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        try:
-            previous[signum] = signal.getsignal(signum)
-            signal.signal(signum, request_stop)
-        except (OSError, ValueError):
-            pass
-    try:
-        installer.launch_process(_service_selection(args.component))
-        owned = _owned_service_processes(installer)
-        if not owned:
-            raise RuntimeError(f"Service {args.component} is available but is not owned by this supervisor.")
-        while not stop_requested:
-            if any(process.poll() is not None for process in owned):
-                return 1
-            time.sleep(0.5)
-        return 0
-    finally:
-        installer.shutdown_apps()
-        installer.shutdown_logging()
-        for signum, handler in previous.items():
+        previous = {}
+        for signum in (signal.SIGINT, signal.SIGTERM):
             try:
-                signal.signal(signum, handler)
+                previous[signum] = signal.getsignal(signum)
+                signal.signal(signum, request_stop)
             except (OSError, ValueError):
                 pass
+        try:
+            installer.launch_process(_service_selection(args.component))
+            owned = _owned_service_processes(installer)
+            if not owned:
+                raise RuntimeError(f"Service {args.component} is available but is not owned by this supervisor.")
+            while not stop_requested:
+                if any(process.poll() is not None for process in owned):
+                    return 1
+                time.sleep(0.5)
+            return 0
+        finally:
+            try:
+                installer.shutdown_apps()
+            finally:
+                try:
+                    installer.shutdown_logging()
+                finally:
+                    for signum, handler in previous.items():
+                        try:
+                            signal.signal(signum, handler)
+                        except (OSError, ValueError):
+                            pass
 
 
 def _open_browser(url: str) -> None:
@@ -441,56 +451,60 @@ def command_launch(args) -> int:
     url = f"http://127.0.0.1:{args.port}/"
     if token:
         url += f"#bootstrap={token}"
-    password = str(os.environ.pop("PANDRATOR_OWNER_PASSWORD", "") or "")
-    database_path = paths.install_root / "pandrator.sqlite3"
-    initialized = False
-    if database_path.is_file():
-        try:
-            with sqlite3.connect(database_path) as connection:
-                initialized = bool(connection.execute("SELECT COUNT(*) FROM owner_account").fetchone()[0])
-        except sqlite3.Error:
-            initialized = False
 
-    protection_enabled = password_scope != "none" or remote
-    if password and protection_enabled:
-        if len(password) < 10:
-            raise RuntimeError("The owner password must contain at least 10 characters.")
-        environment = os.environ.copy()
-        environment["PANDRATOR_OWNER_PASSWORD"] = password
-        auth_command = [
-            str(_runtime_python(paths)), "-m", "pandrator", "--data-dir", str(paths.install_root),
-            "auth", "init",
-        ]
-        if initialized:
-            auth_command.append("--replace")
-        result = subprocess.run(
-            auth_command,
-            cwd=str(paths.pandrator_repo),
-            env=environment,
-            capture_output=True,
-            text=True,
+    def prepare() -> None:
+        password = str(os.environ.pop("PANDRATOR_OWNER_PASSWORD", "") or "")
+        database_path = paths.install_root / "pandrator.sqlite3"
+        initialized = False
+        if database_path.is_file():
+            try:
+                with sqlite3.connect(database_path) as connection:
+                    initialized = bool(connection.execute("SELECT COUNT(*) FROM owner_account").fetchone()[0])
+            except sqlite3.Error:
+                initialized = False
+
+        protection_enabled = password_scope != "none" or remote
+        if password and protection_enabled:
+            if len(password) < 10:
+                raise RuntimeError("The owner password must contain at least 10 characters.")
+            environment = os.environ.copy()
+            environment["PANDRATOR_OWNER_PASSWORD"] = password
+            auth_command = [
+                str(_runtime_python(paths)), "-m", "pandrator", "--data-dir", str(paths.install_root),
+                "auth", "init",
+            ]
+            if initialized:
+                auth_command.append("--replace")
+            result = subprocess.run(
+                auth_command,
+                cwd=str(paths.pandrator_repo),
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode:
+                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Could not save the owner password.")
+            initialized = True
+        if protection_enabled and not initialized:
+            raise RuntimeError("Password protection requires an owner password of at least 10 characters.")
+        if password_scope in {"local", "all"}:
+            # A local-password policy must not be bypassed by a session cookie from
+            # an earlier automatic-bootstrap launch. Rotating the signing secret at
+            # startup invalidates those cookies without storing server-side sessions.
+            try:
+                (paths.install_root / ".flask-secret").unlink(missing_ok=True)
+            except OSError as exc:
+                raise RuntimeError("Could not invalidate existing browser sessions.") from exc
+
+    with installation_lifecycle_guard(paths.install_root, shared=True):
+        supervisor = ProcessSupervisor(
+            data_root=paths.install_root,
+            specs=_runtime_specs(paths, args, token),
+            status_callback=lambda message: print(message, flush=True),
+            ready_callback=(lambda: None) if args.no_browser else (lambda: _open_browser(url)),
         )
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Could not save the owner password.")
-        initialized = True
-    if protection_enabled and not initialized:
-        raise RuntimeError("Password protection requires an owner password of at least 10 characters.")
-    if password_scope in {"local", "all"}:
-        # A local-password policy must not be bypassed by a session cookie from
-        # an earlier automatic-bootstrap launch. Rotating the signing secret at
-        # startup invalidates those cookies without storing server-side sessions.
-        try:
-            (paths.install_root / ".flask-secret").unlink(missing_ok=True)
-        except OSError as exc:
-            raise RuntimeError("Could not invalidate existing browser sessions.") from exc
-    supervisor = ProcessSupervisor(
-        data_root=paths.install_root,
-        specs=_runtime_specs(paths, args, token),
-        status_callback=lambda message: print(message, flush=True),
-        ready_callback=(lambda: None) if args.no_browser else (lambda: _open_browser(url)),
-    )
-    supervisor.run_foreground()
-    return 0
+        supervisor.run_foreground(prepare=prepare)
+        return 0
 
 
 def command_stop(args) -> int:
@@ -719,30 +733,46 @@ def command_uninstall(args) -> int:
         return 0
     if not args.yes:
         raise RuntimeError("Uninstall requires --yes. User data is preserved unless --purge-data is also supplied.")
-    if uninstall_runtime_may_be_active(paths.install_root):
-        raise RuntimeError(
-            "Pandrator may still be running. Stop it and check its runtime metadata before uninstalling."
-        )
     installer = HeadlessInstaller(working_dir=str(paths.workspace))
-    if installer.get_running_installation_processes(str(paths.install_root)):
-        raise RuntimeError("Pandrator is still running. Stop it before uninstalling.")
-    if not args.purge_data and paths.pandrator_repo.is_dir():
-        preserved_root = paths.install_root / "preserved-data"
-        preserved_root.mkdir(parents=True, exist_ok=True)
-        for name in ("Outputs", "voices", "models", "pandrator_state.sqlite3", "pandrator.sqlite3", "config.json"):
-            source = paths.pandrator_repo / name
-            if not source.exists():
-                continue
-            destination = preserved_root / name
-            if destination.exists():
-                raise RuntimeError(f"Cannot preserve {source}: {destination} already exists.")
-            shutil.move(str(source), str(destination))
-    for target in targets:
-        resolved = target.resolve()
-        if resolved.is_dir() and resolved != paths.install_root.resolve() and paths.install_root.resolve() in resolved.parents:
-            shutil.rmtree(resolved)
-    if args.purge_data and paths.install_root.is_dir():
-        shutil.rmtree(paths.install_root)
+
+    def check_runtime() -> None:
+        if uninstall_runtime_may_be_active(paths.install_root):
+            raise RuntimeError(
+                "Pandrator may still be running. Stop it and check its runtime metadata before uninstalling."
+            )
+        if installer.get_running_installation_processes(str(paths.install_root)):
+            raise RuntimeError("Pandrator is still running. Stop it before uninstalling.")
+
+    check_runtime()
+    if paths.install_root.is_dir():
+        with installation_lifecycle_guard(paths.install_root, shared=False):
+            with runtime_metadata_guard(paths.install_root):
+                check_runtime()
+                if not args.purge_data and paths.pandrator_repo.is_dir():
+                    preserved_root = paths.install_root / "preserved-data"
+                    preserved_root.mkdir(parents=True, exist_ok=True)
+                    for name in ("Outputs", "voices", "models", "pandrator_state.sqlite3", "pandrator.sqlite3", "config.json"):
+                        source = paths.pandrator_repo / name
+                        if not source.exists():
+                            continue
+                        destination = preserved_root / name
+                        if destination.exists():
+                            raise RuntimeError(f"Cannot preserve {source}: {destination} already exists.")
+                        shutil.move(str(source), str(destination))
+                for target in targets:
+                    resolved = target.resolve()
+                    if resolved.is_dir() and resolved != paths.install_root.resolve() and paths.install_root.resolve() in resolved.parents:
+                        shutil.rmtree(resolved)
+                if args.purge_data:
+                    # Keep both lock files at stable paths while other participants may
+                    # have them open. Everything else, including user data, is removed.
+                    for target in paths.install_root.iterdir():
+                        if target.name in {LIFECYCLE_GUARD_NAME, ".runtime-metadata.guard"}:
+                            continue
+                        if target.is_dir() and not target.is_symlink():
+                            shutil.rmtree(target)
+                        else:
+                            target.unlink()
     _emit({**payload, "status": "uninstalled"}, args.json)
     return 0
 
@@ -813,7 +843,10 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall = commands.add_parser("uninstall")
     uninstall.add_argument("--dry-run", action="store_true")
     uninstall.add_argument("--yes", action="store_true")
-    uninstall.add_argument("--purge-data", action="store_true")
+    uninstall.add_argument(
+        "--purge-data", action="store_true",
+        help="Remove application and user files; retain the folder and two empty coordination files.",
+    )
     uninstall.set_defaults(handler=command_uninstall)
     return parser
 

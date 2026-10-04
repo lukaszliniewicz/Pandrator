@@ -3,8 +3,11 @@ import contextlib
 import hashlib
 import io
 import json
+import os
+import signal
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,10 +21,12 @@ from pandrator_installer.lifecycle import (
     SERVICE_HEALTH_URLS,
     _owned_service_processes,
     _runtime_specs,
+    command_service,
     main,
 )
+from pandrator_installer.lifecycle_guard import LifecycleBusy, installation_lifecycle_guard
 from pandrator_installer.models import WorkspacePaths, normalize_password_scope
-from pandrator_installer.supervisor import ProcessSupervisor
+from pandrator_installer.supervisor import InstanceLock, ProcessSupervisor
 from pandrator_installer.update import verify_release_manifest
 
 
@@ -103,6 +108,7 @@ class InstallerLifecycleTests(unittest.TestCase):
                 code, _output, error = self.invoke(
                     ["launch", "--workspace", workspace, "--password-scope", "local"]
                 )
+                supervisor.return_value.run_foreground.call_args.kwargs["prepare"]()
                 supervisor.call_args.kwargs["ready_callback"]()
         self.assertEqual(code, 0, error)
         auth_command = auth_init.call_args.args[0]
@@ -111,6 +117,109 @@ class InstallerLifecycleTests(unittest.TestCase):
         self.assertNotIn("PANDRATOR_BOOTSTRAP_TOKEN", api.env)
         self.assertFalse(secret.exists())
         open_browser.assert_called_once_with("http://127.0.0.1:8097/")
+
+    def test_duplicate_launch_cannot_change_authentication_or_consume_password(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Pandrator"
+            owner = InstanceLock(root / "pandrator.instance.lock")
+            owner.acquire()
+            secret = root / ".flask-secret"
+            secret.write_bytes(b"original signing secret")
+            before = secret.stat()
+            try:
+                with (
+                    mock.patch.dict(os.environ, {"PANDRATOR_OWNER_PASSWORD": "fixture-password"}),
+                    mock.patch("pandrator_installer.lifecycle._runtime_specs", return_value=[]),
+                    mock.patch("pandrator_installer.lifecycle.subprocess.run") as auth,
+                ):
+                    code, _output, error = self.invoke([
+                        "launch", "--workspace", directory, "--password-scope", "local", "--no-browser",
+                    ])
+                    self.assertEqual(code, 2, error)
+                    self.assertIn("already supervised", error)
+                    auth.assert_not_called()
+                    self.assertEqual(os.environ.get("PANDRATOR_OWNER_PASSWORD"), "fixture-password")
+                self.assertEqual(secret.read_bytes(), b"original signing secret")
+                self.assertEqual(secret.stat(), before)
+                self.assertTrue(owner.acquired)
+            finally:
+                owner.release()
+
+    def test_failed_authentication_releases_new_supervisor_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Pandrator"
+            with (
+                mock.patch.dict(os.environ, {"PANDRATOR_OWNER_PASSWORD": "short"}),
+                mock.patch("pandrator_installer.lifecycle._runtime_specs", return_value=[]),
+            ):
+                code, _output, error = self.invoke([
+                    "launch", "--workspace", directory, "--password-scope", "local", "--no-browser",
+                ])
+            self.assertEqual(code, 2, error)
+            self.assertIn("at least 10", error)
+            self.assertFalse((root / "pandrator.instance.lock").exists())
+            self.assertFalse((root / "runtime-processes.json").exists())
+            with installation_lifecycle_guard(root, shared=False):
+                pass
+            with InstanceLock(root / "pandrator.instance.lock"):
+                pass
+
+    def test_service_holds_shared_admission_through_backend_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Pandrator"
+            installer = mock.Mock()
+            observations = []
+            errors = []
+
+            def check_lease(stage):
+                def inspect():
+                    try:
+                        with installation_lifecycle_guard(root, shared=False):
+                            errors.append("exclusive overlapped " + stage)
+                    except LifecycleBusy:
+                        observations.append(stage)
+                    except BaseException as error:
+                        errors.append(error)
+                thread = threading.Thread(target=inspect)
+                thread.start()
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+            def launch(_selection):
+                check_lease("launch")
+                handler = signal.getsignal(signal.SIGTERM)
+                self.assertTrue(callable(handler))
+                if callable(handler):
+                    handler(signal.SIGTERM, None)
+
+            installer.launch_process.side_effect = launch
+            installer.shutdown_apps.side_effect = lambda: check_lease("cleanup")
+            args = type("Args", (), {"workspace": directory, "component": "rvc"})()
+            with (
+                mock.patch("pandrator_installer.lifecycle.HeadlessInstaller", return_value=installer),
+                mock.patch("pandrator_installer.lifecycle._owned_service_processes", return_value=[mock.Mock()]),
+            ):
+                self.assertEqual(command_service(args), 0)
+            self.assertEqual(errors, [])
+            self.assertEqual(observations, ["launch", "cleanup"])
+            with installation_lifecycle_guard(root, shared=False):
+                pass
+
+    def test_service_cleanup_failure_still_restores_handlers_and_releases_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "Pandrator"
+            installer = mock.Mock()
+            installer.launch_process.side_effect = RuntimeError("startup failed")
+            installer.shutdown_apps.side_effect = RuntimeError("cleanup failed")
+            previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+            args = type("Args", (), {"workspace": directory, "component": "rvc"})()
+            with mock.patch("pandrator_installer.lifecycle.HeadlessInstaller", return_value=installer):
+                with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                    command_service(args)
+            installer.shutdown_logging.assert_called_once_with()
+            self.assertEqual({signum: signal.getsignal(signum) for signum in previous}, previous)
+            with installation_lifecycle_guard(root, shared=False):
+                pass
 
     def test_remote_launch_rejects_an_explicit_passwordless_policy(self):
         with tempfile.TemporaryDirectory() as workspace:

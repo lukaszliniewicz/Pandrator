@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from urllib.request import urlopen
 
 import psutil
 
+from .lifecycle_guard import installation_lifecycle_guard
 from .process_identity import (
     ProcessIdentityError,
     ProcessIdentityMismatch,
@@ -58,6 +60,10 @@ class InstanceLock:
         self.acquired = False
 
     def acquire(self) -> str:
+        with installation_lifecycle_guard(self.path.parent, shared=True):
+            return self._acquire()
+
+    def _acquire(self) -> str:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             current_identity = capture_process_identity(
@@ -436,9 +442,11 @@ class ProcessSupervisor:
         self._stop_one(managed)
         raise RuntimeError(f"{spec.label} did not become healthy. See {log_path}.")
 
-    def start_all(self) -> None:
+    def start_all(self, *, prepare: Callable[[], None] | None = None) -> None:
         self.lock.acquire()
         try:
+            if prepare is not None:
+                prepare()
             try:
                 self.runtime_control.unlink()
             except FileNotFoundError:
@@ -456,7 +464,7 @@ class ProcessSupervisor:
             self.ready_at = time.time()
             self._write_state()
             self._status("Pandrator web application is ready.")
-        except Exception:
+        except BaseException:
             self.stop_all()
             raise
 
@@ -522,7 +530,9 @@ class ProcessSupervisor:
             self._status(f"{managed.spec.label} was stopped from the installer.")
         self._write_state()
 
-    def run_foreground(self, interval: float = 1.0) -> None:
+    def run_foreground(
+        self, interval: float = 1.0, *, prepare: Callable[[], None] | None = None
+    ) -> None:
         previous_handlers: dict[int, Any] = {}
 
         def request_stop(_signum, _frame):
@@ -534,19 +544,25 @@ class ProcessSupervisor:
                 signal.signal(signum, request_stop)
             except (ValueError, OSError):
                 pass
-        self.start_all()
+        started = False
         try:
-            while not self.stop_event.wait(max(0.1, interval)):
-                self.monitor_once()
-        except KeyboardInterrupt:
-            self._status("Stopping Pandrator...")
+            self.start_all(prepare=prepare)
+            started = True
+            try:
+                while not self.stop_event.wait(max(0.1, interval)):
+                    self.monitor_once()
+            except KeyboardInterrupt:
+                self._status("Stopping Pandrator...")
         finally:
-            self.stop_all()
-            for signum, previous in previous_handlers.items():
-                try:
-                    signal.signal(signum, previous)
-                except (ValueError, OSError):
-                    pass
+            try:
+                if started:
+                    self.stop_all()
+            finally:
+                for signum, previous in previous_handlers.items():
+                    try:
+                        signal.signal(signum, previous)
+                    except (ValueError, OSError):
+                        pass
 
     @staticmethod
     def _terminate_process_tree(process: subprocess.Popen, timeout: float = 10.0) -> None:

@@ -75,6 +75,16 @@ selected installation. If the reported workspace or data root is not the one
 you expect, stop rather than “trying it to see what happens”—a philosophical
 method best reserved for soup, not storage.
 
+### Source installer CLI
+
+For the source installer CLI (`python -m pandrator_installer.lifecycle`),
+`uninstall --yes` preserves data by default. `--purge-data` removes application
+and user files, retaining the installation folder and two empty coordination
+files: `.lifecycle-operation.guard` and `.runtime-metadata.guard`. These files
+keep concurrent launch and removal operations coordinated. Uninstall refuses
+while an owned runtime or a backend service holds the installation; stop it
+before retrying. These CLI rules are separate from Manager removal plans.
+
 ## Safe maintenance checklist
 
 - Confirm the workspace and data root.

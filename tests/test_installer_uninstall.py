@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from unittest.mock import patch
 import psutil
 
 from pandrator_installer.lifecycle import main
+from pandrator_installer.lifecycle_guard import LIFECYCLE_GUARD_NAME, installation_lifecycle_guard
 from pandrator_installer.process_identity import capture_process_identity, identity_payload
 from pandrator_installer.service import HeadlessInstaller
 
@@ -190,8 +192,105 @@ class InstallerUninstallTests(unittest.TestCase):
                 code, output, error = self.invoke(workspace, "--yes", "--purge-data")
             self.assertEqual(code, 0, error)
             self.assertFalse(json.loads(output)["preserve_data"])
-            self.assertFalse(root.exists())
+            self.assertTrue(root.is_dir())
+            self.assertEqual(
+                {path.name: path.read_bytes() for path in root.iterdir()},
+                {LIFECYCLE_GUARD_NAME: b"", ".runtime-metadata.guard": b""},
+            )
             self.assertEqual(unrelated.read_bytes(), b"preserve sibling")
+
+    def test_missing_root_is_a_noop_without_creating_coordination_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            with patch("psutil.process_iter", return_value=iter(())):
+                code, _output, error = self.invoke(workspace, "--yes", "--purge-data")
+            self.assertEqual(code, 0, error)
+            self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_shared_service_lease_refuses_uninstall_without_deleting_original_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = _populate(workspace)
+            with installation_lifecycle_guard(root, shared=True):
+                before = _witness(root)
+                # Another thread/process would conflict natively; this same-thread
+                # mixed-mode request must also refuse without upgrading its lease.
+                with patch("psutil.process_iter", return_value=iter(())):
+                    code, _output, error = self.invoke(workspace, "--yes", "--purge-data")
+                self.assertEqual(code, 2, error)
+                self.assertIn("busy", error)
+                self.assertEqual(_witness(root), before)
+
+    def test_rechecks_recorded_runtime_after_exclusive_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = _populate(workspace)
+            before = _witness(root)
+            with (
+                patch("psutil.process_iter", return_value=iter(())),
+                patch(
+                    "pandrator_installer.lifecycle.uninstall_runtime_may_be_active",
+                    side_effect=[False, True],
+                ) as metadata,
+            ):
+                code, _output, error = self.invoke(workspace, "--yes", "--purge-data")
+            self.assertEqual(code, 2, error)
+            self.assertEqual(metadata.call_count, 2)
+            # Admission may create empty guards, but all original data is exact.
+            after = _witness(root)
+            self.assertEqual({name: after[name] for name in before}, before)
+            self.assertFalse((root / "preserved-data").exists())
+
+    def test_native_supervisor_cannot_start_at_the_first_deletion_cut(self):
+        child_code = textwrap.dedent("""
+            import json, os, sys
+            from pandrator_installer.lifecycle_guard import LifecycleBusy
+            from pandrator_installer.supervisor import ProcessSupervisor
+            supervisor = ProcessSupervisor(data_root=sys.argv[1], specs=[])
+            try:
+                supervisor.start_all()
+            except LifecycleBusy:
+                print(json.dumps({"token": sys.argv[2], "refused": True,
+                                  "acquired": supervisor.lock.acquired}))
+            else:
+                supervisor.stop_all()
+                print(json.dumps({"token": sys.argv[2], "refused": False}))
+        """)
+        import shutil
+
+        native_rmtree = shutil.rmtree
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = _populate(workspace)
+            token = uuid.uuid4().hex
+            observed = []
+
+            def delete_at_cut(path, *args, **kwargs):
+                if not observed:
+                    result = subprocess.run(
+                        [sys.executable, "-c", child_code, str(root), token],
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        check=True,
+                    )
+                    observed.append(json.loads(result.stdout))
+                    self.assertFalse((root / "pandrator.instance.lock").exists())
+                    self.assertFalse((root / "runtime-processes.json").exists())
+                return native_rmtree(path, *args, **kwargs)
+
+            with (
+                patch("psutil.process_iter", return_value=iter(())),
+                patch("pandrator_installer.lifecycle.shutil.rmtree", side_effect=delete_at_cut),
+            ):
+                code, _output, error = self.invoke(workspace, "--yes", "--purge-data")
+            self.assertEqual(code, 0, error)
+            self.assertEqual(observed, [{"token": token, "refused": True, "acquired": False}])
+            self.assertEqual(
+                {path.name: path.read_bytes() for path in root.iterdir()},
+                {LIFECYCLE_GUARD_NAME: b"", ".runtime-metadata.guard": b""},
+            )
 
 
 if __name__ == "__main__":
