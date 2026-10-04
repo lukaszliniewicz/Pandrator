@@ -37,6 +37,7 @@ from .process_identity import (
 )
 from .runtime_metadata import uninstall_runtime_may_be_active
 from .runtime_metadata_files import (
+    RuntimeMetadataSnapshot,
     discard_runtime_metadata,
     read_runtime_metadata,
     runtime_metadata_guard,
@@ -592,6 +593,7 @@ def command_update(args) -> int:
         stop_attempted = False
         stop_confirmed = False
         restart_allowed = False
+        snapshot: RuntimeMetadataSnapshot | None = None
         try:
             database_path = data_root / "pandrator.sqlite3"
             if database_path.is_file():
@@ -626,9 +628,7 @@ def command_update(args) -> int:
                 if not isinstance(runtime, dict):
                     raise RuntimeError("Runtime state must contain a JSON object.")
                 original_supervisor = _validated_supervisor_process(paths, runtime)
-                if original_supervisor is None:
-                    discard_runtime_metadata(snapshot)
-                else:
+                if original_supervisor is not None:
                     try:
                         restart_command = original_supervisor.cmdline()
                         restart_cwd = original_supervisor.cwd()
@@ -640,7 +640,6 @@ def command_update(args) -> int:
                         original_supervisor = None
                         restart_command = None
                         restart_cwd = None
-                        discard_runtime_metadata(snapshot)
                     except psutil.AccessDenied as error:
                         raise RuntimeError("Access was denied while stopping the Pandrator supervisor.") from error
                     else:
@@ -652,10 +651,12 @@ def command_update(args) -> int:
                         except psutil.NoSuchProcess:
                             pass
                         stop_confirmed = True
-                        discard_runtime_metadata(snapshot)
 
             operation.activate()
             _require_update_runtime_stopped(paths)
+            # Retained records let preflight inspect children that outlive their supervisor.
+            if snapshot is not None:
+                discard_runtime_metadata(snapshot)
             restart_allowed = True
             selected_environment = validate_update_environment(python, data_root)
             validate_update_package(python, selected_environment.prefix)

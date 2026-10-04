@@ -479,8 +479,15 @@ class InstallerLifecycleTests(unittest.TestCase):
             manifest, public = self._signed_release(root, wheel)
             data_root = root / "Pandrator"
             data_root.mkdir()
-            (data_root / "runtime-processes.json").write_text("{}", encoding="utf-8")
-            supervisor = mock.Mock(pid=4321)
+            state = {
+                "instance_id": "stopped-fixture",
+                "supervisor_pid": 2_000_000_001,
+                "supervisor_create_time": 1.0,
+                "supervisor_executable": sys.executable,
+                "processes": {},
+            }
+            (data_root / "runtime-processes.json").write_text(json.dumps(state), encoding="utf-8")
+            supervisor = mock.Mock(pid=2_000_000_001)
             supervisor.cmdline.return_value = ["PandratorInstaller", "launch", "--workspace", str(root)]
             supervisor.cwd.return_value = str(root)
             supervisor.is_running.return_value = False

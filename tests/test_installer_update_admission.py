@@ -9,11 +9,19 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 from unittest.mock import Mock, patch
+
+import psutil
 
 from pandrator_installer.lifecycle import main
 from pandrator_installer.models import WorkspacePaths
+from pandrator_installer.process_identity import (
+    ProcessIdentity,
+    ProcessInspectionError,
+    capture_process_identity,
+    identity_payload,
+)
 from pandrator_installer.runtime_metadata_files import runtime_metadata_guard
 from pandrator_installer.update_operation import UpdateOperation
 from tests.test_installer_install_admission import native_reader_admitted, runtime_lease
@@ -113,7 +121,17 @@ class InstallerUpdateAdmissionTests(unittest.TestCase):
         return code, output.getvalue() + error.getvalue()
 
     def stopped_supervisor(self) -> Mock:
-        (self.root / "runtime-processes.json").write_text("{}")
+        (self.root / "runtime-processes.json").write_text(
+            json.dumps(
+                {
+                    "instance_id": "fixture",
+                    "supervisor_pid": 2_000_000_001,
+                    "supervisor_create_time": 1.0,
+                    "supervisor_executable": sys.executable,
+                    "processes": {},
+                }
+            )
+        )
         supervisor = Mock()
         supervisor.cmdline.return_value = ["fixture-launcher"]
         supervisor.cwd.return_value = str(self.paths.workspace)
@@ -125,6 +143,83 @@ class InstallerUpdateAdmissionTests(unittest.TestCase):
             )
         )
         return supervisor
+
+    def original_child_state(self, child: object, boundary: str) -> bytes:
+        supervisor = self.stopped_supervisor()
+        if boundary == "absent":
+            self.stack.enter_context(
+                patch(
+                    "pandrator_installer.lifecycle._validated_supervisor_process", return_value=None
+                )
+            )
+        elif boundary == "disappeared":
+            supervisor.terminate.side_effect = psutil.NoSuchProcess(2_000_000_001)
+        state = self.root / "runtime-processes.json"
+        payload = json.loads(state.read_text())
+        payload["processes"] = {"fixture-child": child}
+        state.write_text(json.dumps(payload))
+        return state.read_bytes()
+
+    def assert_original_child_refused(self, child: object, boundary: str) -> None:
+        original = self.original_child_state(child, boundary)
+        code, message = self.invoke()
+        self.assertEqual(code, 2, message)
+        self.assertIn("runtime metadata", message)
+        self.assertEqual((self.root / "runtime-processes.json").read_bytes(), original)
+        self.snapshot.assert_not_called()
+        self.install.assert_not_called()
+        self.restart.assert_not_called()
+        self.assertFalse((self.root / "backups").exists())
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(exclusive_admitted(self.root))
+
+    def live_child_record(self) -> dict[str, Any]:
+        return identity_payload(capture_process_identity(psutil.Process(), instance_id="fixture"))
+
+    def test_original_live_child_survives_absent_supervisor(self) -> None:
+        self.assert_original_child_refused(self.live_child_record(), "absent")
+
+    def test_original_live_child_survives_disappeared_supervisor(self) -> None:
+        self.assert_original_child_refused(self.live_child_record(), "disappeared")
+
+    def test_original_live_child_survives_waited_supervisor(self) -> None:
+        self.assert_original_child_refused(self.live_child_record(), "waited")
+
+    def test_original_malformed_child_is_preserved(self) -> None:
+        self.assert_original_child_refused(None, "absent")
+
+    def test_original_uninspectable_child_is_preserved(self) -> None:
+        child = self.live_child_record()
+
+        def inspect(identity: ProcessIdentity) -> None:
+            if identity.pid == os.getpid():
+                raise ProcessInspectionError("controlled inspection failure")
+            return None
+
+        with patch("pandrator_installer.runtime_metadata.validated_process", side_effect=inspect):
+            self.assert_original_child_refused(child, "absent")
+
+    def test_original_dead_child_can_be_retired_at_each_stop_boundary(self) -> None:
+        child = {
+            "pid": 2_000_000_002,
+            "process_create_time": 1.0,
+            "executable": sys.executable,
+            "instance_id": "fixture",
+        }
+        for boundary in ("absent", "disappeared", "waited"):
+            with self.subTest(boundary=boundary):
+                self.snapshot.reset_mock()
+                self.install.reset_mock()
+                self.restart.reset_mock()
+                self.original_child_state(child, boundary)
+                code, message = self.invoke()
+                self.assertEqual(code, 0, message)
+                self.assertFalse((self.root / "runtime-processes.json").exists())
+                self.snapshot.assert_called_once()
+                self.install.assert_called_once()
+                self.assertEqual(self.restart.call_count, int(boundary == "waited"))
+                self.assertFalse(self.marker.exists())
+                self.assertTrue(exclusive_admitted(self.root))
 
     def test_runtime_lease_refuses_activation_before_backups(self) -> None:
         with runtime_lease(self.root):
