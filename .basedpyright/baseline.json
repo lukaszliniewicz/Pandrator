@@ -5370,24 +5370,6 @@
                 }
             }
         ],
-        "./pandrator_installer/update.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator_installer/workflows.py": [
             {
                 "code": "reportAttributeAccessIssue",

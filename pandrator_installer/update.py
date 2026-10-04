@@ -12,9 +12,13 @@ import subprocess
 import time
 import zipfile
 from dataclasses import dataclass
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
+
+from .subprocess_env import external_subprocess_environment
+from .update_environment import inspect_update_environment, validate_update_package
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +56,9 @@ def verify_release_manifest(manifest_path: Path, public_key_path: Path) -> Verif
         key.verify(base64.b64decode(signature_text, validate=True), _canonical(signed))
     except Exception as error:
         raise ValueError("Release manifest signature verification failed.") from error
-    wheel = signed.get("wheel") if isinstance(signed.get("wheel"), dict) else {}
+    wheel = signed.get("wheel")
+    if not isinstance(wheel, dict):
+        wheel = {}
     name = str(wheel.get("filename") or "").strip()
     digest = str(wheel.get("sha256") or "").strip().lower()
     version = str(signed.get("version") or "").strip()
@@ -71,14 +77,7 @@ def snapshot_sqlite(source: Path, destination: Path) -> bool:
 
 
 def _site_packages(python: Path) -> Path:
-    result = subprocess.run(
-        [str(python), "-c", "import json,site; print(json.dumps(site.getsitepackages()))"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    candidates = [Path(value) for value in json.loads(result.stdout)]
-    return next((path.resolve() for path in candidates if path.is_dir()), candidates[0].resolve())
+    return inspect_update_environment(python).purelib
 
 
 def snapshot_installed_package(python: Path, destination: Path) -> Path:
@@ -122,15 +121,35 @@ def restore_installed_package(snapshot: Path, site_packages: Path) -> None:
             archive.extract(member, site_packages)
 
 
+def _wheel_package_name(wheel: Path) -> str:
+    with zipfile.ZipFile(wheel) as archive:
+        records = [name for name in archive.namelist()
+                   if name.endswith(".dist-info/METADATA") and len(name.split("/")) == 2]
+        if len(records) != 1:
+            raise ValueError("The update wheel must contain exactly one package metadata record.")
+        name = BytesParser().parsebytes(archive.read(records[0])).get("Name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("The update wheel must identify its package name.")
+    return name.strip()
+
+
 def install_wheel(python: Path, wheel: Path) -> None:
+    selected = inspect_update_environment(python)
+    validate_update_package(python, selected.prefix, _wheel_package_name(wheel))
+    environment = external_subprocess_environment()
+    environment = {name: value for name, value in environment.items() if not name.startswith("PIP_")}
+    environment["PIP_CONFIG_FILE"] = os.devnull
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--upgrade", "--force-reinstall", "--no-deps", str(wheel)],
+        [str(python), "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
+         "install", "--no-index", "--upgrade", "--force-reinstall", "--no-deps",
+         "--prefix", str(selected.prefix), str(wheel)],
         check=True,
+        env=environment,
     )
 
 
 def run_migrations(python: Path, data_root: Path) -> None:
-    subprocess.run([str(python), "-m", "pandrator", "--data-dir", str(data_root), "--json", "migrate"], check=True)
+    subprocess.run([str(python), "-I", "-m", "pandrator", "--data-dir", str(data_root), "--json", "migrate"], check=True, env=external_subprocess_environment())
 
 
 def health_check(python: Path, data_root: Path, timeout: float = 35.0) -> None:
@@ -138,12 +157,13 @@ def health_check(python: Path, data_root: Path, timeout: float = 35.0) -> None:
         probe.bind(("127.0.0.1", 0))
         port = int(probe.getsockname()[1])
     process = subprocess.Popen(
-        [str(python), "-m", "pandrator", "--data-dir", str(data_root), "serve", "--host", "127.0.0.1", "--port", str(port), "--no-open-browser"],
+        [str(python), "-I", "-m", "pandrator", "--data-dir", str(data_root), "serve", "--host", "127.0.0.1", "--port", str(port), "--no-open-browser"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         start_new_session=os.name != "nt",
+        env=external_subprocess_environment(),
     )
     try:
         deadline = time.monotonic() + timeout

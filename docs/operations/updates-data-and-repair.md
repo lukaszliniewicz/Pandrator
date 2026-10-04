@@ -89,6 +89,11 @@ If runtime metadata cannot establish that they have stopped, installation refuse
 until that uncertainty is resolved. These CLI rules are separate from Manager
 removal plans.
 
+Signed-wheel updates require a Python environment inside the selected installation.
+A missing or escaped environment must be repaired before updating. The update
+uses the installation environment and ignores personal pip destination settings.
+It also refuses an existing Pandrator package whose files lie outside that environment.
+
 ## Safe maintenance checklist
 
 - Confirm the workspace and data root.

@@ -53,6 +53,7 @@ from .update import (
     snapshot_sqlite,
     verify_release_manifest,
 )
+from .update_environment import validate_update_environment, validate_update_package
 
 LIFECYCLE_COMMANDS = {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"}
 
@@ -569,6 +570,10 @@ def command_update(args) -> int:
     if verified.wheel_name != wheel.name or not secrets.compare_digest(verified.wheel_sha256, digest.lower()):
         raise ValueError("The selected wheel does not match the signed release manifest.")
 
+    python = _runtime_python(paths)
+    selected_environment = validate_update_environment(python, paths.install_root)
+    validate_update_package(python, selected_environment.prefix)
+
     data_root = paths.install_root
     data_root.mkdir(parents=True, exist_ok=True)
     maintenance = data_root / "maintenance.json"
@@ -641,7 +646,8 @@ def command_update(args) -> int:
                     stop_confirmed = True
                     discard_runtime_metadata(snapshot)
 
-        python = _runtime_python(paths)
+        selected_environment = validate_update_environment(python, data_root)
+        validate_update_package(python, selected_environment.prefix)
         backup_dir = data_root / "backups" / f"update-{time.time_ns()}-{verified.version}"
         backup_dir.mkdir(parents=True, exist_ok=False)
         database_snapshot = backup_dir / "pandrator.sqlite3"

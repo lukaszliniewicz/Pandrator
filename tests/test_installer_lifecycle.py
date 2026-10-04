@@ -431,7 +431,9 @@ class InstallerLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "signature"):
                 verify_release_manifest(manifest, public)
 
-    def test_live_update_activates_only_after_signature_snapshot_migration_and_health(self):
+    @mock.patch("pandrator_installer.lifecycle.validate_update_environment")
+    @mock.patch("pandrator_installer.lifecycle.validate_update_package")
+    def test_live_update_activates_only_after_signature_snapshot_migration_and_health(self, _validate_package, _validate_environment):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wheel = root / "pandrator-0.49.0-py3-none-any.whl"
@@ -448,7 +450,9 @@ class InstallerLifecycleTests(unittest.TestCase):
             migrate.assert_called_once()
             health.assert_called_once()
 
-    def test_update_clears_maintenance_marker_when_runtime_state_is_malformed(self):
+    @mock.patch("pandrator_installer.lifecycle.validate_update_environment")
+    @mock.patch("pandrator_installer.lifecycle.validate_update_package")
+    def test_update_clears_maintenance_marker_when_runtime_state_is_malformed(self, _validate_package, _validate_environment):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wheel = root / "pandrator-0.49.0-py3-none-any.whl"
@@ -465,7 +469,9 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertIn("Runtime state is unreadable", error)
             self.assertFalse((data_root / "maintenance.json").exists())
 
-    def test_update_restarts_stopped_supervisor_when_snapshot_fails(self):
+    @mock.patch("pandrator_installer.lifecycle.validate_update_environment")
+    @mock.patch("pandrator_installer.lifecycle.validate_update_package")
+    def test_update_restarts_stopped_supervisor_when_snapshot_fails(self, _validate_package, _validate_environment):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wheel = root / "pandrator-0.49.0-py3-none-any.whl"
@@ -519,7 +525,9 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertIn("unrelated PID", error)
             reused_process.terminate.assert_not_called()
 
-    def test_update_preserves_replacement_state_at_each_stop_cleanup_boundary(self):
+    @mock.patch("pandrator_installer.lifecycle.validate_update_environment")
+    @mock.patch("pandrator_installer.lifecycle.validate_update_package")
+    def test_update_preserves_replacement_state_at_each_stop_cleanup_boundary(self, _validate_package, _validate_environment):
         import os
 
         import psutil
