@@ -156,3 +156,22 @@ class InstallerRuntimeMetadataTests(unittest.TestCase):
 
         self.assertFalse(self.runtime_state.exists())
         self.assertFalse(self.lock.exists())
+
+    def test_infinite_metadata_pids_do_not_abort_cleanup(self) -> None:
+        for value in (float("inf"), float("-inf")):
+            with self.subTest(pid=value):
+                self._write(self.runtime_state, {"supervisor_pid": value})
+                self._write(self.lock, {"pid": value})
+                with (
+                    patch(
+                        "pandrator_installer.runtime_metadata.psutil.Process",
+                        side_effect=AssertionError("Unexpected process inspection"),
+                    ),
+                    patch(
+                        "pandrator_installer.runtime_metadata.psutil.pid_exists",
+                        side_effect=AssertionError("Unexpected PID inspection"),
+                    ),
+                ):
+                    remove_stale_runtime_metadata(self.root)
+                self.assertFalse(self.runtime_state.exists())
+                self.assertFalse(self.lock.exists())

@@ -25,7 +25,7 @@ def _metadata_record_is_live(
 ) -> bool:
     try:
         raw_pid = int(record.get(pid_key) or 0) if isinstance(record, dict) else 0
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         raw_pid = 0
     if not isinstance(record, dict):
         return False
