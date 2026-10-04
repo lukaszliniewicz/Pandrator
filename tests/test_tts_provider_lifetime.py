@@ -390,8 +390,12 @@ def test_metadata_borrower_survives_close_and_cleanup_failure(
             adapter.close()
 
 
-@pytest.mark.parametrize("ending", ["return", "error", "interrupt", "browser_error"])
-def test_serve_cli_closes_native_app_registry_on_every_exit(monkeypatch, tmp_path, ending):
+@pytest.mark.parametrize(
+    "ending", ["return", "error", "interrupt", "browser_error", "shutdown_incomplete"]
+)
+def test_serve_cli_retires_native_registry_after_completed_request_shutdown(
+    monkeypatch, tmp_path, ending
+):
     app = create_app(data_root=tmp_path, testing=True, background_maintenance=True)
     services = app.extensions["pandrator"]["services"]
     assert services.startup_maintenance.wait(5)
@@ -413,6 +417,8 @@ def test_serve_cli_closes_native_app_registry_on_every_exit(monkeypatch, tmp_pat
             raise RuntimeError("controlled server failure")
         if ending == "interrupt":
             raise KeyboardInterrupt()
+        if ending == "shutdown_incomplete":
+            raise cli.ApiShutdownIncomplete("controlled incomplete request shutdown")
 
     def browser(_url):
         raise RuntimeError("controlled browser failure")
@@ -438,11 +444,17 @@ def test_serve_cli_closes_native_app_registry_on_every_exit(monkeypatch, tmp_pat
             expected = KeyboardInterrupt if ending == "interrupt" else RuntimeError
             with pytest.raises(expected):
                 cli.command_serve(args)
-        assert pool.closed
-        assert session.close_count == 1
-        assert not periodic.is_alive()
-        assert not quick.is_alive()
-        assert services.database.engine.pool is not original_pool
+        if ending == "shutdown_incomplete":
+            assert not pool.closed
+            assert session.close_count == 0
+            assert periodic.is_alive() and quick.is_alive()
+            assert services.database.engine.pool is original_pool
+        else:
+            assert pool.closed
+            assert session.close_count == 1
+            assert not periodic.is_alive()
+            assert not quick.is_alive()
+            assert services.database.engine.pool is not original_pool
     finally:
         services.startup_maintenance.stop()
         services.quick_transcriptions.stop_maintenance()

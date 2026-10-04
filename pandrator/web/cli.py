@@ -23,6 +23,7 @@ from sqlalchemy import select
 from pandrator.runtime import DataPaths
 
 from .api import create_app
+from .api_server import ApiShutdownIncomplete
 from .api_server import serve_api as waitress_serve
 from .artifacts import ArtifactService, sha256_file
 from .auth import ALL_SCOPES, AuthService, BootstrapTokenStore
@@ -446,6 +447,7 @@ def command_serve(args) -> int:
         bootstrap_tokens=bootstrap,
         public_origin=network.browser_url,
     )
+    retire_resources = True
     try:
         if args.open_browser:
             token = bootstrap.issue()
@@ -465,9 +467,13 @@ def command_serve(args) -> int:
             threads=max(6, args.threads),
             url_scheme="http",
         )
+    except ApiShutdownIncomplete:
+        retire_resources = False
+        raise
     finally:
-        # Request bounded maintenance stops and retire application-owned resources.
-        app.extensions["pandrator"]["services"].close()
+        # Retire application-owned resources only after request shutdown completes.
+        if retire_resources:
+            app.extensions["pandrator"]["services"].close()
     return 0
 
 

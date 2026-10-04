@@ -13,11 +13,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import requests
 from sqlalchemy import select
 
 from pandrator.runtime import DataPaths
+from pandrator.web import api_server
 from pandrator.web.api import create_app
 from pandrator.web.database import Database
 from pandrator.web.legacy_migration import import_legacy_data
@@ -207,8 +209,8 @@ raise SystemExit(code)
             },
         )
 
-    def _exercise_active_cut(self, signum, *, repeat=False):
-        child = self._start_api()
+    def _exercise_active_cut(self, signum, *, repeat=False, delay=1.5):
+        child = self._start_api(delay=delay)
         thread, original_http = self._start_request()
         reservation_id = self._wait_preparation(child)
         child.send_signal(signum)
@@ -216,7 +218,12 @@ raise SystemExit(code)
             time.sleep(0.15)
             self.assertIsNone(child.poll())
             child.send_signal(signum)
-        self.assertEqual(child.wait(timeout=7), 0)
+        if delay > 5:
+            time.sleep(5.5)
+            self.assertIsNone(child.poll(), "API retired before its active request completed")
+            self.assertFalse(self.closed.exists())
+            self.assertEqual(self._wait_preparation(child), reservation_id)
+        self.assertEqual(child.wait(timeout=max(7, delay + 5)), 0)
         self._assert_clean_shutdown()
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
@@ -256,24 +263,89 @@ raise SystemExit(code)
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", self.port), timeout=0.1)
 
-    def test_shutdown_is_bounded_when_preparation_outlasts_waitress_window(self):
-        child = self._start_api(delay=8)
-        thread, original_http = self._start_request()
-        reservation_id = self._wait_preparation(child)
-        start = time.monotonic()
-        child.send_signal(signal.SIGTERM)
-        self.assertEqual(child.wait(timeout=7), 0)
-        self.assertLess(time.monotonic() - start, 7)
-        thread.join(timeout=5)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(len(original_http), 1)
-        self._assert_clean_shutdown()
-        with self.database.snapshot_session() as db:
-            reservation = db.scalar(select(ApiIdempotency))
-            assert reservation is not None
-            self.assertEqual(
-                (reservation.id, reservation.state, reservation.resource_id),
-                (reservation_id, "in_progress", None),
+    def test_shutdown_finishes_preparation_beyond_waitress_default_window(self):
+        self._exercise_active_cut(signal.SIGTERM, delay=8)
+
+    def test_sigterm_disconnects_connected_event_stream_before_request_drain(self):
+        child = self._start_api()
+        with requests.Session() as client:
+            client.trust_env = False
+            with client.get(
+                f"http://127.0.0.1:{self.port}/api/v1/events",
+                headers={"Authorization": "Bearer " + self.token},
+                stream=True,
+                timeout=15,
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(next(response.iter_lines(chunk_size=1)), b": heartbeat")
+                child.send_signal(signal.SIGTERM)
+                self.assertEqual(child.wait(timeout=5), 0)
+                self._assert_clean_shutdown()
+
+
+class ApiShutdownOwnershipTests(unittest.TestCase):
+    def _server(self):
+        server = mock.Mock()
+        server.adj.asyncore_use_poll = False
+        return server
+
+    def _serve(self):
+        api_server.serve_api(mock.Mock(), host="127.0.0.1", port=0, threads=1, url_scheme="http")
+
+    def test_failed_or_interrupted_drain_preserves_cause_and_restores_handler(self):
+        for error in (RuntimeError("drain failed"), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                server = self._server()
+                server.task_dispatcher.shutdown.side_effect = error
+                with (
+                    mock.patch.object(api_server, "create_server", return_value=server),
+                    mock.patch.object(api_server, "close_waitress_connections") as close,
+                    mock.patch.object(
+                        api_server.signal, "signal", return_value=signal.SIG_DFL
+                    ) as install,
+                ):
+                    with self.assertRaises(api_server.ApiShutdownIncomplete) as raised:
+                        self._serve()
+                    self.assertIs(raised.exception.__cause__, error)
+                    close.assert_called_once()
+                    server.task_dispatcher.shutdown.assert_called_once_with(
+                        cancel_pending=True, timeout=float("inf")
+                    )
+                    self.assertEqual(install.call_args, mock.call(signal.SIGTERM, signal.SIG_DFL))
+
+    def test_connection_close_failure_still_attempts_request_drain(self):
+        server = self._server()
+        error = RuntimeError("connection close failed")
+        with (
+            mock.patch.object(api_server, "create_server", return_value=server),
+            mock.patch.object(api_server, "close_waitress_connections", side_effect=error),
+            mock.patch.object(api_server.signal, "signal", return_value=signal.SIG_DFL),
+        ):
+            with self.assertRaises(api_server.ApiShutdownIncomplete) as raised:
+                self._serve()
+            self.assertIs(raised.exception.__cause__, error)
+            server.task_dispatcher.shutdown.assert_called_once_with(
+                cancel_pending=True, timeout=float("inf")
             )
-            self.assertEqual(list(db.scalars(select(GenerationRun))), [])
-            self.assertEqual(list(db.scalars(select(Job))), [])
+
+    def test_loop_failure_propagates_after_completed_request_drain(self):
+        server = self._server()
+        error = RuntimeError("event loop failed")
+
+        def create(*_args, **kwargs):
+            kwargs["map"][1] = mock.Mock()
+            return server
+
+        with (
+            mock.patch.object(api_server, "create_server", side_effect=create),
+            mock.patch.object(api_server.wasyncore, "loop", side_effect=error),
+            mock.patch.object(api_server, "close_waitress_connections") as close,
+            mock.patch.object(api_server.signal, "signal", return_value=signal.SIG_DFL),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                self._serve()
+            self.assertIs(raised.exception, error)
+            close.assert_called_once()
+            server.task_dispatcher.shutdown.assert_called_once_with(
+                cancel_pending=True, timeout=float("inf")
+            )

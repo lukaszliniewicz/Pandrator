@@ -1,15 +1,32 @@
-"""Waitress adapter with bounded shutdown after an API termination request."""
+"""Waitress adapter that completes active requests after an API termination request."""
 
 from __future__ import annotations
 
 import logging
 import signal
+from collections.abc import Callable
 from types import FrameType
-from typing import Any
+from typing import Any, cast
 from wsgiref.types import WSGIApplication
 
 from waitress import wasyncore
+from waitress.channel import HTTPChannel
 from waitress.server import create_server
+
+
+def close_waitress_connections(channels: dict[int, wasyncore.dispatcher]) -> None:
+    # HTTPChannel.close() does not wake writers waiting on the output condition.
+    # Notify them before closing the remaining listener/trigger descriptors.
+    for channel in list(channels.values()):
+        if isinstance(channel, HTTPChannel):
+            channel.handle_close()
+    # Waitress's stubs describe sockets here; its native map holds dispatchers.
+    close_all = cast(Callable[[dict[int, wasyncore.dispatcher]], None], wasyncore.close_all)
+    close_all(channels)
+
+
+class ApiShutdownIncomplete(RuntimeError):
+    """Request shutdown failed, so application resources must remain owned."""
 
 
 def serve_api(
@@ -20,7 +37,7 @@ def serve_api(
     threads: int,
     url_scheme: str,
 ) -> None:
-    """Finish active tasks within Waitress's existing shutdown allowance."""
+    """Disconnect clients and wait for active native tasks to finish on shutdown."""
 
     logging.basicConfig()
     # Waitress stores heterogeneous dispatchers despite its socket-only map annotations.
@@ -54,8 +71,15 @@ def serve_api(
             pass
         finally:
             try:
-                server.task_dispatcher.shutdown()
-            finally:
-                wasyncore.close_all(socket_map)
+                try:
+                    close_waitress_connections(socket_map)
+                finally:
+                    # The native deadline supports floats unlike the installed integer-only stub.
+                    shutdown = cast(Callable[..., bool], server.task_dispatcher.shutdown)
+                    shutdown(cancel_pending=True, timeout=float("inf"))
+            except BaseException as error:
+                raise ApiShutdownIncomplete(
+                    "API request shutdown did not complete; application resources remain owned."
+                ) from error
     finally:
         signal.signal(signal.SIGTERM, previous)
