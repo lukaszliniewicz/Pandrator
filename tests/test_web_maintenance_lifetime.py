@@ -14,6 +14,7 @@ import pytest
 
 from pandrator.web import startup
 from pandrator.web.application_services import ApplicationServices
+from pandrator.web.maintenance_threads import MaintenanceThread
 from pandrator.web.models import AppSettingHistory, utcnow
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -183,7 +184,7 @@ def test_maintenance_thread_can_request_stop_without_joining_itself(
         except BaseException as error:
             errors.append(error)
 
-    thread = threading.Thread(target=request_stop)
+    thread = MaintenanceThread(target=request_stop, name="test-self-stop")
     maintenance._thread = thread
     try:
         thread.start()

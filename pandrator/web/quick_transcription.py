@@ -28,6 +28,7 @@ from .credentials import SecretRedactor, hydrate_stt_settings
 from .database import Database
 from .idempotency import IdempotencyService
 from .jobs import JobQueue
+from .maintenance_threads import MaintenanceThread
 from .media_process import resolve_ffmpeg_executable
 from .models import AppSetting, Job, QuickTranscription, new_id, utcnow
 from .quick_transcription_schemas import CHUNK_SIZE, INLINE_BYTES, TranscriptionCreate
@@ -81,7 +82,7 @@ class QuickTranscriptionService:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.idempotency = IdempotencyService(database, SecretRedactor(database, paths))
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._thread: MaintenanceThread | None = None
 
     def _directory(self, identifier: str) -> Path:
         # Identifiers come from a database record, never a caller's path.
@@ -499,7 +500,7 @@ class QuickTranscriptionService:
                     pass
                 self._stop.wait(30)
 
-        self._thread = threading.Thread(
+        self._thread = MaintenanceThread(
             target=maintain, name="quick-transcription-cleanup", daemon=True
         )
         self._thread.start()
@@ -511,8 +512,7 @@ class QuickTranscriptionService:
             return True
         if thread is threading.current_thread():
             return False
-        thread.join(timeout=timeout)
-        return not thread.is_alive()
+        return thread.finish(timeout=timeout)
 
     def run(self, payload, progress, cancel_event):
         identifier = str(payload["transcription_id"])

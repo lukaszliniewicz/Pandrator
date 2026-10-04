@@ -12,6 +12,7 @@ from pandrator.runtime import DataPaths
 
 from .database import Database
 from .maintenance import apply_retention
+from .maintenance_threads import MaintenanceThread
 from .models import AppSetting
 from .session_purge import SessionPurgeService
 from .uploads import ChunkUploadService
@@ -25,22 +26,22 @@ class StartupMaintenance:
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger(__name__))
     result: dict[str, Any] | None = None
     error: str | None = None
-    _thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _thread: MaintenanceThread | None = field(default=None, init=False, repr=False)
     _completed: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _run_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
-    _periodic_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _periodic_thread: MaintenanceThread | None = field(default=None, init=False, repr=False)
 
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(
+        self._thread = MaintenanceThread(
             target=self.run,
             name="pandrator-startup-maintenance",
             daemon=True,
         )
         self._thread.start()
-        self._periodic_thread = threading.Thread(
+        self._periodic_thread = MaintenanceThread(
             target=self._periodic_purge,
             name="pandrator-session-purge-maintenance",
             daemon=True,
@@ -57,7 +58,7 @@ class StartupMaintenance:
                 self.logger.exception("Periodic session purge maintenance failed")
 
     def stop(self, *, timeout: float | None = 2) -> bool:
-        """Request shutdown and report whether both threads finish within one budget."""
+        """Stop maintenance work within one budget; cancel work that has not begun."""
 
         self._stop.set()
         threads = tuple(
@@ -69,10 +70,14 @@ class StartupMaintenance:
         if any(thread is current for thread in threads):
             return False
         deadline = None if timeout is None else time.monotonic() + timeout
+        complete = True
         for thread in threads:
             remaining = None if deadline is None else max(0, deadline - time.monotonic())
-            thread.join(timeout=remaining)
-        return all(not thread.is_alive() for thread in threads)
+            finished = thread.finish(timeout=remaining)
+            if finished and thread is self._thread:
+                self._completed.set()
+            complete = finished and complete
+        return complete
 
     def run(self) -> dict[str, Any]:
         with self._run_lock:
