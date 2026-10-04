@@ -294,7 +294,10 @@ class ApplicationServices:
         try:
             self.tts_providers.close()
         finally:
-            self.database.dispose()
+            try:
+                self.manager_bridge.close()
+            finally:
+                self.database.dispose()
 
     def extension_mapping(self) -> dict[str, Any]:
         """Return the stable test/plugin surface exposed through Flask."""

@@ -236,6 +236,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_workflow_selection_concurrency.py",
         "tests/test_web_credentials.py",
         "tests/test_web_manager_proxy.py",
+        "tests/test_web_manager_proxy_lifetime.py",
         "tests/test_web_workflow_plans.py",
         "tests/test_multilingual_setup.py",
     ),

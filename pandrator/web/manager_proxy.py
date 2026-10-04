@@ -99,9 +99,19 @@ class LocalManagerProxy:
             if configured_credential
             else None
         )
-        self.session = session or requests.Session()
+        self._owns_session = session is None
+        self.session = requests.Session() if session is None else session
         self.session.trust_env = False
         self._session_lock = RLock()
+        self._closed = False
+        self._session_retired = False
+
+    def close(self) -> None:
+        with self._session_lock:
+            self._closed = True
+            if self._owns_session and not self._session_retired:
+                self.session.close()
+                self._session_retired = True
 
     @property
     def configured(self) -> bool:
@@ -211,28 +221,30 @@ class LocalManagerProxy:
     ) -> tuple[dict[str, Any], int]:
         if not path.startswith("/v1/") or "://" in path:
             raise ValueError("Manager proxy paths must be allowlisted v1 resources.")
-        connection = self.discover()
-        headers = {
-            "Accept": "application/json",
-            "Authorization": f"Bearer {connection.secret}",
-        }
-        if has_request_context():
-            request_id = str(
-                getattr(g, "request_id", "") or ""
-            )
-            traceparent = str(
-                getattr(g, "traceparent", "") or ""
-            )
-            if request_id:
-                headers["X-Request-ID"] = request_id[:120]
-            if traceparent:
-                headers["traceparent"] = traceparent[:160]
-        if method.upper() not in {"GET", "HEAD"}:
-            headers["Idempotency-Key"] = (
-                idempotency_key or str(uuid.uuid4())
-            )
-        try:
-            with self._session_lock:
+        with self._session_lock:
+            if self._closed:
+                raise RuntimeError("Manager proxy is closed.")
+            connection = self.discover()
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {connection.secret}",
+            }
+            if has_request_context():
+                request_id = str(
+                    getattr(g, "request_id", "") or ""
+                )
+                traceparent = str(
+                    getattr(g, "traceparent", "") or ""
+                )
+                if request_id:
+                    headers["X-Request-ID"] = request_id[:120]
+                if traceparent:
+                    headers["traceparent"] = traceparent[:160]
+            if method.upper() not in {"GET", "HEAD"}:
+                headers["Idempotency-Key"] = (
+                    idempotency_key or str(uuid.uuid4())
+                )
+            try:
                 response = self.session.request(
                     method.upper(),
                     f"{connection.base_url}{path}",
@@ -240,51 +252,54 @@ class LocalManagerProxy:
                     json=body,
                     timeout=timeout,
                 )
-        except requests.RequestException as error:
-            raise ManagerProxyError(
-                "manager_unavailable",
-                "Pandrator Manager is not responding.",
-            ) from error
-        try:
-            payload = response.json()
-        except ValueError as error:
-            raise ManagerProxyError(
-                "manager_invalid_response",
-                "Pandrator Manager returned an invalid response.",
-            ) from error
-        if not isinstance(payload, dict):
-            raise ManagerProxyError(
-                "manager_invalid_response",
-                "Pandrator Manager returned an unexpected response.",
-            )
-        if response.status_code >= 400:
-            envelope = payload.get("error")
-            if isinstance(envelope, dict):
+            except requests.RequestException as error:
                 raise ManagerProxyError(
-                    str(envelope.get("code") or "manager_request_failed"),
-                    str(envelope.get("message") or "Manager request failed."),
-                    status=response.status_code,
-                    details=envelope.get("details"),
+                    "manager_unavailable",
+                    "Pandrator Manager is not responding.",
+                ) from error
+            try:
+                try:
+                    payload = response.json()
+                except ValueError as error:
+                    raise ManagerProxyError(
+                        "manager_invalid_response",
+                        "Pandrator Manager returned an invalid response.",
+                    ) from error
+                if not isinstance(payload, dict):
+                    raise ManagerProxyError(
+                        "manager_invalid_response",
+                        "Pandrator Manager returned an unexpected response.",
+                    )
+                if response.status_code >= 400:
+                    envelope = payload.get("error")
+                    if isinstance(envelope, dict):
+                        raise ManagerProxyError(
+                            str(envelope.get("code") or "manager_request_failed"),
+                            str(envelope.get("message") or "Manager request failed."),
+                            status=response.status_code,
+                            details=envelope.get("details"),
+                        )
+                    raise ManagerProxyError(
+                        "manager_request_failed",
+                        f"Manager request failed ({response.status_code}).",
+                        status=response.status_code,
+                    )
+                response_instance = str(
+                    response.headers.get("X-Pandrator-Manager-Instance") or ""
                 )
-            raise ManagerProxyError(
-                "manager_request_failed",
-                f"Manager request failed ({response.status_code}).",
-                status=response.status_code,
-            )
-        response_instance = str(
-            response.headers.get("X-Pandrator-Manager-Instance") or ""
-        )
-        payload_instance = (
-            str(payload.get("instance_id") or "")
-            if path == "/v1/health"
-            else response_instance
-        )
-        if not hmac.compare_digest(payload_instance, connection.instance_id):
-            raise ManagerProxyError(
-                "manager_identity_mismatch",
-                "The process answering on the manager port has the wrong identity.",
-            )
-        return payload, response.status_code
+                payload_instance = (
+                    str(payload.get("instance_id") or "")
+                    if path == "/v1/health"
+                    else response_instance
+                )
+                if not hmac.compare_digest(payload_instance, connection.instance_id):
+                    raise ManagerProxyError(
+                        "manager_identity_mismatch",
+                        "The process answering on the manager port has the wrong identity.",
+                    )
+                return payload, response.status_code
+            finally:
+                response.close()
 
     def inventory(self) -> dict[str, Any]:
         """Return one bounded manager projection for application services."""
