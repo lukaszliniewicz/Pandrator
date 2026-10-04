@@ -77,6 +77,9 @@ method best reserved for soup, not storage.
 
 ### Source installer CLI
 
+Use Manager for component updates. The source installer provides installation
+and signed-wheel lifecycle commands.
+
 For the source installer CLI (`python -m pandrator_installer.lifecycle`),
 `uninstall --yes` preserves data by default. `--purge-data` removes application
 and user files, retaining the installation folder and two empty coordination

@@ -446,28 +446,5 @@ class InstallerUpdateMigrationTests(unittest.TestCase):
             self.assertTrue(os.path.exists(state_path))
             self.assertTrue(os.path.exists(lock_path))
 
-    def test_update_stop_choice_is_applied_before_the_runtime_guard(self):
-        installer = HeadlessInstaller(working_dir="workspace")
-        calls = []
-
-        with patch.object(
-            installer,
-            "stop_running_installation_processes",
-            side_effect=lambda *_args: calls.append("stop") or [],
-        ), patch.object(
-            installer,
-            "ensure_update_runtime_stopped",
-            side_effect=lambda *_args: calls.append("guard"),
-        ), patch.object(
-            installer,
-            "load_install_config",
-            side_effect=RuntimeError("test sentinel"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "test sentinel"):
-                installer.update_process(stop_running_processes=True)
-
-        self.assertEqual(["stop", "guard"], calls)
-
-
 if __name__ == "__main__":
     unittest.main()
