@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -208,6 +208,15 @@ class ManagedProcessSpec:
 
 
 @dataclass(slots=True)
+class StartingProcess:
+    """Retain a spawned child before its process identity is validated."""
+
+    spec: ManagedProcessSpec
+    process: subprocess.Popen
+    log_handle: TextIO
+
+
+@dataclass(slots=True)
 class ManagedProcess:
     spec: ManagedProcessSpec
     process: subprocess.Popen
@@ -235,6 +244,7 @@ class ProcessSupervisor:
         self.ready_callback = ready_callback or (lambda: None)
         self.lock = InstanceLock(self.data_root / "pandrator.instance.lock")
         self.processes: dict[str, ManagedProcess] = {}
+        self.starting_processes: dict[str, StartingProcess] = {}
         self.stop_event = threading.Event()
         self.ready = False
         self.ready_at: float | None = None
@@ -391,26 +401,32 @@ class ProcessSupervisor:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.logs_dir / f"{spec.key}.log"
         log_handle = log_path.open("a", encoding="utf-8")
-        environment = self._managed_process_environment(spec)
-        self._status(f"Starting {spec.label}...")
-        process = subprocess.Popen(
-            list(spec.command),
-            cwd=spec.cwd or None,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            shell=False,
-            **self._popen_options(),
-        )
+        try:
+            environment = self._managed_process_environment(spec)
+            self._status(f"Starting {spec.label}...")
+            process = subprocess.Popen(
+                list(spec.command),
+                cwd=spec.cwd or None,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                shell=False,
+                **self._popen_options(),
+            )
+        except BaseException:
+            log_handle.close()
+            raise
+        starting = StartingProcess(spec=spec, process=process, log_handle=log_handle)
+        self.starting_processes[spec.key] = starting
         try:
             child_identity = capture_process_identity(
                 psutil.Process(process.pid),
                 instance_id=self.lock.instance_id,
             )
         except (psutil.Error, OSError) as error:
-            self._terminate_process_tree(process)
-            log_handle.close()
+            self._stop_one(starting)
+            self.starting_processes.pop(spec.key, None)
             raise RuntimeError(
                 f"Could not capture a safe process identity for {spec.label}."
             ) from error
@@ -423,6 +439,7 @@ class ProcessSupervisor:
             restarts=restarts,
         )
         self.processes[spec.key] = managed
+        self.starting_processes.pop(spec.key, None)
 
         deadline = time.monotonic() + spec.startup_timeout_seconds
         started = time.monotonic()
@@ -455,7 +472,7 @@ class ProcessSupervisor:
                 try:
                     self._start_one(spec)
                 except Exception:
-                    if spec.required:
+                    if spec.required or spec.key in self.starting_processes:
                         raise
                     logging.exception("Optional managed process %s failed to start", spec.key)
             self._write_state()
@@ -627,7 +644,7 @@ class ProcessSupervisor:
             process.kill()
             process.wait(timeout=2)
 
-    def _stop_one(self, managed: ManagedProcess) -> None:
+    def _stop_one(self, managed: ManagedProcess | StartingProcess) -> None:
         self._status(f"Stopping {managed.spec.label}...")
         self._terminate_process_tree(managed.process)
         try:
@@ -639,8 +656,11 @@ class ProcessSupervisor:
         self.stop_event.set()
         self.ready = False
         self.ready_at = None
+        for _key, starting in reversed(list(self.starting_processes.items())):
+            self._stop_one(starting)
         for _key, managed in reversed(list(self.processes.items())):
             self._stop_one(managed)
+        self.starting_processes.clear()
         self.processes.clear()
         snapshot = read_runtime_metadata(self.runtime_state)
         if (
