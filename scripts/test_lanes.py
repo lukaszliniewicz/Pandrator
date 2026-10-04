@@ -171,6 +171,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_http.py",
         "tests/test_mcp_media_edit.py",
         "tests/test_mcp_media_edit_registration.py",
+        "tests/test_mcp_media_edit_recovery.py",
         "tests/test_mcp_media_edit_dispatch.py",
         "tests/test_mcp_media_edit_workflow.py",
         "tests/test_mcp_model_management.py",

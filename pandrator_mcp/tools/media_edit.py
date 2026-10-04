@@ -210,14 +210,53 @@ def _queue_job(
     enqueue: Callable[[], dict[str, Any]],
     tool_name: str,
 ) -> ToolOutcome:
-    job = enqueue()
-    return _job_outcome(
-        runtime,
-        job,
-        wait=arguments.wait,
-        timeout_seconds=arguments.timeout_seconds,
-        tool_name=tool_name,
-    )
+    try:
+        job = enqueue()
+    except PandratorMcpError as error:
+        if error.code != "application_response_timeout":
+            raise
+        proposal = isinstance(arguments, ProposeMediaEditArguments)
+        error.next_actions = [
+            NextAction(
+                tool="pandrator_list_work",
+                arguments={
+                    "session_id": arguments.session_id,
+                    "kinds": ["media_edit.propose" if proposal else "media_edit.render"],
+                    "limit": 5,
+                },
+                reason=(
+                    "Inspect recent media-edit work to learn whether the timed-out request queued a job."
+                ),
+            ),
+            NextAction(
+                tool="pandrator_propose_media_edit" if proposal else "pandrator_render_media_edit",
+                arguments=arguments.model_dump(mode="json"),
+                reason=(
+                    "Recover the retained receipt using the same request, revision and idempotency key. "
+                    "Inspect work before retrying if the receipt has expired."
+                ),
+            ),
+        ]
+        raise
+    try:
+        return _job_outcome(
+            runtime,
+            job,
+            wait=arguments.wait,
+            timeout_seconds=arguments.timeout_seconds,
+            tool_name=tool_name,
+        )
+    except PandratorMcpError as error:
+        if error.code != "application_response_timeout":
+            raise
+        error.next_actions = [
+            NextAction(
+                tool="pandrator_get_work",
+                arguments={"work_id": _job_id(job), "wait_seconds": 0},
+                reason="Inspect the accepted media-edit job after its status request timed out.",
+            ),
+        ]
+        raise
 
 
 def propose_media_edit(

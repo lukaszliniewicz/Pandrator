@@ -28,6 +28,7 @@ from pandrator_mcp.schemas import (
     RenewMediaEditDispatchBatchInput,
     SubmitMediaEditDispatchBatchInput,
 )
+from pandrator_mcp.schemas.media_edit import ProposeMediaEditArguments, RenderMediaEditArguments
 from pandrator_mcp.server import build_server
 from pandrator_mcp.settings import McpSettings
 
@@ -479,8 +480,18 @@ async def invoke_case(
         assert value["code"] == "application_response_timeout"
         assert value["details"] == {"operation_outcome": "unknown"}
         assert value["retryable"] is True
-        # Original media-edit enqueue failures have no authored replay action.
-        assert value["next_actions"] == []
+        model = (
+            ProposeMediaEditArguments
+            if case.method == "propose_media_edit"
+            else RenderMediaEditArguments
+        )
+        assert [action["tool"] for action in value["next_actions"]] == [
+            "pandrator_list_work",
+            case.name,
+        ]
+        assert value["next_actions"][1]["arguments"] == model.model_validate(
+            case.arguments
+        ).model_dump(mode="json")
     else:
         value = envelope(result, structured=arguments.get("response_mode") == "structured")
         assert isinstance(value["result"], dict)
