@@ -1,4 +1,4 @@
-"""Wait for installed queue owners to acknowledge update cancellation."""
+"""Drain active queue rows before separate process-exit admission."""
 
 import json
 import math
@@ -103,6 +103,8 @@ def prepare_job_drain(
     if not math.isfinite(drain_timeout):
         raise ValueError("Update job drain timeout must be finite.")
     deadline = time.monotonic() + max(0.0, drain_timeout)
+    # Terminal queue state can result from lease expiry; lifecycle also
+    # requires the managed processes to exit before activating an update.
     while True:
         active, running = _inspect_active_jobs(
             database_path, timeout=min(5.0, max(0.0, deadline - time.monotonic()))

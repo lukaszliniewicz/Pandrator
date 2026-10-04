@@ -18,6 +18,7 @@ from .credentials import SecretRedactor
 from .database import Database
 from .model_maintenance import ensure_app_job_allowed
 from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, SessionRecord, utcnow
+from .update_maintenance import update_maintenance_active
 
 JobHandler = Callable[
     [dict[str, Any], Callable[[float, str | None], None], threading.Event],
@@ -700,6 +701,8 @@ class JobQueue:
             return job
 
     def claim(self, worker_id: str, lease_seconds: int = 30) -> Job | None:
+        if update_maintenance_active(self.database.path.parent):
+            return None
         now = utcnow()
         with self.database.session() as session:
             potentially_available = session.scalar(
@@ -715,6 +718,8 @@ class JobQueue:
         if potentially_available is None:
             return None
         with self.database.immediate_session() as session:
+            if update_maintenance_active(self.database.path.parent):
+                return None
             now = utcnow()
             self._reconcile_stale_locked(session)
             session.flush()

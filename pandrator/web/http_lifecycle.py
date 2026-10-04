@@ -21,6 +21,7 @@ from werkzeug.exceptions import HTTPException
 from .application_services import ApplicationServices
 from .auth import ALL_SCOPES, Principal, normalize_scopes
 from .credentials import contains_inline_secret
+from .update_maintenance import update_maintenance_active
 
 ViewFunction = TypeVar("ViewFunction", bound=Callable[..., Any])
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$")
@@ -380,7 +381,7 @@ class ApiGuards:
             g.principal = None
             endpoint = _endpoint_name()
             if (
-                (paths.root / "maintenance.json").is_file()
+                update_maintenance_active(paths.root)
                 and request.method in {"POST", "PUT", "PATCH", "DELETE"}
                 and endpoint
                 not in {
