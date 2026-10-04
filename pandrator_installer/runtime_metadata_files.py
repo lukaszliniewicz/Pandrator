@@ -11,6 +11,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .file_locking import try_file_lock as _try_lock
+from .file_locking import unlock_file as _unlock
+
 _METADATA_GATE = threading.Lock()
 
 
@@ -46,30 +49,6 @@ def read_runtime_metadata(path: str | os.PathLike[str]) -> RuntimeMetadataSnapsh
         payload = None
         parse_error = error
     return RuntimeMetadataSnapshot(metadata_path, payload, data, after, parse_error)
-
-
-def _try_lock(fd: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
-def _unlock(fd: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 @contextmanager
