@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -48,9 +49,15 @@ def identity_from_mapping(
         raise ProcessIdentityError("Process identity must be a JSON object.")
     try:
         pid = int(payload.get(pid_key) or 0)
-        create_time = float(payload.get(create_time_key))
-    except (TypeError, ValueError):
+        raw_create_time = payload.get(create_time_key)
+        if raw_create_time is None:
+            raise ValueError
+        create_time = float(raw_create_time)
+    except (OverflowError, TypeError, ValueError):
         raise ProcessIdentityError("Process identity has an invalid PID or creation time.") from None
+
+    if not math.isfinite(create_time):
+        raise ProcessIdentityError("Process identity has an invalid PID or creation time.")
 
     executable = str(payload.get(executable_key) or "").strip()
     instance_id = (
@@ -95,7 +102,9 @@ def validated_process(identity: ProcessIdentity) -> psutil.Process | None:
         ) from error
 
     if (
-        abs(actual_create_time - identity.create_time)
+        not math.isfinite(identity.create_time)
+        or not math.isfinite(actual_create_time)
+        or abs(actual_create_time - identity.create_time)
         > PROCESS_CREATE_TIME_TOLERANCE_SECONDS
         or normalized_executable(actual_executable)
         != normalized_executable(identity.executable)

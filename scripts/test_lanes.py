@@ -98,6 +98,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     "installer-serial": (
         "tests/test_installer_architecture.py",
         "tests/test_installer_lifecycle.py",
+        "tests/test_installer_process_identity.py",
         "tests/test_installer_rvc_service.py",
         "tests/test_installer_update_migrations.py",
         "tests/test_installer_web_readiness.py",

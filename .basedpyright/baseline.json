@@ -4030,24 +4030,6 @@
                 }
             }
         ],
-        "./pandrator_installer/process_identity.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator_installer/runtime.py": [
             {
                 "code": "reportCallIssue",
