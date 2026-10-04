@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -76,9 +77,8 @@ def _redact_mapping(value: Any) -> Any:
 def _legacy_settings(paths: DataPaths) -> dict[str, Any]:
     if paths.legacy_database.is_file():
         try:
-            connection = sqlite3.connect(paths.legacy_database)
-            row = connection.execute("SELECT payload_json FROM app_settings_current WHERE singleton_id = 1").fetchone()
-            connection.close()
+            with closing(sqlite3.connect(paths.legacy_database)) as connection:
+                row = connection.execute("SELECT payload_json FROM app_settings_current WHERE singleton_id = 1").fetchone()
             if row:
                 payload = json.loads(row[0])
                 if isinstance(payload, dict):
@@ -95,10 +95,9 @@ def _legacy_session_rows(paths: DataPaths) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if paths.legacy_database.is_file():
         try:
-            connection = sqlite3.connect(paths.legacy_database)
-            connection.row_factory = sqlite3.Row
-            rows = [dict(row) for row in connection.execute("SELECT * FROM sessions WHERE trashed_at IS NULL")]
-            connection.close()
+            with closing(sqlite3.connect(paths.legacy_database)) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = [dict(row) for row in connection.execute("SELECT * FROM sessions WHERE trashed_at IS NULL")]
         except sqlite3.DatabaseError:
             rows = []
     known = {str(row.get("session_name")) for row in rows}
@@ -304,9 +303,8 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
         current_schema: str | None = None
         if paths.database.is_file():
             try:
-                connection = sqlite3.connect(paths.database)
-                row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-                connection.close()
+                with closing(sqlite3.connect(paths.database)) as connection:
+                    row = connection.execute("SELECT version_num FROM alembic_version").fetchone()
                 current_schema = str(row[0]) if row else None
             except sqlite3.DatabaseError:
                 current_schema = None
@@ -318,15 +316,17 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
         promotion_changed = promotion_version < GENERATION_PROMOTION_VERSION
         if promotion_changed:
             database = Database(paths.database)
-            with database.session() as session:
-                records = list(session.scalars(select(SessionRecord)).all())
-                for item in records:
-                    session.expunge(item)
-            for record in records:
-                legacy_path = Path(record.legacy_path).resolve() if record.legacy_path else None
-                if legacy_path and legacy_path.is_dir():
-                    promoted += _import_generation(database, legacy_path, record)
-            database.dispose()
+            try:
+                with database.session() as session:
+                    records = list(session.scalars(select(SessionRecord)).all())
+                    for item in records:
+                        session.expunge(item)
+                for record in records:
+                    legacy_path = Path(record.legacy_path).resolve() if record.legacy_path else None
+                    if legacy_path and legacy_path.is_dir():
+                        promoted += _import_generation(database, legacy_path, record)
+            finally:
+                database.dispose()
             result["generation_promotion_version"] = GENERATION_PROMOTION_VERSION
         if (
             promoted
@@ -346,58 +346,62 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
     try:
         upgrade_database(paths.database)
         database = Database(paths.database)
-        settings = _legacy_settings(paths)
-        with database.session() as session:
-            session.add(AppSetting(key="global", value_json=_redact_mapping(settings)))
-        provider_count = _import_providers(database, settings)
-        artifact_service = ArtifactService(database, paths)
-        imported_sessions = 0
-        imported_segments = 0
-        imported_artifacts = 0
-        for row in _legacy_session_rows(paths):
-            name = str(row.get("session_name") or "Untitled Session")
-            legacy_path = Path(str(row.get("session_path") or paths.legacy_outputs / name)).resolve()
-            config = _load_json(legacy_path / "session_config.json")
-            state = config.get("state") if isinstance(config, dict) and isinstance(config.get("state"), dict) else {}
-            workflow = state.get("workflow") if isinstance(state.get("workflow"), dict) else {}
-            record = SessionRecord(
-                name=name,
-                legacy_name=name,
-                legacy_path=str(legacy_path),
-                workflow_kind=str(workflow.get("workflow_kind") or ("voiceover" if row.get("dubbing_mode") else "audiobook")),
-                source_language=str(workflow.get("source_language") or state.get("original_language") or "auto"),
-                target_language=str(workflow.get("target_language") or state.get("target_language") or "") or None,
-                workflow_preset=str(workflow.get("workflow_preset") or "custom"),
-                included_stages_json=list(workflow.get("included_stages") or []),
-                status=str(row.get("status") or "idle"),
-            )
+        try:
+            settings = _legacy_settings(paths)
             with database.session() as session:
-                session.add(record)
-                session.flush()
-                session.expunge(record)
-            imported_sessions += 1
-            if legacy_path.is_dir() and paths.root in legacy_path.parents:
-                imported_segments += _import_sentences(database, legacy_path, record)
-                for file_path in legacy_path.rglob("*"):
-                    if not file_path.is_file() or file_path.name in {"session_config.json", "metadata.json"}:
-                        continue
-                    try:
-                        artifact_service.register(
-                            file_path,
-                            kind=file_path.suffix.lower().lstrip(".") or "file",
-                            role="legacy",
-                            session_id=record.id,
-                            calculate_hash=False,
-                            metadata={"legacy": True},
-                        )
-                        imported_artifacts += 1
-                    except (OSError, ValueError):
-                        continue
-                _import_generation(database, legacy_path, record)
+                session.add(AppSetting(key="global", value_json=_redact_mapping(settings)))
+            provider_count = _import_providers(database, settings)
+            artifact_service = ArtifactService(database, paths)
+            imported_sessions = 0
+            imported_segments = 0
+            imported_artifacts = 0
+            for row in _legacy_session_rows(paths):
+                name = str(row.get("session_name") or "Untitled Session")
+                legacy_path = Path(str(row.get("session_path") or paths.legacy_outputs / name)).resolve()
+                config = _load_json(legacy_path / "session_config.json")
+                raw_state = config.get("state") if isinstance(config, dict) else None
+                state = raw_state if isinstance(raw_state, dict) else {}
+                raw_workflow = state.get("workflow")
+                workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
+                record = SessionRecord(
+                    name=name,
+                    legacy_name=name,
+                    legacy_path=str(legacy_path),
+                    workflow_kind=str(workflow.get("workflow_kind") or ("voiceover" if row.get("dubbing_mode") else "audiobook")),
+                    source_language=str(workflow.get("source_language") or state.get("original_language") or "auto"),
+                    target_language=str(workflow.get("target_language") or state.get("target_language") or "") or None,
+                    workflow_preset=str(workflow.get("workflow_preset") or "custom"),
+                    included_stages_json=list(workflow.get("included_stages") or []),
+                    status=str(row.get("status") or "idle"),
+                )
+                with database.session() as session:
+                    session.add(record)
+                    session.flush()
+                    session.expunge(record)
+                imported_sessions += 1
+                if legacy_path.is_dir() and paths.root in legacy_path.parents:
+                    imported_segments += _import_sentences(database, legacy_path, record)
+                    for file_path in legacy_path.rglob("*"):
+                        if not file_path.is_file() or file_path.name in {"session_config.json", "metadata.json"}:
+                            continue
+                        try:
+                            artifact_service.register(
+                                file_path,
+                                kind=file_path.suffix.lower().lstrip(".") or "file",
+                                role="legacy",
+                                session_id=record.id,
+                                calculate_hash=False,
+                                metadata={"legacy": True},
+                            )
+                            imported_artifacts += 1
+                        except (OSError, ValueError):
+                            continue
+                    _import_generation(database, legacy_path, record)
 
-        with database.session() as session:
-            validated_sessions = session.scalar(select(func.count()).select_from(SessionRecord)) or 0
-        database.dispose()
+            with database.session() as session:
+                validated_sessions = session.scalar(select(func.count()).select_from(SessionRecord)) or 0
+        finally:
+            database.dispose()
         if validated_sessions != imported_sessions:
             raise RuntimeError(
                 f"Legacy migration validation failed: imported {imported_sessions}, database has {validated_sessions}."
@@ -421,4 +425,3 @@ def import_legacy_data(paths: DataPaths) -> dict[str, Any]:
         if paths.database.exists():
             paths.database.unlink()
         raise
-
