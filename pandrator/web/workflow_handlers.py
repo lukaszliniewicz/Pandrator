@@ -370,7 +370,7 @@ def _stage_settings_fingerprint(
         model = _model("translation_model", "translate_model", "model_name")
         if not model and backend == "llm":
             model = _text("llm_default_model")
-        result = {
+        result: dict[str, Any] = {
             "backend": backend,
             "target_language": _text("target_language").lower(),
             "model": model,
@@ -1601,11 +1601,8 @@ class WorkflowHandlers:
                 and isinstance(translation_setting.value_json, dict)
                 else {}
             )
-        input_choices = (
-            outcome_value.get("inputs")
-            if isinstance(outcome_value.get("inputs"), dict)
-            else {}
-        )
+        raw_input_choices = outcome_value.get("inputs")
+        input_choices = raw_input_choices if isinstance(raw_input_choices, dict) else {}
         required = self._continuation_required_stages(
             record.workflow_kind,
             target_stage,
