@@ -414,6 +414,7 @@
   let topologyBusy = $state(false);
   let supportingOptionsStarted = false;
   let alternateOpen = $state(false);
+  let alternateError = $state('');
   let pendingSegmentUpdates = $state(0);
   const editQueue = new GenerationEditQueue();
   const savedEditRows = new Map<string, GenerationSegment>();
@@ -1259,16 +1260,17 @@
     selectedSegmentOverride: Record<string, unknown> = {},
     staleOnly = false,
     pinnedRevisionId: string | null = null
-  ) {
+  ): Promise<boolean> {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
       expandIfCollapsed();
       error = 'Choose an RVC model before converting audio.';
-      return;
+      return false;
     }
     loading = true;
     error = '';
     regenerationNotice = '';
+    let accepted = false;
     try {
       if (selectedRun) settingsSourceRunId = selectedRun.id;
       ids = await editQueue.settledIds(ids);
@@ -1310,6 +1312,8 @@
         staleOnly,
         settingsSourceRunId || null
       );
+      // Acceptance survives a later refresh error; retrying would create another take.
+      accepted = true;
       generationStore.upsertRun(started);
       if (operation === 'regenerate') {
         regenerationNotice = started.resume_source_on_completion
@@ -1328,6 +1332,7 @@
     } finally {
       loading = false;
     }
+    return accepted;
   }
 
   async function settlePlanReviewEdits() {
@@ -1444,11 +1449,13 @@
       f0_method: String(sourceRvc.f0_method ?? 'rmvpe'),
       index_rate: Number(sourceRvc.index_rate ?? 0.3)
     };
+    alternateError = '';
     alternateOpen = true;
   }
 
   async function submitAlternateRegeneration() {
-    if (!alternateCanStart) return;
+    if (!alternateCanStart || loading) return;
+    alternateError = '';
     const voice = String(alternateTts.voice ?? '').trim();
     const language = String(alternateTts.language ?? '').trim();
     const tts = {
@@ -1464,8 +1471,12 @@
       model: String(alternateRvc.model ?? '').trim(),
       rvc_model: String(alternateRvc.model ?? '').trim()
     };
-    alternateOpen = false;
-    await start('regenerate', alternateSegmentIds, { tts, rvc });
+    const accepted = await start('regenerate', alternateSegmentIds, {
+      tts,
+      rvc
+    });
+    if (accepted) alternateOpen = false;
+    else alternateError = error;
   }
 
   async function loadRvc() {
@@ -3239,7 +3250,8 @@
     class="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-5"
     role="presentation"
     onclick={(event) => {
-      if (event.currentTarget === event.target) alternateOpen = false;
+      if (!loading && event.currentTarget === event.target)
+        alternateOpen = false;
     }}
   >
     <div
@@ -3247,6 +3259,10 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="alternate-regeneration-title"
+      use:modalFocus={{
+        onclose: () => (alternateOpen = false),
+        closeOnEscape: !loading
+      }}
     >
       <header class="flex items-start justify-between gap-4">
         <div>
@@ -3270,288 +3286,297 @@
         <button
           class="action"
           aria-label="Close alternate regeneration"
+          disabled={loading}
           onclick={() => (alternateOpen = false)}>Close</button
         >
       </header>
 
-      <div class="mt-5 grid gap-4 sm:grid-cols-2">
-        <label class="text-sm font-semibold"
-          >Speech service
-          <select
-            class="field mt-1 w-full"
-            value={String(alternateTts.service ?? '')}
-            onchange={(event) => {
-              const service = event.currentTarget.value;
-              const next = speechOptions.catalogue.services.find(
-                (item) => item.id === service
-              );
-              const language = String(
-                alternateTts.language ?? alternateTts.target_language ?? 'en'
-              );
-              const model = String(
-                next?.default_model ??
-                  next?.models?.[0] ??
-                  next?.model_catalog?.[0]?.id ??
-                  ''
-              );
-              const voice = next
-                ? preferredAlternateVoice(next, model, language)
-                : '';
-              alternateTts = {
-                ...alternateTts,
-                service,
-                tts_service: service,
-                model,
-                voice,
-                speaker: voice
-              };
-            }}
-          >
-            <option value="">Choose a service</option>
-            {#each selectableTtsServices(speechOptions.catalogue.services, alternateTts.service) as service}
-              <option value={service.id} disabled={service.online === false}
-                >{service.name ?? service.id}{service.online === false
-                  ? ' · unavailable'
-                  : ''}</option
-              >
-            {/each}
-          </select>
-        </label>
-        <label class="text-sm font-semibold"
-          >Model
-          <select
-            class="field mt-1 w-full"
-            value={String(alternateTts.model ?? '')}
-            disabled={!alternateService ||
-              alternateService.online === false ||
-              !alternateModels.length}
-            onchange={(event) => {
-              const model = event.currentTarget.value;
-              const language = String(
-                alternateTts.language ?? alternateTts.target_language ?? 'en'
-              );
-              const voice = alternateService
-                ? setAlternateVoiceFor(
-                    alternateService,
-                    model,
-                    language,
-                    String(alternateTts.voice ?? '')
-                  )
-                : '';
-              alternateTts = {
-                ...alternateTts,
-                model,
-                voice,
-                speaker: voice
-              };
-            }}
-          >
-            {#if !alternateModels.length}<option value=""
-                >Service default</option
-              >{/if}
-            {#each alternateModels as model}<option value={model}
-                >{model}</option
-              >{/each}
-          </select>
-        </label>
-        <label class="text-sm font-semibold"
-          >Voice / managed reference
-          <select
-            class="field mt-1 w-full"
-            value={String(alternateTts.voice ?? '')}
-            disabled={!alternateService || alternateService.online === false}
-            onchange={(event) => {
-              const voice = event.currentTarget.value;
-              alternateTts = { ...alternateTts, voice, speaker: voice };
-            }}
-          >
-            <option value="">Service default</option>
-            {#each alternateVoices as voice}<option value={voice.id}
-                >{voiceLabel(voice)}</option
-              >{/each}
-          </select>
-          <span class="muted mt-1 block text-[.67rem]"
-            >Published voice references appear here when ready for this
-            provider.</span
-          >
-        </label>
-        <div>
-          <LanguageSelect
-            label="Speech language"
-            value={String(alternateTts.language ?? '')}
-            options={alternateLanguages}
-            allowCustom={alternateLanguageSupport?.coverage !== 'exact'}
-            disabled={!alternateService || alternateService.online === false}
-            onchange={(language) => {
-              const voice = alternateService
-                ? setAlternateVoiceFor(
-                    alternateService,
-                    String(alternateTts.model ?? ''),
-                    language,
-                    String(alternateTts.voice ?? '')
-                  )
-                : '';
-              alternateTts = {
-                ...alternateTts,
-                language,
-                target_language: language,
-                voice,
-                speaker: voice
-              };
-            }}
-          />
-          {#if alternateLanguageIssue}<p
-              class="mt-2 text-sm text-red-600"
-              role="alert"
-            >
-              {alternateLanguageIssue}
-            </p>{:else if alternateLanguageSupport?.coverage !== 'exact'}<p
-              class="muted mt-2 text-xs"
-            >
-              Language coverage is {alternateLanguageSupport?.coverage ===
-              'subset'
-                ? 'a documented subset'
-                : alternateLanguageSupport?.coverage === 'claim'
-                  ? 'a documented claim'
-                  : 'unverified'} for this model. Try a short sample before generating
-              all selected passages.
-            </p>{/if}
-        </div>
-      </div>
-
-      <label class="mt-4 block text-sm font-semibold"
-        >Generation prompt / instructions
-        <textarea
-          class="field mt-1 min-h-20 w-full"
-          value={String(alternateTts.generation_prompt ?? '')}
-          oninput={(event) => {
-            alternateTts = {
-              ...alternateTts,
-              generation_prompt: event.currentTarget.value
-            };
-          }}
-          placeholder="Provider-supported style or voice instructions"
-        ></textarea>
-      </label>
-
-      {#if alternateIsChatterbox}
-        <div
-          class="mt-4 grid gap-4 rounded-xl bg-[var(--accent-soft)] p-4 sm:grid-cols-2"
-        >
+      <fieldset disabled={loading}>
+        <div class="mt-5 grid gap-4 sm:grid-cols-2">
           <label class="text-sm font-semibold"
-            >Chatterbox exaggeration
-            <input
+            >Speech service
+            <select
               class="field mt-1 w-full"
-              type="number"
-              min="0"
-              max="2"
-              step="0.05"
-              value={Number(alternateTts.chatterbox_exaggeration ?? 0.5)}
-              onchange={(event) =>
-                (alternateTts = {
+              value={String(alternateTts.service ?? '')}
+              onchange={(event) => {
+                const service = event.currentTarget.value;
+                const next = speechOptions.catalogue.services.find(
+                  (item) => item.id === service
+                );
+                const language = String(
+                  alternateTts.language ?? alternateTts.target_language ?? 'en'
+                );
+                const model = String(
+                  next?.default_model ??
+                    next?.models?.[0] ??
+                    next?.model_catalog?.[0]?.id ??
+                    ''
+                );
+                const voice = next
+                  ? preferredAlternateVoice(next, model, language)
+                  : '';
+                alternateTts = {
                   ...alternateTts,
-                  chatterbox_exaggeration: Number(event.currentTarget.value)
-                })}
-            />
+                  service,
+                  tts_service: service,
+                  model,
+                  voice,
+                  speaker: voice
+                };
+              }}
+            >
+              <option value="">Choose a service</option>
+              {#each selectableTtsServices(speechOptions.catalogue.services, alternateTts.service) as service}
+                <option value={service.id} disabled={service.online === false}
+                  >{service.name ?? service.id}{service.online === false
+                    ? ' · unavailable'
+                    : ''}</option
+                >
+              {/each}
+            </select>
           </label>
           <label class="text-sm font-semibold"
-            >Chatterbox CFG weight
-            <input
+            >Model
+            <select
               class="field mt-1 w-full"
-              type="number"
-              min="0"
-              max="2"
-              step="0.05"
-              value={Number(alternateTts.chatterbox_cfg_weight ?? 0.5)}
-              onchange={(event) =>
-                (alternateTts = {
+              value={String(alternateTts.model ?? '')}
+              disabled={!alternateService ||
+                alternateService.online === false ||
+                !alternateModels.length}
+              onchange={(event) => {
+                const model = event.currentTarget.value;
+                const language = String(
+                  alternateTts.language ?? alternateTts.target_language ?? 'en'
+                );
+                const voice = alternateService
+                  ? setAlternateVoiceFor(
+                      alternateService,
+                      model,
+                      language,
+                      String(alternateTts.voice ?? '')
+                    )
+                  : '';
+                alternateTts = {
                   ...alternateTts,
-                  chatterbox_cfg_weight: Number(event.currentTarget.value)
-                })}
-            />
+                  model,
+                  voice,
+                  speaker: voice
+                };
+              }}
+            >
+              {#if !alternateModels.length}<option value=""
+                  >Service default</option
+                >{/if}
+              {#each alternateModels as model}<option value={model}
+                  >{model}</option
+                >{/each}
+            </select>
           </label>
-        </div>
-      {/if}
-
-      <div class="mt-4 rounded-xl border border-[var(--line)] p-4">
-        <label class="flex items-center gap-2 text-sm font-semibold">
-          <input
-            type="checkbox"
-            checked={Boolean(alternateRvc.enabled)}
-            onchange={(event) =>
-              (alternateRvc = {
-                ...alternateRvc,
-                enabled: event.currentTarget.checked
-              })}
-          />
-          Convert the new take with RVC
-        </label>
-        {#if alternateRvc.enabled}
-          <div class="mt-3 grid gap-3 sm:grid-cols-3">
-            <label class="text-sm font-semibold"
-              >RVC model
-              <select
-                class="field mt-1 w-full"
-                value={String(alternateRvc.model ?? '')}
-                onchange={(event) =>
-                  (alternateRvc = {
-                    ...alternateRvc,
-                    model: event.currentTarget.value,
-                    rvc_model: event.currentTarget.value
-                  })}
+          <label class="text-sm font-semibold"
+            >Voice / managed reference
+            <select
+              class="field mt-1 w-full"
+              value={String(alternateTts.voice ?? '')}
+              disabled={!alternateService || alternateService.online === false}
+              onchange={(event) => {
+                const voice = event.currentTarget.value;
+                alternateTts = { ...alternateTts, voice, speaker: voice };
+              }}
+            >
+              <option value="">Service default</option>
+              {#each alternateVoices as voice}<option value={voice.id}
+                  >{voiceLabel(voice)}</option
+                >{/each}
+            </select>
+            <span class="muted mt-1 block text-[.67rem]"
+              >Published voice references appear here when ready for this
+              provider.</span
+            >
+          </label>
+          <div>
+            <LanguageSelect
+              label="Speech language"
+              value={String(alternateTts.language ?? '')}
+              options={alternateLanguages}
+              allowCustom={alternateLanguageSupport?.coverage !== 'exact'}
+              disabled={!alternateService || alternateService.online === false}
+              onchange={(language) => {
+                const voice = alternateService
+                  ? setAlternateVoiceFor(
+                      alternateService,
+                      String(alternateTts.model ?? ''),
+                      language,
+                      String(alternateTts.voice ?? '')
+                    )
+                  : '';
+                alternateTts = {
+                  ...alternateTts,
+                  language,
+                  target_language: language,
+                  voice,
+                  speaker: voice
+                };
+              }}
+            />
+            {#if alternateLanguageIssue}<p
+                class="mt-2 text-sm text-red-600"
+                role="alert"
               >
-                <option value="">Choose a model</option>
-                {#each rvcModels as model}<option value={model}>{model}</option
-                  >{/each}
-              </select>
-            </label>
+                {alternateLanguageIssue}
+              </p>{:else if alternateLanguageSupport?.coverage !== 'exact'}<p
+                class="muted mt-2 text-xs"
+              >
+                Language coverage is {alternateLanguageSupport?.coverage ===
+                'subset'
+                  ? 'a documented subset'
+                  : alternateLanguageSupport?.coverage === 'claim'
+                    ? 'a documented claim'
+                    : 'unverified'} for this model. Try a short sample before generating
+                all selected passages.
+              </p>{/if}
+          </div>
+        </div>
+
+        <label class="mt-4 block text-sm font-semibold"
+          >Generation prompt / instructions
+          <textarea
+            class="field mt-1 min-h-20 w-full"
+            value={String(alternateTts.generation_prompt ?? '')}
+            oninput={(event) => {
+              alternateTts = {
+                ...alternateTts,
+                generation_prompt: event.currentTarget.value
+              };
+            }}
+            placeholder="Provider-supported style or voice instructions"
+          ></textarea>
+        </label>
+
+        {#if alternateIsChatterbox}
+          <div
+            class="mt-4 grid gap-4 rounded-xl bg-[var(--accent-soft)] p-4 sm:grid-cols-2"
+          >
             <label class="text-sm font-semibold"
-              >Pitch
-              <input
-                class="field mt-1 w-full"
-                type="number"
-                min="-24"
-                max="24"
-                value={Number(alternateRvc.pitch ?? 0)}
-                onchange={(event) =>
-                  (alternateRvc = {
-                    ...alternateRvc,
-                    pitch: Number(event.currentTarget.value)
-                  })}
-              />
-            </label>
-            <label class="text-sm font-semibold"
-              >Index rate
+              >Chatterbox exaggeration
               <input
                 class="field mt-1 w-full"
                 type="number"
                 min="0"
-                max="1"
+                max="2"
                 step="0.05"
-                value={Number(alternateRvc.index_rate ?? 0.3)}
+                value={Number(alternateTts.chatterbox_exaggeration ?? 0.5)}
                 onchange={(event) =>
-                  (alternateRvc = {
-                    ...alternateRvc,
-                    index_rate: Number(event.currentTarget.value)
+                  (alternateTts = {
+                    ...alternateTts,
+                    chatterbox_exaggeration: Number(event.currentTarget.value)
+                  })}
+              />
+            </label>
+            <label class="text-sm font-semibold"
+              >Chatterbox CFG weight
+              <input
+                class="field mt-1 w-full"
+                type="number"
+                min="0"
+                max="2"
+                step="0.05"
+                value={Number(alternateTts.chatterbox_cfg_weight ?? 0.5)}
+                onchange={(event) =>
+                  (alternateTts = {
+                    ...alternateTts,
+                    chatterbox_cfg_weight: Number(event.currentTarget.value)
                   })}
               />
             </label>
           </div>
         {/if}
-      </div>
-      {#if alternateService?.online === false}<p
-          class="mt-3 text-sm text-red-500"
-        >
-          This speech service is currently unavailable.
-        </p>{/if}
-      {#if alternateRvc.enabled && !rvcModels.length}<p
-          class="mt-3 text-sm text-red-500"
-        >
-          No RVC models are available. Add one in RVC management first.
-        </p>{/if}
+
+        <div class="mt-4 rounded-xl border border-[var(--line)] p-4">
+          <label class="flex items-center gap-2 text-sm font-semibold">
+            <input
+              type="checkbox"
+              checked={Boolean(alternateRvc.enabled)}
+              onchange={(event) =>
+                (alternateRvc = {
+                  ...alternateRvc,
+                  enabled: event.currentTarget.checked
+                })}
+            />
+            Convert the new take with RVC
+          </label>
+          {#if alternateRvc.enabled}
+            <div class="mt-3 grid gap-3 sm:grid-cols-3">
+              <label class="text-sm font-semibold"
+                >RVC model
+                <select
+                  class="field mt-1 w-full"
+                  value={String(alternateRvc.model ?? '')}
+                  onchange={(event) =>
+                    (alternateRvc = {
+                      ...alternateRvc,
+                      model: event.currentTarget.value,
+                      rvc_model: event.currentTarget.value
+                    })}
+                >
+                  <option value="">Choose a model</option>
+                  {#each rvcModels as model}<option value={model}
+                      >{model}</option
+                    >{/each}
+                </select>
+              </label>
+              <label class="text-sm font-semibold"
+                >Pitch
+                <input
+                  class="field mt-1 w-full"
+                  type="number"
+                  min="-24"
+                  max="24"
+                  value={Number(alternateRvc.pitch ?? 0)}
+                  onchange={(event) =>
+                    (alternateRvc = {
+                      ...alternateRvc,
+                      pitch: Number(event.currentTarget.value)
+                    })}
+                />
+              </label>
+              <label class="text-sm font-semibold"
+                >Index rate
+                <input
+                  class="field mt-1 w-full"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={Number(alternateRvc.index_rate ?? 0.3)}
+                  onchange={(event) =>
+                    (alternateRvc = {
+                      ...alternateRvc,
+                      index_rate: Number(event.currentTarget.value)
+                    })}
+                />
+              </label>
+            </div>
+          {/if}
+        </div>
+        {#if alternateService?.online === false}<p
+            class="mt-3 text-sm text-red-500"
+          >
+            This speech service is currently unavailable.
+          </p>{/if}
+        {#if alternateRvc.enabled && !rvcModels.length}<p
+            class="mt-3 text-sm text-red-500"
+          >
+            No RVC models are available. Add one in RVC management first.
+          </p>{/if}
+      </fieldset>
+      {#if alternateError}
+        <p class="mt-3 text-sm text-red-600" role="alert">{alternateError}</p>
+      {/if}
       <footer class="mt-6 flex justify-end gap-3">
-        <button class="action" onclick={() => (alternateOpen = false)}
-          >Cancel</button
+        <button
+          class="action"
+          disabled={loading}
+          onclick={() => (alternateOpen = false)}>Cancel</button
         >
         <button
           class="action primary"
