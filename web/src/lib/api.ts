@@ -67,6 +67,21 @@ export class ApiError extends Error {
   }
 }
 
+/** One user-confirmed mutation: an unchanged retry must replay its first acceptance. */
+export class ApiMutationAttempt {
+  private signature = '';
+  private key = '';
+
+  headersFor(target: string, body: unknown): Record<string, string> {
+    const signature = JSON.stringify([target, body]);
+    if (signature !== this.signature) {
+      this.signature = signature;
+      this.key = createIdempotencyKey();
+    }
+    return { 'Idempotency-Key': this.key };
+  }
+}
+
 export function setCsrfToken(value: string | null | undefined) {
   csrfToken = value ?? '';
 }

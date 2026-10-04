@@ -160,6 +160,9 @@ async function fixture(page: Page) {
     route.fulfill({ json: { items: ['history-rvc', 'draft-rvc'] } })
   );
   const posts: Record<string, unknown>[] = [];
+  const keys: string[] = [];
+  const acceptedKeys = new Set<string>();
+  let loseAcceptedResponse = false;
   let submissionFailure = false;
   let holdSubmission = false;
   let heldSubmission: Route | undefined;
@@ -183,6 +186,12 @@ async function fixture(page: Page) {
   await page.route(`**${endpoint}/generation-runs`, (route) => {
     if (route.request().method() === 'POST') {
       posts.push(route.request().postDataJSON());
+      const key = route.request().headers()['idempotency-key'];
+      keys.push(key);
+      if (loseAcceptedResponse) {
+        acceptedKeys.add(key);
+        if (posts.length === 1) return route.abort('failed');
+      }
       if (holdSubmission) {
         heldSubmission = route;
         return;
@@ -216,7 +225,7 @@ async function fixture(page: Page) {
     });
   });
   let heldSave: Route | undefined;
-  await page.route('**/api/v1/generation-segments/segment-active', (route) => {
+  await page.route('**/api/v1/generation-segments/segment-*', (route) => {
     heldSave = route;
   });
   await page.goto(`/sessions/${sessionId}`);
@@ -248,6 +257,11 @@ async function fixture(page: Page) {
   }
   return {
     posts,
+    keys,
+    acceptedKeys,
+    loseAcceptedResponse() {
+      loseAcceptedResponse = true;
+    },
     dialog,
     open,
     settingsRequests: () => settingsRequests,
@@ -283,7 +297,9 @@ async function fixture(page: Page) {
         await route.fulfill({
           json: {
             ...segment(activeId),
-            previous_segment_id: 'segment-active',
+            previous_segment_id: new URL(route.request().url()).pathname
+              .split('/')
+              .at(-1),
             revision: 2,
             text: 'Edited narration.'
           }
@@ -590,4 +606,90 @@ test('an accepted alternate is closed even when its following history refresh fa
     page.getByRole('alert').filter({ hasText: 'Controlled refresh failure' })
   ).toBeVisible();
   expect(data.posts).toHaveLength(1);
+});
+
+test('retrying an accepted alternate whose response was lost reuses its request key', async ({
+  page
+}) => {
+  const data = await fixture(page);
+  await data.open();
+  data.loseAcceptedResponse();
+  await submit(page).click();
+  await expect(data.dialog.getByRole('alert')).toBeVisible();
+  await expect(submit(page)).toBeEnabled();
+  expect(data.acceptedKeys.size).toBe(1);
+  await submit(page).click();
+  await expect.poll(() => data.posts.length).toBe(2);
+  expect(data.posts[1]).toEqual(data.posts[0]);
+  expect(data.keys[1]).toBe(data.keys[0]);
+  expect(data.acceptedKeys.size).toBe(1);
+  await expect(data.dialog).toHaveCount(0);
+});
+
+test('changing an alternate draft or cancelling it starts a fresh request attempt', async ({
+  page
+}) => {
+  const data = await fixture(page);
+  await data.open();
+  data.failSubmission(true);
+  await submit(page).click();
+  await expect(data.dialog.getByRole('alert')).toBeVisible();
+  await data.dialog
+    .getByRole('textbox', {
+      name: 'Generation prompt / instructions',
+      exact: true
+    })
+    .fill('Changed intent');
+  await submit(page).click();
+  await expect.poll(() => data.posts.length).toBe(2);
+  await expect(submit(page)).toBeEnabled();
+  expect(data.keys[1]).not.toBe(data.keys[0]);
+  await data.dialog
+    .getByRole('button', { name: 'Cancel', exact: true })
+    .click();
+  await data.open();
+  await submit(page).click();
+  await expect.poll(() => data.posts.length).toBe(3);
+  await expect(submit(page)).toBeEnabled();
+  expect(data.posts[2]).toEqual(data.posts[0]);
+  expect(new Set(data.keys).size).toBe(3);
+});
+
+test('leaving history through an edit retains and names the saved settings source', async ({
+  page
+}) => {
+  const data = await fixture(page);
+  await page
+    .getByRole('combobox', { name: 'Audio view', exact: true })
+    .selectOption('root');
+  await expect(page.locator('tbody tr[data-segment-id]')).toHaveAttribute(
+    'data-segment-id',
+    'segment-repair'
+  );
+  await page
+    .getByRole('textbox', { name: 'Script text for segment 1', exact: true })
+    .fill('Edited historical narration.');
+  await page.keyboard.press('Tab');
+  await data.waitForSave();
+  await data.releaseSave();
+  await expect(page.locator('tbody tr[data-segment-id]')).toHaveAttribute(
+    'data-segment-id',
+    'segment-edited'
+  );
+  await expect(
+    page.getByRole('combobox', { name: 'Audio view', exact: true })
+  ).toHaveValue('');
+  await data.open();
+  await expect(
+    data.dialog.getByRole('combobox', { name: 'Model', exact: true })
+  ).toHaveValue('repair-model');
+  await expect(data.dialog).toContainText(
+    'Uses History · Repaired narration as the source'
+  );
+  await submit(page).click();
+  await expect.poll(() => data.posts.length).toBe(1);
+  expect(data.posts[0].settings_source_run_id).toBe('repair');
+  expect(data.posts[0].generation_run_id).toBeNull();
+  expect(data.posts[0].segment_ids).toEqual(['segment-edited']);
+  expect(data.posts[0].speech_plan_revision_id).toBe('edited-plan');
 });

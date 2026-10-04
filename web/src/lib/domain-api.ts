@@ -1,4 +1,5 @@
 import {
+  ApiMutationAttempt,
   apiJson,
   apiJsonUpload,
   typedApiJson,
@@ -1248,6 +1249,7 @@ export const generationApi = {
       path: { segmentId: segment.id, takeId },
       headers: { 'If-Match': `"${segment.revision}"` }
     }),
+  createStartAttempt: () => new ApiMutationAttempt(),
   start: (
     sessionId: string,
     operation: 'generate' | 'regenerate' | 'rvc',
@@ -1257,25 +1259,32 @@ export const generationApi = {
     selectedSegmentOverride: Record<string, unknown> = {},
     speechPlanRevisionId: string | null = null,
     staleOnly = false,
-    settingsSourceRunId: string | null = null
-  ) =>
-    typedApiJson<
+    settingsSourceRunId: string | null = null,
+    attempt?: ApiMutationAttempt
+  ) => {
+    const body = {
+      operation,
+      segment_ids: segmentIds,
+      generation_run_id: generationRunId,
+      run_override: runOverride,
+      selected_segment_override: selectedSegmentOverride,
+      speech_plan_revision_id: speechPlanRevisionId,
+      stale_only: staleOnly,
+      settings_source_run_id: settingsSourceRunId
+    };
+    return typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-runs',
       'post',
       GenerationRun
     >('/api/v1/sessions/{sessionId}/generation-runs', 'post', {
       path: { sessionId },
-      body: {
-        operation,
-        segment_ids: segmentIds,
-        generation_run_id: generationRunId,
-        run_override: runOverride,
-        selected_segment_override: selectedSegmentOverride,
-        speech_plan_revision_id: speechPlanRevisionId,
-        stale_only: staleOnly,
-        settings_source_run_id: settingsSourceRunId
-      }
-    }),
+      headers: attempt?.headersFor(
+        `/sessions/${sessionId}/generation-runs`,
+        body
+      ),
+      body
+    });
+  },
   rvcModels: () =>
     typedApiJson<'/api/v1/rvc/models', 'get', RvcModelCatalogue>(
       '/api/v1/rvc/models',

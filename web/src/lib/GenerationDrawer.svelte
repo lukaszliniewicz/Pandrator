@@ -415,6 +415,7 @@
   let supportingOptionsStarted = false;
   let alternateOpen = $state(false);
   let alternateError = $state('');
+  let alternateAttempt = generationApi.createStartAttempt();
   let pendingSegmentUpdates = $state(0);
   const editQueue = new GenerationEditQueue();
   const savedEditRows = new Map<string, GenerationSegment>();
@@ -1259,7 +1260,8 @@
     ids: string[] = [],
     selectedSegmentOverride: Record<string, unknown> = {},
     staleOnly = false,
-    pinnedRevisionId: string | null = null
+    pinnedRevisionId: string | null = null,
+    attempt?: ReturnType<typeof generationApi.createStartAttempt>
   ): Promise<boolean> {
     if (operation === 'rvc' && !rvcModel) {
       showRvc = true;
@@ -1310,7 +1312,8 @@
         selectedSegmentOverride,
         selectedRunId && ids.length ? null : payload.plan_revision_id || null,
         staleOnly,
-        settingsSourceRunId || null
+        settingsSourceRunId || null,
+        attempt
       );
       // Acceptance survives a later refresh error; retrying would create another take.
       accepted = true;
@@ -1450,6 +1453,7 @@
       index_rate: Number(sourceRvc.index_rate ?? 0.3)
     };
     alternateError = '';
+    alternateAttempt = generationApi.createStartAttempt();
     alternateOpen = true;
   }
 
@@ -1471,10 +1475,14 @@
       model: String(alternateRvc.model ?? '').trim(),
       rvc_model: String(alternateRvc.model ?? '').trim()
     };
-    const accepted = await start('regenerate', alternateSegmentIds, {
-      tts,
-      rvc
-    });
+    const accepted = await start(
+      'regenerate',
+      alternateSegmentIds,
+      { tts, rvc },
+      false,
+      null,
+      alternateAttempt
+    );
     if (accepted) alternateOpen = false;
     else alternateError = error;
   }
@@ -3278,9 +3286,11 @@
           <p class="muted mt-1 text-xs">
             Uses {selectedRun
               ? `History · ${selectedHistoryRun?.label ?? selectedRun.label}`
-              : 'the current session settings'} as the source, then saves these choices
-            with the replacement takes in the same output run. Previous takes remain
-            available.
+              : settingsSourceRun
+                ? `History · ${settingsSourceRun.label}`
+                : 'the current session settings'} as the source, then saves these
+            choices with the replacement takes in the same output run. Previous takes
+            remain available.
           </p>
         </div>
         <button
