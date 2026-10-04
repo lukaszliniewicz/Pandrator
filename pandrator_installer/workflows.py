@@ -238,6 +238,7 @@ class WorkflowMixin:
         if is_windows() and not is_admin:
             logging.warning("Running installer without admin privileges - some features may not work correctly")
 
+        bootstrap_executor: concurrent.futures.ThreadPoolExecutor | None = None
         try:
             self.configure_tls_certificates()
 
@@ -499,7 +500,6 @@ class WorkflowMixin:
             if kokoro_bootstrap_future is not None:
                 self.reporter.status("Waiting for Kokoro API server bootstrap to complete...")
                 kokoro_bootstrap_future.result()
-                bootstrap_executor.shutdown()
 
             # Create or update config file
             config = self.load_install_config(pandrator_path)
@@ -586,6 +586,9 @@ class WorkflowMixin:
             logging.error(traceback.format_exc())
             self.reporter.status("Installation failed. Check the log for details.")
             raise
+        finally:
+            if bootstrap_executor is not None:
+                bootstrap_executor.shutdown(wait=True)
 
 
     def update_process(self, stop_running_processes=False):
