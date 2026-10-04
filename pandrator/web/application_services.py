@@ -276,6 +276,20 @@ class ApplicationServices:
             session_directory=session_directory,
         )
 
+    def close(self) -> None:
+        """Request bounded maintenance stops and retire application resources."""
+
+        try:
+            self.startup_maintenance.stop()
+        finally:
+            try:
+                self.quick_transcriptions.stop_maintenance()
+            finally:
+                try:
+                    self.tts_providers.close()
+                finally:
+                    self.database.dispose()
+
     def extension_mapping(self) -> dict[str, Any]:
         """Return the stable test/plugin surface exposed through Flask."""
 

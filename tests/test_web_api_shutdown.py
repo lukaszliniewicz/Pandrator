@@ -55,6 +55,7 @@ class ApiShutdownTests(unittest.TestCase):
         self.addCleanup(self._stop_children)
         self.marker = self.paths.root / "prepared.json"
         self.restored = self.paths.root / "handler-restored.json"
+        self.closed = self.paths.root / "resources-closed.json"
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
@@ -76,7 +77,16 @@ class ApiShutdownTests(unittest.TestCase):
 from pathlib import Path
 sys.path.insert(0, {str(REPO)!r})
 from pandrator.web.workspace import GenerationService
+from pandrator.web import cli
 from pandrator.web.cli import main
+native_create_app = cli.create_app
+owners = []
+def observed_create_app(*args, **kwargs):
+    app = native_create_app(*args, **kwargs)
+    services = app.extensions['pandrator']['services']
+    owners.append((services, services.database.engine.pool))
+    return app
+cli.create_app = observed_create_app
 marker = Path({str(self.marker)!r})
 original = GenerationService.prepare_start
 def controlled(self, *args, **kwargs):
@@ -91,6 +101,16 @@ GenerationService.prepare_start = controlled
 previous = signal.getsignal(signal.SIGTERM)
 code = main(sys.argv[1:])
 Path({str(self.restored)!r}).write_text(json.dumps(signal.getsignal(signal.SIGTERM) == previous))
+services, original_pool = owners[0]
+periodic = services.startup_maintenance._periodic_thread
+quick = services.quick_transcriptions._thread
+Path({str(self.closed)!r}).write_text(json.dumps({{
+    'startup_stop': services.startup_maintenance._stop.is_set(),
+    'quick_stop': services.quick_transcriptions._stop.is_set(),
+    'periodic_alive': bool(periodic and periodic.is_alive()),
+    'quick_alive': bool(quick and quick.is_alive()),
+    'database_pool_replaced': services.database.engine.pool is not original_pool,
+}}))
 raise SystemExit(code)
 """
         )
@@ -174,6 +194,19 @@ raise SystemExit(code)
             self.assertEqual(list(db.scalars(select(Job))), [])
             return reservation.id
 
+    def _assert_clean_shutdown(self):
+        self.assertTrue(json.loads(self.restored.read_text()))
+        self.assertEqual(
+            json.loads(self.closed.read_text()),
+            {
+                "startup_stop": True,
+                "quick_stop": True,
+                "periodic_alive": False,
+                "quick_alive": False,
+                "database_pool_replaced": True,
+            },
+        )
+
     def _exercise_active_cut(self, signum, *, repeat=False):
         child = self._start_api()
         thread, original_http = self._start_request()
@@ -184,7 +217,7 @@ raise SystemExit(code)
             self.assertIsNone(child.poll())
             child.send_signal(signum)
         self.assertEqual(child.wait(timeout=7), 0)
-        self.assertTrue(json.loads(self.restored.read_text()))
+        self._assert_clean_shutdown()
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(original_http), 1)
@@ -219,7 +252,7 @@ raise SystemExit(code)
         child = self._start_api()
         child.send_signal(signal.SIGTERM)
         self.assertEqual(child.wait(timeout=3), 0)
-        self.assertTrue(json.loads(self.restored.read_text()))
+        self._assert_clean_shutdown()
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", self.port), timeout=0.1)
 
@@ -234,7 +267,7 @@ raise SystemExit(code)
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(original_http), 1)
-        self.assertTrue(json.loads(self.restored.read_text()))
+        self._assert_clean_shutdown()
         with self.database.snapshot_session() as db:
             reservation = db.scalar(select(ApiIdempotency))
             assert reservation is not None

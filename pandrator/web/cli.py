@@ -466,8 +466,8 @@ def command_serve(args) -> int:
             url_scheme="http",
         )
     finally:
-        # Waitress can return with requests active; the pool drains its borrowers.
-        app.extensions["pandrator"]["tts_providers"].close()
+        # Request bounded maintenance stops and retire application-owned resources.
+        app.extensions["pandrator"]["services"].close()
     return 0
 
 

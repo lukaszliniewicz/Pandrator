@@ -392,8 +392,15 @@ def test_metadata_borrower_survives_close_and_cleanup_failure(
 
 @pytest.mark.parametrize("ending", ["return", "error", "interrupt", "browser_error"])
 def test_serve_cli_closes_native_app_registry_on_every_exit(monkeypatch, tmp_path, ending):
-    app = create_app(data_root=tmp_path, testing=True, background_maintenance=False)
-    providers = app.extensions["pandrator"]["tts_providers"]
+    app = create_app(data_root=tmp_path, testing=True, background_maintenance=True)
+    services = app.extensions["pandrator"]["services"]
+    assert services.startup_maintenance.wait(5)
+    periodic = services.startup_maintenance._periodic_thread
+    quick = services.quick_transcriptions._thread
+    assert periodic is not None and quick is not None
+    assert periodic.is_alive() and quick.is_alive()
+    original_pool = services.database.engine.pool
+    providers = services.tts_providers
     session = RecordingSession()
     pool = providers.get("audio_cpp")._session_pool
     pool.session_for_key("fixture", create_session=lambda: session)
@@ -433,7 +440,12 @@ def test_serve_cli_closes_native_app_registry_on_every_exit(monkeypatch, tmp_pat
                 cli.command_serve(args)
         assert pool.closed
         assert session.close_count == 1
+        assert not periodic.is_alive()
+        assert not quick.is_alive()
+        assert services.database.engine.pool is not original_pool
     finally:
+        services.startup_maintenance.stop()
+        services.quick_transcriptions.stop_maintenance()
         providers.close()
         app.extensions["pandrator"]["database"].dispose()
 
