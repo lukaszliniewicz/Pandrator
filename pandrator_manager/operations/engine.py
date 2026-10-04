@@ -114,11 +114,23 @@ class OperationEngine:
                 continue
             self.enqueue(operation.id)
 
-    def shutdown(self, *, timeout: float = 5) -> None:
+    def shutdown(self, *, timeout: float | None = 5) -> bool:
+        """Request a stop and report whether this worker has finished.
+
+        The active operation retains its cancellation/rollback behavior. A
+        bounded wait can return False while it finishes; resource owners must
+        wait for completion before retiring resources. A worker callback may
+        request its own stop, but cannot wait for itself.
+        """
         self._stop_event.set()
         self._queue.put(None)
-        if self._thread:
-            self._thread.join(timeout=timeout)
+        thread = self._thread
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout=timeout)
+        return not thread.is_alive()
 
     def enqueue(self, operation_id: str) -> None:
         with self._queued_lock:
@@ -134,7 +146,10 @@ class OperationEngine:
             except queue.Empty:
                 continue
             if operation_id is None:
-                return
+                # A stop requested during _execute can leave its wakeup queued.
+                # On restart it must not terminate the new worker or discard
+                # pending operation IDs; the loop checks the current stop flag.
+                continue
             with self._queued_lock:
                 self._queued.discard(operation_id)
             try:

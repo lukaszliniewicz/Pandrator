@@ -472,7 +472,9 @@ def run_daemon(
         return 0
     finally:
         if operation_engine is not None:
-            operation_engine.shutdown()
+            # The worker can still be executing tasks, rollback or finalization.
+            # Keep its supervisor and workspace ownership until it has finished.
+            operation_engine.shutdown(timeout=None)
         if supervisor is not None:
             supervisor.shutdown(stop_children=False)
         if server is not None:

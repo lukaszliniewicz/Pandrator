@@ -41,6 +41,10 @@ second job rather than “wake up” the first one.
 Use cancellation only when the operation reports it is cancellable. A process
 or service can require a short cleanup phase after cancellation.
 
+Stopping Manager waits for work it is currently executing, including operation
+cleanup, before releasing the workspace. Request cancellation first if you want
+to stop an operation that supports it.
+
 ## Repair before reinstalling
 
 Repair is appropriate when a managed runtime is incomplete, its environment is
