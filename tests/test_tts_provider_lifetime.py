@@ -516,16 +516,24 @@ def test_worker_cli_closes_after_native_handler_unwinds_before_database_disposal
     monkeypatch.setattr(cli, "WorkflowHandlers", handlers)
     monkeypatch.setattr(cli, "Worker", worker)
     args = SimpleNamespace(worker_id="lifetime-fixture", once=once, poll_interval=0.001)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(cli.command_worker, args)
+    returned = threading.Event()
+
+    def observe_active_handler():
         try:
             assert started.wait(2)
             workers[0].stop()
-            assert not future.done()
+            assert not returned.is_set()
             assert session.close_count == 0
             assert disposal == []
+        finally:
             finish.set()
-            assert future.result(timeout=3) == 0
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        observation = executor.submit(observe_active_handler)
+        try:
+            assert cli.command_worker(args) == 0
+            returned.set()
+            observation.result(timeout=3)
             assert session.close_count == 1
             assert disposal == [1]
             assert registries[0].service_ids() == ()
