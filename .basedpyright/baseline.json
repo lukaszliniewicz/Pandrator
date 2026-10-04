@@ -3792,24 +3792,6 @@
                 }
             }
         ],
-        "./pandrator_installer/lifecycle.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 87,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator_installer/operations.py": [
             {
                 "code": "reportAttributeAccessIssue",

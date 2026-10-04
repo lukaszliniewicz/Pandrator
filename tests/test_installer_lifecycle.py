@@ -1,3 +1,4 @@
+import argparse
 import base64
 import contextlib
 import hashlib
@@ -5,13 +6,20 @@ import io
 import json
 import os
 import signal
+import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
+from types import TracebackType
+from typing import Any, Literal
 from unittest import mock
 
+import pytest
+
+from pandrator_installer.catalog import COMPONENTS
 from pandrator_installer.cli import main as launcher_main
 from pandrator_installer.cli import (
     parse_launcher_cli_args,
@@ -21,6 +29,8 @@ from pandrator_installer.lifecycle import (
     SERVICE_HEALTH_URLS,
     _owned_service_processes,
     _runtime_specs,
+    _service_selection,
+    command_launch,
     command_service,
     main,
 )
@@ -28,6 +38,164 @@ from pandrator_installer.lifecycle_guard import LifecycleBusy, installation_life
 from pandrator_installer.models import WorkspacePaths, normalize_password_scope
 from pandrator_installer.supervisor import InstanceLock, ProcessSupervisor
 from pandrator_installer.update import verify_release_manifest
+
+
+@contextlib.contextmanager
+def held_owner_inspection(
+    root: Path, *, owners: int | None = 0, failure: str | None = None
+) -> Iterator[tuple[Path, list[sqlite3.Connection], list[int]]]:
+    paths = WorkspacePaths.from_value(root)
+    paths.install_root.mkdir(parents=True)
+    native_connect = sqlite3.connect
+    with contextlib.closing(native_connect(paths.install_root / "pandrator.sqlite3")) as setup, setup:
+        if owners is not None:
+            setup.execute("CREATE TABLE owner_account(id INTEGER)")
+            setup.executemany("INSERT INTO owner_account VALUES (?)", [(i,) for i in range(owners)])
+    connections: list[sqlite3.Connection] = []
+    closes: list[int] = []
+
+    class HeldConnection(sqlite3.Connection):
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            if sql == "SELECT COUNT(*) FROM owner_account":
+                if failure == "query":
+                    raise sqlite3.OperationalError("query sentinel")
+                if failure == "interrupt":
+                    raise KeyboardInterrupt("inspection sentinel")
+            return super().execute(sql, *args, **kwargs)
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> Literal[False]:
+            result = super().__exit__(exc_type, exc_value, traceback)
+            if failure == "context":
+                raise sqlite3.OperationalError("context sentinel")
+            return result
+
+        def close(self) -> None:
+            closes.append(id(self))
+            super().close()
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if failure == "open":
+            raise sqlite3.OperationalError("open sentinel")
+        connection = native_connect(*args, factory=HeldConnection, **kwargs)
+        connections.append(connection)
+        return connection
+
+    try:
+        with mock.patch("pandrator_installer.lifecycle.sqlite3.connect", side_effect=connect):
+            yield paths.install_root, connections, closes
+    finally:
+        # Hold strong references until every real-closed-handle assertion has run.
+        for connection in connections:
+            sqlite3.Connection.close(connection)
+
+
+def invoke_launch_prepare(root: Path, *, password: str, scope: str = "local") -> int:
+    args = argparse.Namespace(
+        workspace=str(root), host="127.0.0.1", port=8097,
+        password_scope=scope, no_browser=True, components=[],
+    )
+    with (
+        mock.patch.dict(os.environ, {"PANDRATOR_OWNER_PASSWORD": password}),
+        mock.patch("pandrator_installer.lifecycle.ProcessSupervisor") as supervisor,
+        mock.patch("pandrator_installer.lifecycle._runtime_specs", return_value=[]),
+    ):
+        supervisor.return_value.run_foreground.side_effect = lambda *, prepare: prepare()
+        return command_launch(args)
+
+
+def assert_inspection_closed(connections: list[sqlite3.Connection], closes: list[int]) -> None:
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+    assert closes == [id(connections[0])]
+
+
+@pytest.mark.parametrize("owners", [0, 1, None])
+def test_launch_owner_inspection_closes_before_authentication(
+    tmp_path: Path, owners: int | None
+) -> None:
+    with held_owner_inspection(tmp_path, owners=owners) as (_installation, connections, closes):
+        def authenticate(*_args: Any, **_kwargs: Any) -> mock.Mock:
+            assert_inspection_closed(connections, closes)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("pandrator_installer.lifecycle.subprocess.run", side_effect=authenticate) as auth:
+            assert invoke_launch_prepare(tmp_path, password="fixture-secure-password") == 0
+        assert_inspection_closed(connections, closes)
+        assert ("--replace" in auth.call_args.args[0]) == (owners == 1)
+
+
+@pytest.mark.parametrize("failure", ["open", "query", "context", "interrupt"])
+def test_launch_owner_inspection_failure_retires_acquired_native_connection(
+    tmp_path: Path, failure: str
+) -> None:
+    with held_owner_inspection(tmp_path, failure=failure) as (_installation, connections, closes):
+        with mock.patch("pandrator_installer.lifecycle.subprocess.run") as auth:
+            if failure == "interrupt":
+                with pytest.raises(KeyboardInterrupt, match="inspection sentinel"):
+                    invoke_launch_prepare(tmp_path, password="", scope="none")
+            else:
+                assert invoke_launch_prepare(tmp_path, password="", scope="none") == 0
+            auth.assert_not_called()
+        if failure == "open":
+            assert not connections and not closes
+        else:
+            assert_inspection_closed(connections, closes)
+
+
+@pytest.mark.parametrize("failure", ["short_password", "auth_child"])
+def test_launch_authentication_failure_follows_connection_retirement(
+    tmp_path: Path, failure: str
+) -> None:
+    with held_owner_inspection(tmp_path) as (_installation, connections, closes):
+        def authenticate(*_args: Any, **_kwargs: Any) -> mock.Mock:
+            assert_inspection_closed(connections, closes)
+            return mock.Mock(returncode=1, stdout="", stderr="auth child sentinel")
+
+        with mock.patch("pandrator_installer.lifecycle.subprocess.run", side_effect=authenticate) as auth:
+            with pytest.raises(RuntimeError, match="at least 10" if failure == "short_password" else "auth child sentinel"):
+                invoke_launch_prepare(
+                    tmp_path, password="short" if failure == "short_password" else "fixture-secure-password"
+                )
+            if failure == "short_password":
+                auth.assert_not_called()
+            else:
+                auth.assert_called_once()
+        assert_inspection_closed(connections, closes)
+
+
+@pytest.mark.parametrize("component", list(SERVICE_HEALTH_URLS))
+def test_service_selection_preserves_backend_flags_and_launch_defaults(
+    tmp_path: Path, component: str
+) -> None:
+    args = argparse.Namespace(host="127.0.0.1", port=8097, components=[component])
+    specs = _runtime_specs(WorkspacePaths.from_value(tmp_path), args)
+    port = COMPONENTS[component].port
+    assert specs[0].ports == ((port,) if port else ())
+    assert [spec.key for spec in specs] == [f"service-{component}", "api", "worker"]
+    selection = _service_selection(component)
+    base = component.removesuffix("_cpu")
+    backend_fields = ("xtts", "voxcpm", "fishs2", "voxtral", "silero", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc")
+    for backend in backend_fields:
+        assert getattr(selection, backend) is (backend == base)
+    for backend in ("xtts", "fishs2", "kokoro", "chatterbox", "kobold_qwen", "magpie", "rvc"):
+        assert getattr(selection, f"{backend}_cpu") is (component == f"{backend}_cpu")
+    assert selection.selected_backend_keys() == (() if base == "rvc" else (base,))
+    assert selection.pandrator is False
+    assert selection.pandrator_network_access is False
+    assert selection.pandrator_password_scope == "none"
+    assert selection.pandrator_port == 8097
+    assert selection.disable_deepspeed is False
+
+
+def test_invalid_direct_service_selection_refuses() -> None:
+    with pytest.raises(ValueError, match="Unsupported supervised service: pandrator_password_scope"):
+        _service_selection("pandrator_password_scope")
 
 
 class InstallerLifecycleTests(unittest.TestCase):

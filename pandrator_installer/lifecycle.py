@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -292,19 +293,19 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
     if unknown:
         raise ValueError("Unsupported supervised service(s): " + ", ".join(unknown))
     launcher = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "pandrator_installer.lifecycle"]
-    service_specs = [
-        ManagedProcessSpec(
+    service_specs = []
+    for component in raw_components:
+        service_port = COMPONENTS[component].port
+        service_specs.append(ManagedProcessSpec(
             key=f"service-{component}",
             label=f"Pandrator service {component}",
             command=tuple([*launcher, "service", "--workspace", str(paths.workspace), "--component", component]),
             cwd=cwd,
-            ports=((COMPONENTS[component].port,) if COMPONENTS[component].port else ()),
+            ports=(service_port,) if service_port else (),
             health_url=SERVICE_HEALTH_URLS[component],
             restart_limit=1,
             startup_timeout_seconds=SERVICE_STARTUP_TIMEOUT_SECONDS.get(component, 180),
-        )
-        for component in raw_components
-    ]
+        ))
     api_command = [
         python, "-m", "pandrator", "--data-dir", data_root, "serve",
         "--host", host, "--port", str(port), "--no-open-browser",
@@ -351,16 +352,30 @@ def _runtime_specs(paths: WorkspacePaths, args, bootstrap_token: str = "") -> li
 
 
 def _service_selection(component: str) -> LaunchSelection:
-    values = {"pandrator": False}
+    if component not in SERVICE_HEALTH_URLS:
+        raise ValueError(f"Unsupported supervised service: {component}")
     base = component[:-4] if component.endswith("_cpu") else component
-    if base == "rvc":
-        values.update(rvc=True, rvc_cpu=component.endswith("_cpu"))
-    else:
-        values[base] = True
-        cpu_field = f"{base}_cpu"
-        if cpu_field in LaunchSelection.__dataclass_fields__:
-            values[cpu_field] = component.endswith("_cpu")
-    return LaunchSelection(**values)
+    cpu = component.endswith("_cpu")
+    return LaunchSelection(
+        pandrator=False,
+        rvc=base == "rvc",
+        rvc_cpu=base == "rvc" and cpu,
+        xtts=base == "xtts",
+        xtts_cpu=base == "xtts" and cpu,
+        voxcpm=base == "voxcpm",
+        fishs2=base == "fishs2",
+        fishs2_cpu=base == "fishs2" and cpu,
+        voxtral=base == "voxtral",
+        kokoro=base == "kokoro",
+        kokoro_cpu=base == "kokoro" and cpu,
+        silero=base == "silero",
+        chatterbox=base == "chatterbox",
+        chatterbox_cpu=base == "chatterbox" and cpu,
+        kobold_qwen=base == "kobold_qwen",
+        kobold_qwen_cpu=base == "kobold_qwen" and cpu,
+        magpie=base == "magpie",
+        magpie_cpu=base == "magpie" and cpu,
+    )
 
 
 def _owned_service_processes(installer) -> list[Any]:
@@ -463,7 +478,7 @@ def command_launch(args) -> int:
         initialized = False
         if database_path.is_file():
             try:
-                with sqlite3.connect(database_path) as connection:
+                with closing(sqlite3.connect(database_path)) as connection, connection:
                     initialized = bool(connection.execute("SELECT COUNT(*) FROM owner_account").fetchone()[0])
             except sqlite3.Error:
                 initialized = False
