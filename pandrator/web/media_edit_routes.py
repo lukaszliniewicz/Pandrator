@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from flask import jsonify, request
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from .auth import Principal
 from .domain_blueprints import DomainBlueprints
-from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .idempotency import IdempotencyConflict, IdempotencyInProgress, IdempotencyReservation
 from .media_edit import MediaEditInputsChanged, MediaEditRevisionConflict
-from .models import Job
+from .models import ApiIdempotency, Job
 from .route_context import RouteContext
 from .schemas import (
     MediaEditBoundaryRequest,
@@ -170,6 +173,52 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
             section, dict(resolved.get("effective") or {})
         )
         return settings, stable_hash(settings)
+
+    def _begin_enqueue_reservation(
+        db_session: Session,
+        principal: Principal,
+        session_id: str,
+        payload: MediaEditProposeRequest | MediaEditRenderRequest,
+        key: str,
+    ) -> IdempotencyReservation:
+        proposal = isinstance(payload, MediaEditProposeRequest)
+        operation_id = "proposeMediaEdit" if proposal else "renderMediaEdit"
+        kind = "media_edit.propose" if proposal else "media_edit.render"
+
+        def legacy_payload(record: ApiIdempotency) -> dict[str, Any] | None:
+            if record.resource_kind != "job" or not record.resource_id:
+                return None
+            job = db_session.get(Job, record.resource_id)
+            if (
+                job is None
+                or job.kind != kind
+                or job.session_id != session_id
+                or not isinstance(job.payload_json, dict)
+            ):
+                return None
+            candidate = deepcopy(job.payload_json)
+            candidate["session_id"] = session_id
+            candidate["revision"] = payload.revision
+            if isinstance(payload, MediaEditProposeRequest):
+                candidate["instructions"] = payload.instructions
+                if payload.model is not None:
+                    settings = candidate.get("settings")
+                    if not isinstance(settings, dict):
+                        return None
+                    settings["correction_model"] = payload.model
+                    candidate["settings_hash"] = stable_hash(settings)
+            else:
+                candidate["subtitles_only"] = payload.subtitles_only
+            return candidate
+
+        return services.idempotency.begin(
+            db_session,
+            principal=principal,
+            operation_id=operation_id,
+            idempotency_key=key,
+            payload={"session_id": session_id, **payload.model_dump(mode="json")},
+            legacy_payload=legacy_payload,
+        )
 
     def _matching_job(
         db_session,
@@ -492,31 +541,32 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
             key, key_error = _mutation_key()
             if key_error is not None:
                 return key_error
-            _active_revision(session_id, payload.revision)
-            settings, settings_hash = _settings_snapshot(session_id, "correction")
-            if payload.model is not None:
-                settings["correction_model"] = payload.model
-                settings_hash = stable_hash(settings)
-            job_payload = {
-                "session_id": session_id,
-                "revision": payload.revision,
-                "instructions": payload.instructions,
-                "settings": settings,
-                "settings_hash": settings_hash,
-            }
             with media_edit.database.immediate_session() as db_session:
                 reservation = None
                 if key is not None:
-                    reservation = services.idempotency.begin(
-                        db_session,
-                        principal=context.guards.principal(),
-                        operation_id="proposeMediaEdit",
-                        idempotency_key=key,
-                        payload=job_payload,
+                    principal = context.guards.principal()
+                    if principal is None:
+                        return error_response(
+                            "authentication_required", "Authentication is required.", 401
+                        )
+                    reservation = _begin_enqueue_reservation(
+                        db_session, principal, session_id, payload, key
                     )
                     replay = _replay_response(reservation)
                     if replay is not None:
                         return replay
+                _active_revision(session_id, payload.revision)
+                settings, settings_hash = _settings_snapshot(session_id, "correction")
+                if payload.model is not None:
+                    settings["correction_model"] = payload.model
+                    settings_hash = stable_hash(settings)
+                job_payload = {
+                    "session_id": session_id,
+                    "revision": payload.revision,
+                    "instructions": payload.instructions,
+                    "settings": settings,
+                    "settings_hash": settings_hash,
+                }
                 job = _matching_job(
                     db_session,
                     kind="media_edit.propose",
@@ -563,35 +613,36 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
             key, key_error = _mutation_key()
             if key_error is not None:
                 return key_error
-            plan = _active_revision(session_id, payload.revision)
-            if not bool(plan.get("reviewed")):
-                raise ValueError(
-                    "The media-edit revision must be reviewed before rendering."
-                )
-            settings, settings_hash = _settings_snapshot(session_id, "output")
-            subtitle_settings, _ = _settings_snapshot(session_id, "subtitles")
-            settings.update(subtitle_settings)
-            settings_hash = stable_hash(settings)
-            job_payload = {
-                "session_id": session_id,
-                "revision": payload.revision,
-                "settings": settings,
-                "settings_hash": settings_hash,
-                "subtitles_only": payload.subtitles_only,
-            }
             with media_edit.database.immediate_session() as db_session:
                 reservation = None
                 if key is not None:
-                    reservation = services.idempotency.begin(
-                        db_session,
-                        principal=context.guards.principal(),
-                        operation_id="renderMediaEdit",
-                        idempotency_key=key,
-                        payload=job_payload,
+                    principal = context.guards.principal()
+                    if principal is None:
+                        return error_response(
+                            "authentication_required", "Authentication is required.", 401
+                        )
+                    reservation = _begin_enqueue_reservation(
+                        db_session, principal, session_id, payload, key
                     )
                     replay = _replay_response(reservation)
                     if replay is not None:
                         return replay
+                plan = _active_revision(session_id, payload.revision)
+                if not bool(plan.get("reviewed")):
+                    raise ValueError(
+                        "The media-edit revision must be reviewed before rendering."
+                    )
+                settings, settings_hash = _settings_snapshot(session_id, "output")
+                subtitle_settings, _ = _settings_snapshot(session_id, "subtitles")
+                settings.update(subtitle_settings)
+                settings_hash = stable_hash(settings)
+                job_payload = {
+                    "session_id": session_id,
+                    "revision": payload.revision,
+                    "settings": settings,
+                    "settings_hash": settings_hash,
+                    "subtitles_only": payload.subtitles_only,
+                }
                 job = _matching_job(
                     db_session,
                     kind="media_edit.render",

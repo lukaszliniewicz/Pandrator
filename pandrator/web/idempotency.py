@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -105,6 +106,7 @@ class IdempotencyService:
         operation_id: str,
         idempotency_key: object,
         payload: Any,
+        legacy_payload: Callable[[ApiIdempotency], dict[str, Any] | None] | None = None,
     ) -> IdempotencyReservation:
         key = self.validate_key(idempotency_key)
         digest = self.request_digest(operation_id, payload)
@@ -122,9 +124,14 @@ class IdempotencyService:
             existing = None
         if existing is not None:
             if existing.request_digest != digest:
-                raise IdempotencyConflict(
-                    "This idempotency key was already used with different arguments."
-                )
+                fallback = legacy_payload(existing) if legacy_payload is not None else None
+                if (
+                    fallback is None
+                    or self.request_digest(operation_id, fallback) != existing.request_digest
+                ):
+                    raise IdempotencyConflict(
+                        "This idempotency key was already used with different arguments."
+                    )
             if existing.state in {"completed", "failed"}:
                 return IdempotencyReservation(existing, replayed=True)
             stale_after = _aware(existing.created_at) + timedelta(
