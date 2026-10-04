@@ -101,6 +101,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_installer_supervisor_lifetime.py",
         "tests/test_installer_startup_ownership.py",
         "tests/test_installer_backend_ownership.py",
+        "tests/test_installer_invocation_ownership.py",
         "tests/test_installer_install_admission.py",
         "tests/test_installer_lifecycle.py",
         "tests/test_installer_lifecycle_guard.py",

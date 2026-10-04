@@ -59,6 +59,7 @@ from .process_identity import (
     identity_from_mapping,
     validated_process,
 )
+from .process_paths import uses_installation_executable
 from .runtime_metadata import remove_stale_runtime_metadata
 
 
@@ -175,7 +176,7 @@ class ComponentOperationsMixin:
         enumeration_error = None
         for _attempt in range(3):
             try:
-                processes = list(psutil.process_iter(['pid', 'name', 'exe', 'create_time']))
+                processes = list(psutil.process_iter(['pid', 'name', 'exe', 'create_time', 'cmdline']))
                 break
             except (FileNotFoundError, ProcessLookupError) as error:
                 enumeration_error = error
@@ -196,8 +197,9 @@ class ComponentOperationsMixin:
                 executable = str(process.info.get('exe') or '').strip()
                 if not executable:
                     continue
-                executable_path = os.path.normcase(os.path.realpath(executable))
-                if os.path.commonpath((installation_root, executable_path)) != installation_root:
+                if not uses_installation_executable(
+                    installation_root, executable, process.info.get('cmdline')
+                ):
                     continue
                 running_processes.append(
                     {
