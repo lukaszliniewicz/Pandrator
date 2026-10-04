@@ -40,6 +40,7 @@ class StartupMaintenanceTests(unittest.TestCase):
                     self.assertFalse(runner.completed)
                     release.set()
                     self.assertTrue(runner.wait(2))
+                assert runner.result is not None
                 self.assertEqual(3, runner.result["expired_uploads"])
                 self.assertEqual(
                     {"removed_sessions": 2},
@@ -47,6 +48,13 @@ class StartupMaintenanceTests(unittest.TestCase):
                 )
             finally:
                 release.set()
+                runner.stop()
+                if runner._thread is not None:
+                    runner._thread.join(timeout=5)
+                    self.assertFalse(runner._thread.is_alive())
+                if runner._periodic_thread is not None:
+                    runner._periodic_thread.join(timeout=5)
+                    self.assertFalse(runner._periodic_thread.is_alive())
                 database.dispose()
 
     def test_application_starts_background_maintenance_only_when_enabled(self):

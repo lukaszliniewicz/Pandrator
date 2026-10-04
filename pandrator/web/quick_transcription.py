@@ -504,10 +504,15 @@ class QuickTranscriptionService:
         )
         self._thread.start()
 
-    def stop_maintenance(self):
+    def stop_maintenance(self, *, timeout: float | None = 2) -> bool:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=2)
+        thread = self._thread
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout=timeout)
+        return not thread.is_alive()
 
     def run(self, payload, progress, cancel_event):
         identifier = str(payload["transcription_id"])

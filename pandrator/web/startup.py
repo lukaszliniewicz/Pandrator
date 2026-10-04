@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,10 +56,23 @@ class StartupMaintenance:
             except Exception:
                 self.logger.exception("Periodic session purge maintenance failed")
 
-    def stop(self) -> None:
+    def stop(self, *, timeout: float | None = 2) -> bool:
+        """Request shutdown and report whether both threads finish within one budget."""
+
         self._stop.set()
-        if self._periodic_thread is not None:
-            self._periodic_thread.join(timeout=2)
+        threads = tuple(
+            thread for thread in (self._thread, self._periodic_thread) if thread is not None
+        )
+        if not threads:
+            return True
+        current = threading.current_thread()
+        if any(thread is current for thread in threads):
+            return False
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for thread in threads:
+            remaining = None if deadline is None else max(0, deadline - time.monotonic())
+            thread.join(timeout=remaining)
+        return all(not thread.is_alive() for thread in threads)
 
     def run(self) -> dict[str, Any]:
         with self._run_lock:

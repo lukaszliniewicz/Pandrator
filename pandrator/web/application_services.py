@@ -277,18 +277,24 @@ class ApplicationServices:
         )
 
     def close(self) -> None:
-        """Request bounded maintenance stops and retire application resources."""
+        """Retire application resources only after both maintenance services finish."""
 
         try:
-            self.startup_maintenance.stop()
+            self.startup_maintenance.stop(timeout=0)
         finally:
-            try:
-                self.quick_transcriptions.stop_maintenance()
-            finally:
-                try:
-                    self.tts_providers.close()
-                finally:
-                    self.database.dispose()
+            self.quick_transcriptions.stop_maintenance(timeout=0)
+        try:
+            startup_complete = self.startup_maintenance.stop(timeout=None)
+        finally:
+            quick_complete = self.quick_transcriptions.stop_maintenance(timeout=None)
+        if not startup_complete or not quick_complete:
+            raise RuntimeError(
+                "Cannot retire application resources while maintenance is still active."
+            )
+        try:
+            self.tts_providers.close()
+        finally:
+            self.database.dispose()
 
     def extension_mapping(self) -> dict[str, Any]:
         """Return the stable test/plugin surface exposed through Flask."""
