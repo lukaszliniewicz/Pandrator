@@ -523,10 +523,11 @@ class ProcessSupervisor:
 
         self.specs = [spec for spec in self.specs if spec.key not in requested]
         for key in requested:
-            managed = self.processes.pop(key, None)
+            managed = self.processes.get(key)
             if managed is None:
                 continue
             self._stop_one(managed)
+            self.processes.pop(key, None)
             self._status(f"{managed.spec.label} was stopped from the installer.")
         self._write_state()
 
@@ -595,6 +596,7 @@ class ProcessSupervisor:
             process.wait(timeout=timeout)
         except (OSError, subprocess.TimeoutExpired):
             process.kill()
+            process.wait(timeout=2)
 
     def _stop_one(self, managed: ManagedProcess) -> None:
         self._status(f"Stopping {managed.spec.label}...")

@@ -279,6 +279,7 @@ class SupervisorTests(unittest.TestCase):
             )
             supervisor = ProcessSupervisor(data_root=directory, specs=[spec])
             supervisor.start_all()
+            child = supervisor.processes["test"].process
             try:
                 deadline = time.monotonic() + 2
                 while not marker.is_file() and time.monotonic() < deadline:
@@ -289,6 +290,7 @@ class SupervisorTests(unittest.TestCase):
                 self.assertIn("test", state["processes"])
             finally:
                 supervisor.stop_all()
+            self.assertIsNotNone(child.returncode)
             self.assertFalse((Path(directory) / "pandrator.instance.lock").exists())
 
     def test_ready_marker_is_written_after_the_ready_callback(self):
@@ -402,7 +404,8 @@ class SupervisorTests(unittest.TestCase):
             supervisor = ProcessSupervisor(data_root=directory, specs=specs)
             supervisor.start_all()
             try:
-                original_pid = supervisor.processes["service-kokoro"].process.pid
+                original = supervisor.processes["service-kokoro"].process
+                original_pid = original.pid
                 (Path(directory) / "runtime-control.json").write_text(
                     json.dumps({"stop_processes": ["service-kokoro"]}),
                     encoding="utf-8",
@@ -410,6 +413,7 @@ class SupervisorTests(unittest.TestCase):
 
                 supervisor.monitor_once()
 
+                self.assertIsNotNone(original.returncode)
                 self.assertNotIn("service-kokoro", supervisor.processes)
                 self.assertFalse(any(spec.key == "service-kokoro" for spec in supervisor.specs))
                 self.assertIn("service-xtts", supervisor.processes)
