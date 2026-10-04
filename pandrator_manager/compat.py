@@ -10,7 +10,7 @@ from .cli import main as manager_main
 def main(argv: list[str] | None = None) -> int:
     print(
         "pandrator-installer is deprecated; use pandrator-manager. "
-        "The Qt installer is feature-frozen during the WebUI migration.",
+        "The Qt installer is retired; Pandrator Manager opens the browser interface.",
         file=sys.stderr,
     )
     arguments = list(sys.argv[1:] if argv is None else argv)

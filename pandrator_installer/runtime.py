@@ -801,7 +801,7 @@ class RuntimeMixin:
         port=8097,
         owner_password=None,
     ):
-        """Launch the shared API/worker supervisor from the Qt installer process."""
+        """Launch the shared API/worker supervisor from the headless installer."""
         workspace = self.initial_working_dir
         if getattr(sys, "frozen", False):
             command = [sys.executable, "launch", "--workspace", workspace]
