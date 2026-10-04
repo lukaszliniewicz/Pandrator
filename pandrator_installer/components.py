@@ -56,11 +56,10 @@ from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows, pixi_env_python_path
 from .process_identity import (
     ProcessIdentityError,
-    ProcessIdentityMismatch,
-    ProcessInspectionError,
     identity_from_mapping,
     validated_process,
 )
+from .runtime_metadata import remove_stale_runtime_metadata
 
 
 class ComponentOperationsMixin:
@@ -250,83 +249,7 @@ class ComponentOperationsMixin:
         return process_preview
 
     def _remove_stale_runtime_metadata(self, pandrator_path):
-        def metadata_record_is_live(
-            record,
-            *,
-            pid_key="pid",
-            create_time_key="process_create_time",
-            executable_key="executable",
-            require_instance_id=True,
-        ):
-            try:
-                raw_pid = int(record.get(pid_key) or 0) if isinstance(record, dict) else 0
-            except (TypeError, ValueError):
-                raw_pid = 0
-            try:
-                identity = identity_from_mapping(
-                    record,
-                    pid_key=pid_key,
-                    create_time_key=create_time_key,
-                    executable_key=executable_key,
-                    require_instance_id=require_instance_id,
-                )
-            except ProcessIdentityError:
-                # Legacy or partially-written metadata cannot authorize a stop,
-                # but a live PID is enough reason not to delete evidence that an
-                # active supervisor may shortly replace atomically.
-                return raw_pid > 0 and psutil.pid_exists(raw_pid)
-            try:
-                return validated_process(identity) is not None
-            except ProcessIdentityMismatch:
-                # A complete record whose PID now belongs to another process is
-                # stale and may be removed without touching that process.
-                return False
-            except ProcessInspectionError:
-                # AccessDenied and transient inspection failures are not proof
-                # that the owner is stale.
-                return True
-
-        def remove_file(path):
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("Could not remove stale runtime metadata %s: %s", path, error)
-
-        runtime_state = os.path.join(pandrator_path, "runtime-processes.json")
-        try:
-            with open(runtime_state, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            payload = None
-
-        runtime_is_live = False
-        if isinstance(payload, dict):
-            runtime_is_live = metadata_record_is_live(
-                payload,
-                pid_key="supervisor_pid",
-                create_time_key="supervisor_create_time",
-                executable_key="supervisor_executable",
-            )
-            raw_processes = payload.get("processes")
-            if isinstance(raw_processes, dict):
-                runtime_is_live = runtime_is_live or any(
-                    metadata_record_is_live(process)
-                    for process in raw_processes.values()
-                    if isinstance(process, dict)
-                )
-        if not runtime_is_live:
-            remove_file(runtime_state)
-
-        lock_path = os.path.join(pandrator_path, "pandrator.instance.lock")
-        try:
-            with open(lock_path, "r", encoding="utf-8") as handle:
-                lock_payload = json.load(handle)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            lock_payload = None
-        if not metadata_record_is_live(lock_payload):
-            remove_file(lock_path)
+        remove_stale_runtime_metadata(pandrator_path)
 
     def stop_running_installation_processes(self, pandrator_path, running_processes=None, timeout=20):
         """Terminate supervised and standalone installation processes safely.
