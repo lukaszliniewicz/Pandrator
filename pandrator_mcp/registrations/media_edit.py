@@ -414,7 +414,7 @@ def register_media_edit_tools(
 def register_media_edit_dispatch_tools(
     server: Any,
     runtime: McpRuntime,
-    _call: Callable[..., dict[str, Any]],
+    _call_with_validated_input: Callable[..., dict[str, Any]],
     *,
     read_only: Any,
     write_action: Any,
@@ -437,15 +437,16 @@ def register_media_edit_dispatch_tools(
     ) -> dict[str, Any]:
         """Create one pinned whole-recording cue-evidence batch."""
 
-        return _call(
+        return _call_with_validated_input(
             create_media_edit_dispatch_run,
             runtime,
-            CreateMediaEditDispatchRunInput(
-                session_id=session_id,
-                revision=revision,
-                instructions=instructions,
-                idempotency_key=idempotency_key,
-            ),
+            CreateMediaEditDispatchRunInput,
+            {
+                "session_id": session_id,
+                "revision": revision,
+                "instructions": instructions,
+                "idempotency_key": idempotency_key,
+            },
         )
 
     @server.tool(
@@ -459,10 +460,14 @@ def register_media_edit_dispatch_tools(
     ) -> dict[str, Any]:
         """List media-edit dispatch metadata without exposing cue evidence."""
 
-        return _call(
+        return _call_with_validated_input(
             list_media_edit_dispatch_runs,
             runtime,
-            ListMediaEditDispatchRunsInput(session_id=session_id, limit=limit),
+            ListMediaEditDispatchRunsInput,
+            {
+                "session_id": session_id,
+                "limit": limit,
+            },
         )
 
     @server.tool(
@@ -473,10 +478,13 @@ def register_media_edit_dispatch_tools(
     def media_edit_dispatch_get_tool(run_id: str) -> dict[str, Any]:
         """Inspect media-edit dispatch status and result revision metadata."""
 
-        return _call(
+        return _call_with_validated_input(
             get_media_edit_dispatch_run,
             runtime,
-            GetMediaEditDispatchRunInput(run_id=run_id),
+            GetMediaEditDispatchRunInput,
+            {
+                "run_id": run_id,
+            },
         )
 
     @server.tool(
@@ -494,14 +502,15 @@ def register_media_edit_dispatch_tools(
     ) -> dict[str, Any]:
         """Claim the single global cue-evidence batch with a short lease."""
 
-        return _call(
+        return _call_with_validated_input(
             claim_media_edit_dispatch_batch,
             runtime,
-            ClaimMediaEditDispatchBatchInput(
-                run_id=run_id,
-                lease_seconds=lease_seconds,
-                idempotency_key=idempotency_key,
-            ),
+            ClaimMediaEditDispatchBatchInput,
+            {
+                "run_id": run_id,
+                "lease_seconds": lease_seconds,
+                "idempotency_key": idempotency_key,
+            },
         )
 
     @server.tool(
@@ -520,15 +529,16 @@ def register_media_edit_dispatch_tools(
     ) -> dict[str, Any]:
         """Renew only the matching media-edit batch lease."""
 
-        return _call(
+        return _call_with_validated_input(
             renew_media_edit_dispatch_batch,
             runtime,
-            RenewMediaEditDispatchBatchInput(
-                batch_id=batch_id,
-                lease_token=lease_token,
-                lease_seconds=lease_seconds,
-                idempotency_key=idempotency_key,
-            ),
+            RenewMediaEditDispatchBatchInput,
+            {
+                "batch_id": batch_id,
+                "lease_token": lease_token,
+                "lease_seconds": lease_seconds,
+                "idempotency_key": idempotency_key,
+            },
         )
 
     @server.tool(
@@ -546,14 +556,15 @@ def register_media_edit_dispatch_tools(
     ) -> dict[str, Any]:
         """Release an unfinished media-edit batch back to ready."""
 
-        return _call(
+        return _call_with_validated_input(
             release_media_edit_dispatch_batch,
             runtime,
-            ReleaseMediaEditDispatchBatchInput(
-                batch_id=batch_id,
-                lease_token=lease_token,
-                idempotency_key=idempotency_key,
-            ),
+            ReleaseMediaEditDispatchBatchInput,
+            {
+                "batch_id": batch_id,
+                "lease_token": lease_token,
+                "idempotency_key": idempotency_key,
+            },
         )
 
     @server.tool(
@@ -572,13 +583,14 @@ def register_media_edit_dispatch_tools(
     ) -> dict[str, Any]:
         """Submit whole-cue removal spans, including an explicit empty result."""
 
-        return _call(
+        return _call_with_validated_input(
             submit_media_edit_dispatch_batch,
             runtime,
-            SubmitMediaEditDispatchBatchInput(
-                batch_id=batch_id,
-                lease_token=lease_token,
-                result=result,
-                idempotency_key=idempotency_key,
-            ),
+            SubmitMediaEditDispatchBatchInput,
+            {
+                "batch_id": batch_id,
+                "lease_token": lease_token,
+                "result": result,
+                "idempotency_key": idempotency_key,
+            },
         )

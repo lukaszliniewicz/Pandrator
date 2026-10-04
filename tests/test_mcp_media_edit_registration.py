@@ -19,6 +19,15 @@ from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.context import McpRuntime, build_runtime
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
+from pandrator_mcp.schemas import (
+    ClaimMediaEditDispatchBatchInput,
+    CreateMediaEditDispatchRunInput,
+    GetMediaEditDispatchRunInput,
+    ListMediaEditDispatchRunsInput,
+    ReleaseMediaEditDispatchBatchInput,
+    RenewMediaEditDispatchBatchInput,
+    SubmitMediaEditDispatchBatchInput,
+)
 from pandrator_mcp.server import build_server
 from pandrator_mcp.settings import McpSettings
 
@@ -537,3 +546,83 @@ async def capture_contract(root: Path) -> dict[str, Any]:
         "extras": extras,
         "timeouts": timeouts,
     }
+
+
+DISPATCH_MODELS = {
+    "pandrator_create_media_edit_dispatch_run": CreateMediaEditDispatchRunInput,
+    "pandrator_list_media_edit_dispatch_runs": ListMediaEditDispatchRunsInput,
+    "pandrator_get_media_edit_dispatch_run": GetMediaEditDispatchRunInput,
+    "pandrator_claim_media_edit_dispatch_batch": ClaimMediaEditDispatchBatchInput,
+    "pandrator_renew_media_edit_dispatch_batch": RenewMediaEditDispatchBatchInput,
+    "pandrator_release_media_edit_dispatch_batch": ReleaseMediaEditDispatchBatchInput,
+    "pandrator_submit_media_edit_dispatch_batch": SubmitMediaEditDispatchBatchInput,
+}
+VALIDATION_CASES = [
+    (case, field, value)
+    for case in CASES[9:]
+    for field in (
+        next(key for key in ("session_id", "run_id", "batch_id") if key in case.arguments),
+    )
+    for value in ("", "x" * (81 if field == "session_id" else 121))
+] + [(CASES[9], "instructions", "   ")]
+
+
+@pytest.mark.parametrize(
+    ("case", "field", "value"),
+    VALIDATION_CASES,
+    ids=[f"{case.name}-{field}-{len(value)}" for case, field, value in VALIDATION_CASES],
+)
+def test_dispatch_validation_is_guarded_and_actionable(
+    tmp_path: Path, monkeypatch, capsys, case: Case, field: str, value: str
+) -> None:
+    runtime, calls, application = fixture_runtime(tmp_path)
+    model = DISPATCH_MODELS[case.name]
+    original_validate = model.model_validate
+    observed = []
+    sentinel = "dispatch validation fixture stdout"
+
+    def probe(cls, supplied, *args, **kwargs):
+        observed.append((_REQUEST_ID.get(), _TRACE_ID.get()))
+        print(sentinel)
+        return original_validate(supplied, *args, **kwargs)
+
+    monkeypatch.setattr(model, "model_validate", classmethod(probe))
+    arguments = copy.deepcopy(case.arguments)
+    capability = "validation-capability-do-not-echo"
+    key = "validation:key:do-not-echo"
+    if "lease_token" in arguments:
+        arguments["lease_token"] = capability
+    if "idempotency_key" in arguments:
+        arguments["idempotency_key"] = key
+    arguments[field] = value
+    before = (_REQUEST_ID.get(), _TRACE_ID.get())
+
+    async def call():
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
+            return await client.call_tool(case.name, arguments)
+
+    result = asyncio.run(call())
+    assert (_REQUEST_ID.get(), _TRACE_ID.get()) == before
+    assert result.is_error
+    assert calls == []
+    assert application.mock_calls == []
+    block = next(item for item in result.content if isinstance(item, TextContent))
+    prefix = f"Error executing tool {case.name}: "
+    assert block.text.startswith(prefix)
+    failure = json.loads(block.text[len(prefix) :])
+    assert failure["code"] == "validation_error"
+    assert failure["retryable"] is False
+    assert failure["next_actions"] == []
+    errors = failure["details"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["loc"] == [field]
+    assert all(key not in errors[0] for key in ("input", "ctx", "url"))
+    assert len(observed) == 1
+    request_id, trace_id = observed[0]
+    assert request_id == failure["request_id"]
+    assert re.fullmatch(r"[0-9a-f]{32}", trace_id)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert sentinel in captured.err
+    assert capability not in block.text + captured.out + captured.err
+    assert key not in block.text + captured.out + captured.err

@@ -1891,7 +1891,7 @@ def build_server(runtime: McpRuntime):
     register_media_edit_dispatch_tools(
         server,
         runtime,
-        _call,
+        _call_with_validated_input,
         read_only=read_only,
         write_action=write_action,
     )
