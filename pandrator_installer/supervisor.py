@@ -1,4 +1,4 @@
-"""Cross-platform process supervision shared by Qt and headless launchers."""
+"""Cross-platform process supervision for the Python launcher."""
 
 from __future__ import annotations
 
@@ -27,6 +27,12 @@ from .process_identity import (
     identity_from_mapping,
     identity_payload,
     validated_process,
+)
+from .runtime_metadata_files import (
+    discard_runtime_metadata,
+    read_runtime_metadata,
+    runtime_metadata_guard,
+    runtime_metadata_matches,
 )
 from .subprocess_env import external_subprocess_environment
 
@@ -75,79 +81,82 @@ class InstanceLock:
             **identity_payload(current_identity),
             "created_at": time.time(),
         }
-        for _attempt in range(2):
-            try:
-                descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
+        with runtime_metadata_guard(self.path.parent):
+            for _attempt in range(2):
                 try:
-                    current = json.loads(self.path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    current = {}
-                try:
-                    raw_pid = int(current.get("pid") or 0) if isinstance(current, dict) else 0
-                except (TypeError, ValueError):
-                    raw_pid = 0
-                try:
-                    owner_identity = identity_from_mapping(
-                        current,
-                        require_instance_id=True,
-                    )
-                except ProcessIdentityError:
-                    if raw_pid > 0 and _pid_exists(raw_pid):
-                        raise InstanceAlreadyRunning(
-                            "The existing Pandrator supervisor lock is live but "
-                            "does not contain a verifiable process identity."
-                        ) from None
-                    owner_identity = None
-
-                if owner_identity is not None:
+                    descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    snapshot = read_runtime_metadata(self.path)
+                    if snapshot is None:
+                        raise InstanceAlreadyRunning("Could not acquire the Pandrator instance lock.") from None
+                    current = snapshot.payload
                     try:
-                        owner = validated_process(owner_identity)
-                    except ProcessIdentityMismatch:
-                        owner = None
-                    except ProcessInspectionError as error:
-                        raise InstanceAlreadyRunning(
-                            "Could not safely inspect the existing Pandrator supervisor."
-                        ) from error
-                else:
-                    owner = None
+                        raw_pid = int(current.get("pid") or 0) if isinstance(current, dict) else 0
+                    except (OverflowError, TypeError, ValueError):
+                        raw_pid = 0
+                    try:
+                        owner_identity = (
+                            identity_from_mapping(current, require_instance_id=True)
+                            if isinstance(current, dict)
+                            else None
+                        )
+                    except ProcessIdentityError:
+                        if raw_pid > 0 and _pid_exists(raw_pid):
+                            raise InstanceAlreadyRunning(
+                                "The existing Pandrator supervisor lock is live but "
+                                "does not contain a verifiable process identity."
+                            ) from None
+                        owner_identity = None
 
-                if owner is not None:
-                    raise InstanceAlreadyRunning(
-                        f"Pandrator data root is already supervised by PID {owner.pid}."
-                    ) from None
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            self.acquired = True
-            return self.instance_id
-        raise InstanceAlreadyRunning("Could not acquire the Pandrator instance lock.")
+                    if owner_identity is not None:
+                        try:
+                            owner = validated_process(owner_identity)
+                        except ProcessIdentityMismatch:
+                            owner = None
+                        except ProcessInspectionError as error:
+                            raise InstanceAlreadyRunning(
+                                "Could not safely inspect the existing Pandrator supervisor."
+                            ) from error
+                    else:
+                        owner = None
+
+                    if owner is not None:
+                        raise InstanceAlreadyRunning(
+                            f"Pandrator data root is already supervised by PID {owner.pid}."
+                        ) from None
+                    if not runtime_metadata_matches(snapshot):
+                        continue
+                    try:
+                        self.path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    continue
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                self.acquired = True
+                return self.instance_id
+            raise InstanceAlreadyRunning("Could not acquire the Pandrator instance lock.")
 
     def release(self) -> None:
         if not self.acquired:
             return
-        try:
-            current = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            current = {}
-        if isinstance(current, dict) and current.get("instance_id") == self.instance_id:
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
+        snapshot = read_runtime_metadata(self.path)
+        current = snapshot.payload if snapshot is not None else None
+        if (
+            snapshot is not None
+            and isinstance(current, dict)
+            and current.get("instance_id") == self.instance_id
+        ):
+            discard_runtime_metadata(snapshot)
         self.acquired = False
 
     def __enter__(self):
         self.acquire()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, _exc_type, _exc_value, _traceback):
         self.release()
 
 
@@ -314,18 +323,27 @@ class ProcessSupervisor:
         }
         temporary = self.runtime_state.with_suffix(".tmp")
         try:
-            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            attempts = 10
-            for attempt in range(1, attempts + 1):
+            with runtime_metadata_guard(self.data_root):
                 try:
-                    os.replace(temporary, self.runtime_state)
-                    return
-                except PermissionError:
-                    if attempt == attempts:
-                        raise
-                    # A Windows reader opens runtime-processes.json without
-                    # FILE_SHARE_DELETE, briefly preventing an atomic replace.
-                    time.sleep(0.1)
+                    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                    attempts = 10
+                    for attempt in range(1, attempts + 1):
+                        try:
+                            os.replace(temporary, self.runtime_state)
+                            return
+                        except PermissionError:
+                            if attempt == attempts:
+                                raise
+                            # A Windows reader opens runtime-processes.json without
+                            # FILE_SHARE_DELETE, briefly preventing an atomic replace.
+                            time.sleep(0.1)
+                finally:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as error:
+                        logging.warning("Could not remove temporary runtime state %s: %s", temporary, error)
         except OSError as error:
             # Runtime state is informational and rewritten on every monitor
             # tick. A stale snapshot is safer than terminating the supervised
@@ -335,13 +353,6 @@ class ProcessSupervisor:
                 self.runtime_state,
                 error,
             )
-        finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                logging.warning("Could not remove temporary runtime state %s: %s", temporary, error)
 
     def _managed_process_environment(self, spec: ManagedProcessSpec) -> dict[str, str]:
         # The frozen installer needs its private libraries, but the installed
@@ -597,10 +608,13 @@ class ProcessSupervisor:
         for _key, managed in reversed(list(self.processes.items())):
             self._stop_one(managed)
         self.processes.clear()
-        try:
-            self.runtime_state.unlink()
-        except FileNotFoundError:
-            pass
+        snapshot = read_runtime_metadata(self.runtime_state)
+        if (
+            snapshot is not None
+            and isinstance(snapshot.payload, dict)
+            and snapshot.payload.get("instance_id") == self.lock.instance_id
+        ):
+            discard_runtime_metadata(snapshot)
         try:
             self.runtime_control.unlink()
         except FileNotFoundError:

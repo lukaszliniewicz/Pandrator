@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,9 +9,9 @@ import psutil
 
 from pandrator_installer.runtime_metadata import remove_stale_runtime_metadata
 
-SUPERVISOR_PID = 900000101
-CHILD_PID = 900000102
-LOCK_PID = 900000103
+SUPERVISOR_PID = 2000000001
+CHILD_PID = 2000000002
+LOCK_PID = 2000000001
 EXECUTABLE = "/fake/pandrator/python"
 
 
@@ -175,3 +176,58 @@ class InstallerRuntimeMetadataTests(unittest.TestCase):
                     remove_stale_runtime_metadata(self.root)
                 self.assertFalse(self.runtime_state.exists())
                 self.assertFalse(self.lock.exists())
+
+    def _assert_replacement_retained(
+        self, path: Path, original: object, replacement: object
+    ) -> None:
+        self._write(path, original)
+        replacement_path = self.root / "replacement.json"
+        replacement_bytes = self._write(replacement_path, replacement)
+
+        def replace_before_stale_result(pid: int) -> None:
+            if pid != SUPERVISOR_PID:
+                raise AssertionError(f"Unexpected fake PID: {pid}")
+            os.replace(replacement_path, path)
+            raise psutil.NoSuchProcess(pid)
+
+        with (
+            patch(
+                "pandrator_installer.runtime_metadata.psutil.Process",
+                side_effect=replace_before_stale_result,
+            ),
+            patch("pandrator_installer.runtime_metadata.psutil.pid_exists", return_value=False),
+        ):
+            remove_stale_runtime_metadata(self.root)
+
+        self.assertEqual(path.read_bytes(), replacement_bytes)
+
+    def test_runtime_state_replacement_during_inspection_is_retained(self) -> None:
+        replacement = _runtime_state(2.0)
+        replacement["supervisor_pid"] = CHILD_PID
+        self._assert_replacement_retained(self.runtime_state, _runtime_state(), replacement)
+
+    def test_lock_replacement_during_inspection_is_retained(self) -> None:
+        self._assert_replacement_retained(self.lock, _record(LOCK_PID), _record(CHILD_PID, 2.0))
+
+    def test_unreadable_metadata_is_retained_without_process_inspection(self) -> None:
+        runtime_bytes = self._write(self.runtime_state, _runtime_state())
+        lock_bytes = self._write(self.lock, _record(LOCK_PID))
+
+        with (
+            patch(
+                "pandrator_installer.runtime_metadata_files.Path.open",
+                side_effect=PermissionError("Metadata is unreadable"),
+            ),
+            patch(
+                "pandrator_installer.runtime_metadata.psutil.Process",
+                side_effect=AssertionError("Unexpected process inspection"),
+            ),
+            patch(
+                "pandrator_installer.runtime_metadata.psutil.pid_exists",
+                side_effect=AssertionError("Unexpected PID inspection"),
+            ),
+        ):
+            remove_stale_runtime_metadata(self.root)
+
+        self.assertEqual(self.runtime_state.read_bytes(), runtime_bytes)
+        self.assertEqual(self.lock.read_bytes(), lock_bytes)

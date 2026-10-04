@@ -1,6 +1,5 @@
 """Conservative cleanup of installer runtime metadata."""
 
-import json
 import logging
 import os
 
@@ -12,6 +11,11 @@ from .process_identity import (
     ProcessInspectionError,
     identity_from_mapping,
     validated_process,
+)
+from .runtime_metadata_files import (
+    RuntimeMetadataSnapshot,
+    discard_runtime_metadata,
+    read_runtime_metadata,
 )
 
 
@@ -54,22 +58,19 @@ def _metadata_record_is_live(
         return True
 
 
-def _remove_file(path: str) -> None:
+def _remove_file(snapshot: RuntimeMetadataSnapshot | None) -> None:
+    if snapshot is None:
+        return
     try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
+        discard_runtime_metadata(snapshot)
     except OSError as error:
-        logging.warning("Could not remove stale runtime metadata %s: %s", path, error)
+        logging.warning("Could not remove stale runtime metadata %s: %s", snapshot.path, error)
 
 
 def remove_stale_runtime_metadata(pandrator_path: str | os.PathLike[str]) -> None:
     runtime_state = os.path.join(pandrator_path, "runtime-processes.json")
-    try:
-        with open(runtime_state, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        payload = None
+    runtime_snapshot = read_runtime_metadata(runtime_state)
+    payload = runtime_snapshot.payload if runtime_snapshot is not None else None
 
     runtime_is_live = False
     if isinstance(payload, dict):
@@ -87,13 +88,10 @@ def remove_stale_runtime_metadata(pandrator_path: str | os.PathLike[str]) -> Non
                 if isinstance(process, dict)
             )
     if not runtime_is_live:
-        _remove_file(runtime_state)
+        _remove_file(runtime_snapshot)
 
     lock_path = os.path.join(pandrator_path, "pandrator.instance.lock")
-    try:
-        with open(lock_path, "r", encoding="utf-8") as handle:
-            lock_payload = json.load(handle)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        lock_payload = None
+    lock_snapshot = read_runtime_metadata(lock_path)
+    lock_payload = lock_snapshot.payload if lock_snapshot is not None else None
     if not _metadata_record_is_live(lock_payload):
-        _remove_file(lock_path)
+        _remove_file(lock_snapshot)

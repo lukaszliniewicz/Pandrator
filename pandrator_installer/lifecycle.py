@@ -34,6 +34,7 @@ from .process_identity import (
     identity_from_mapping,
     validated_process,
 )
+from .runtime_metadata_files import discard_runtime_metadata, read_runtime_metadata
 from .service import HeadlessInstaller
 from .supervisor import ManagedProcessSpec, ProcessSupervisor
 from .update import (
@@ -497,22 +498,27 @@ def command_stop(args) -> int:
     if not state_path.is_file():
         _emit({"status": "not_running"}, args.json)
         return 0
+    snapshot = read_runtime_metadata(state_path)
     try:
-        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        if snapshot is None:
+            raise OSError
+        if snapshot.parse_error is not None:
+            raise snapshot.parse_error
+        payload = snapshot.payload
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError("Runtime state is unreadable; refusing to signal an unknown PID.") from error
     if not isinstance(payload, dict):
         raise RuntimeError("Runtime state must contain a JSON object.")
     supervisor = _validated_supervisor_process(paths, payload)
     if supervisor is None:
-        state_path.unlink(missing_ok=True)
+        discard_runtime_metadata(snapshot)
         _emit({"status": "not_running"}, args.json)
         return 0
     supervisor_pid = supervisor.pid
     try:
         supervisor.terminate()
     except psutil.NoSuchProcess:
-        state_path.unlink(missing_ok=True)
+        discard_runtime_metadata(snapshot)
         _emit({"status": "not_running"}, args.json)
         return 0
     except psutil.AccessDenied as error:
@@ -579,15 +585,20 @@ def command_update(args) -> int:
                 time.sleep(0.5)
 
         if runtime_state.is_file():
+            snapshot = read_runtime_metadata(runtime_state)
             try:
-                runtime = json.loads(runtime_state.read_text(encoding="utf-8"))
+                if snapshot is None:
+                    raise OSError
+                if snapshot.parse_error is not None:
+                    raise snapshot.parse_error
+                runtime = snapshot.payload
             except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
                 raise RuntimeError("Runtime state is unreadable; refusing to stop an unknown PID.") from error
             if not isinstance(runtime, dict):
                 raise RuntimeError("Runtime state must contain a JSON object.")
             original_supervisor = _validated_supervisor_process(paths, runtime)
             if original_supervisor is None:
-                runtime_state.unlink(missing_ok=True)
+                discard_runtime_metadata(snapshot)
             else:
                 try:
                     restart_command = original_supervisor.cmdline()
@@ -600,7 +611,7 @@ def command_update(args) -> int:
                     original_supervisor = None
                     restart_command = None
                     restart_cwd = None
-                    runtime_state.unlink(missing_ok=True)
+                    discard_runtime_metadata(snapshot)
                 except psutil.AccessDenied as error:
                     raise RuntimeError("Access was denied while stopping the Pandrator supervisor.") from error
                 else:
@@ -612,7 +623,7 @@ def command_update(args) -> int:
                     except psutil.NoSuchProcess:
                         pass
                     stop_confirmed = True
-                    runtime_state.unlink(missing_ok=True)
+                    discard_runtime_metadata(snapshot)
 
         python = _runtime_python(paths)
         backup_dir = data_root / "backups" / f"update-{time.time_ns()}-{verified.version}"

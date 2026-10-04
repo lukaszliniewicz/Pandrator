@@ -41,7 +41,12 @@ class InstanceLockTests(unittest.TestCase):
             lock.release()
 
     def test_malformed_json_values_are_replaced_without_crashing(self):
-        for payload in ({"pid": "not-a-number"}, ["not", "an", "object"]):
+        for payload in (
+            {"pid": "not-a-number"},
+            ["not", "an", "object"],
+            {"pid": float("inf")},
+            {"pid": float("-inf")},
+        ):
             with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "instance.lock"
                 path.write_text(json.dumps(payload), encoding="utf-8")
@@ -421,4 +426,3 @@ class SupervisorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -410,6 +410,76 @@ class InstallerLifecycleTests(unittest.TestCase):
             self.assertIn("unrelated PID", error)
             reused_process.terminate.assert_not_called()
 
+    def test_update_preserves_replacement_state_at_each_stop_cleanup_boundary(self):
+        import os
+
+        import psutil
+
+        from pandrator_installer.runtime_metadata_files import runtime_metadata_guard
+
+        for boundary in ("stale", "disappeared", "waited"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                wheel = root / "pandrator-0.49.0-py3-none-any.whl"
+                wheel.write_bytes(b"wheel")
+                manifest, public = self._signed_release(root, wheel)
+                data_root = root / "Pandrator"
+                data_root.mkdir()
+                state_path = data_root / "runtime-processes.json"
+                state_path.write_text('{"instance_id":"old"}', encoding="utf-8")
+                replacement = b'{"instance_id":"new","supervisor_pid":2000000002}'
+                supervisor = mock.Mock(pid=2000000001)
+                supervisor.cmdline.return_value = ["fixture-launcher"]
+                supervisor.cwd.return_value = directory
+
+                def replace_state(
+                    *_args, _root=data_root, _state=state_path, _data=replacement, **_kwargs
+                ):
+                    # A cooperative publisher must be able to run during wait.
+                    with runtime_metadata_guard(_root, timeout=0.2):
+                        temporary = _state.with_suffix(".replacement")
+                        temporary.write_bytes(_data)
+                        os.replace(temporary, _state)
+
+                def inspect(
+                    _paths, _payload, _boundary=boundary, _supervisor=supervisor, _replace=replace_state
+                ):
+                    if _boundary == "stale":
+                        _replace()
+                        return None
+                    return _supervisor
+
+                def disappear(_replace=replace_state):
+                    _replace()
+                    raise psutil.NoSuchProcess(2000000001)
+
+                if boundary == "disappeared":
+                    supervisor.terminate.side_effect = disappear
+                if boundary == "waited":
+                    supervisor.wait.side_effect = replace_state
+                with (
+                    mock.patch("pandrator_installer.lifecycle._validated_supervisor_process", side_effect=inspect),
+                    mock.patch(
+                        "pandrator_installer.lifecycle.snapshot_installed_package",
+                        side_effect=RuntimeError("snapshot sentinel"),
+                    ) as snapshot,
+                    mock.patch("pandrator_installer.lifecycle.subprocess.Popen") as restart,
+                ):
+                    code, _output, error = self.invoke([
+                        "update", "--workspace", directory, "--wheel", str(wheel),
+                        "--manifest", str(manifest), "--public-key", str(public),
+                    ])
+                self.assertEqual(code, 2)
+                self.assertIn("snapshot sentinel", error)
+                snapshot.assert_called_once()
+                self.assertEqual(state_path.read_bytes(), replacement)
+                self.assertFalse((data_root / "maintenance.json").exists())
+                if boundary == "waited":
+                    supervisor.wait.assert_called_once_with(timeout=40)
+                    restart.assert_called_once()
+                else:
+                    restart.assert_not_called()
+
     def test_stop_terminates_a_matching_supervisor_identity(self):
         with tempfile.TemporaryDirectory() as workspace:
             data_root = Path(workspace) / "Pandrator"
