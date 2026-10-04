@@ -495,6 +495,14 @@ test('a rejected alternate submission retains the edited draft for retry', async
     })
   ).toHaveValue('Keep my draft');
   await page.screenshot({ path: info.outputPath('alternate-rejected.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await data.dialog.getByRole('alert').scrollIntoViewIfNeeded();
+  await expect(data.dialog.getByRole('alert')).toBeInViewport();
+  await submit(page).scrollIntoViewIfNeeded();
+  await expect(submit(page)).toBeInViewport();
+  await page.screenshot({
+    path: info.outputPath('alternate-rejected-narrow.png')
+  });
   data.failSubmission(false);
   await submit(page).click();
   await expect.poll(() => data.posts.length).toBe(2);
