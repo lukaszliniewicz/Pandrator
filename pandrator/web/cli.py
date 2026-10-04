@@ -491,25 +491,27 @@ def command_serve(args) -> int:
 
 def command_worker(args) -> int:
     paths, database = _database(args)
-    queue = JobQueue(database)
-    artifacts = ArtifactService(database, paths)
-    worker_id = args.worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-
-    def hash_artifact(payload, progress, cancel_event):
-        artifact_id = str(payload.get("artifact_id") or "")
-        artifact, path = artifacts.resolve(artifact_id)
-        progress(0.1, "Reading artifact")
-        digest = sha256_file(path)
-        if cancel_event.is_set():
-            return {}
-        with database.session() as session:
-            managed = session.get(type(artifact), artifact.id)
-            managed.content_hash = digest
-        progress(1.0, "Artifact hash updated")
-        return {"artifact_id": artifact_id, "sha256": digest}
-
     tts_providers: TtsProviderRegistry | None = None
     try:
+        queue = JobQueue(database)
+        artifacts = ArtifactService(database, paths)
+        worker_id = args.worker_id or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+        def hash_artifact(payload, progress, cancel_event):
+            artifact_id = str(payload.get("artifact_id") or "")
+            artifact, path = artifacts.resolve(artifact_id)
+            progress(0.1, "Reading artifact")
+            digest = sha256_file(path)
+            if cancel_event.is_set():
+                return {}
+            with database.session() as session:
+                managed = session.get(type(artifact), artifact.id)
+                if managed is None or managed.state == "deleted":
+                    raise KeyError(artifact_id)
+                managed.content_hash = digest
+            progress(1.0, "Artifact hash updated")
+            return {"artifact_id": artifact_id, "sha256": digest}
+
         with WorkerPresence(paths.worker_presence, worker_id) as presence:
             if presence.conflict:
                 conflict_pid = int(presence.conflict.get("pid") or 0)

@@ -9,7 +9,7 @@ import os
 import secrets
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,7 +22,7 @@ from sqlalchemy.pool import Pool
 from pandrator.runtime import DataPaths
 from pandrator.web import cli
 from pandrator.web.database import Database
-from pandrator.web.models import ApiToken, Job, JobEvent, SessionRecord
+from pandrator.web.models import ApiToken, Artifact, Job, JobEvent, SessionRecord
 from tests.web_test_support import prepare_web_test_data_root
 
 COMMANDS = {
@@ -153,6 +153,166 @@ def test_constructor_failure_retires_native_pool(owner: HeldDatabase) -> None:
         assert caught.value is sentinel
         emit.assert_not_called()
     owner.assert_retired()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["JobQueue", "ArtifactService", "socket.gethostname", "uuid.uuid4"],
+)
+@pytest.mark.parametrize("failure_type", [RuntimeError, KeyboardInterrupt])
+def test_worker_setup_failure_retires_native_pool(
+    owner: HeldDatabase, boundary: str, failure_type: type[BaseException]
+) -> None:
+    args = cli.build_parser().parse_args(["worker", "--once"])
+    sentinel = failure_type("worker setup sentinel")
+    before = list(owner.connection.iterdump())
+    sqlite_sidecars = {
+        owner.paths.database.with_name(owner.paths.database.name + suffix)
+        for suffix in ("-wal", "-shm")
+    }
+    before_files = sorted(
+        str(path.relative_to(owner.paths.root))
+        for path in owner.paths.root.rglob("*")
+        if path not in sqlite_sidecars
+    )
+    with (
+        patch.object(cli, "_database", return_value=(owner.paths, owner.database)),
+        patch(f"pandrator.web.cli.{boundary}", side_effect=sentinel),
+        patch.object(cli, "WorkerPresence") as presence,
+        patch.object(cli, "TtsProviderRegistry") as providers,
+        patch.object(cli, "WorkflowHandlers") as handlers,
+    ):
+        with pytest.raises(failure_type) as caught:
+            args.handler(args)
+        assert caught.value is sentinel
+        presence.assert_not_called()
+        providers.assert_not_called()
+        handlers.assert_not_called()
+    owner.assert_retired()
+    with closing(sqlite3.connect(owner.paths.database)) as connection:
+        assert list(connection.iterdump()) == before
+    assert (
+        sorted(
+            str(path.relative_to(owner.paths.root))
+            for path in owner.paths.root.rglob("*")
+            if path not in sqlite_sidecars
+        )
+        == before_files
+    )
+
+
+@pytest.mark.parametrize("failure_type", [RuntimeError, KeyboardInterrupt])
+def test_worker_acquisition_failure_does_not_dispose_unreturned_owner(
+    owner: HeldDatabase, failure_type: type[BaseException]
+) -> None:
+    args = cli.build_parser().parse_args(["worker", "--once"])
+    sentinel = failure_type("worker acquisition sentinel")
+    with (
+        patch.object(cli, "_database", side_effect=sentinel),
+        patch.object(cli, "JobQueue") as queue,
+    ):
+        with pytest.raises(failure_type) as caught:
+            args.handler(args)
+        assert caught.value is sentinel
+        queue.assert_not_called()
+    owner.dispose.assert_not_called()
+    assert owner.connection.execute("SELECT 1").fetchone() == (1,)
+    assert owner.database.engine.pool is owner.initial_pool
+
+
+def test_worker_once_completes_native_job_before_retiring_pool(owner: HeldDatabase) -> None:
+    args = cli.build_parser().parse_args(["worker", "--once", "--worker-id", "lifetime-fixture"])
+    queue = cli.JobQueue(owner.database)
+    job = queue.enqueue("noop", {"echo": "native worker completion"})
+    native_close = cli.TtsProviderRegistry.close
+    closed: list[cli.TtsProviderRegistry] = []
+
+    def close(registry: cli.TtsProviderRegistry) -> None:
+        owner.dispose.assert_not_called()
+        assert owner.connection.execute("SELECT 1").fetchone() == (1,)
+        native_close(registry)
+        closed.append(registry)
+
+    with (
+        patch.object(cli, "_database", return_value=(owner.paths, owner.database)),
+        patch.object(cli.TtsProviderRegistry, "close", new=close),
+    ):
+        assert args.handler(args) == 0
+    owner.assert_retired()
+    assert len(closed) == 1
+    assert not owner.paths.worker_presence.exists()
+    completed = queue.get(job.id)
+    assert (completed.status, completed.attempts, completed.result_json) == (
+        "succeeded",
+        1,
+        {"echo": "native worker completion", "worker": "ready"},
+    )
+
+
+@pytest.mark.parametrize("state", ["present", "deleted", "missing"])
+def test_worker_hash_rechecks_artifact_after_reading_file(owner: HeldDatabase, state: str) -> None:
+    path = owner.paths.uploads / "hash-fixture.txt"
+    path.write_text("native hash fixture", encoding="utf-8")
+    artifact = cli.ArtifactService(owner.database, owner.paths).register(
+        path, kind="text", calculate_hash=False
+    )
+    queue = cli.JobQueue(owner.database)
+    job = queue.enqueue("artifact.hash", {"artifact_id": artifact.id})
+    args = cli.build_parser().parse_args(
+        ["worker", "--once", "--worker-id", "hash-lifetime-fixture"]
+    )
+    native_hash = cli.sha256_file
+    digest = native_hash(path)
+
+    def hash_file(value: Path) -> str:
+        assert value == path
+        result = native_hash(value)
+        if state != "present":
+            with owner.database.session() as session:
+                managed = session.get(Artifact, artifact.id)
+                assert managed is not None
+                if state == "missing":
+                    session.delete(managed)
+                else:
+                    managed.state = "deleted"
+        return result
+
+    with (
+        patch.object(cli, "_database", return_value=(owner.paths, owner.database)),
+        patch.object(cli, "sha256_file", side_effect=hash_file),
+    ):
+        assert args.handler(args) == 0
+    owner.assert_retired()
+    assert path.read_text(encoding="utf-8") == "native hash fixture"
+    assert not owner.paths.worker_presence.exists()
+    completed = queue.get(job.id)
+    with owner.database.session() as session:
+        stored = session.get(Artifact, artifact.id)
+        if state == "present":
+            assert stored is not None and stored.content_hash == digest
+            assert (completed.status, completed.result_json, completed.error_code) == (
+                "succeeded",
+                {"artifact_id": artifact.id, "sha256": digest},
+                None,
+            )
+        else:
+            assert (
+                completed.status,
+                completed.result_json,
+                completed.error_code,
+                completed.error_message,
+            ) == (
+                "failed",
+                None,
+                "KeyError",
+                repr(artifact.id),
+            )
+            if state == "missing":
+                assert stored is None
+            else:
+                assert (
+                    stored is not None and stored.state == "deleted" and stored.content_hash is None
+                )
 
 
 def test_mkdir_failure_retires_pool_without_undoing_committed_session(owner: HeldDatabase) -> None:
