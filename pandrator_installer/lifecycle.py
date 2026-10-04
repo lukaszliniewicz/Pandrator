@@ -55,6 +55,7 @@ from .update import (
     verify_release_manifest,
 )
 from .update_environment import validate_update_environment, validate_update_package
+from .update_jobs import prepare_job_drain
 from .update_operation import UpdateOperation
 
 LIFECYCLE_COMMANDS = {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"}
@@ -599,14 +600,7 @@ def command_update(args) -> int:
             if database_path.is_file():
                 deadline = time.monotonic() + max(0.0, float(args.drain_timeout))
                 while True:
-                    try:
-                        with sqlite3.connect(database_path) as connection:
-                            running = int(connection.execute("SELECT COUNT(*) FROM jobs WHERE status = 'running'").fetchone()[0])
-                            if running and args.cancel_running:
-                                connection.execute("UPDATE jobs SET status = 'cancel_requested' WHERE status = 'running'")
-                                connection.commit()
-                    except sqlite3.OperationalError:
-                        running = 0
+                    running = prepare_job_drain(database_path, cancel_running=args.cancel_running)
                     if not running:
                         break
                     if time.monotonic() >= deadline:

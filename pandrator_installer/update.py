@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import time
 import zipfile
+from contextlib import closing
 from dataclasses import dataclass
 from email.parser import BytesParser
 from pathlib import Path
@@ -71,7 +72,12 @@ def snapshot_sqlite(source: Path, destination: Path) -> bool:
     if not source.is_file():
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(source) as incoming, sqlite3.connect(destination) as backup:
+    with (
+        closing(sqlite3.connect(source)) as incoming,
+        incoming,
+        closing(sqlite3.connect(destination)) as backup,
+        backup,
+    ):
         incoming.backup(backup)
     return True
 

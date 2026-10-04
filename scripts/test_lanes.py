@@ -111,6 +111,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_installer_runtime_metadata.py",
         "tests/test_installer_runtime_metadata_files.py",
         "tests/test_installer_update_admission.py",
+        "tests/test_installer_update_sqlite.py",
         "tests/test_installer_update_environment.py",
         "tests/test_installer_update_migrations.py",
         "tests/test_installer_uninstall.py",

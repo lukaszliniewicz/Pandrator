@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -220,6 +221,75 @@ class InstallerUpdateAdmissionTests(unittest.TestCase):
                 self.assertEqual(self.restart.call_count, int(boundary == "waited"))
                 self.assertFalse(self.marker.exists())
                 self.assertTrue(exclusive_admitted(self.root))
+
+    def job_database(self, schema: str = "CREATE TABLE jobs(status TEXT)") -> Path:
+        path = self.root / "pandrator.sqlite3"
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute(schema)
+        return path
+
+    def assert_job_preflight_refused(self, supervisor: Mock) -> str:
+        state = self.root / "runtime-processes.json"
+        original = state.read_bytes()
+        code, message = self.invoke()
+        self.assertEqual(code, 2, message)
+        supervisor.terminate.assert_not_called()
+        self.assertEqual(state.read_bytes(), original)
+        self.snapshot.assert_not_called()
+        self.install.assert_not_called()
+        self.restart.assert_not_called()
+        self.assertFalse((self.root / "backups").exists())
+        self.assertFalse(self.marker.exists())
+        self.assertTrue(exclusive_admitted(self.root))
+        return message
+
+    def test_missing_jobs_table_refuses_before_supervisor_stop(self) -> None:
+        self.job_database("CREATE TABLE unrelated(value INTEGER)")
+        message = self.assert_job_preflight_refused(self.stopped_supervisor())
+        self.assertIn("jobs", message)
+
+    def test_missing_job_status_refuses_before_supervisor_stop(self) -> None:
+        self.job_database("CREATE TABLE jobs(unknown TEXT)")
+        message = self.assert_job_preflight_refused(self.stopped_supervisor())
+        self.assertIn("status", message)
+
+    def test_job_connection_failure_refuses_before_supervisor_stop(self) -> None:
+        self.job_database()
+        supervisor = self.stopped_supervisor()
+        with patch("sqlite3.connect", side_effect=sqlite3.OperationalError("connection sentinel")):
+            message = self.assert_job_preflight_refused(supervisor)
+        self.assertIn("connection sentinel", message)
+
+    def test_running_job_drain_timeout_preserves_runtime(self) -> None:
+        path = self.job_database()
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("INSERT INTO jobs(status) VALUES ('running')")
+        self.arguments += ["--drain-timeout", "0"]
+        message = self.assert_job_preflight_refused(self.stopped_supervisor())
+        self.assertIn("did not drain", message)
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            self.assertEqual(connection.execute("SELECT status FROM jobs").fetchone(), ("running",))
+
+    def test_job_inspection_connections_are_closed_before_activation(self) -> None:
+        self.job_database()
+        connections: list[sqlite3.Connection] = []
+        native_connect = sqlite3.connect
+
+        def connect(*args, **kwargs) -> sqlite3.Connection:
+            connection = native_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+
+        with patch("sqlite3.connect", side_effect=connect):
+            code, message = self.invoke()
+        self.assertEqual(code, 0, message)
+        self.assertEqual(len(connections), 1)
+        try:
+            with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+                connections[0].execute("SELECT 1")
+        finally:
+            for connection in connections:
+                connection.close()
 
     def test_runtime_lease_refuses_activation_before_backups(self) -> None:
         with runtime_lease(self.root):
