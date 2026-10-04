@@ -11,6 +11,8 @@ import socket
 import sys
 import uuid
 import webbrowser
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -109,6 +111,15 @@ def _database(args) -> tuple[DataPaths, Database]:
                 raise RuntimeError(message)
     import_legacy_data(paths)
     return paths, Database(paths.database)
+
+
+@contextmanager
+def _command_database(args: argparse.Namespace) -> Iterator[tuple[DataPaths, Database]]:
+    paths, database = _database(args)
+    try:
+        yield paths, database
+    finally:
+        database.dispose()
 
 
 def _remote_api(args, method: str, path: str, *, payload: Any = None, files: Any = None) -> Any:
@@ -546,35 +557,33 @@ def command_worker(args) -> int:
 
 
 def command_auth_init(args) -> int:
-    _, database = _database(args)
-    password = args.password or os.environ.get("PANDRATOR_OWNER_PASSWORD")
-    if not password:
-        import getpass
+    with _command_database(args) as (_, database):
+        password = args.password or os.environ.get("PANDRATOR_OWNER_PASSWORD")
+        if not password:
+            import getpass
 
-        password = getpass.getpass("Owner password: ")
-        confirmation = getpass.getpass("Confirm password: ")
-        if password != confirmation:
-            print("Passwords do not match.", file=sys.stderr)
-            return 2
-    AuthService(database).initialize_owner(password, replace=args.replace)
-    database.dispose()
+            password = getpass.getpass("Owner password: ")
+            confirmation = getpass.getpass("Confirm password: ")
+            if password != confirmation:
+                print("Passwords do not match.", file=sys.stderr)
+                return 2
+        AuthService(database).initialize_owner(password, replace=args.replace)
     _emit({"initialized": True}, args.json)
     return 0
 
 
 def command_auth_token_create(args) -> int:
-    _, database = _database(args)
-    record, raw = AuthService(database).create_api_token(
-        args.label,
-        scopes=args.scope,
-        expires_at=(
-            utcnow() + timedelta(days=args.expires_in_days)
-            if args.expires_in_days is not None
-            else None
-        ),
-        created_by="owner-cli",
-    )
-    database.dispose()
+    with _command_database(args) as (_, database):
+        record, raw = AuthService(database).create_api_token(
+            args.label,
+            scopes=args.scope,
+            expires_at=(
+                utcnow() + timedelta(days=args.expires_in_days)
+                if args.expires_in_days is not None
+                else None
+            ),
+            created_by="owner-cli",
+        )
     _emit(
         {
             "id": record.id,
@@ -589,9 +598,8 @@ def command_auth_token_create(args) -> int:
 
 
 def command_auth_token_list(args) -> int:
-    _, database = _database(args)
-    records = AuthService(database).list_tokens()
-    database.dispose()
+    with _command_database(args) as (_, database):
+        records = AuthService(database).list_tokens()
     _emit(
         [
             {
@@ -609,9 +617,8 @@ def command_auth_token_list(args) -> int:
 
 
 def command_auth_token_revoke(args) -> int:
-    _, database = _database(args)
-    AuthService(database).revoke_token(args.token_id)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        AuthService(database).revoke_token(args.token_id)
     _emit({"revoked": args.token_id}, args.json)
     return 0
 
@@ -649,33 +656,30 @@ def command_auth_automation_client_revoke(args) -> int:
 
 
 def command_session_list(args) -> int:
-    _, database = _database(args)
-    records = SessionService(database).list(include_trashed=args.include_trashed)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        records = SessionService(database).list(include_trashed=args.include_trashed)
     _emit([_session_dict(record) for record in records], args.json)
     return 0
 
 
 def command_session_create(args) -> int:
-    paths, database = _database(args)
-    record = SessionService(database).create(
-        args.name,
-        workflow_kind=args.kind,
-        source_language=args.source_language,
-        target_language=args.target_language,
-        workflow_preset=args.preset,
-        included_stages=args.include or [],
-    )
-    (paths.sessions / record.storage_key).mkdir(parents=True, exist_ok=False)
-    database.dispose()
+    with _command_database(args) as (paths, database):
+        record = SessionService(database).create(
+            args.name,
+            workflow_kind=args.kind,
+            source_language=args.source_language,
+            target_language=args.target_language,
+            workflow_preset=args.preset,
+            included_stages=args.include or [],
+        )
+        (paths.sessions / record.storage_key).mkdir(parents=True, exist_ok=False)
     _emit(_session_dict(record), args.json)
     return 0
 
 
 def command_session_show(args) -> int:
-    _, database = _database(args)
-    record = SessionService(database).get(args.session_id)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        record = SessionService(database).get(args.session_id)
     _emit(_session_dict(record), args.json)
     return 0
 
@@ -702,38 +706,34 @@ def command_session_import(args) -> int:
 
 
 def command_job_list(args) -> int:
-    _, database = _database(args)
-    records = JobQueue(database).list(args.limit)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        records = JobQueue(database).list(args.limit)
     _emit([_job_dict(record) for record in records], args.json)
     return 0
 
 
 def command_job_enqueue(args) -> int:
-    _, database = _database(args)
-    try:
-        payload = json.loads(args.payload)
-    except json.JSONDecodeError as error:
-        print(f"Invalid --payload JSON: {error}", file=sys.stderr)
-        return 2
-    record = JobQueue(database).enqueue(args.kind, payload, session_id=args.session_id, max_attempts=args.max_attempts)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as error:
+            print(f"Invalid --payload JSON: {error}", file=sys.stderr)
+            return 2
+        record = JobQueue(database).enqueue(args.kind, payload, session_id=args.session_id, max_attempts=args.max_attempts)
     _emit(_job_dict(record), args.json)
     return 0
 
 
 def command_job_show(args) -> int:
-    _, database = _database(args)
-    record = JobQueue(database).get(args.job_id)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        record = JobQueue(database).get(args.job_id)
     _emit(_job_dict(record), args.json)
     return 0
 
 
 def command_job_cancel(args) -> int:
-    _, database = _database(args)
-    record = JobQueue(database).request_cancel(args.job_id)
-    database.dispose()
+    with _command_database(args) as (_, database):
+        record = JobQueue(database).request_cancel(args.job_id)
     _emit(_job_dict(record), args.json)
     return 0
 
@@ -946,9 +946,8 @@ def command_export_create(args) -> int:
 
 
 def command_doctor(args) -> int:
-    paths, database = _database(args)
-    reports = ArtifactService(database, paths).reconcile()
-    database.dispose()
+    with _command_database(args) as (paths, database):
+        reports = ArtifactService(database, paths).reconcile()
     result = {"ok": not reports, "data_root": str(paths.root), "artifact_issues": reports}
     _emit(result, args.json)
     return 0 if not reports else 4
