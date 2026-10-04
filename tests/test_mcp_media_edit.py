@@ -1,11 +1,15 @@
-import inspect
+import asyncio
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
+from mcp import Client
 from pydantic import ValidationError
 
 from pandrator_mcp.clients.application import ApplicationClient
+from pandrator_mcp.context import build_runtime
 from pandrator_mcp.credentials import CredentialResolver
 from pandrator_mcp.schemas.media_edit import (
     GetMediaEditArguments,
@@ -24,6 +28,7 @@ from pandrator_mcp.schemas.sessions import (
 )
 from pandrator_mcp.schemas.workflow import DescribeParametersInput
 from pandrator_mcp.server import build_server
+from pandrator_mcp.settings import McpSettings
 from pandrator_mcp.tools.media_edit import (
     get_media_edit,
     inspect_media_edit_boundary,
@@ -570,19 +575,35 @@ class MediaEditToolTests(unittest.TestCase):
 
 
 class MediaEditServerRegistrationTests(unittest.TestCase):
-    def test_server_source_registers_all_media_edit_tools(self):
-        source = inspect.getsource(build_server)
+    def test_server_registers_all_media_edit_tools(self):
+        async def registered_names(root):
+            runtime = build_runtime(
+                McpSettings(target_name="unconfigured", configuration_path=root / "absent.json")
+            )
+            async with Client(build_server(runtime)) as client:
+                return {tool.name for tool in (await client.list_tools()).tools}
+
+        with tempfile.TemporaryDirectory(prefix="pandrator-media-edit-registration-") as directory:
+            names = asyncio.run(registered_names(Path(directory)))
         for name in (
             "pandrator_get_media_edit",
             "pandrator_list_media_edit_cuts",
             "pandrator_inspect_media_edit_boundary",
+            "pandrator_plan_media_edit_workflow",
             "pandrator_prepare_media_edit",
             "pandrator_update_media_edit",
             "pandrator_refine_media_edit_boundary",
             "pandrator_propose_media_edit",
             "pandrator_render_media_edit",
+            "pandrator_create_media_edit_dispatch_run",
+            "pandrator_list_media_edit_dispatch_runs",
+            "pandrator_get_media_edit_dispatch_run",
+            "pandrator_claim_media_edit_dispatch_batch",
+            "pandrator_renew_media_edit_dispatch_batch",
+            "pandrator_release_media_edit_dispatch_batch",
+            "pandrator_submit_media_edit_dispatch_batch",
         ):
-            self.assertIn(f'name="{name}"', source)
+            self.assertIn(name, names)
 
 
 if __name__ == "__main__":
