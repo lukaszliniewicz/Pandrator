@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -105,176 +106,182 @@ class ApplicationServices:
 
         paths = DataPaths.from_value(data_root).ensure()
         migration = import_legacy_data(paths)
-        database = Database(paths.database)
+        with ExitStack() as cleanup:
+            database = Database(paths.database)
+            cleanup.callback(database.dispose)
 
-        stt_preferences = crispasr_install_preferences(paths)
-        if stt_preferences["configured"]:
-            with database.session() as settings_session:
-                if settings_session.get(AppSetting, "defaults.stt") is None:
-                    settings_session.add(
-                        AppSetting(
-                            key="defaults.stt",
-                            value_json={
-                                "stt_engine": "auto",
-                                "stt_model_quantization": stt_preferences[
-                                    "quantization"
-                                ],
-                            },
+            stt_preferences = crispasr_install_preferences(paths)
+            if stt_preferences["configured"]:
+                with database.session() as settings_session:
+                    if settings_session.get(AppSetting, "defaults.stt") is None:
+                        settings_session.add(
+                            AppSetting(
+                                key="defaults.stt",
+                                value_json={
+                                    "stt_engine": "auto",
+                                    "stt_model_quantization": stt_preferences[
+                                        "quantization"
+                                    ],
+                                },
+                            )
                         )
-                    )
 
-        auth = AuthService(database)
-        automation_enrollment = AutomationEnrollmentService(database, auth)
-        login_throttle = LoginThrottle()
-        capabilities = CapabilityService(
-            database,
-            paths,
-            ttl_seconds=capability_ttl_seconds,
-        )
-        redactor = SecretRedactor(database, paths)
-        audit = AuditService(database, redactor)
-        idempotency = IdempotencyService(database, redactor)
-        jobs = JobQueue(database, secret_redactor=redactor)
-        quick_transcriptions = QuickTranscriptionService(database, paths, jobs)
-        work = WorkService(jobs, redactor)
-        identity = ApplicationIdentityService(
-            database,
-            public_origin=public_origin,
-        )
-        sessions = SessionService(database)
-        artifacts = ArtifactService(database, paths)
-        session_forks = SessionForkService(database, paths, artifacts)
-        workflows = WorkflowService(database, jobs)
-        workspace_settings = WorkspaceSettingsService(database)
+            auth = AuthService(database)
+            automation_enrollment = AutomationEnrollmentService(database, auth)
+            login_throttle = LoginThrottle()
+            capabilities = CapabilityService(
+                database,
+                paths,
+                ttl_seconds=capability_ttl_seconds,
+            )
+            redactor = SecretRedactor(database, paths)
+            audit = AuditService(database, redactor)
+            idempotency = IdempotencyService(database, redactor)
+            jobs = JobQueue(database, secret_redactor=redactor)
+            quick_transcriptions = QuickTranscriptionService(database, paths, jobs)
+            work = WorkService(jobs, redactor)
+            identity = ApplicationIdentityService(
+                database,
+                public_origin=public_origin,
+            )
+            sessions = SessionService(database)
+            artifacts = ArtifactService(database, paths)
+            session_forks = SessionForkService(database, paths, artifacts)
+            workflows = WorkflowService(database, jobs)
+            workspace_settings = WorkspaceSettingsService(database)
 
-        def session_directory(session_id: str) -> Path:
-            with database.session() as db_session:
-                record = db_session.get(SessionRecord, session_id)
-                if record is None:
-                    raise KeyError(session_id)
-                destination = paths.sessions / record.storage_key
-            destination.mkdir(parents=True, exist_ok=True)
-            return destination
+            def session_directory(session_id: str) -> Path:
+                with database.session() as db_session:
+                    record = db_session.get(SessionRecord, session_id)
+                    if record is None:
+                        raise KeyError(session_id)
+                    destination = paths.sessions / record.storage_key
+                destination.mkdir(parents=True, exist_ok=True)
+                return destination
 
-        media_edit = MediaEditService(database, artifacts, session_directory)
-        subtitle_evidence = SubtitleEvidenceService(
-            database,
-            artifacts,
-            jobs,
-            workspace_settings,
-            session_directory,
-            paths,
-        )
-        manager_bridge = LocalManagerProxy()
-        tts_providers = TtsProviderRegistry()
-        workflow_handlers = WorkflowHandlers(
-            database,
-            paths,
-            tts_providers=tts_providers,
-            manager_bridge=manager_bridge,
-            jobs=jobs,
-            subtitle_evidence=subtitle_evidence,
-        )
-        workflow_plans = WorkflowExecutionPlanService(
-            database,
-            workflows,
-            jobs,
-            work,
-            idempotency,
-            handlers=workflow_handlers,
-        )
-        tts_catalogue = TtsCatalogueService(
-            database,
-            paths,
-            tts_providers,
-            manager_bridge=manager_bridge,
-        )
-        outcome_plans = OutcomePlanService(database)
-        source_library = SourceLibraryService(database, artifacts)
-        generation = GenerationService(
-            database,
-            jobs,
-            workspace_settings,
-            artifacts,
-            plan_refresher=workflow_handlers.refresh_generation_plan,
-        )
-        pronunciations = PronunciationLibrary(database)
-        chunk_uploads = ChunkUploadService(
-            database,
-            paths,
-            artifacts,
-            source_library,
-        )
-        startup_maintenance = StartupMaintenance(
-            database,
-            paths,
-            chunk_uploads,
-        )
+            media_edit = MediaEditService(database, artifacts, session_directory)
+            subtitle_evidence = SubtitleEvidenceService(
+                database,
+                artifacts,
+                jobs,
+                workspace_settings,
+                session_directory,
+                paths,
+            )
+            manager_bridge = LocalManagerProxy()
+            cleanup.callback(manager_bridge.close)
+            tts_providers = TtsProviderRegistry()
+            cleanup.callback(tts_providers.close)
+            workflow_handlers = WorkflowHandlers(
+                database,
+                paths,
+                tts_providers=tts_providers,
+                manager_bridge=manager_bridge,
+                jobs=jobs,
+                subtitle_evidence=subtitle_evidence,
+            )
+            workflow_plans = WorkflowExecutionPlanService(
+                database,
+                workflows,
+                jobs,
+                work,
+                idempotency,
+                handlers=workflow_handlers,
+            )
+            tts_catalogue = TtsCatalogueService(
+                database,
+                paths,
+                tts_providers,
+                manager_bridge=manager_bridge,
+            )
+            outcome_plans = OutcomePlanService(database)
+            source_library = SourceLibraryService(database, artifacts)
+            generation = GenerationService(
+                database,
+                jobs,
+                workspace_settings,
+                artifacts,
+                plan_refresher=workflow_handlers.refresh_generation_plan,
+            )
+            pronunciations = PronunciationLibrary(database)
+            chunk_uploads = ChunkUploadService(
+                database,
+                paths,
+                artifacts,
+                source_library,
+            )
+            startup_maintenance = StartupMaintenance(
+                database,
+                paths,
+                chunk_uploads,
+            )
 
-        subtitle_review = SubtitleReviewService(
-            database,
-            artifacts,
-            session_directory,
-        )
-        dispatch = DispatchRunService(
-            database,
-            artifacts,
-            session_directory,
-        )
-        source_cleaning_dispatch = SourceCleaningDispatchRunService(
-            database,
-            artifacts,
-            session_directory,
-            jobs=jobs,
-            workspace_settings=workspace_settings,
-        )
-        speech_optimization_dispatch = SpeechOptimizationDispatchRunService(
-            database,
-            artifacts,
-            session_directory,
-        )
-        media_edit_dispatch = MediaEditDispatchRunService(database, media_edit)
-        return cls(
-            paths=paths,
-            migration=migration,
-            database=database,
-            auth=auth,
-            automation_enrollment=automation_enrollment,
-            login_throttle=login_throttle,
-            capabilities=capabilities,
-            redactor=redactor,
-            audit=audit,
-            idempotency=idempotency,
-            jobs=jobs,
-            work=work,
-            quick_transcriptions=quick_transcriptions,
-            identity=identity,
-            sessions=sessions,
-            session_forks=session_forks,
-            artifacts=artifacts,
-            workflows=workflows,
-            workflow_plans=workflow_plans,
-            workflow_handlers=workflow_handlers,
-            manager_bridge=manager_bridge,
-            tts_providers=tts_providers,
-            tts_catalogue=tts_catalogue,
-            workspace_settings=workspace_settings,
-            outcome_plans=outcome_plans,
-            source_library=source_library,
-            generation=generation,
-            pronunciations=pronunciations,
-            chunk_uploads=chunk_uploads,
-            startup_maintenance=startup_maintenance,
-            subtitle_review=subtitle_review,
-            subtitle_evidence=subtitle_evidence,
-            dispatch=dispatch,
-            source_cleaning_dispatch=source_cleaning_dispatch,
-            speech_optimization_dispatch=speech_optimization_dispatch,
-            media_edit_dispatch=media_edit_dispatch,
-            media_edit=media_edit,
-            bootstrap=bootstrap_tokens or BootstrapTokenStore(),
-            session_directory=session_directory,
-        )
+            subtitle_review = SubtitleReviewService(
+                database,
+                artifacts,
+                session_directory,
+            )
+            dispatch = DispatchRunService(
+                database,
+                artifacts,
+                session_directory,
+            )
+            source_cleaning_dispatch = SourceCleaningDispatchRunService(
+                database,
+                artifacts,
+                session_directory,
+                jobs=jobs,
+                workspace_settings=workspace_settings,
+            )
+            speech_optimization_dispatch = SpeechOptimizationDispatchRunService(
+                database,
+                artifacts,
+                session_directory,
+            )
+            media_edit_dispatch = MediaEditDispatchRunService(database, media_edit)
+            services = cls(
+                paths=paths,
+                migration=migration,
+                database=database,
+                auth=auth,
+                automation_enrollment=automation_enrollment,
+                login_throttle=login_throttle,
+                capabilities=capabilities,
+                redactor=redactor,
+                audit=audit,
+                idempotency=idempotency,
+                jobs=jobs,
+                work=work,
+                quick_transcriptions=quick_transcriptions,
+                identity=identity,
+                sessions=sessions,
+                session_forks=session_forks,
+                artifacts=artifacts,
+                workflows=workflows,
+                workflow_plans=workflow_plans,
+                workflow_handlers=workflow_handlers,
+                manager_bridge=manager_bridge,
+                tts_providers=tts_providers,
+                tts_catalogue=tts_catalogue,
+                workspace_settings=workspace_settings,
+                outcome_plans=outcome_plans,
+                source_library=source_library,
+                generation=generation,
+                pronunciations=pronunciations,
+                chunk_uploads=chunk_uploads,
+                startup_maintenance=startup_maintenance,
+                subtitle_review=subtitle_review,
+                subtitle_evidence=subtitle_evidence,
+                dispatch=dispatch,
+                source_cleaning_dispatch=source_cleaning_dispatch,
+                speech_optimization_dispatch=speech_optimization_dispatch,
+                media_edit_dispatch=media_edit_dispatch,
+                media_edit=media_edit,
+                bootstrap=bootstrap_tokens or BootstrapTokenStore(),
+                session_directory=session_directory,
+            )
+            cleanup.pop_all()
+            return services
 
     def close(self) -> None:
         """Retire application resources only after both maintenance services finish."""
