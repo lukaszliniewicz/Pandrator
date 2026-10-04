@@ -87,7 +87,11 @@ def test_failed_final_reap_retains_native_process_and_resources(
     with (
         mock.patch.object(psutil, "Process", side_effect=psutil.AccessDenied(child.pid)),
         mock.patch.object(
-            child, "wait", side_effect=[subprocess.TimeoutExpired(child.args, 0.01), error]
+            child,
+            "wait",
+            side_effect=error
+            if sys.platform == "linux"
+            else [subprocess.TimeoutExpired(child.args, 0.01), error],
         ),
         mock.patch.object(
             owner,
@@ -123,3 +127,68 @@ def test_control_stop_failure_retains_child_for_foreground_cleanup(
     assert owner.lock.acquired
     assert owner.runtime_state.exists()
     assert not any(spec.key == managed.spec.key for spec in owner.specs)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Native family fixture uses Linux subreaping")
+@pytest.mark.parametrize(
+    "root_ignores_term,hold_reap", [(True, False), (False, False), (True, True)]
+)
+def test_fallback_family_completion_and_unconfirmed_retry(
+    root_ignores_term: bool,
+    hold_reap: bool,
+) -> None:
+    command = [
+        sys.executable,
+        str(Path(__file__).parent / "fixtures" / "installer_process_family.py"),
+    ]
+    if root_ignores_term:
+        command.append("--root-ignores-term")
+    if hold_reap:
+        command.append("--hold-reap")
+    # Optional immutable original source only for the recorded before regression run.
+    if revision := os.environ.get("PANDRATOR_TEST_SUPERVISOR_REVISION"):
+        command.extend(["--revision", revision])
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=15, check=True)
+    result = json.loads(completed.stdout)
+    assert result["root_reaped"] and result["grandchild_reaped"] and result["root_removed"]
+    assert result["final_owner_released"]
+    assert result["grandchild_exitcode"] == -signal.SIGKILL
+    assert not result["grandchild_active"]
+    if hold_reap:
+        assert result["stop_error"] == "TimeoutExpired"
+        assert result["retry_error"] == "TimeoutExpired" and result["retry_retained_owner"]
+        assert result["grandchild_status"] == psutil.STATUS_ZOMBIE
+        assert not result["log_closed"] and not result["process_map_empty"]
+        assert result["lock_acquired"] and result["state_exists"]
+    else:
+        assert result["stop_error"] is None
+        assert result["descendant_reaped_before_retirement"]
+        assert result["log_closed"] and result["process_map_empty"]
+        assert not result["lock_acquired"] and not result["state_exists"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux fallback ownership guard")
+@pytest.mark.parametrize("failure", ["group", "waitable"])
+def test_fallback_refuses_unproven_group_ownership(
+    owned: tuple[ProcessSupervisor, ManagedProcess],
+    failure: str,
+) -> None:
+    owner, managed = owned
+    child = managed.process
+    if failure == "group":
+        patch = mock.patch.object(os, "getpgid", return_value=0)
+        error = RuntimeError
+    else:
+        patch = mock.patch.object(os, "waitid", side_effect=ChildProcessError("not waitable"))
+        error = ChildProcessError
+    with (
+        mock.patch.object(psutil, "Process", side_effect=psutil.AccessDenied(child.pid)),
+        mock.patch.object(os, "killpg") as group_signal,
+        patch,
+    ):
+        with pytest.raises(error):
+            owner.stop_all()
+        group_signal.assert_not_called()
+    assert child.poll() is None and owner.processes[managed.spec.key] is managed
+    assert owner.lock.acquired and owner.runtime_state.exists()
+    assert not managed.log_handle.closed

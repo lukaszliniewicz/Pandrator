@@ -566,8 +566,23 @@ class ProcessSupervisor:
                         pass
 
     @staticmethod
+    def _wait_process_group_exit(process: subprocess.Popen, timeout: float = 2.0) -> None:
+        """Require group absence, including completion of orphan zombie reaping."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            time.sleep(0.01)
+
+    @staticmethod
     def _terminate_process_tree(process: subprocess.Popen, timeout: float = 10.0) -> None:
         if process.poll() is not None:
+            if sys.platform == "linux":
+                ProcessSupervisor._wait_process_group_exit(process)
             return
         try:
             parent = psutil.Process(process.pid)
@@ -585,9 +600,23 @@ class ProcessSupervisor:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
+            if sys.platform == "linux":
+                ProcessSupervisor._wait_process_group_exit(process)
             return
         except (psutil.Error, OSError):
             pass
+        if sys.platform == "linux":
+            if os.getpgid(process.pid) != process.pid:
+                raise RuntimeError("Managed process is not its isolated process-group leader.")
+            # Keep the original child waitable so its PID stays reserved through escalation.
+            os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            os.killpg(process.pid, signal.SIGTERM)
+            # Descendants receive the full grace even if their root exits promptly.
+            time.sleep(timeout)
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=2)
+            ProcessSupervisor._wait_process_group_exit(process)
+            return
         try:
             if os.name == "nt":
                 process.send_signal(signal.CTRL_BREAK_EVENT)
