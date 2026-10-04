@@ -83,7 +83,14 @@ class TtsCatalogueService:
         self.database = database
         self.paths = paths
         self.providers = providers
-        self.manager_bridge = manager_bridge or LocalManagerProxy()
+        self._owns_manager_bridge = manager_bridge is None
+        self.manager_bridge = LocalManagerProxy() if manager_bridge is None else manager_bridge
+
+    def close(self) -> None:
+        """Retire only the manager bridge created by this catalogue."""
+
+        if self._owns_manager_bridge:
+            self.manager_bridge.close()
 
     def _settings(
         self,

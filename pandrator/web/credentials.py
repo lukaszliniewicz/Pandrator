@@ -12,6 +12,7 @@ import stat
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1253,55 +1254,58 @@ def hydrate_tts_settings(
     hydrated["provider_configs"] = records
     from .manager_proxy import LocalManagerProxy, ManagerProxyError
 
-    bridge = manager_bridge or LocalManagerProxy()
-    connection_mode = effective_tts_connection_mode(
-        selected,
-        configured_provider_ids=configured_provider_ids,
-        manager_configured=bool(
-            getattr(
-                bridge,
-                "configured",
-                manager_bridge is not None,
-            )
-        ),
-    )
-    if connection_mode == "managed_local":
-        binding = binding_for_provider(service_id)
-        if binding is None:
-            raise ValueError(
-                f"{selected_value} has no qualified local manager binding."
-            )
-        requested_service = str(
-            selected.get("managed_service_id") or binding.service_id
-        ).strip()
-        if requested_service != binding.service_id:
-            raise ValueError(
-                f"{selected_value} has an invalid managed-service binding."
-            )
-        try:
-            managed = bridge.managed_service(binding.service_id)
-        except ManagerProxyError as error:
-            raise RuntimeError(
-                f"The managed local {selected_value} service is unavailable: {error}"
-            ) from error
-        endpoint = str(managed.get("endpoint") or "").strip().rstrip("/")
-        health = str((managed.get("health") or {}).get("state") or "stopped")
-        if not endpoint:
-            raise RuntimeError(
-                f"The managed local {selected_value} service has no endpoint."
-            )
-        if health != "healthy":
-            raise RuntimeError(
-                f"The managed local {selected_value} service is {health}. "
-                "Start it in Providers & Services before generating audio."
-            )
-        hydrated[binding.settings_url_key] = endpoint
-        if str(hydrated.get("preview_service_id") or "") == service_id:
-            hydrated["preview_api_base"] = endpoint
-        record["api_base"] = endpoint
-        record["connection_mode"] = "managed_local"
-        record["managed_service_id"] = binding.service_id
-    return hydrated
+    with ExitStack() as stack:
+        bridge = LocalManagerProxy() if manager_bridge is None else manager_bridge
+        if manager_bridge is None:
+            stack.callback(bridge.close)
+        connection_mode = effective_tts_connection_mode(
+            selected,
+            configured_provider_ids=configured_provider_ids,
+            manager_configured=bool(
+                getattr(
+                    bridge,
+                    "configured",
+                    manager_bridge is not None,
+                )
+            ),
+        )
+        if connection_mode == "managed_local":
+            binding = binding_for_provider(service_id)
+            if binding is None:
+                raise ValueError(
+                    f"{selected_value} has no qualified local manager binding."
+                )
+            requested_service = str(
+                selected.get("managed_service_id") or binding.service_id
+            ).strip()
+            if requested_service != binding.service_id:
+                raise ValueError(
+                    f"{selected_value} has an invalid managed-service binding."
+                )
+            try:
+                managed = bridge.managed_service(binding.service_id)
+            except ManagerProxyError as error:
+                raise RuntimeError(
+                    f"The managed local {selected_value} service is unavailable: {error}"
+                ) from error
+            endpoint = str(managed.get("endpoint") or "").strip().rstrip("/")
+            health = str((managed.get("health") or {}).get("state") or "stopped")
+            if not endpoint:
+                raise RuntimeError(
+                    f"The managed local {selected_value} service has no endpoint."
+                )
+            if health != "healthy":
+                raise RuntimeError(
+                    f"The managed local {selected_value} service is {health}. "
+                    "Start it in Providers & Services before generating audio."
+                )
+            hydrated[binding.settings_url_key] = endpoint
+            if str(hydrated.get("preview_service_id") or "") == service_id:
+                hydrated["preview_api_base"] = endpoint
+            record["api_base"] = endpoint
+            record["connection_mode"] = "managed_local"
+            record["managed_service_id"] = binding.service_id
+        return hydrated
 
 
 def auxiliary_reference_map(session: Session) -> dict[str, str]:

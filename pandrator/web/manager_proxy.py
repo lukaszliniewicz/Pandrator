@@ -352,14 +352,14 @@ def register_manager_routes(
     *,
     require_auth: Callable,
     error_response: Callable,
-    proxy: LocalManagerProxy | None = None,
+    proxy: LocalManagerProxy,
     plan_response_transform: (
         Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None
     ) = None,
 ) -> None:
     """Register the deliberately narrow browser-to-manager contract."""
 
-    manager = proxy or LocalManagerProxy()
+    manager = proxy
 
     def failure(error: ManagerProxyError):
         return error_response(
