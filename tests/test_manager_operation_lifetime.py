@@ -2,14 +2,18 @@
 
 import logging
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 from unittest import mock
 
+from dulwich import porcelain
 from waitress import wasyncore
 from waitress.adjustments import Adjustments
 from waitress.channel import HTTPChannel
@@ -19,7 +23,20 @@ from pandrator_manager import daemon
 from pandrator_manager.api import create_api
 from pandrator_manager.application import create_application
 from pandrator_manager.components import ComponentRegistry
+from pandrator_manager.components.slots import active_component_path
+from pandrator_manager.models import (
+    DesiredComponentState,
+    ManagedProcessSpec,
+    ManagedService,
+    OperationKind,
+    OperationRecord,
+    OperationState,
+    TaskSpec,
+    TaskState,
+)
 from pandrator_manager.operations import OperationEngine
+from pandrator_manager.supervisor import ProcessSupervisor
+from tests.test_manager_operations import _commit, _registry, _wait
 
 
 class _BackpressureChannel(Protocol):
@@ -213,8 +230,306 @@ class OperationLifetimeTests(unittest.TestCase):
     def test_daemon_retains_workspace_until_operation_worker_finishes(self) -> None:
         self._assert_daemon_retains_workspace("operation")
 
+    def test_startup_restoration_waits_for_recovered_component_update(self) -> None:
+        base = Path(self.temporary.name)
+        repository = base / "origin"
+        porcelain.init(str(repository))
+        _commit(repository, "one")
+        workspace = base / "component-workspace"
+        setup = create_application(workspace, registry=_registry(repository))
+
+        def submit(application, kind: OperationKind) -> OperationRecord:
+            plan = application.plan(kind=kind, desired={"fixture": DesiredComponentState()})
+            operation, created = application.submit_operation(
+                plan_id=plan.id,
+                plan_digest=plan.digest,
+                accepted_confirmations=tuple(item.key for item in plan.confirmations),
+                idempotency_key=str(uuid.uuid4()),
+            )
+            self.assertTrue(created)
+            return operation
+
+        installed = submit(setup, OperationKind.INSTALL)
+        OperationEngine(setup.context, setup.store, setup.registry)._execute(installed.id)
+        self.assertEqual(setup.store.get_operation(installed.id).state, OperationState.SUCCEEDED)
+        application = create_application(
+            workspace, registry=_registry(repository, service_key="fixture.service")
+        )
+
+        def spec(component_id: str, _resolved=None) -> ManagedProcessSpec:
+            active = active_component_path(application.context.layout, component_id)
+            assert active is not None
+            return ManagedProcessSpec(
+                service_id="fixture.service",
+                component_id=component_id,
+                label="Disposable service",
+                executable=sys.executable,
+                arguments=("-c", "import time; time.sleep(60)"),
+                cwd=str(active),
+                startup_timeout_seconds=3,
+                shutdown_timeout_seconds=1,
+            )
+
+        old_spec = spec("fixture")
+        # An interrupted update whose desired service exited before this daemon
+        # registered it. Adoption must not conceal a background restoration start.
+        application.store.save_service(
+            ManagedService(
+                id="fixture.service",
+                component_id="fixture",
+                service_key="fixture.service",
+                desired_running=True,
+            )
+        )
+        _commit(repository, "two")
+        updated = submit(application, OperationKind.UPDATE)
+        stop_task = next(
+            task
+            for task in application.store.operation_tasks(updated.id)
+            if task.task.kind == "stop_service"
+        )
+        updated.state = OperationState.RUNNING
+        updated.current_task_id = stop_task.task.id
+        application.store.update_operation(updated)
+        application.store.update_operation_task(
+            updated.id,
+            stop_task.task.id,
+            state=TaskState.RUNNING,
+            attempt=1,
+        )
+        application = create_application(
+            workspace, registry=_registry(repository, service_key="fixture.service")
+        )
+        before_stop, allow_stop, after_stop, allow_operation, selected, allow_start, restored = (
+            threading.Event() for _ in range(7)
+        )
+        engines: list[OperationEngine] = []
+        failures: list[BaseException] = []
+        children: list[subprocess.Popen] = []
+
+        class ControlledSupervisor(ProcessSupervisor):
+            def stop(self, service_id: str) -> ManagedService:
+                if (
+                    threading.current_thread().name == "pandrator-manager-operations"
+                    and not after_stop.is_set()
+                ):
+                    before_stop.set()
+                    if not allow_stop.wait(5):
+                        raise RuntimeError("Fixture stop gate expired")
+                return super().stop(service_id)
+
+            def start(self, service_id: str) -> ManagedService:
+                if threading.current_thread().name == "manager-restore-desired-services":
+                    selected.set()
+                    if not allow_start.wait(5):
+                        raise RuntimeError("Fixture restoration gate expired")
+                service = super().start(service_id)
+                process = self._runtime[service_id].process
+                if process is not None and process not in children:
+                    children.append(process)
+                return service
+
+            def restore_desired(self) -> dict[str, str]:
+                try:
+                    return super().restore_desired()
+                finally:
+                    restored.set()
+
+        supervisor = ControlledSupervisor(
+            application.context,
+            application.store,
+            manager_instance_id="startup-fixture",
+        )
+
+        def factory(*args, **kwargs) -> OperationEngine:
+            kwargs["service_spec_factory"] = spec
+
+            def fault(_operation: OperationRecord, task: TaskSpec, _result: dict) -> None:
+                if task.kind == "stop_service":
+                    after_stop.set()
+                    if not allow_operation.wait(5):
+                        raise RuntimeError("Fixture operation gate expired")
+
+            kwargs["fault_injector"] = fault
+            engine = OperationEngine(*args, **kwargs)
+            engines.append(engine)
+            original_start = engine.start
+
+            def start() -> None:
+                original_start()
+                if not before_stop.wait(5):
+                    raise RuntimeError("Recovered update did not reach its stop task")
+
+            engine.start = start
+            return engine
+
+        server = mock.Mock()
+        server.effective_port = 12345
+        server._map = {}
+
+        def run_server() -> None:
+            if not allow_operation.wait(5):
+                raise RuntimeError("Fixture server gate expired")
+            _wait(application, updated.id)
+            if not restored.wait(5):
+                raise RuntimeError("Fixture restoration did not complete")
+
+        server.run.side_effect = run_server
+
+        def run() -> None:
+            try:
+                daemon.run_daemon(workspace, register_silero=False, handoff_child="fixture")
+            except BaseException as error:
+                failures.append(error)
+
+        with (
+            mock.patch.object(daemon, "create_application", return_value=application),
+            mock.patch.object(daemon, "ProcessSupervisor", return_value=supervisor),
+            mock.patch.object(daemon, "OperationEngine", side_effect=factory),
+            mock.patch.object(daemon, "create_api", return_value=object()),
+            mock.patch.object(daemon, "create_server", return_value=server),
+            mock.patch.object(daemon, "pandrator_runtime_specs", return_value=()),
+            mock.patch.object(
+                daemon, "installed_component_runtime_specs", return_value=(old_spec,)
+            ),
+            mock.patch.object(daemon.signal, "signal"),
+            mock.patch.object(daemon.logging, "basicConfig"),
+            mock.patch.object(daemon, "RotatingFileHandler", return_value=logging.NullHandler()),
+        ):
+            worker = threading.Thread(target=run)
+            try:
+                worker.start()
+                self.assertTrue(before_stop.wait(5))
+                # Give the old implementation time to snapshot True before stop.
+                selected_before_stop = selected.wait(0.1)
+                allow_stop.set()
+                self.assertTrue(after_stop.wait(5))
+                allow_start.set()
+                restored_during_maintenance = restored.wait(0.1)
+                acquired = application.lifecycle_lock.acquire(blocking=False)
+                if acquired:
+                    application.lifecycle_lock.release()
+                self.assertFalse(acquired)
+                self.assertFalse(selected_before_stop)
+                self.assertFalse(restored_during_maintenance)
+                self.assertFalse(application.store.list_services()[0].desired_running)
+                self.assertEqual(supervisor._runtime, {})
+                allow_operation.set()
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(failures, [])
+                self.assertTrue(restored.is_set())
+                self.assertEqual(
+                    application.store.get_operation(updated.id).state, OperationState.SUCCEEDED
+                )
+                recovered_stop = next(
+                    task
+                    for task in application.store.operation_tasks(updated.id)
+                    if task.task.kind == "stop_service"
+                )
+                self.assertEqual(recovered_stop.attempt, 2)
+                self.assertTrue(recovered_stop.result["desired_running"])
+                self.assertEqual(application.store.configuration_revision(), 2)
+                active = active_component_path(application.context.layout, "fixture")
+                assert active is not None
+                self.assertEqual((active / "marker.txt").read_text(), "two")
+                self.assertEqual(supervisor.spec("fixture.service"), spec("fixture"))
+                self.assertEqual(len(children), 1)
+                self.assertIsNone(children[0].poll())
+            finally:
+                allow_stop.set()
+                allow_start.set()
+                allow_operation.set()
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive())
+                for engine in engines:
+                    self.assertTrue(engine.shutdown(timeout=5))
+                supervisor.shutdown(stop_children=True)
+                for process in children:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+                reaper_names = {f"pandrator-service-reaper-{process.pid}" for process in children}
+                for thread in threading.enumerate():
+                    if thread.name in reaper_names:
+                        thread.join(timeout=5)
+                        self.assertFalse(thread.is_alive())
+
     def test_daemon_retains_workspace_until_restoration_finishes(self) -> None:
         self._assert_daemon_retains_workspace("restoration")
+
+    def test_shutdown_skips_restoration_waiting_for_maintenance(self) -> None:
+        ready, release, shutdown_entered = (threading.Event() for _ in range(3))
+        engines: list[OperationEngine] = []
+        failures: list[BaseException] = []
+        supervisor = mock.Mock()
+        supervisor.restore_desired.return_value = {}
+        server = mock.Mock()
+        server.effective_port = 12345
+        server._map = {}
+
+        def factory(*args, **kwargs) -> OperationEngine:
+            engine = OperationEngine(*args, **kwargs)
+            engines.append(engine)
+            original_start, original_shutdown = engine.start, engine.shutdown
+
+            def execute(operation_id: str) -> None:
+                with engine.lifecycle_lock:
+                    ready.set()
+                    if not release.wait(5):
+                        raise RuntimeError("Fixture maintenance release expired")
+
+            def start() -> None:
+                original_start()
+                engine.enqueue("controlled-maintenance")
+                if not ready.wait(5):
+                    raise RuntimeError("Fixture maintenance did not start")
+
+            def shutdown(*, timeout: float | None = 5) -> bool:
+                shutdown_entered.set()
+                return original_shutdown(timeout=timeout)
+
+            engine._execute = execute
+            engine.start = start
+            engine.shutdown = shutdown
+            return engine
+
+        def run() -> None:
+            try:
+                daemon.run_daemon(
+                    self.temporary.name, register_silero=False, handoff_child="fixture"
+                )
+            except BaseException as error:
+                failures.append(error)
+
+        with (
+            mock.patch.object(daemon, "create_application", return_value=self.application),
+            mock.patch.object(daemon, "ProcessSupervisor", return_value=supervisor),
+            mock.patch.object(daemon, "OperationEngine", side_effect=factory),
+            mock.patch.object(daemon, "create_api", return_value=object()),
+            mock.patch.object(daemon, "create_server", return_value=server),
+            mock.patch.object(daemon, "pandrator_runtime_specs", return_value=()),
+            mock.patch.object(daemon, "installed_component_runtime_specs", return_value=()),
+            mock.patch.object(daemon.signal, "signal"),
+            mock.patch.object(daemon.logging, "basicConfig"),
+            mock.patch.object(daemon, "RotatingFileHandler", return_value=logging.NullHandler()),
+        ):
+            worker = threading.Thread(target=run)
+            try:
+                worker.start()
+                self.assertTrue(shutdown_entered.wait(5))
+                supervisor.restore_desired.assert_not_called()
+                release.set()
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(failures, [])
+                supervisor.restore_desired.assert_not_called()
+            finally:
+                release.set()
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+                for engine in engines:
+                    self.assertTrue(engine.shutdown(timeout=5))
 
     def test_daemon_retains_workspace_until_request_handlers_finish(self) -> None:
         self._assert_daemon_retains_workspace("request")

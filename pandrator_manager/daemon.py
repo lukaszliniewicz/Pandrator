@@ -453,13 +453,19 @@ def run_daemon(
         _atomic_descriptor(layout.descriptor, descriptor)
 
         def restore_desired_services() -> None:
-            failures = supervisor.restore_desired()
-            for service_id, message in failures.items():
-                logging.error(
-                    "Could not restore desired managed service %s: %s",
-                    service_id,
-                    message,
-                )
+            # Restoration reads durable running intent and can spawn services.
+            # Keep that snapshot/start sequence outside complete maintenance
+            # operations, including their rollback and finalization.
+            with application.lifecycle_lock:
+                if api_shutdown.is_set():
+                    return
+                failures = supervisor.restore_desired()
+                for service_id, message in failures.items():
+                    logging.error(
+                        "Could not restore desired managed service %s: %s",
+                        service_id,
+                        message,
+                    )
 
         restoration_thread = threading.Thread(
             target=restore_desired_services,
