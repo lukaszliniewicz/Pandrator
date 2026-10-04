@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from alembic import command
@@ -105,11 +105,10 @@ class Database:
 def upgrade_database(path: Path) -> None:
     if path.is_file():
         try:
-            connection = sqlite3.connect(path)
-            row = connection.execute(
-                "SELECT version_num FROM alembic_version LIMIT 1"
-            ).fetchone()
-            connection.close()
+            with closing(sqlite3.connect(path)) as connection:
+                row = connection.execute(
+                    "SELECT version_num FROM alembic_version LIMIT 1"
+                ).fetchone()
             if row and row[0] == SCHEMA_HEAD:
                 return
         except sqlite3.DatabaseError:
