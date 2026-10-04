@@ -45,6 +45,7 @@ Releases = "https://github.com/lukaszliniewicz/Pandrator/releases"
 packages = [
   "pandrator_mcp",
   "pandrator_mcp.clients",
+  "pandrator_mcp.registrations",
   "pandrator_mcp.schemas",
   "pandrator_mcp.tools",
 ]
@@ -53,6 +54,7 @@ include-package-data = false
 [tool.setuptools.package-dir]
 pandrator_mcp = "."
 "pandrator_mcp.clients" = "clients"
+"pandrator_mcp.registrations" = "registrations"
 "pandrator_mcp.schemas" = "schemas"
 "pandrator_mcp.tools" = "tools"
 
