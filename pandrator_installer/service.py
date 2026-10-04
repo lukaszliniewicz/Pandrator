@@ -22,7 +22,7 @@ class HeadlessInstaller(
     WorkflowMixin,
     RuntimeMixin,
 ):
-    """Installer workflow host without Qt widgets or a window."""
+    """Installer workflow host for headless automation."""
 
     def __init__(self, working_dir):
         self.headless = True

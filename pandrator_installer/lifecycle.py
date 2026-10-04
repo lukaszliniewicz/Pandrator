@@ -1,4 +1,4 @@
-"""Headless installer lifecycle CLI shared with the Qt launcher."""
+"""Headless installer lifecycle CLI for the Python and Svelte application."""
 
 from __future__ import annotations
 
