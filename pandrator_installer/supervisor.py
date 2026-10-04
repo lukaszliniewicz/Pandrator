@@ -19,6 +19,8 @@ from urllib.error import URLError
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
+import psutil
+
 from .process_identity import (
     ProcessIdentityError,
     ProcessIdentityMismatch,
@@ -36,11 +38,6 @@ from .runtime_metadata_files import (
 )
 from .subprocess_env import external_subprocess_environment
 
-try:
-    import psutil
-except ImportError:  # pragma: no cover - installer dependencies include psutil
-    psutil = None
-
 
 class InstanceAlreadyRunning(RuntimeError):
     pass
@@ -49,13 +46,7 @@ class InstanceAlreadyRunning(RuntimeError):
 def _pid_exists(pid: int) -> bool:
     if pid <= 0:
         return False
-    if psutil is not None:
-        return bool(psutil.pid_exists(pid))
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    return bool(psutil.pid_exists(pid))
 
 
 class InstanceLock:
@@ -68,8 +59,6 @@ class InstanceLock:
 
     def acquire(self) -> str:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if psutil is None:
-            raise RuntimeError("psutil is required for safe supervisor process identity.")
         try:
             current_identity = capture_process_identity(
                 psutil.Process(os.getpid()),
@@ -248,13 +237,12 @@ class ProcessSupervisor:
         self.runtime_control = self.data_root / "runtime-control.json"
         self.supervisor_create_time: float | None = None
         self.supervisor_executable = str(Path(sys.executable).resolve())
-        if psutil is not None:
-            try:
-                current_process = psutil.Process(os.getpid())
-                self.supervisor_create_time = current_process.create_time()
-                self.supervisor_executable = current_process.exe()
-            except (psutil.Error, OSError):
-                pass
+        try:
+            current_process = psutil.Process(os.getpid())
+            self.supervisor_create_time = current_process.create_time()
+            self.supervisor_executable = current_process.exe()
+        except (psutil.Error, OSError):
+            pass
 
     @staticmethod
     def _validate_specs(specs: list[ManagedProcessSpec]) -> None:
@@ -564,26 +552,25 @@ class ProcessSupervisor:
     def _terminate_process_tree(process: subprocess.Popen, timeout: float = 10.0) -> None:
         if process.poll() is not None:
             return
-        if psutil is not None:
+        try:
+            parent = psutil.Process(process.pid)
+            descendants = parent.children(recursive=True)
+            for child in descendants:
+                child.terminate()
+            parent.terminate()
+            _, alive = psutil.wait_procs([*descendants, parent], timeout=timeout)
+            for item in alive:
+                item.kill()
+            if alive:
+                psutil.wait_procs(alive, timeout=2)
             try:
-                parent = psutil.Process(process.pid)
-                descendants = parent.children(recursive=True)
-                for child in descendants:
-                    child.terminate()
-                parent.terminate()
-                _, alive = psutil.wait_procs([*descendants, parent], timeout=timeout)
-                for item in alive:
-                    item.kill()
-                if alive:
-                    psutil.wait_procs(alive, timeout=2)
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=2)
-                return
-            except (psutil.Error, OSError):
-                pass
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            return
+        except (psutil.Error, OSError):
+            pass
         try:
             if os.name == "nt":
                 process.send_signal(signal.CTRL_BREAK_EVENT)
