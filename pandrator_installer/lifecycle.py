@@ -718,6 +718,9 @@ def command_uninstall(args) -> int:
         return 0
     if not args.yes:
         raise RuntimeError("Uninstall requires --yes. User data is preserved unless --purge-data is also supplied.")
+    installer = HeadlessInstaller(working_dir=str(paths.workspace))
+    if installer.get_running_installation_processes(str(paths.install_root)):
+        raise RuntimeError("Pandrator is still running. Stop it before uninstalling.")
     if not args.purge_data and paths.pandrator_repo.is_dir():
         preserved_root = paths.install_root / "preserved-data"
         preserved_root.mkdir(parents=True, exist_ok=True)
