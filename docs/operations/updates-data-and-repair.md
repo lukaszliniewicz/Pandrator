@@ -93,6 +93,13 @@ Signed-wheel updates require a Python environment inside the selected installati
 A missing or escaped environment must be repaired before updating. The update
 uses the installation environment and ignores personal pip destination settings.
 It also refuses an existing Pandrator package whose files lie outside that environment.
+The signed-wheel CLI drains and stops the old runtime, then requires exclusive
+installation ownership for backups, activation and rollback. If a runtime is still
+running or starts before activation, the update refuses to change the package.
+Concurrent updates cannot replace each other's maintenance marker. A marker left
+by an interrupted update must be investigated before retrying: confirm that the
+update has ended, stop the runtime, and check the retained backups before removing
+that marker. The repair command does not automatically clear it.
 
 ## Safe maintenance checklist
 

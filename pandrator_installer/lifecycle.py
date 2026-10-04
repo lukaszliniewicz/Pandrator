@@ -54,6 +54,7 @@ from .update import (
     verify_release_manifest,
 )
 from .update_environment import validate_update_environment, validate_update_package
+from .update_operation import UpdateOperation
 
 LIFECYCLE_COMMANDS = {"list", "probe", "plan", "install", "update", "repair", "launch", "service", "stop", "uninstall"}
 
@@ -552,6 +553,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _require_update_runtime_stopped(paths: WorkspacePaths) -> None:
+    if uninstall_runtime_may_be_active(paths.install_root):
+        raise RuntimeError("Pandrator may still be running. Check its runtime metadata before activating an update.")
+    installer = HeadlessInstaller(str(paths.workspace))
+    if installer.get_running_installation_processes(str(paths.install_root)):
+        raise RuntimeError("Pandrator is still running. Stop it before activating an update.")
+
+
 def command_update(args) -> int:
     paths = _workspace(args)
     wheel = Path(args.wheel).expanduser().resolve()
@@ -575,140 +584,155 @@ def command_update(args) -> int:
     validate_update_package(python, selected_environment.prefix)
 
     data_root = paths.install_root
-    data_root.mkdir(parents=True, exist_ok=True)
-    maintenance = data_root / "maintenance.json"
-    maintenance.write_text(json.dumps({"reason": "update", "version": verified.version, "started_at": time.time()}), encoding="utf-8")
-    runtime_state = data_root / "runtime-processes.json"
-    restart_command: list[str] | None = None
-    restart_cwd: str | None = None
-    original_supervisor = None
-    stop_attempted = False
-    stop_confirmed = False
-    try:
-        database_path = data_root / "pandrator.sqlite3"
-        if database_path.is_file():
-            deadline = time.monotonic() + max(0.0, float(args.drain_timeout))
-            while True:
-                try:
-                    with sqlite3.connect(database_path) as connection:
-                        running = int(connection.execute("SELECT COUNT(*) FROM jobs WHERE status = 'running'").fetchone()[0])
-                        if running and args.cancel_running:
-                            connection.execute("UPDATE jobs SET status = 'cancel_requested' WHERE status = 'running'")
-                            connection.commit()
-                except sqlite3.OperationalError:
-                    running = 0
-                if not running:
-                    break
-                if time.monotonic() >= deadline:
-                    if not args.cancel_running:
-                        raise RuntimeError("Running jobs did not drain before the update timeout; retry with --cancel-running to request cancellation.")
-                    break
-                time.sleep(0.5)
-
-        if runtime_state.is_file():
-            snapshot = read_runtime_metadata(runtime_state)
-            try:
-                if snapshot is None:
-                    raise OSError
-                if snapshot.parse_error is not None:
-                    raise snapshot.parse_error
-                runtime = snapshot.payload
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
-                raise RuntimeError("Runtime state is unreadable; refusing to stop an unknown PID.") from error
-            if not isinstance(runtime, dict):
-                raise RuntimeError("Runtime state must contain a JSON object.")
-            original_supervisor = _validated_supervisor_process(paths, runtime)
-            if original_supervisor is None:
-                discard_runtime_metadata(snapshot)
-            else:
-                try:
-                    restart_command = original_supervisor.cmdline()
-                    restart_cwd = original_supervisor.cwd()
-                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as error:
-                    raise RuntimeError("Could not capture the Pandrator restart command safely.") from error
-                try:
-                    original_supervisor.terminate()
-                except psutil.NoSuchProcess:
-                    original_supervisor = None
-                    restart_command = None
-                    restart_cwd = None
-                    discard_runtime_metadata(snapshot)
-                except psutil.AccessDenied as error:
-                    raise RuntimeError("Access was denied while stopping the Pandrator supervisor.") from error
-                else:
-                    stop_attempted = True
+    with UpdateOperation(data_root, verified.version) as operation:
+        runtime_state = data_root / "runtime-processes.json"
+        restart_command: list[str] | None = None
+        restart_cwd: str | None = None
+        original_supervisor = None
+        stop_attempted = False
+        stop_confirmed = False
+        restart_allowed = False
+        try:
+            database_path = data_root / "pandrator.sqlite3"
+            if database_path.is_file():
+                deadline = time.monotonic() + max(0.0, float(args.drain_timeout))
+                while True:
                     try:
-                        original_supervisor.wait(timeout=40)
-                    except psutil.TimeoutExpired as error:
-                        raise RuntimeError("The running Pandrator supervisor did not stop cleanly.") from error
-                    except psutil.NoSuchProcess:
-                        pass
-                    stop_confirmed = True
+                        with sqlite3.connect(database_path) as connection:
+                            running = int(connection.execute("SELECT COUNT(*) FROM jobs WHERE status = 'running'").fetchone()[0])
+                            if running and args.cancel_running:
+                                connection.execute("UPDATE jobs SET status = 'cancel_requested' WHERE status = 'running'")
+                                connection.commit()
+                    except sqlite3.OperationalError:
+                        running = 0
+                    if not running:
+                        break
+                    if time.monotonic() >= deadline:
+                        if not args.cancel_running:
+                            raise RuntimeError("Running jobs did not drain before the update timeout; retry with --cancel-running to request cancellation.")
+                        break
+                    time.sleep(0.5)
+
+            if runtime_state.is_file():
+                snapshot = read_runtime_metadata(runtime_state)
+                try:
+                    if snapshot is None:
+                        raise OSError
+                    if snapshot.parse_error is not None:
+                        raise snapshot.parse_error
+                    runtime = snapshot.payload
+                except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                    raise RuntimeError("Runtime state is unreadable; refusing to stop an unknown PID.") from error
+                if not isinstance(runtime, dict):
+                    raise RuntimeError("Runtime state must contain a JSON object.")
+                original_supervisor = _validated_supervisor_process(paths, runtime)
+                if original_supervisor is None:
                     discard_runtime_metadata(snapshot)
+                else:
+                    try:
+                        restart_command = original_supervisor.cmdline()
+                        restart_cwd = original_supervisor.cwd()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as error:
+                        raise RuntimeError("Could not capture the Pandrator restart command safely.") from error
+                    try:
+                        original_supervisor.terminate()
+                    except psutil.NoSuchProcess:
+                        original_supervisor = None
+                        restart_command = None
+                        restart_cwd = None
+                        discard_runtime_metadata(snapshot)
+                    except psutil.AccessDenied as error:
+                        raise RuntimeError("Access was denied while stopping the Pandrator supervisor.") from error
+                    else:
+                        stop_attempted = True
+                        try:
+                            original_supervisor.wait(timeout=40)
+                        except psutil.TimeoutExpired as error:
+                            raise RuntimeError("The running Pandrator supervisor did not stop cleanly.") from error
+                        except psutil.NoSuchProcess:
+                            pass
+                        stop_confirmed = True
+                        discard_runtime_metadata(snapshot)
 
-        selected_environment = validate_update_environment(python, data_root)
-        validate_update_package(python, selected_environment.prefix)
-        backup_dir = data_root / "backups" / f"update-{time.time_ns()}-{verified.version}"
-        backup_dir.mkdir(parents=True, exist_ok=False)
-        database_snapshot = backup_dir / "pandrator.sqlite3"
-        snapshot_sqlite(data_root / "pandrator.sqlite3", database_snapshot)
-        package_snapshot = backup_dir / "installed-package.zip"
-        site_packages = snapshot_installed_package(python, package_snapshot)
-        try:
-            install_wheel(python, wheel)
-            run_migrations(python, data_root)
-            health_check(python, data_root)
-        except Exception as activation_error:
+            operation.activate()
+            _require_update_runtime_stopped(paths)
+            restart_allowed = True
+            selected_environment = validate_update_environment(python, data_root)
+            validate_update_package(python, selected_environment.prefix)
+            backup_dir = data_root / "backups" / f"update-{time.time_ns()}-{verified.version}"
+            backup_dir.mkdir(parents=True, exist_ok=False)
+            database_snapshot = backup_dir / "pandrator.sqlite3"
+            snapshot_sqlite(data_root / "pandrator.sqlite3", database_snapshot)
+            package_snapshot = backup_dir / "installed-package.zip"
+            site_packages = snapshot_installed_package(python, package_snapshot)
             try:
-                restore_installed_package(package_snapshot, site_packages)
-                restore_database(database_snapshot, data_root / "pandrator.sqlite3")
+                install_wheel(python, wheel)
+                run_migrations(python, data_root)
                 health_check(python, data_root)
-            except Exception as rollback_error:
+            except Exception as activation_error:
+                try:
+                    restore_installed_package(package_snapshot, site_packages)
+                    restore_database(database_snapshot, data_root / "pandrator.sqlite3")
+                    health_check(python, data_root)
+                except Exception as rollback_error:
+                    raise RuntimeError(
+                        f"Update activation failed ({activation_error}) and rollback verification also failed: {rollback_error}"
+                    ) from rollback_error
                 raise RuntimeError(
-                    f"Update activation failed ({activation_error}) and rollback verification also failed: {rollback_error}"
-                ) from rollback_error
-            raise RuntimeError(
-                f"Update activation failed and the previous package/database were restored: {activation_error}"
-            ) from activation_error
-    finally:
-        active_error = sys.exc_info()[0] is not None
-        cleanup_error = None
-        try:
-            maintenance.unlink(missing_ok=True)
-        except OSError as error:
-            cleanup_error = error
-            logging.exception("Could not clear Pandrator maintenance mode")
+                    f"Update activation failed and the previous package/database were restored: {activation_error}"
+                ) from activation_error
+        finally:
+            active_error = sys.exc_info()[0] is not None
+            restart_error = None
+            supervisor_stopped = stop_confirmed
+            if stop_attempted and not stop_confirmed and original_supervisor is not None:
+                try:
+                    supervisor_stopped = not original_supervisor.is_running()
+                except psutil.NoSuchProcess:
+                    supervisor_stopped = True
+                except psutil.AccessDenied as error:
+                    restart_error = error
+                    logging.exception("Could not confirm that the Pandrator supervisor stopped")
+            if restart_command and supervisor_stopped and not operation.activation_attempted:
+                try:
+                    operation.activate()
+                    _require_update_runtime_stopped(paths)
+                    restart_allowed = True
+                except (OSError, RuntimeError, ValueError):
+                    logging.exception("Could not admit Pandrator recovery after the update attempt")
 
-        restart_error = None
-        supervisor_stopped = stop_confirmed
-        if stop_attempted and not stop_confirmed and original_supervisor is not None:
+            cleanup_error = None
+            cleared = False
             try:
-                supervisor_stopped = not original_supervisor.is_running()
-            except psutil.NoSuchProcess:
-                supervisor_stopped = True
-            except psutil.AccessDenied as error:
-                restart_error = error
-                logging.exception("Could not confirm that the Pandrator supervisor stopped")
-        if restart_command and supervisor_stopped:
-            try:
-                subprocess.Popen(
-                    restart_command,
-                    cwd=restart_cwd or None,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
-                    start_new_session=os.name != "nt",
-                )
-            except (OSError, ValueError) as error:
-                restart_error = error
-                logging.exception("Could not restart Pandrator after the update attempt")
+                cleared = operation.finish()
+                if not cleared:
+                    raise RuntimeError("Update maintenance ownership changed; the current marker was preserved.")
+            except BaseException as error:
+                if not active_error and not isinstance(error, (OSError, RuntimeError)):
+                    raise
+                cleanup_error = error
+                logging.exception("Could not clear owned Pandrator maintenance mode")
 
-        if not active_error:
-            if cleanup_error is not None:
-                raise RuntimeError("Update completed but maintenance mode could not be cleared.") from cleanup_error
-            if restart_error is not None:
-                raise RuntimeError("Update completed but Pandrator could not be restarted.") from restart_error
+            if restart_command and supervisor_stopped and restart_allowed and cleared:
+                try:
+                    subprocess.Popen(
+                        restart_command,
+                        cwd=restart_cwd or None,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0,
+                        start_new_session=os.name != "nt",
+                    )
+                except (OSError, ValueError) as error:
+                    restart_error = error
+                    logging.exception("Could not restart Pandrator after the update attempt")
+
+            if not active_error:
+                if cleanup_error is not None:
+                    raise RuntimeError("Update completed but maintenance mode could not be cleared.") from cleanup_error
+                if restart_error is not None:
+                    raise RuntimeError("Update completed but Pandrator could not be restarted.") from restart_error
 
     _emit({**plan, "status": "updated", "version": verified.version, "backup": str(backup_dir)}, args.json)
     return 0
