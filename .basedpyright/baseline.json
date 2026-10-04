@@ -5342,22 +5342,6 @@
                     "endColumn": 26,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
             }
         ],
         "./pandrator_installer/storage.py": [

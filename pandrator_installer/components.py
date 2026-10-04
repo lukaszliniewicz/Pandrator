@@ -1086,16 +1086,13 @@ class ComponentOperationsMixin:
         return None
 
     def terminate_process_tree(self, process, timeout=10):
-        if process is None:
+        if process is None or process.poll() is not None:
             return
 
         try:
             parent = psutil.Process(process.pid)
         except psutil.NoSuchProcess:
-            try:
-                process.wait(timeout=1)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            process.wait(timeout=1)
             return
 
         descendants = []
@@ -1133,8 +1130,6 @@ class ComponentOperationsMixin:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
-        except OSError:
-            pass
 
     def is_xtts_runtime_ready(self, xtts_repo_path):
         run_script_path = os.path.join(xtts_repo_path, 'run.bat' if is_windows() else 'run.py')

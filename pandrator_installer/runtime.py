@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING
 
 import psutil
 import requests
@@ -38,6 +39,11 @@ from .platforms import is_windows
 
 
 class RuntimeMixin:
+    if TYPE_CHECKING:
+        # Supplied by ComponentOperationsMixin in the installer host.
+        def terminate_process_tree(self, process: subprocess.Popen | None, timeout: int = 10) -> None:
+            ...
+
     def _backend_runtime_specs(self):
         return tuple(
             (
@@ -1561,11 +1567,9 @@ class RuntimeMixin:
             return
 
         logging.info("Terminating %s process with PID: %s", label, process.pid)
-        try:
-            self.terminate_process_tree(process)
-        finally:
-            self._close_process_log_handle(process)
-            setattr(self, process_attr, None)
+        self.terminate_process_tree(process)
+        self._close_process_log_handle(process)
+        setattr(self, process_attr, None)
 
     def shutdown_rvc(self):
         self._shutdown_owned_backend("rvc_process", "RVC")
