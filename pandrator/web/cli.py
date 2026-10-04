@@ -54,6 +54,7 @@ from .subtitle_review import SubtitleReviewService
 from .tts_providers import TtsProviderRegistry
 from .worker_shutdown import worker_termination
 from .workflow_handlers import WorkflowHandlers
+from .workflow_prerequisites import WorkflowPrerequisiteService
 from .workflows import WorkflowService
 
 
@@ -765,7 +766,7 @@ def command_workflow_run(args) -> int:
         if not isinstance(settings, dict):
             raise TypeError("--settings must be a JSON object.")
         if args.stage == "generate_audio" and not args.rerun_changed_prerequisites:
-            mismatches = WorkflowHandlers(database, paths).settings_mismatches(args.session_id, args.stage)
+            mismatches = WorkflowPrerequisiteService(database, paths).settings_mismatches(args.session_id, args.stage)
             if mismatches:
                 settings["reuse_stages"] = [item["stage"] for item in mismatches]
                 for item in mismatches:
