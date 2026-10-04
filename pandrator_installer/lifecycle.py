@@ -228,28 +228,29 @@ def command_install(args) -> int:
     selection = _selection(args)
     paths.workspace.mkdir(parents=True, exist_ok=True)
     installer = HeadlessInstaller(working_dir=str(paths.workspace))
-    completed = False
-    try:
-        installer.run_headless_install(
-            set(selection.selected_components()),
-            install_pandrator=selection.pandrator,
-            crispasr_backend=selection.crispasr_backend,
-            crispasr_engine=selection.crispasr_engine,
-            crispasr_model_quantization=selection.crispasr_model_quantization,
-            kobold_qwen_backend=selection.kobold_qwen_backend,
-            kobold_qwen_model_size=selection.kobold_qwen_model_size,
-            kobold_qwen_quantization=selection.kobold_qwen_quantization,
-            kobold_qwen_initial_model=selection.kobold_qwen_initial_model,
-        )
-        completed = True
-    finally:
-        # Component bootstrap methods own and stop their temporary validation
-        # processes.  A second broad shutdown after success can act on stale
-        # PIDs after reuse and has caused a successful Linux CLI install to
-        # terminate itself with SIGTERM.  Failure cleanup remains best-effort.
-        if not completed:
-            installer.shutdown_apps()
-        installer.shutdown_logging()
+    with installation_lifecycle_guard(paths.install_root, shared=False):
+        completed = False
+        try:
+            installer.run_headless_install(
+                set(selection.selected_components()),
+                install_pandrator=selection.pandrator,
+                crispasr_backend=selection.crispasr_backend,
+                crispasr_engine=selection.crispasr_engine,
+                crispasr_model_quantization=selection.crispasr_model_quantization,
+                kobold_qwen_backend=selection.kobold_qwen_backend,
+                kobold_qwen_model_size=selection.kobold_qwen_model_size,
+                kobold_qwen_quantization=selection.kobold_qwen_quantization,
+                kobold_qwen_initial_model=selection.kobold_qwen_initial_model,
+            )
+            completed = True
+        finally:
+            # Component bootstrap methods own and stop their temporary validation
+            # processes.  A second broad shutdown after success can act on stale
+            # PIDs after reuse and has caused a successful Linux CLI install to
+            # terminate itself with SIGTERM.  Failure cleanup remains best-effort.
+            if not completed:
+                installer.shutdown_apps()
+            installer.shutdown_logging()
     _emit({**plan, "status": "installed"}, args.json)
     return 0
 

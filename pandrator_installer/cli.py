@@ -6,6 +6,7 @@ import os
 import sys
 
 from .catalog import COMPONENTS, PACKAGING_COMPONENT_PATHS
+from .lifecycle_guard import installation_lifecycle_guard
 from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import (
     normalized_machine,
@@ -106,25 +107,26 @@ def run_headless_install_from_cli(args):
 
     installer = HeadlessInstaller(working_dir=workspace)
 
-    completed = False
-    try:
-        components = parse_headless_components(args.components)
-        installer.run_headless_install(
-            components,
-            install_pandrator=not args.skip_pandrator,
-            crispasr_backend=args.crispasr_backend,
-            crispasr_engine=args.crispasr_engine,
-            crispasr_model_quantization=args.crispasr_model_quantization,
-            kobold_qwen_backend=args.qwen_backend,
-            kobold_qwen_model_size=args.qwen_model_size,
-            kobold_qwen_quantization=args.qwen_quantization,
-            kobold_qwen_initial_model=args.qwen_initial_model,
-        )
-        completed = True
-    finally:
-        if not completed:
-            installer.shutdown_apps()
-        installer.shutdown_logging()
+    with installation_lifecycle_guard(os.path.join(workspace, "Pandrator"), shared=False):
+        completed = False
+        try:
+            components = parse_headless_components(args.components)
+            installer.run_headless_install(
+                components,
+                install_pandrator=not args.skip_pandrator,
+                crispasr_backend=args.crispasr_backend,
+                crispasr_engine=args.crispasr_engine,
+                crispasr_model_quantization=args.crispasr_model_quantization,
+                kobold_qwen_backend=args.qwen_backend,
+                kobold_qwen_model_size=args.qwen_model_size,
+                kobold_qwen_quantization=args.qwen_quantization,
+                kobold_qwen_initial_model=args.qwen_initial_model,
+            )
+            completed = True
+        finally:
+            if not completed:
+                installer.shutdown_apps()
+            installer.shutdown_logging()
 
 
 def run_self_check():

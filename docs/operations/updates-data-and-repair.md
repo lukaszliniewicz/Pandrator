@@ -83,7 +83,11 @@ and user files, retaining the installation folder and two empty coordination
 files: `.lifecycle-operation.guard` and `.runtime-metadata.guard`. These files
 keep concurrent launch and removal operations coordinated. Uninstall refuses
 while an owned runtime or a backend service holds the installation; stop it
-before retrying. These CLI rules are separate from Manager removal plans.
+before retrying. Source installation also requires the app and backend services
+to be stopped, including when adding components to an existing installation.
+If runtime metadata cannot establish that they have stopped, installation refuses
+until that uncertainty is resolved. These CLI rules are separate from Manager
+removal plans.
 
 ## Safe maintenance checklist
 
