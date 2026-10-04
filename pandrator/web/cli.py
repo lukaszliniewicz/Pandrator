@@ -19,11 +19,11 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from sqlalchemy import select
-from waitress import serve as waitress_serve
 
 from pandrator.runtime import DataPaths
 
 from .api import create_app
+from .api_server import serve_api as waitress_serve
 from .artifacts import ArtifactService, sha256_file
 from .auth import ALL_SCOPES, AuthService, BootstrapTokenStore
 from .automation_enrollment import AutomationEnrollmentService
