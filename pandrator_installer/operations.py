@@ -1,5 +1,7 @@
 """Logging, command execution, networking, and Windows dependency operations."""
 
+from __future__ import annotations
+
 import ctypes
 import ctypes.util
 import hashlib
@@ -16,6 +18,7 @@ import traceback
 import zipfile
 from collections import deque
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -54,7 +57,22 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 2 * 60 * 60
 COMMAND_OUTPUT_TAIL_LINES = 4000
 
 
-class OperationsMixin:
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .command_protocols import CommandProvider as _CommandProvider
+    from .command_protocols import PathArgument
+    from .environment_protocols import HiddenSubprocessOptions
+    from .reporting import Reporter
+else:
+    _CommandProvider = object
+
+
+class OperationsMixin(_CommandProvider):
+    if TYPE_CHECKING:
+        initial_working_dir: str
+        reporter: Reporter
+
     def _terminate_timed_out_process(self, process, *, drain=True):
         """Terminate and reap a timed-out subprocess and its descendants."""
         if process is None:
@@ -124,7 +142,7 @@ class OperationsMixin:
 
         logging.info(f"Logging initialized. Writing to: {self.log_filename}")
 
-    def configure_tls_certificates(self, force=False):
+    def configure_tls_certificates(self, force: bool = False) -> None:
         if self.tls_configured and not force:
             return
 
@@ -170,7 +188,7 @@ class OperationsMixin:
         except Exception as e:
             logging.warning(f"Could not configure TLS certificate bundle via certifi: {str(e)}")
 
-    def is_certificate_error(self, error):
+    def is_certificate_error(self, error: object) -> bool:
         error_text = str(error).lower()
         return (
             'certificate verify failed' in error_text
@@ -180,14 +198,14 @@ class OperationsMixin:
 
     def download_verified_file(
         self,
-        url,
-        destination,
-        expected_digest,
+        url: str,
+        destination: PathArgument,
+        expected_digest: str,
         *,
-        hash_name='sha256',
-        timeout=(30, 600),
-        chunk_size=1024 * 1024,
-    ):
+        hash_name: str = 'sha256',
+        timeout: float | tuple[float, float] | None = (30, 600),
+        chunk_size: int = 1024 * 1024,
+    ) -> str:
         """Stream a remote artifact to disk and fail closed on identity mismatch."""
         self.configure_tls_certificates()
         expected = str(expected_digest or '').strip().lower()
@@ -237,7 +255,7 @@ class OperationsMixin:
                 except Exception:
                     pass
 
-    def get_network_subprocess_env(self):
+    def get_network_subprocess_env(self) -> dict[str, str]:
         env = self.get_external_subprocess_env()
         if self.ca_bundle_path and os.path.exists(self.ca_bundle_path):
             for env_name in (
@@ -249,7 +267,7 @@ class OperationsMixin:
                 env.setdefault(env_name, self.ca_bundle_path)
         return env
 
-    def get_external_subprocess_env(self, base_env=None):
+    def get_external_subprocess_env(self, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
         return external_subprocess_environment(base_env)
 
     def is_admin(self):
@@ -278,12 +296,12 @@ class OperationsMixin:
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def get_hidden_subprocess_kwargs(self):
+    def get_hidden_subprocess_kwargs(self) -> HiddenSubprocessOptions:
         """Return subprocess kwargs that hide transient console windows on Windows."""
         if os.name != 'nt':
             return {}
 
-        kwargs = {}
+        kwargs: HiddenSubprocessOptions = {}
 
         creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         if creationflags:
@@ -421,10 +439,10 @@ class OperationsMixin:
     def get_bundled_calibre_executable(self, pandrator_path):
         return os.path.join(pandrator_path, CALIBRE_BUNDLED_EBOOK_CONVERT_RELATIVE_PATH)
 
-    def get_bundled_ffmpeg_executable(self, pandrator_path):
+    def get_bundled_ffmpeg_executable(self, pandrator_path: PathArgument) -> str:
         return os.path.join(pandrator_path, FFMPEG_BUNDLED_RELATIVE_PATH)
 
-    def get_local_temp_dir(self, pandrator_path):
+    def get_local_temp_dir(self, pandrator_path: PathArgument) -> str:
         preferred_temp_dir = os.path.join(
             pandrator_path,
             PIXI_CACHE_DIRNAME,

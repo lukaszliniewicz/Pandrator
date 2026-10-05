@@ -63,13 +63,18 @@ from .platforms import is_windows
 from .reporting import HeadlessReporter, NullReporter
 
 if TYPE_CHECKING:
-    from .command_protocols import CommandProvider as _CommandProvider
+    from typing import Protocol
+
+    from .environment_protocols import ArtifactDownloadProvider, EnvironmentProvider
     from .reporting import Reporter
+
+    class _WorkflowProviders(EnvironmentProvider, ArtifactDownloadProvider, Protocol):
+        pass
 else:
-    _CommandProvider = object
+    _WorkflowProviders = object
 
 
-class WorkflowMixin(_CommandProvider):
+class WorkflowMixin(_WorkflowProviders):
     if TYPE_CHECKING:
         reporter: Reporter
         initial_working_dir: str

@@ -39,17 +39,22 @@ from .platforms import is_windows
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Protocol
 
-    from .command_protocols import PathArgument
+    from .environment_protocols import EnvironmentProvider, SubprocessEnvironmentProvider
     from .reporting import Reporter
 
+    class _RuntimeProviders(EnvironmentProvider, SubprocessEnvironmentProvider, Protocol):
+        pass
+else:
+    _RuntimeProviders = object
 
-class RuntimeMixin:
+
+class RuntimeMixin(_RuntimeProviders):
     if TYPE_CHECKING:
         reporter: Reporter
         initial_working_dir: str
         backend_stop_targets: list[str]
-        get_pixi_subprocess_env: Callable[[PathArgument], dict[str, str]]
         notify_error: Callable[[str, str], None]
 
         # Supplied by ComponentOperationsMixin in the installer host.

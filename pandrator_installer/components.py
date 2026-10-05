@@ -65,19 +65,25 @@ from .runtime_metadata import remove_stale_runtime_metadata
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Protocol
 
-    from .command_protocols import CommandProvider as _CommandProvider
-    from .command_protocols import PathArgument
+    from .environment_protocols import (
+        ArtifactDownloadProvider,
+        EnvironmentProvider,
+        SubprocessEnvironmentProvider,
+    )
     from .reporting import Reporter
+
+    class _ComponentProviders(EnvironmentProvider, SubprocessEnvironmentProvider, ArtifactDownloadProvider, Protocol):
+        pass
 else:
-    _CommandProvider = object
+    _ComponentProviders = object
 
 
-class ComponentOperationsMixin(_CommandProvider):
+class ComponentOperationsMixin(_ComponentProviders):
     if TYPE_CHECKING:
         reporter: Reporter
         initial_working_dir: str
-        get_pixi_subprocess_env: Callable[[PathArgument], dict[str, str]]
         notify_error: Callable[[str, str], None]
         is_port_in_use: Callable[[int], bool]
 

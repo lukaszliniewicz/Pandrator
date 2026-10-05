@@ -1,5 +1,7 @@
 """Pixi environment and Python requirement management."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import logging
@@ -37,22 +39,29 @@ from .platforms import (
 )
 
 if TYPE_CHECKING:
-    from .command_protocols import CommandProvider as _CommandProvider
+    from collections.abc import Sequence
+    from typing import Protocol
+
+    from .command_protocols import CommandProvider, PathArgument
+    from .environment_protocols import ArtifactDownloadProvider, SubprocessEnvironmentProvider
+
+    class _PixiProviders(CommandProvider, SubprocessEnvironmentProvider, ArtifactDownloadProvider, Protocol):
+        pass
 else:
-    _CommandProvider = object
+    _PixiProviders = object
 
 
-class PixiEnvironmentMixin(_CommandProvider):
-    def get_pixi_executable(self, pandrator_path):
+class PixiEnvironmentMixin(_PixiProviders):
+    def get_pixi_executable(self, pandrator_path: PathArgument) -> str:
         return os.path.join(pandrator_path, 'bin', pixi_binary_name())
 
-    def get_pixi_env_dir(self, pandrator_path, env_name):
+    def get_pixi_env_dir(self, pandrator_path: PathArgument, env_name: str) -> str:
         return os.path.join(pandrator_path, 'envs', env_name)
 
-    def get_pixi_manifest_path(self, pandrator_path, env_name):
+    def get_pixi_manifest_path(self, pandrator_path: PathArgument, env_name: str) -> str:
         return os.path.join(self.get_pixi_env_dir(pandrator_path, env_name), 'pixi.toml')
 
-    def get_pixi_subprocess_env(self, pandrator_path) -> dict[str, str]:
+    def get_pixi_subprocess_env(self, pandrator_path: PathArgument) -> dict[str, str]:
         pixi_home = os.path.join(pandrator_path, PIXI_HOME_DIRNAME)
         pixi_cache = os.path.join(pandrator_path, PIXI_CACHE_DIRNAME)
         rattler_cache = os.path.join(pixi_cache, 'rattler')
@@ -101,7 +110,7 @@ class PixiEnvironmentMixin(_CommandProvider):
 
         return env
 
-    def cleanup_installer_package_caches(self, pandrator_path):
+    def cleanup_installer_package_caches(self, pandrator_path: PathArgument) -> None:
         """Best-effort cleanup of disposable package caches after successful install/update."""
         pixi_cache = os.path.join(pandrator_path, PIXI_CACHE_DIRNAME)
         cleanup_paths = [
@@ -145,7 +154,9 @@ class PixiEnvironmentMixin(_CommandProvider):
             log_errors=log_errors,
         )
 
-    def build_pixi_run_command(self, pandrator_path, env_name, command):
+    def build_pixi_run_command(
+        self, pandrator_path: PathArgument, env_name: str, command: list[str]
+    ) -> list[str]:
         manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
         if not os.path.exists(manifest_path):
             raise FileNotFoundError(
@@ -160,7 +171,14 @@ class PixiEnvironmentMixin(_CommandProvider):
             '--executable',
         ] + command
 
-    def run_pixi_in_env(self, pandrator_path, env_name, command, cwd=None, log_errors=True) -> tuple[str, str]:
+    def run_pixi_in_env(
+        self,
+        pandrator_path: PathArgument,
+        env_name: str,
+        command: list[str],
+        cwd: PathArgument | None = None,
+        log_errors: bool = True,
+    ) -> tuple[str, str]:
         return self.run_command(
             self.build_pixi_run_command(pandrator_path, env_name, command),
             cwd=cwd,
@@ -168,7 +186,7 @@ class PixiEnvironmentMixin(_CommandProvider):
             log_errors=log_errors,
         )
 
-    def check_pixi(self, pandrator_path):
+    def check_pixi(self, pandrator_path: PathArgument) -> bool:
         return os.path.exists(self.get_pixi_executable(pandrator_path))
 
     @staticmethod
@@ -196,7 +214,7 @@ class PixiEnvironmentMixin(_CommandProvider):
             return
         raise RuntimeError(f"Unsupported Pixi archive type: {archive_type}")
 
-    def install_pixi(self, pandrator_path):
+    def install_pixi(self, pandrator_path: PathArgument) -> None:
         logging.info("Installing Pixi...")
         self.configure_tls_certificates()
         bin_path = os.path.join(pandrator_path, 'bin')
@@ -348,7 +366,7 @@ class PixiEnvironmentMixin(_CommandProvider):
 
         return python_version
 
-    def create_pixi_env(self, pandrator_path, env_name, python_version):
+    def create_pixi_env(self, pandrator_path: PathArgument, env_name: str, python_version: str) -> None:
         logging.info(f"Creating pixi environment {env_name}...")
         manifest_path = self.ensure_pixi_manifest(pandrator_path, env_name, python_version)
 
@@ -363,7 +381,7 @@ class PixiEnvironmentMixin(_CommandProvider):
             logging.error(f"Error output: {e.stderr}")
             raise
 
-    def add_pixi_conda_package(self, pandrator_path, env_name, package_spec):
+    def add_pixi_conda_package(self, pandrator_path: PathArgument, env_name: str, package_spec: str) -> None:
         logging.info(f"Adding {package_spec} to {env_name} via pixi...")
         manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
         package_name, separator, package_version = package_spec.partition('=')
@@ -711,7 +729,9 @@ class PixiEnvironmentMixin(_CommandProvider):
         self.save_installer_state(pandrator_path, state)
         return False, "requirements changed but package checks passed"
 
-    def component_needs_package_sync(self, pandrator_path, env_name, package_specs):
+    def component_needs_package_sync(
+        self, pandrator_path: PathArgument, env_name: str, package_specs: Sequence[str]
+    ) -> tuple[bool, str]:
         manifest_path = self.get_pixi_manifest_path(pandrator_path, env_name)
         if not os.path.exists(manifest_path):
             return True, "Pixi manifest is missing"
@@ -807,7 +827,9 @@ class PixiEnvironmentMixin(_CommandProvider):
 
         return requirements_text, filtered_requirements_text, requirement_specs, unsupported_lines, skipped_lines
 
-    def add_pypi_requirements(self, pandrator_path, env_name, requirement_specs):
+    def add_pypi_requirements(
+        self, pandrator_path: PathArgument, env_name: str, requirement_specs: list[str]
+    ) -> list[str]:
         if not requirement_specs:
             return []
 
@@ -845,7 +867,9 @@ class PixiEnvironmentMixin(_CommandProvider):
 
         return failed_specs
 
-    def install_requirement_specs_with_pip(self, pandrator_path, env_name, requirement_specs):
+    def install_requirement_specs_with_pip(
+        self, pandrator_path: PathArgument, env_name: str, requirement_specs: Sequence[str]
+    ) -> None:
         for requirement_spec in requirement_specs:
             logging.info(f"Installing requirement via pip fallback in {env_name}: {requirement_spec}")
             if requirement_spec == NEMO_TEXT_PROCESSING_SPEC:
@@ -914,7 +938,9 @@ class PixiEnvironmentMixin(_CommandProvider):
                     f"This is best-effort only and may be expected on Windows. STDERR: {e.stderr}"
                 )
 
-    def install_requirements(self, pandrator_path, env_name, requirements_file):
+    def install_requirements(
+        self, pandrator_path: PathArgument, env_name: str, requirements_file: str
+    ) -> None:
         logging.info(f"Installing requirements for {env_name}...")
 
         (

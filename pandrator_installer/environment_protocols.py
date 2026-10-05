@@ -1,0 +1,69 @@
+"""Static contracts for installer environments, subprocesses, and downloads."""
+
+from __future__ import annotations
+
+import subprocess
+from collections.abc import Mapping, Sequence
+from typing import Protocol, TypedDict
+
+from .command_protocols import CommandProvider, PathArgument
+
+
+class HiddenSubprocessOptions(TypedDict, total=False):
+    creationflags: int
+    startupinfo: subprocess.STARTUPINFO
+
+
+class EnvironmentProvider(CommandProvider, Protocol):
+    def get_pixi_executable(self, pandrator_path: PathArgument) -> str: ...
+    def get_pixi_manifest_path(self, pandrator_path: PathArgument, env_name: str) -> str: ...
+    def get_pixi_subprocess_env(self, pandrator_path: PathArgument) -> dict[str, str]: ...
+    def build_pixi_run_command(
+        self, pandrator_path: PathArgument, env_name: str, command: list[str]
+    ) -> list[str]: ...
+    def check_pixi(self, pandrator_path: PathArgument) -> bool: ...
+    def install_pixi(self, pandrator_path: PathArgument) -> None: ...
+    def create_pixi_env(
+        self, pandrator_path: PathArgument, env_name: str, python_version: str
+    ) -> None: ...
+    def add_pixi_conda_package(
+        self, pandrator_path: PathArgument, env_name: str, package_spec: str
+    ) -> None: ...
+    def component_needs_package_sync(
+        self, pandrator_path: PathArgument, env_name: str, package_specs: Sequence[str]
+    ) -> tuple[bool, str]: ...
+    def add_pypi_requirements(
+        self, pandrator_path: PathArgument, env_name: str, requirement_specs: list[str]
+    ) -> list[str]: ...
+    def install_requirement_specs_with_pip(
+        self, pandrator_path: PathArgument, env_name: str, requirement_specs: Sequence[str]
+    ) -> None: ...
+    def install_requirements(
+        self, pandrator_path: PathArgument, env_name: str, requirements_file: str
+    ) -> None: ...
+    def cleanup_installer_package_caches(self, pandrator_path: PathArgument) -> None: ...
+
+
+class SubprocessEnvironmentProvider(Protocol):
+    def get_external_subprocess_env(
+        self, base_env: Mapping[str, str] | None = None
+    ) -> dict[str, str]: ...
+    def get_hidden_subprocess_kwargs(self) -> HiddenSubprocessOptions: ...
+    def get_bundled_ffmpeg_executable(self, pandrator_path: PathArgument) -> str: ...
+
+
+class ArtifactDownloadProvider(Protocol):
+    def configure_tls_certificates(self, force: bool = False) -> None: ...
+    def is_certificate_error(self, error: object) -> bool: ...
+    def get_network_subprocess_env(self) -> dict[str, str]: ...
+    def download_verified_file(
+        self,
+        url: str,
+        destination: PathArgument,
+        expected_digest: str,
+        *,
+        hash_name: str = "sha256",
+        timeout: float | tuple[float, float] | None = (30, 600),
+        chunk_size: int = 1024 * 1024,
+    ) -> str: ...
+    def get_local_temp_dir(self, pandrator_path: PathArgument) -> str: ...
