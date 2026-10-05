@@ -9,7 +9,7 @@ import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
+from typing import cast, get_args
 
 from pydantic import ValidationError
 
@@ -19,6 +19,7 @@ from pandrator_mcp.clients.application import (
     _PASSTHROUGH_ERROR_CODES,
     ApplicationClient,
 )
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.credentials import (
     APPROVED_CREDENTIAL_BACKENDS,
     CredentialReference,
@@ -219,13 +220,15 @@ class McpArchitectureTests(unittest.TestCase):
                 idempotency_key="settings:test",
             )
         with self.assertRaises(ValidationError):
-            ManagerDesiredComponentInput(
-                component_id="pandrator",
-                options={
-                    "nested": {
-                        "command": "powershell -EncodedCommand ...",
-                    }
-                },
+            ManagerDesiredComponentInput.model_validate(
+                {
+                    "component_id": "pandrator",
+                    "options": {
+                        "nested": {
+                            "command": "powershell -EncodedCommand ...",
+                        }
+                    },
+                }
             )
         with self.assertRaises(ValidationError):
             PlanWorkflowInput(
@@ -288,8 +291,9 @@ class McpArchitectureTests(unittest.TestCase):
             manager=Manager(),
             profile=SimpleNamespace(mode=TargetMode.PRIVATE_NETWORK),
         )
+        # This partial runtime double supplies only the ports exercised below.
         outcome = system_status(
-            runtime,
+            cast(McpRuntime, runtime),
             SystemStatusInput(
                 include_capabilities=True,
                 include_manager=True,
