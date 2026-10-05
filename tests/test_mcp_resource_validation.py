@@ -16,6 +16,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import ReadResourceResult, TextResourceContents
 from pydantic import BaseModel, create_model, model_validator
 
+import pandrator_mcp.registrations.resources as resource_owner
 import pandrator_mcp.server as adapter
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.errors import PandratorMcpError
@@ -140,7 +141,7 @@ def install_rejecting_handler(
         reached.append(True)
         raise AssertionError("Resource handler must not run for invalid DTO input.")
 
-    monkeypatch.setattr(adapter, case.callback, reject)
+    monkeypatch.setattr(resource_owner, case.callback, reject)
 
 
 @pytest.mark.parametrize("protocol", PROTOCOLS, ids=["modern", "legacy"])
@@ -168,10 +169,10 @@ def test_resource_dto_validator_runs_inside_request_and_stdout_guard(
     validators: dict[str, Any] = {"probe": probe}
     controlled = create_model(
         "ControlledResource" + case.model,
-        __base__=getattr(adapter, case.model),
+        __base__=getattr(resource_owner, case.model),
         __validators__=validators,
     )
-    monkeypatch.setattr(adapter, case.model, controlled)
+    monkeypatch.setattr(resource_owner, case.model, controlled)
     install_rejecting_handler(monkeypatch, case, reached)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
     error = asyncio.run(invoke_error(runtime, case.uri, protocol))
@@ -221,7 +222,7 @@ def test_resource_callback_retains_typed_defaults_and_plain_json_result(
     if expected is None:
         monkeypatch.setattr(runtime.guides, case.callback, guide_callback)
     else:
-        monkeypatch.setattr(adapter, case.callback, handler)
+        monkeypatch.setattr(resource_owner, case.callback, handler)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
     result = asyncio.run(invoke(runtime, case.uri, protocol))
     assert (_REQUEST_ID.get(), _TRACE_ID.get()) == before
@@ -285,7 +286,7 @@ def test_resource_callback_error_keeps_existing_native_error_and_guard(
         print(SENTINEL)
         raise PandratorMcpError("validation_error", MARKER, details={"fixture": MARKER})
 
-    monkeypatch.setattr(adapter, case.callback, handler)
+    monkeypatch.setattr(resource_owner, case.callback, handler)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
     error = asyncio.run(invoke_error(runtime, case.uri, protocol))
     record_error(record_property, error, observed)
