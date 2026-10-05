@@ -293,39 +293,6 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertIn('<prosody rate="+0%">', post.call_args.kwargs["data"])
         self.assertNotIn("express-as", post.call_args.kwargs["data"])
 
-    def test_azure_speech_voice_catalogue_uses_model_specific_default(self):
-        settings = {
-            "service": tts_handler.OPENAI_COMPAT_SERVICE,
-            "openai_audio_endpoint": "azure",
-            "model": "MAI-Voice-2-Flash",
-            "provider_configs": [
-                {
-                    "id": "azure",
-                    "provider": "azure",
-                    "api_base": "https://eastus.tts.speech.microsoft.com",
-                    "adapter": "azure_speech",
-                    "models": ["MAI-Voice-2", "MAI-Voice-2-Flash"],
-                    "default_model": "MAI-Voice-2",
-                    "default_voice": "en-US-Ethan:MAI-Voice-2",
-                    "default_voices": {
-                        "MAI-Voice-2": "en-US-Ethan:MAI-Voice-2",
-                        "MAI-Voice-2-Flash": "en-US-Ethan:MAI-Voice-2-Flash",
-                    },
-                    "voice_catalogues": {
-                        "MAI-Voice-2-Flash": [
-                            "en-US-Ethan:MAI-Voice-2-Flash",
-                            "en-US-Harper:MAI-Voice-2-Flash",
-                        ]
-                    },
-                }
-            ],
-        }
-
-        voices = tts_handler.get_openai_audio_voices(settings)
-
-        self.assertEqual("en-US-Ethan:MAI-Voice-2-Flash", voices[0])
-        self.assertNotIn("en-US-Ethan:MAI-Voice-2", voices)
-
     def test_azure_speech_rejects_invalid_style_degree(self):
         settings = {
             "speed": 1,
@@ -1328,34 +1295,6 @@ class TTSHandlerTests(unittest.TestCase):
             {"model": "fish-audio-s2-pro"}, get.call_args_list[1].kwargs["params"]
         )
 
-    def test_generic_provider_connection_uses_safe_get_on_configured_route(self):
-        settings = {
-            "service": tts_handler.OPENAI_COMPAT_SERVICE,
-            "openai_audio_endpoint": "styletts-local",
-            "provider_configs": [
-                {
-                    "id": "styletts-local",
-                    "name": "StyleTTS Local",
-                    "provider": "openai",
-                    "api_base": "http://127.0.0.1:8000",
-                    "adapter": "generic_json",
-                    "speech_path": "/generate",
-                    "request_fields": {"text": "text"},
-                }
-            ],
-        }
-
-        with patch("pandrator.logic.tts_handler.requests.get") as mock_get:
-            mock_get.return_value.status_code = 405
-            connected, message = tts_handler.check_openai_audio_connection(settings)
-
-        self.assertTrue(connected, message)
-        mock_get.assert_called_once_with(
-            "http://127.0.0.1:8000/generate",
-            headers={},
-            timeout=8,
-        )
-
     def test_openai_provider_generation_prioritizes_profile_speech_path(self):
         settings = {
             "service": tts_handler.OPENAI_COMPAT_SERVICE,
@@ -1512,23 +1451,9 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(payload["prosody"]["volume"], -20.0)
 
     def test_fishs2_model_catalog_collapses_compatibility_aliases(self):
-        response = Mock(status_code=200)
-        response.json.return_value = {
-            "data": [
-                {"id": "fishs2"},
-                {"id": "fish-s2"},
-                {"id": "s2-pro"},
-                {"id": "fishaudio/s2-pro"},
-            ]
-        }
-        response.raise_for_status.return_value = None
-
-        with patch(
-            "pandrator.logic.tts_handler.requests.get",
-            return_value=response,
-        ):
-            models = tts_handler.get_fishs2_models("http://localhost:8022")
-
+        models = tts_handler.normalize_tts_model_catalog(
+            "fishs2", ["fishs2", "fish-s2", "s2-pro", "fishaudio/s2-pro"]
+        )
         self.assertEqual(["fishaudio/s2-pro"], models)
 
     def test_chatterbox_payload_construction(self):

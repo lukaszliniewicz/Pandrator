@@ -288,6 +288,7 @@ class TTSProviderProfileTests(unittest.TestCase):
 
     def test_profile_catalogs_do_not_gain_unrelated_openai_defaults(self):
         profile = tts_provider_profiles.get_tts_provider_profile("pandrator-xtts2-api")
+        assert profile is not None
         adapter_config = dict(profile)
         adapter_config["profile_id"] = profile["id"]
 
@@ -308,7 +309,9 @@ class TTSProviderProfileTests(unittest.TestCase):
             "openai_audio_endpoint": providers[0]["id"],
             "provider_configs": providers,
         }
-        self.assertEqual(tts_handler.get_openai_audio_voices_fallback(settings), [])
+        service = tts_handler.get_service_config(settings, str(providers[0]["id"]))
+        assert service is not None
+        self.assertEqual(service["voices"], [])
 
 
 if __name__ == "__main__":

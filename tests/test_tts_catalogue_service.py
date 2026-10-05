@@ -99,3 +99,61 @@ assert owner.tts_handler is facade.tts_handler
         check=True,
         timeout=30,
     )
+
+
+def test_azure_preview_uses_model_specific_default_and_catalogue(tmp_path):
+    from pandrator.logic import tts_handler
+
+    paths = prepare_web_test_data_root(tmp_path)
+    database = Database(paths.database)
+    providers = TtsProviderRegistry()
+    catalogue = TtsCatalogueService(database, paths, providers)
+    connections = {
+        "provider_configs": [
+            {
+                "id": "azure",
+                "provider": "azure",
+                "api_base": "https://eastus.tts.speech.microsoft.com",
+                "adapter": "azure_speech",
+                "models": ["MAI-Voice-2", "MAI-Voice-2-Flash"],
+                "default_model": "MAI-Voice-2",
+                "default_voice": "en-US-Ethan:MAI-Voice-2",
+                "default_voices": {
+                    "MAI-Voice-2": "en-US-Ethan:MAI-Voice-2",
+                    "MAI-Voice-2-Flash": "en-US-Ethan:MAI-Voice-2-Flash",
+                },
+                "voice_catalogues": {
+                    "MAI-Voice-2-Flash": [
+                        "en-US-Ethan:MAI-Voice-2-Flash",
+                        "en-US-Harper:MAI-Voice-2-Flash",
+                    ]
+                },
+            }
+        ]
+    }
+    try:
+        with database.session() as session:
+            session.add(AppSetting(key="services.tts", value_json=connections, revision=7))
+        settings = catalogue.preview_settings(
+            "azure", model="MAI-Voice-2-Flash", voice=None, language="en"
+        )
+        assert settings is not None
+        assert settings["voice"] == "en-US-Ethan:MAI-Voice-2-Flash"
+        assert settings["speaker"] == "en-US-Ethan:MAI-Voice-2-Flash"
+        service = tts_handler.get_service_config(connections, "azure")
+        assert service is not None
+        catalogues = service["voice_catalogues"]
+        assert isinstance(catalogues, dict)
+        assert catalogues["MAI-Voice-2-Flash"] == [
+            "en-US-Ethan:MAI-Voice-2-Flash",
+            "en-US-Harper:MAI-Voice-2-Flash",
+        ]
+        with database.session() as session:
+            persisted = session.get(AppSetting, "services.tts")
+            assert persisted is not None
+            assert persisted.value_json == connections
+            assert persisted.revision == 7
+    finally:
+        catalogue.close()
+        providers.close()
+        database.dispose()

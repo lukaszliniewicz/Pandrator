@@ -111,13 +111,23 @@ class TTSEndpointDiscoveryTests(unittest.TestCase):
         self.assertEqual(result["voices"], ["nova"])
 
     def test_infers_likely_generic_route_without_openapi(self):
-        with patch(
-            "pandrator.logic.tts_endpoint_discovery.requests.get",
-            side_effect=response_map(
-                {"http://localhost:8000/generate": FakeResponse(405, None, "text/plain")}
-            ),
+        with (
+            patch(
+                "pandrator.logic.tts_endpoint_discovery.requests.get",
+                side_effect=response_map(
+                    {"http://localhost:8000/generate": FakeResponse(405, None, "text/plain")}
+                ),
+            ) as get,
+            patch("pandrator.logic.tts_endpoint_discovery.requests.post") as post,
         ):
             result = tts_endpoint_discovery.discover_tts_endpoint("http://localhost:8000")
+
+        get.assert_any_call(
+            "http://localhost:8000/generate",
+            headers={},
+            timeout=tts_endpoint_discovery.DISCOVERY_TIMEOUT_SECONDS,
+        )
+        post.assert_not_called()
 
         self.assertTrue(result["success"])
         self.assertEqual(result["confidence"], "low")
