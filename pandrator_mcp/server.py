@@ -225,6 +225,23 @@ def _response(envelope: dict[str, Any], mode: str = "standard") -> Any:
     )
 
 
+def _input_from_factory(factory: Callable[[], Any]) -> Any:
+    try:
+        return factory()
+    except ValidationError as error:
+        raise PandratorMcpError(
+            "validation_error",
+            "The tool input is invalid.",
+            details={
+                "errors": error.errors(
+                    include_url=False,
+                    include_context=False,
+                    include_input=False,
+                )
+            },
+        ) from error
+
+
 def _call_with_input_factory(
     function,
     runtime: McpRuntime,
@@ -233,20 +250,7 @@ def _call_with_input_factory(
     """Construct tool arguments inside the request and stdout guard."""
 
     def invoke() -> Any:
-        try:
-            arguments = factory()
-        except ValidationError as error:
-            raise PandratorMcpError(
-                "validation_error",
-                "The tool input is invalid.",
-                details={
-                    "errors": error.errors(
-                        include_url=False,
-                        include_context=False,
-                        include_input=False,
-                    )
-                },
-            ) from error
+        arguments = _input_from_factory(factory)
         return function(runtime, arguments)
 
     return _call(invoke)
@@ -262,10 +266,23 @@ def _call_with_validated_input(
 
 
 def _resource_call(function, *args) -> str:
-    _, result = _guarded_call(function, *args)
+    from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+
+    try:
+        _, result = _guarded_call(function, *args)
+    except ToolError as error:
+        raise ResourceError(str(error)) from error
     if isinstance(result, ToolOutcome):
         result = result.result
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _resource_call_with_input_factory(
+    function,
+    runtime: McpRuntime,
+    factory: Callable[[], Any],
+) -> str:
+    return _resource_call(lambda: function(runtime, _input_from_factory(factory)))
 
 
 def build_server(runtime: McpRuntime):
@@ -1596,7 +1613,9 @@ def build_server(runtime: McpRuntime):
             ),
         )
 
-    register_resources(server, runtime, _resource_call)
+    register_resources(
+        server, runtime, _resource_call, _resource_call_with_input_factory
+    )
     register_prompts(server)
 
     # MCP 2.2.0 derives a tool's schema from its flat Python signature and has

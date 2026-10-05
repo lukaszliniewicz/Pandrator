@@ -20,6 +20,7 @@ def register_resources(
     server: Any,
     runtime: McpRuntime,
     _resource_call: Callable[..., str],
+    _resource_call_with_input_factory: Callable[..., str],
 ) -> None:
     """Register resources at their existing inventory position."""
 
@@ -39,34 +40,30 @@ def register_resources(
     def target_resource() -> str:
         """Inspect the current target without requiring authentication."""
 
-        return _resource_call(
-            lambda: target_status(
-                runtime,
-                TargetStatusInput(include_authenticated_identity=False),
-            ),
+        return _resource_call_with_input_factory(
+            target_status, runtime, lambda: TargetStatusInput(include_authenticated_identity=False)
         )
 
     @server.resource("pandrator://live/status")
     def live_status_resource() -> str:
         """Inspect current application and Manager status."""
 
-        return _resource_call(lambda: system_status(runtime, SystemStatusInput()))
+        return _resource_call_with_input_factory(
+            system_status, runtime, lambda: SystemStatusInput()
+        )
 
     @server.resource("pandrator://live/capabilities")
     def live_capabilities_resource() -> str:
         """Inspect current capabilities."""
 
-        return _resource_call(lambda: capabilities(runtime, CapabilitiesInput()))
+        return _resource_call_with_input_factory(capabilities, runtime, lambda: CapabilitiesInput())
 
     @server.resource("pandrator://sessions/{session_id}/workflow")
     def workflow_resource(session_id: str) -> str:
         """Inspect one live workflow snapshot."""
 
-        return _resource_call(
-            lambda: get_workflow(
-                runtime,
-                GetWorkflowInput(session_id=session_id),
-            ),
+        return _resource_call_with_input_factory(
+            get_workflow, runtime, lambda: GetWorkflowInput(session_id=session_id)
         )
 
     @server.resource("pandrator://work/{work_type}/{work_id}")
@@ -76,13 +73,8 @@ def register_resources(
     ) -> str:
         """Inspect one application or Manager work item."""
 
-        return _resource_call(
-            lambda: get_work(
-                runtime,
-                GetWorkInput(
-                    work_type=work_type,
-                    work_id=work_id,
-                    include_events=False,
-                ),
-            ),
+        return _resource_call_with_input_factory(
+            get_work,
+            runtime,
+            lambda: GetWorkInput(work_type=work_type, work_id=work_id, include_events=False),
         )

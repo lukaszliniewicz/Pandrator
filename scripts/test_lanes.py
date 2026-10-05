@@ -208,6 +208,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_main_validation.py",
         "tests/test_mcp_cue_patch_admission.py",
         "tests/test_mcp_resource_validation.py",
+        "tests/test_mcp_resource_errors.py",
         "tests/test_mcp_session_registration.py",
         "tests/test_mcp_session_settings_registration.py",
         "tests/test_mcp_subtitle_evidence.py",
