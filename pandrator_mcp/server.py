@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from typing import Annotated, Any, Literal
 
@@ -236,15 +237,16 @@ def _response(envelope: dict[str, Any], mode: str = "standard") -> Any:
     )
 
 
-def _call_with_validated_input(
+def _call_with_input_factory(
     function,
     runtime: McpRuntime,
-    model: type[Any],
-    values: dict[str, Any],
+    factory: Callable[[], Any],
 ) -> dict[str, Any]:
+    """Construct tool arguments inside the request and stdout guard."""
+
     def invoke() -> Any:
         try:
-            arguments = model.model_validate(values)
+            arguments = factory()
         except ValidationError as error:
             raise PandratorMcpError(
                 "validation_error",
@@ -260,6 +262,15 @@ def _call_with_validated_input(
         return function(runtime, arguments)
 
     return _call(invoke)
+
+
+def _call_with_validated_input(
+    function,
+    runtime: McpRuntime,
+    model: type[Any],
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    return _call_with_input_factory(function, runtime, lambda: model.model_validate(values))
 
 
 def _resource_call(function, *args) -> str:
@@ -399,10 +410,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Get concise topic guidance; use detail='full' for the complete procedure. Live health/identity lookup is opt-in."""
 
-        return _call(
+        return _call_with_input_factory(
             explain_system,
             runtime,
-            ExplainSystemInput(
+            lambda: ExplainSystemInput(
                 topic=topic,
                 audience=audience,
                 detail=detail,
@@ -421,10 +432,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Recommend inspect-first steps without changing Pandrator."""
 
-        return _call(
+        return _call_with_input_factory(
             recommend_next_steps,
             runtime,
-            RecommendNextStepsInput(session_id=session_id, goal=goal),
+            lambda: RecommendNextStepsInput(session_id=session_id, goal=goal),
         )
 
     @server.tool(
@@ -437,10 +448,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect target reachability and optional pinned identity."""
 
-        return _call(
+        return _call_with_input_factory(
             target_status,
             runtime,
-            TargetStatusInput(
+            lambda: TargetStatusInput(
                 include_authenticated_identity=include_authenticated_identity,
             ),
         )
@@ -456,10 +467,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect application identity, health, capabilities, and Manager state."""
 
-        return _call(
+        return _call_with_input_factory(
             system_status,
             runtime,
-            SystemStatusInput(
+            lambda: SystemStatusInput(
                 include_capabilities=include_capabilities,
                 include_manager=include_manager,
             ),
@@ -473,7 +484,7 @@ def build_server(runtime: McpRuntime):
     def capabilities_tool() -> dict[str, Any]:
         """Inspect side-effect-free runtime and feature capability probes."""
 
-        return _call(capabilities, runtime, CapabilitiesInput())
+        return _call_with_input_factory(capabilities, runtime, lambda: CapabilitiesInput())
 
     @server.tool(
         name="pandrator_browse_local_sources",
@@ -490,10 +501,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """List opaque roots or safe relative paths; never expose absolute paths."""
 
-        return _call(
+        return _call_with_input_factory(
             browse_local_sources,
             runtime,
-            BrowseLocalSourcesInput(
+            lambda: BrowseLocalSourcesInput(
                 root=root,
                 directory=directory,
                 query=query,
@@ -519,10 +530,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """List bounded session summaries from the configured target."""
 
-        return _call(
+        return _call_with_input_factory(
             list_sessions,
             runtime,
-            ListSessionsInput(
+            lambda: ListSessionsInput(
                 limit=limit,
                 workflow_kind=workflow_kind,
                 include_trashed=include_trashed,
@@ -539,10 +550,10 @@ def build_server(runtime: McpRuntime):
     def session_get_tool(session_id: str) -> dict[str, Any]:
         """Inspect one session summary and its current revision."""
 
-        return _call(
+        return _call_with_input_factory(
             get_session,
             runtime,
-            GetSessionInput(session_id=session_id),
+            lambda: GetSessionInput(session_id=session_id),
         )
 
     @server.tool(
@@ -556,10 +567,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Move exactly one session to recoverable trash; it can be restored later."""
 
-        return _call(
+        return _call_with_input_factory(
             trash_session,
             runtime,
-            TrashSessionInput(
+            lambda: TrashSessionInput(
                 session_id=session_id,
                 expected_revision=expected_revision,
             ),
@@ -576,10 +587,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Restore exactly one trashed session using its current revision."""
 
-        return _call(
+        return _call_with_input_factory(
             restore_session,
             runtime,
-            RestoreSessionInput(
+            lambda: RestoreSessionInput(
                 session_id=session_id,
                 expected_revision=expected_revision,
             ),
@@ -593,10 +604,10 @@ def build_server(runtime: McpRuntime):
     def workflow_get_tool(session_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Inspect the stages, prerequisites, and selections for one session."""
 
-        envelope = _call(
+        envelope = _call_with_input_factory(
             get_workflow,
             runtime,
-            GetWorkflowInput(session_id=session_id),
+            lambda: GetWorkflowInput(session_id=session_id),
         )
         return _response(envelope, response_mode)
 
@@ -657,10 +668,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Preview paginated cues and transcript segments inline without downloading."""
 
-        envelope = _call(
+        envelope = _call_with_input_factory(
             preview_subtitles,
             runtime,
-            PreviewSubtitlesInput(
+            lambda: PreviewSubtitlesInput(
                 session_id=session_id,
                 stage=stage,
                 artifact_id=artifact_id,
@@ -694,10 +705,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Find and replace text across subtitle cues with revision guard."""
 
-        return _call(
+        return _call_with_input_factory(
             replace_subtitle_text,
             runtime,
-            ReplaceSubtitleTextInput(
+            lambda: ReplaceSubtitleTextInput(
                 session_id=session_id,
                 stage=stage,
                 expected_revision=expected_revision,
@@ -725,27 +736,26 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Patch specific subtitle cues by ordinal while preserving all other cues."""
 
-        parsed_cues = [
-            CuePatchInput(
-                ordinal=int(item["ordinal"]),
-                text=item.get("text"),
-                speaker=item.get("speaker"),
-                start_ms=item.get("start_ms"),
-                end_ms=item.get("end_ms"),
-            )
-            for item in cues
-        ]
-        return _call(
-            patch_subtitle_cues,
-            runtime,
-            PatchSubtitleCuesInput(
+        def make_arguments() -> PatchSubtitleCuesInput:
+            parsed_cues = [
+                CuePatchInput(
+                    ordinal=int(item["ordinal"]),
+                    text=item.get("text"),
+                    speaker=item.get("speaker"),
+                    start_ms=item.get("start_ms"),
+                    end_ms=item.get("end_ms"),
+                )
+                for item in cues
+            ]
+            return PatchSubtitleCuesInput(
                 session_id=session_id,
                 stage=stage,
                 expected_revision=expected_revision,
                 cues=parsed_cues,
                 idempotency_key=idempotency_key,
-            ),
-        )
+            )
+
+        return _call_with_input_factory(patch_subtitle_cues, runtime, make_arguments)
 
     @server.tool(
         name="pandrator_import_subtitles",
@@ -762,10 +772,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Import reviewed subtitles from raw SRT text or file."""
 
-        return _call(
+        return _call_with_input_factory(
             import_subtitles,
             runtime,
-            ImportSubtitlesInput(
+            lambda: ImportSubtitlesInput(
                 session_id=session_id,
                 stage=stage,
                 expected_revision=expected_revision,
@@ -797,10 +807,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect one settings section, its effective values, and revision."""
 
-        return _call(
+        return _call_with_input_factory(
             get_session_settings,
             runtime,
-            GetSessionSettingsInput(
+            lambda: GetSessionSettingsInput(
                 session_id=session_id,
                 section=section,
             ),
@@ -836,10 +846,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Discover only definitions matching at least one supplied filter."""
 
-        return _call(
+        return _call_with_input_factory(
             describe_parameters,
             runtime,
-            DescribeParametersInput(
+            lambda: DescribeParametersInput(
                 sections=sections,
                 names=names,
                 workflow_kind=workflow_kind,
@@ -862,10 +872,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """List bounded source metadata without paths or source contents."""
 
-        return _call(
+        return _call_with_input_factory(
             list_sources,
             runtime,
-            ListSourcesInput(
+            lambda: ListSourcesInput(
                 state=state,
                 query=query,
                 kind=kind,
@@ -896,10 +906,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Store supplied UTF-8 text as a managed source and attach it once."""
 
-        return _call(
+        return _call_with_input_factory(
             create_text_source,
             runtime,
-            CreateTextSourceInput(
+            lambda: CreateTextSourceInput(
                 session_id=session_id,
                 text=text,
                 filename=filename,
@@ -931,10 +941,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Stream one approved local file via resumable upload and attach it once."""
 
-        return _call(
+        return _call_with_input_factory(
             import_local_source,
             runtime,
-            ImportLocalSourceInput(
+            lambda: ImportLocalSourceInput(
                 session_id=session_id,
                 root=root,
                 relative_path=relative_path,
@@ -1000,10 +1010,10 @@ def build_server(runtime: McpRuntime):
     def subtitle_evidence_get_tool(evidence_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Read candidate transcripts, provenance, timing, and cost status."""
 
-        envelope = _call(
+        envelope = _call_with_input_factory(
             get_subtitle_evidence,
             runtime,
-            GetSubtitleEvidenceInput(evidence_id=evidence_id),
+            lambda: GetSubtitleEvidenceInput(evidence_id=evidence_id),
         )
         return _response(envelope, response_mode)
 
@@ -1033,10 +1043,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Record the explicit editorial disposition of an evidence request."""
 
-        return _call(
+        return _call_with_input_factory(
             resolve_subtitle_evidence,
             runtime,
-            ResolveSubtitleEvidenceInput(
+            lambda: ResolveSubtitleEvidenceInput(
                 session_id=session_id,
                 evidence_id=evidence_id,
                 action=action,
@@ -1129,10 +1139,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Create one session; retries with the same key replay the first result."""
 
-        return _call(
+        return _call_with_input_factory(
             create_session,
             runtime,
-            CreateSessionInput(
+            lambda: CreateSessionInput(
                 name=name,
                 workflow_kind=workflow_kind,
                 source_language=source_language,
@@ -1217,10 +1227,10 @@ def build_server(runtime: McpRuntime):
         values.update({key: value for key, value in optional.items() if value is not None})
         if multilingual_setup is not MISSING:
             values["multilingual_setup"] = multilingual_setup
-        return _call(
+        return _call_with_input_factory(
             update_session,
             runtime,
-            UpdateSessionInput.model_validate(values),
+            lambda: UpdateSessionInput.model_validate(values),
         )
 
     @server.tool(
@@ -1237,10 +1247,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Attach one existing source when the session revision still matches."""
 
-        return _call(
+        return _call_with_input_factory(
             attach_existing_source,
             runtime,
-            AttachExistingSourceInput(
+            lambda: AttachExistingSourceInput(
                 session_id=session_id,
                 source_asset_id=source_asset_id,
                 role=role,
@@ -1281,10 +1291,10 @@ def build_server(runtime: McpRuntime):
         ordinary partial edits.
         """
 
-        return _call(
+        return _call_with_input_factory(
             update_session_settings,
             runtime,
-            UpdateSessionSettingsInput(
+            lambda: UpdateSessionSettingsInput(
                 session_id=session_id,
                 section=section,
                 expected_revision=expected_revision,
@@ -1323,10 +1333,10 @@ def build_server(runtime: McpRuntime):
         fields, and null remains a literal value.
         """
 
-        return _call(
+        return _call_with_input_factory(
             patch_session_settings,
             runtime,
-            PatchSessionSettingsInput(
+            lambda: PatchSessionSettingsInput(
                 session_id=session_id,
                 section=section,
                 expected_revision=expected_revision,
@@ -1346,10 +1356,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Permanently remove only the requested output file by artifact ID."""
 
-        return _call(
+        return _call_with_input_factory(
             delete_output,
             runtime,
-            DeleteOutputInput(
+            lambda: DeleteOutputInput(
                 session_id=session_id,
                 artifact_id=artifact_id,
             ),
@@ -1381,10 +1391,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Preview stages, reuse, providers, disclosures, locks, and confirmations."""
 
-        return _call(
+        return _call_with_input_factory(
             plan_workflow,
             runtime,
-            PlanWorkflowInput(
+            lambda: PlanWorkflowInput(
                 session_id=session_id,
                 target_stage=target_stage,
                 overrides=overrides or {},
@@ -1450,10 +1460,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Create the ordinary immutable workflow plan for one explicit output."""
 
-        return _call(
+        return _call_with_input_factory(
             plan_export_variant,
             runtime,
-            PlanExportVariantInput(
+            lambda: PlanExportVariantInput(
                 session_id=session_id,
                 generation_run_id=generation_run_id,
                 export_mode=export_mode,
@@ -1478,10 +1488,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Consume an unchanged plan once and return its durable work handle."""
 
-        return _call(
+        return _call_with_input_factory(
             execute_workflow_plan,
             runtime,
-            ExecuteWorkflowPlanInput(
+            lambda: ExecuteWorkflowPlanInput(
                 plan_id=plan_id,
                 plan_digest=plan_digest,
                 accepted_confirmations=accepted_confirmations,
@@ -1502,10 +1512,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """List bounded artifact metadata without paths or content."""
 
-        return _call(
+        return _call_with_input_factory(
             list_artifacts,
             runtime,
-            ListArtifactsInput(
+            lambda: ListArtifactsInput(
                 session_id=session_id,
                 kind=kind,
                 role=role,
@@ -1524,10 +1534,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Resume and verify one immutable artifact without exposing server paths."""
 
-        return _call(
+        return _call_with_input_factory(
             download_artifact,
             runtime,
-            DownloadArtifactInput(
+            lambda: DownloadArtifactInput(
                 artifact_id=artifact_id,
                 filename=filename,
             ),
@@ -1543,10 +1553,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect providers without credential references or values."""
 
-        return _call(
+        return _call_with_input_factory(
             provider_status,
             runtime,
-            ProviderStatusInput(include_disabled=include_disabled),
+            lambda: ProviderStatusInput(include_disabled=include_disabled),
         )
 
     @server.tool(
@@ -1565,10 +1575,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Resolve current TTS choices without exposing credentials or endpoints."""
 
-        return _call(
+        return _call_with_input_factory(
             tts_catalog,
             runtime,
-            TtsCatalogInput(
+            lambda: TtsCatalogInput(
                 service_id=service_id,
                 include_compatibility=include_compatibility,
                 model=model,
@@ -1656,10 +1666,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Validate exact catalog IDs and update only the session's TTS override."""
 
-        return _call(
+        return _call_with_input_factory(
             configure_tts,
             runtime,
-            ConfigureTtsInput(
+            lambda: ConfigureTtsInput(
                 session_id=session_id,
                 service_id=service_id,
                 model=model,
@@ -1703,10 +1713,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect the normalized voice catalog with bounded filters and cursors."""
 
-        return _call(
+        return _call_with_input_factory(
             voice_catalog,
             runtime,
-            VoiceCatalogInput(
+            lambda: VoiceCatalogInput(
                 query=query,
                 language=language,
                 accent=accent,
@@ -1755,10 +1765,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """List payload-free, redacted durable work projections."""
 
-        return _call(
+        return _call_with_input_factory(
             list_work,
             runtime,
-            ListWorkInput(
+            lambda: ListWorkInput(
                 session_id=session_id,
                 kinds=kinds,
                 states=states,
@@ -1780,10 +1790,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect work, optionally polling until terminal or the wait deadline."""
 
-        return _call(
+        return _call_with_input_factory(
             get_work,
             runtime,
-            GetWorkInput(
+            lambda: GetWorkInput(
                 work_type=work_type,
                 work_id=work_id,
                 include_events=include_events,
@@ -1805,10 +1815,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Inspect bounded redacted events or Manager task summaries."""
 
-        return _call(
+        return _call_with_input_factory(
             get_work_log,
             runtime,
-            GetWorkLogInput(
+            lambda: GetWorkLogInput(
                 work_type=work_type,
                 work_id=work_id,
                 after=after,
@@ -1828,10 +1838,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Request retry-safe cancellation for one exact application job."""
 
-        return _call(
+        return _call_with_input_factory(
             cancel_work,
             runtime,
-            CancelWorkInput(
+            lambda: CancelWorkInput(
                 work_type=work_type,
                 work_id=work_id,
                 idempotency_key=idempotency_key,
@@ -1871,10 +1881,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Create a bounded immutable Manager plan for exact components."""
 
-        return _call(
+        return _call_with_input_factory(
             plan_component_change,
             runtime,
-            PlanComponentChangeInput(
+            lambda: PlanComponentChangeInput(
                 kind=kind,
                 components=components,
                 expected_revision=expected_revision,
@@ -1895,10 +1905,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Submit only the exact Manager plan digest the user reviewed."""
 
-        return _call(
+        return _call_with_input_factory(
             execute_component_plan,
             runtime,
-            ExecuteComponentPlanInput(
+            lambda: ExecuteComponentPlanInput(
                 plan_id=plan_id,
                 plan_digest=plan_digest,
                 accepted_confirmations=accepted_confirmations,
@@ -1923,10 +1933,10 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Perform one explicitly reviewed, idempotent runtime action."""
 
-        return _call(
+        return _call_with_input_factory(
             control_runtime,
             runtime,
-            ControlRuntimeInput(
+            lambda: ControlRuntimeInput(
                 action=action,
                 runtime_target=runtime_target,
                 service_ids=service_ids,
