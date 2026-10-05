@@ -71,7 +71,7 @@ def revision_history(database, session_id: str, *, limit: int = 50, before_revis
     from .workspace_settings import WorkspaceSettingsService
 
     limit = max(1, min(int(limit), 100))
-    snapshot = None
+    snapshot: dict[str, Any] = {}
     if include_audio_reuse:
         from .generation_audio_identity import AudioIdentityContext, take_reuse_reason
 
@@ -352,6 +352,7 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
         if action == "split":
             selector = operation.get("segment") or {"segment_id": operation.get("segment_id")}
             segment = resolve_segment_selector(rows, selector, lineage, aliases)
+            anchor_id = segment.id
             text_layer = str(operation.get("text_layer") or "display")
             if text_layer not in {"display", "speech"}:
                 raise ValueError("Text layer must be display or speech.")
@@ -360,6 +361,7 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
             concrete.update(segment_id=segment.id, cursor=cursor, text_layer=text_layer)
         elif action == "merge":
             left = resolve_segment_selector(rows, operation.get("left") or {"segment_id": operation.get("left_segment_id")}, lineage, aliases)
+            anchor_id = left.id
             right = resolve_segment_selector(rows, operation.get("right") or {"segment_id": operation.get("right_segment_id")}, lineage, aliases)
             concrete.update(left_segment_id=left.id, right_segment_id=right.id)
         else:
@@ -371,11 +373,11 @@ def revise_topology_batch_in_session(service, session, session_id: str, expected
         affected = {child for parent in affected for child in step_lineage.get(parent, [])} | set(result["affected_segment_ids"])
         if label:
             if action == "split":
-                children = step_lineage[segment.id]
+                children = step_lineage[anchor_id]
                 aliases[f"{label}.left"] = children[:1]
                 aliases[f"{label}.right"] = children[1:]
             else:
-                aliases[label] = step_lineage[left.id]
+                aliases[label] = step_lineage[anchor_id]
         current_id = result["plan_revision_id"]
         revision_ids.append(current_id)
     return {

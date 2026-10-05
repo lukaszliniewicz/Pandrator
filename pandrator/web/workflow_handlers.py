@@ -4584,8 +4584,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             )
             kind = "json"
         else:
-            source_text = source_path.read_text(encoding="utf-8-sig")
-            optimized, usage = optimize_units([source_text], [default_language])
+            source_texts = [source_path.read_text(encoding="utf-8-sig")]
+            optimized, usage = optimize_units(source_texts, [default_language])
             if cancel_event.is_set():
                 return {}
             destination = (

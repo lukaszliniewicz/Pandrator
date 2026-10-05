@@ -9,7 +9,7 @@ import time
 import traceback
 from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeGuard
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -236,7 +236,7 @@ class JobQueue:
         lease_generation: int,
         *,
         require_running: bool = True,
-    ) -> bool:
+    ) -> TypeGuard[Job]:
         return bool(
             job
             and job.lease_owner == worker_id
@@ -924,8 +924,9 @@ class JobQueue:
             job.result_json = self.redact_diagnostic(result or {})
             job.lease_owner = None
             job.lease_expires_at = None
-            job.finished_at = utcnow()
-            job.updated_at = job.finished_at
+            finished_at = utcnow()
+            job.finished_at = finished_at
+            job.updated_at = finished_at
             self._event(session, job.id, "job.succeeded", job.result_json)
             self._reconcile_generation_run_for_job_locked(session, job)
             self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
@@ -1005,8 +1006,9 @@ class JobQueue:
             job.status = "canceled"
             job.lease_owner = None
             job.lease_expires_at = None
-            job.finished_at = utcnow()
-            job.updated_at = job.finished_at
+            finished_at = utcnow()
+            job.finished_at = finished_at
+            job.updated_at = finished_at
             self._event(session, job.id, "job.canceled")
             self._reconcile_generation_run_for_job_locked(session, job)
             self._reconcile_agent_runs_for_jobs_locked(session, [job.id])

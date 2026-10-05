@@ -364,6 +364,51 @@ class TtsOptimizationHandlerTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
+    def test_guarded_plain_text_publishes_optimized_text_and_speech_plan(self):
+        source_path = self.session_dir / "guarded-source.txt"
+        source_path.write_text("Dr. Jones", encoding="utf-8")
+        source = self.artifacts.register(
+            source_path, kind="text", role="source", session_id=self.session.id
+        )
+        handlers = WorkflowHandlers(self.database, self.paths)
+        settings = {
+            "speech_optimization_mode": "guarded",
+            "speech_plan_save_proposals": False,
+            "llm_concurrent_calls": 1,
+            "llm_provider_configs": [],
+            "llm_default_model": "provider/model",
+            "tts_optimization_model": "provider/model",
+            "request_timeout_seconds": 30,
+            "language": "en",
+        }
+        planned = SimpleNamespace(
+            text="Doctor Jones",
+            plan={"prompt_revision": SPEECH_PROMPT_REVISION},
+            responses=[],
+        )
+        with (
+            mock.patch.object(
+                handlers, "_with_database_llm_settings", return_value=settings
+            ),
+            mock.patch(
+                "pandrator.web.speech_planning.plan_speech_text", return_value=planned
+            ),
+        ):
+            result = handlers.optimize_tts(
+                {"session_id": self.session.id, "source_artifact_id": source.id},
+                lambda *_args: None,
+                threading.Event(),
+            )
+        output, path = self.artifacts.resolve(result["artifact_id"])
+        self.assertEqual("Doctor Jones", path.read_text(encoding="utf-8"))
+        plan_id = output.metadata_json["speech_plan_artifact_id"]
+        _plan, plan_path = self.artifacts.resolve(plan_id)
+        self.assertEqual("Dr. Jones", json.loads(plan_path.read_text())[0]["source_text"])
+        with self.database.session() as session:
+            run = session.scalar(select(AgentRun).where(AgentRun.session_id == self.session.id))
+            self.assertIsNotNone(run)
+            self.assertEqual("completed", run.status)
+
     def test_srt_optimization_creates_previewable_revision_with_lineage_and_cost(self):
         source_path = self.session_dir / "source.srt"
         source_path.write_text(
