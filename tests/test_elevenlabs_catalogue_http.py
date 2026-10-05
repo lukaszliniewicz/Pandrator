@@ -469,3 +469,144 @@ def test_adapter_rejects_incomplete_catalogue_instead_of_enriching_partial_rows(
     assert cause.status_code == 0
     models.assert_consumed()
     voices.assert_consumed()
+
+
+@pytest.mark.parametrize("kind", ("models", "voices"))
+@pytest.mark.parametrize("error_type", (ValueError, RuntimeError))
+def test_url_policy_errors_remain_outside_catalogue_catch_boundary(
+    monkeypatch: pytest.MonkeyPatch, kind: str, error_type: type[Exception]
+):
+    error = error_type("fixture URL policy")
+
+    def normalize(value: str) -> str:
+        assert value == BASE
+        raise error
+
+    script = GetScript(kind, [])
+    script.install(monkeypatch)
+    monkeypatch.setattr(tts_handler, "_elevenlabs_base_url", normalize)
+    with pytest.raises(error_type) as raised:
+        catalogue(kind, strict=True)
+    assert raised.value is error
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("kind", ("models", "voices"))
+def test_status_policy_rebound_during_get_is_resolved_after_http_failure(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+):
+    result = response({}, status=500)
+    observed: list[BaseException] = []
+
+    def status(error: BaseException) -> int:
+        observed.append(error)
+        return 429
+
+    def get(url: str, **options: object) -> requests.Response:
+        assert url == BASE + ("/v1/models" if kind == "models" else "/v2/voices")
+        assert options["headers"] == HEADERS and options["timeout"] == 15
+        monkeypatch.setattr(tts_handler, "_elevenlabs_catalog_status", status)
+        return result
+
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    with pytest.raises(tts_handler.ElevenLabsCatalogError) as raised:
+        catalogue(kind, strict=True)
+    assert_error(raised.value, kind, 429)
+    assert observed == [raised.value.__cause__]
+    assert isinstance(raised.value.__cause__, requests.exceptions.HTTPError)
+    assert raised.value.__cause__.response is result
+
+
+@pytest.mark.parametrize("kind", ("models", "voices"))
+def test_error_class_rebound_during_get_is_used_for_strict_failure(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+):
+    result = response({}, status=500)
+    constructors: list[tuple[str, int, bool]] = []
+
+    class LateCatalogError(tts_handler.ElevenLabsCatalogError):
+        def __init__(self, operation: str, status_code: int = 0, *, incomplete: bool = False):
+            constructors.append((operation, status_code, incomplete))
+            super().__init__(operation, status_code, incomplete=incomplete)
+
+    def get(url: str, **options: object) -> requests.Response:
+        assert url == BASE + ("/v1/models" if kind == "models" else "/v2/voices")
+        assert options["headers"] == HEADERS and options["timeout"] == 15
+        monkeypatch.setattr(tts_handler, "ElevenLabsCatalogError", LateCatalogError)
+        return result
+
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    with pytest.raises(LateCatalogError) as raised:
+        catalogue(kind, strict=True)
+    assert constructors == [(kind, 500, False)]
+    assert isinstance(raised.value.__cause__, requests.exceptions.HTTPError)
+    assert raised.value.__cause__.response is result
+
+
+def test_voice_headers_rebound_during_get_are_resolved_for_the_next_page(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+    rebound_headers = {**HEADERS, "fixture-policy": "second"}
+
+    def headers(key: str) -> dict[str, str]:
+        assert key == " fixture-key "
+        return rebound_headers
+
+    def get(url: str, **options: object) -> requests.Response:
+        assert url == BASE + "/v2/voices"
+        assert options["timeout"] == 15
+        assert len(calls) < 2
+        if not calls:
+            assert options == {"headers": HEADERS, "timeout": 15, "params": INITIAL_PARAMS}
+            monkeypatch.setattr(tts_handler, "_elevenlabs_auth_headers", headers)
+            calls.append("first")
+            return response({"voices": [], "has_more": True, "next_page_token": "second"})
+        assert options == {
+            "headers": rebound_headers,
+            "timeout": 15,
+            "params": {**INITIAL_PARAMS, "next_page_token": "second"},
+        }
+        calls.append("second")
+        return response({"voices": [{"voice_id": "voice-1"}], "has_more": False})
+
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    assert catalogue("voices", strict=True) == [{"voice_id": "voice-1"}]
+    assert calls == ["first", "second"]
+
+
+@pytest.mark.parametrize("strict", (False, True))
+def test_second_page_header_value_error_remains_inside_catch_boundary(
+    monkeypatch: pytest.MonkeyPatch, strict: bool
+):
+    error = ValueError("fixture header policy")
+    first = {"voice_id": "voice-1"}
+    script = GetScript(
+        "voices",
+        [
+            Step(
+                response({"voices": [first], "has_more": True, "next_page_token": "second"}),
+                INITIAL_PARAMS.copy(),
+            )
+        ],
+    )
+    original = tts_handler._elevenlabs_auth_headers
+    calls: list[str] = []
+
+    def headers(key: str) -> dict[str, str]:
+        calls.append(key)
+        if len(calls) == 2:
+            raise error
+        return original(key)
+
+    script.install(monkeypatch)
+    monkeypatch.setattr(tts_handler, "_elevenlabs_auth_headers", headers)
+    if strict:
+        with pytest.raises(tts_handler.ElevenLabsCatalogError) as raised:
+            catalogue("voices", strict=True)
+        assert_error(raised.value, "voices", 0)
+        assert raised.value.__cause__ is error
+    else:
+        assert catalogue("voices", strict=False) == [first]
+    assert calls == [" fixture-key ", " fixture-key "]
+    script.assert_consumed()
