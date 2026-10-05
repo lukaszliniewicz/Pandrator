@@ -11,6 +11,7 @@ import pytest
 from mcp import Client
 from pydantic import create_model, model_validator
 
+import pandrator_mcp.registrations.sessions as session_owner
 import pandrator_mcp.server as adapter
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
 from tests.test_mcp_generic_dispatch_validation import failure_value
@@ -19,6 +20,21 @@ from tests.test_mcp_media_edit_registration import fixture_runtime
 SENTINEL = "main DTO validation stdout sentinel"
 MARKER = "private-main-validation-fixture-" * 8
 KEY = "guard:main:1"
+
+SESSION_MODELS = {
+    "ListSessionsInput",
+    "GetSessionInput",
+    "TrashSessionInput",
+    "RestoreSessionInput",
+    "CreateSessionInput",
+    "UpdateSessionInput",
+    "AttachExistingSourceInput",
+}
+
+
+def binding_for_model(model: str) -> Any:
+    return session_owner if model in SESSION_MODELS else adapter
+
 
 CASES = [
     ("pandrator_explain_system", "ExplainSystemInput", "explain_system", {}),
@@ -353,10 +369,10 @@ def install_probe(
         observed.append(correlation_headers())
         raise ValueError("Controlled main DTO validation failure.")
 
-    original = getattr(adapter, model)
+    original = getattr(binding_for_model(model), model)
     validators: dict[str, Any] = {"probe": probe}
     controlled = create_model("Controlled" + model, __base__=original, __validators__=validators)
-    monkeypatch.setattr(adapter, model, controlled)
+    monkeypatch.setattr(binding_for_model(model), model, controlled)
 
 
 @pytest.mark.parametrize("protocol", ["2026-07-28", "legacy"], ids=["modern", "legacy"])
@@ -400,12 +416,12 @@ def test_main_valid_input_reaches_original_handler_with_typed_arguments(
     observed: list[Any] = []
 
     def controlled(current: Any, values: Any) -> dict[str, Any]:
-        assert current is runtime and isinstance(values, getattr(adapter, model))
+        assert current is runtime and isinstance(values, getattr(binding_for_model(model), model))
         observed.append((values.model_dump(mode="json"), correlation_headers()))
         print(SENTINEL)
         return {"fixture": "ok"}
 
-    monkeypatch.setattr(adapter, handler, controlled)
+    monkeypatch.setattr(binding_for_model(model), handler, controlled)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
     result = asyncio.run(invoke(runtime, tool, arguments, "2026-07-28"))
     assert not result.is_error
