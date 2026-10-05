@@ -160,6 +160,21 @@ endpoints can be configured where supported. Native ElevenLabs uses its own API
 contract, not an OpenAI-compatible one. A third-party intermediary that exposes
 an OpenAI-compatible speech API should be added as a custom provider instead.
 
+`gemini-3.8-flash-tts` is available under Google Gemini and Vertex AI. Select it
+explicitly; existing saved models and defaults remain available. Gemini uses the
+Interactions API with request storage disabled. The Vertex route uses the Gemini
+Enterprise API with your configured Google Cloud project and credentials, and
+requires the `global` location. Enable that API in your project before using it.
+Both routes support existing prebuilt voice names such as Kore. Creating designed
+or replicated voices through Google's Voices API is not integrated.
+
+Delivery directions use structured speech metadata rather than text that might
+be read aloud. See [Google's TTS guide](https://ai.google.dev/gemini-api/docs/speech-generation)
+and [the Cloud setup guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview).
+Usage estimates reflect Developer API launch rates through December 2026 and
+the regular rates from January 2027. Cloud estimates use the regular rate before
+promotional billing credits; configured pricing overrides remain authoritative.
+
 Keep provider secrets in Pandrator's configured credential backend, an
 owner-restricted secret file, or the deployment secret store. Never paste a
 key into a prompt, MCP tool argument, target profile, log, or source document.

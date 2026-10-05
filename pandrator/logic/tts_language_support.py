@@ -23,6 +23,8 @@ from .language_capabilities import (
 )
 
 _SOURCE_RECORDS: dict[tuple[str, str], str] = {
+    ("gemini", "gemini-3.8-flash-tts"): "gemini38_tts_languages",
+    ("vertex_ai", "gemini-3.8-flash-tts"): "vertex_gemini38_tts_languages",
     ("fishs2", "fishaudio/s2-pro"): "fish_s2_pro83",
     ("openai", "tts-1"): "openai_tts57",
     ("openai", "tts-1-hd"): "openai_tts57",
@@ -309,6 +311,12 @@ def tts_language_support(
         raise ValueError("model_id must be a non-empty string")
     provider_key = provider_id.strip().casefold()
     model_key = model_id.strip().casefold()
+    if (
+        native_route in {"", "gemini", "gemini_generate_content"}
+        and provider_key == "gemini"
+        and model_key == "gemini-3.8-flash-tts"
+    ):
+        native_route = "gemini_interactions"
     model_metadata = metadata if isinstance(metadata, Mapping) else {}
     selected_discovery = "provider_live" if discovery == "provider_live" else "static"
 

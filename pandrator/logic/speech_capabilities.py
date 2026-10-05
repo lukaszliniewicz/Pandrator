@@ -27,6 +27,17 @@ _GEMINI_EVENTS = {
     "cough": "cough",
     "gasp": "gasp",
 }
+_GEMINI38_EVENTS = {
+    "pause": "short pause",
+    "laugh": "laugh",
+    "chuckle": "chuckle",
+    "sigh": "sigh",
+    "inhale": "breath",
+    "exhale": "exhales",
+    "cough": "cough",
+    "gasp": "gasp",
+    "clear_throat": "throat-clearing",
+}
 _TURBO_EVENTS = {"laugh": "laugh", "chuckle": "chuckle", "cough": "cough"}
 _BREEZE_EVENTS = {"laugh": "laugh", "cough": "cough", "clear_throat": "clears throat", "sigh": "sigh"}
 _BREEZE_ZH_EVENTS = {"laugh": "笑", "cough": "咳嗽", "clear_throat": "清嗓子", "sigh": "叹气"}
@@ -97,6 +108,25 @@ def capabilities_for_model(
         profile.update(status="documented", semantic_context="field")
         profile["notes"].append(
             "Previous and next text are unspoken stitching context, subject to model interpretation."
+        )
+    elif gemini and normalized in {
+        "gemini_3_8_flash_tts",
+        "gemini_gemini_3_8_flash_tts",
+        "vertex_ai_gemini_3_8_flash_tts",
+        "models_gemini_3_8_flash_tts",
+    }:
+        profile.update(
+            status="documented",
+            dialect="gemini38",
+            instructions="field",
+            instruction_scope=["request", "span"],
+            semantic_context="prompt",
+            emotion={"mode": "open_description", "tags": []},
+            event_tags=dict(_GEMINI38_EVENTS),
+            event_format="angle_brackets",
+        )
+        profile["notes"].append(
+            "Directions and optional context use unspoken speech metadata; phrase direction and pause duration remain soft hints."
         )
     elif gemini and "tts" in normalized:
         profile.update(

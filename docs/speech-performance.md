@@ -96,7 +96,8 @@ The initial compiler supports:
 | Qwen 1.7B CustomVoice through audio.cpp | Separate instruction | Phrase intent described in the whole-request instruction |
 | Qwen 1.7B VoiceDesign through audio.cpp | Separate instruction | Stable voice description remains required |
 | Kobold Qwen's instruction-capable prebuilt path | Separate instruction | Not applied to its cloning path |
-| Gemini / Vertex Gemini TTS | Prompt envelope | Phrase tags and bounded preceding/following semantic context |
+| Gemini / Vertex 3.8 Flash TTS | Separate speech metadata | Phrase intent and bounded context in metadata; angle-bracket vocal events |
+| Gemini / Vertex 3.1 and 2.5 TTS | Prompt envelope | Phrase tags and bounded preceding/following semantic context |
 | Supported OpenAI mini-TTS models | Separate instruction | Phrase intent approximated in the whole-request instruction |
 | Breeze's audio.cpp instruction path | Separate instruction | Whole-request direction |
 | ElevenLabs `eleven_v3` | Inline natural-language audio tags | Soft phrase directions and explicit supported vocal events; no request stitching |
@@ -183,7 +184,15 @@ across a production recording.
 
 ## Gemini and ElevenLabs setup
 
-Gemini combines general direction, labelled preceding/following context, and the
+Gemini 3.8 Flash TTS keeps the spoken transcript separate from delivery directions
+in `speech_metadata.style` (Cloud: `speechMetadata.style`). Optional preceding and
+following text stays in that metadata, with explicit unspoken context labels.
+Phrase directions are soft whole-request hints; supported vocal events use
+angle-bracket tags such as `<laugh>` and `<short pause>`. Unary WAV output is
+decoded directly without adding a second WAV header. The existing 3.1/2.5 models
+retain their prompt-based path.
+
+Gemini 3.1 and 2.5 combine general direction, labelled preceding/following context, and the
 current transcript in one prompt. Pandrator keeps the transcript last and uses
 accepted neighbouring speech blocks, including when regenerating only a selected
 block. Context is text, not previously generated audio. Inline tags and prompt

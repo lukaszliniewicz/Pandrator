@@ -253,3 +253,49 @@ test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', a
     page.getByText('No models match.', { exact: false })
   ).toBeVisible();
 });
+
+for (const provider of ['gemini', 'vertex_ai']) {
+  for (const width of [1280, 390]) {
+    test(`Gemini 3.8 catalogue exposes structured speech controls for ${provider} at ${width}`, async ({
+      page
+    }, info) => {
+      await page.setViewportSize({ width, height: 900 });
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await signIn(page);
+      await page
+        .getByRole('combobox', { name: 'Provider', exact: true })
+        .selectOption(provider);
+      await page.getByLabel('Recommended starting points').uncheck();
+      await page.getByLabel('Search models').fill('gemini-3.8-flash-tts');
+      await page
+        .getByRole('button', { name: 'Apply filters', exact: true })
+        .click();
+      await expect(page.locator('article')).toHaveCount(1);
+      const model = page.locator('article');
+      await expect(
+        model.getByRole('heading', {
+          name: 'gemini-3.8-flash-tts',
+          exact: true
+        })
+      ).toBeVisible();
+      await model
+        .getByText('Languages, licence and controls', { exact: true })
+        .click();
+      await expect(model.getByText(/unspoken speech metadata/)).toBeVisible();
+      await expect(
+        model.getByText('Direction scope:', { exact: true })
+      ).toBeVisible();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth
+        )
+      ).toBeTruthy();
+      await page.screenshot({
+        path: info.outputPath('gemini38-catalogue.png'),
+        fullPage: true
+      });
+      expect(errors).toEqual([]);
+    });
+  }
+}

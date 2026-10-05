@@ -13,6 +13,7 @@ import wave
 from collections.abc import Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from contextlib import ExitStack, contextmanager
+from datetime import date
 from queue import Queue
 from threading import Event, Lock, RLock, Thread
 from typing import Any
@@ -33,6 +34,7 @@ from ..constants import (
 )
 from . import audio_cpp_speech_payload as _audio_cpp_speech_payload
 from . import elevenlabs_catalogue_http as _elevenlabs_catalogue_http
+from . import google_tts_audio as _google_tts_audio
 from . import kobold_qwen_http as _kobold_qwen_http
 from . import native_speech_http as _native_speech_http
 from . import silero_catalogue_http as _silero_catalogue_http
@@ -566,12 +568,14 @@ OPENAI_TTS_MODELS = [
 OPENAI_GENERATION_PROMPT_MODELS = ["gpt-4o-mini-tts"]
 
 GEMINI_TTS_MODELS = [
+    "gemini-3.8-flash-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
 ]
 
 VERTEX_TTS_MODELS = [
+    "gemini-3.8-flash-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-tts",
     "gemini-2.5-pro-tts",
@@ -727,6 +731,21 @@ DEFAULT_TTS_PRICING = {
         "audio_tokens_per_second": 25.0,
     },
 }
+
+
+def _default_tts_pricing(
+    provider: str, *, as_of: date | None = None
+) -> dict[str, dict[str, float]]:
+    pricing = copy.deepcopy(DEFAULT_TTS_PRICING)
+    # Developer API launch rates expire; Cloud's promotion is a billing credit,
+    # so its usage estimate retains the regular rate before credits.
+    promotional = provider == GEMINI_PROVIDER and (as_of or date.today()) < date(2027, 1, 1)
+    pricing["gemini-3.8-flash-tts"] = {
+        "input_cost_per_million_tokens": 0.50 if promotional else 1.0,
+        "output_cost_per_million_audio_tokens": 9.0 if promotional else 18.0,
+        "audio_tokens_per_second": 25.0,
+    }
+    return pricing
 
 FIRST_CLASS_SERVICE_ORDER = [
     "audio_cpp",
@@ -1127,7 +1146,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
-                "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
+                "pricing": _default_tts_pricing(GEMINI_PROVIDER),
             },
             {
                 "id": VERTEX_PROVIDER,
@@ -1146,7 +1165,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "vertex_location": VERTEX_AUDIO_DEFAULT_LOCATION,
                 GENERATION_PROMPT_MODELS_FIELD: list(VERTEX_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
-                "pricing": copy.deepcopy(DEFAULT_TTS_PRICING),
+                "pricing": _default_tts_pricing(VERTEX_PROVIDER),
             },
             {
                 "id": ELEVENLABS_PROVIDER,
@@ -4659,6 +4678,14 @@ def _request_openai_compatible_audio(
         and _normalize_base_url(str(endpoint.get("base_url") or ""), "") != GEMINI_AUDIO_BASE_URL
     )
     if (
+        provider == GEMINI_PROVIDER
+        and not uses_nonstandard_gemini_base
+        and _google_tts_audio.is_structured_tts_model(str(payload.get("model") or ""))
+    ):
+        return _request_gemini_native_audio(
+            payload, endpoint, request_session=request_session
+        )
+    if (
         provider in SUPPORTED_AUDIO_PROVIDERS
         and not uses_nonstandard_gemini_base
         and not _coerce_bool(endpoint.get("direct_http"), False)
@@ -4803,10 +4830,35 @@ def _google_tts_pcm_response(
 
 
 def _request_gemini_native_audio(
-    payload: dict, endpoint: dict[str, object], *,
+    payload: dict,
+    endpoint: dict[str, object],
+    *,
     request_session: requests.Session | None = None,
 ) -> requests.Response:
     model = _normalize_model_for_provider(str(payload.get("model") or ""), GEMINI_PROVIDER)
+    if _google_tts_audio.is_structured_tts_model(model):
+        url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+        body = _google_tts_audio.build_gemini_speech_request(
+            model,
+            str(payload.get("input") or ""),
+            str(payload.get("voice") or ""),
+            style=str(payload.get("instructions") or ""),
+        )
+        response = _native_speech_http.post_prepared_speech(
+            lambda: url,
+            request_options=lambda: {
+                "headers": {
+                    "x-goog-api-key": _resolve_openai_audio_api_key(endpoint),
+                    "Content-Type": "application/json",
+                },
+                "json": body,
+                "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            },
+            request_session=request_session,
+        )
+        return _google_tts_audio.decode_google_wav_response(
+            response, url, "Gemini", interactions=True
+        )
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{quote(model, safe='')}:generateContent"
@@ -4840,9 +4892,7 @@ def _request_gemini_native_audio(
 def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response:
     service = get_service_config(tts_settings, VERTEX_PROVIDER) or {}
     token, project_id = _vertex_access_token(service)
-    location = str(
-        service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION
-    ).strip()
+    location = str(service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION).strip()
     model = str(
         tts_settings.get("xtts_model")
         or tts_settings.get("model")
@@ -4850,6 +4900,9 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         or VERTEX_AUDIO_DEFAULT_MODEL
     ).strip()
     model = _normalize_model_for_provider(model, VERTEX_PROVIDER)
+    structured_tts = _google_tts_audio.is_structured_tts_model(model)
+    if structured_tts and location != "global":
+        raise ValueError("Gemini 3.8 Flash TTS on Vertex requires the global location.")
     voice = str(
         tts_settings.get("speaker")
         or tts_settings.get("voice")
@@ -4857,26 +4910,33 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
         or GEMINI_AUDIO_DEFAULT_VOICE
     ).strip()
     endpoint = (
-        "https://aiplatform.googleapis.com/v1beta1/projects/"
+        f"https://aiplatform.googleapis.com/{'v1' if structured_tts else 'v1beta1'}/projects/"
         f"{quote(project_id, safe='')}/locations/{quote(location, safe='')}/"
         f"publishers/google/models/{quote(model, safe='')}:generateContent"
     )
     from .speech_performance import compile_for_provider
 
-    prompt_text = compile_for_provider(
+    compiled = compile_for_provider(
         text, {**tts_settings, "xtts_model": model}, {"provider": "vertex_ai"}
-    ).input
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": voice},
-                }
+    )
+    prompt_text = compiled.input
+    payload = (
+        _google_tts_audio.build_vertex_speech_request(
+            prompt_text, voice, style=compiled.instructions
+        )
+        if structured_tts
+        else {
+            "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {"voiceName": voice},
+                    }
+                },
             },
-        },
-    }
+        }
+    )
     response = _native_speech_http.post_prepared_speech(
         lambda: endpoint,
         request_options=lambda: {
@@ -4888,6 +4948,10 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
             "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
         },
     )
+    if structured_tts:
+        return _google_tts_audio.decode_google_wav_response(
+            response, endpoint, "Vertex AI", interactions=False
+        )
     return _google_tts_pcm_response(response, endpoint, "Vertex AI")
 
 

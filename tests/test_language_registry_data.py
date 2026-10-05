@@ -19,7 +19,7 @@ def _load_json(path: Path) -> dict[str, object]:
 def test_language_registry_is_stable_and_referentially_valid() -> None:
     registry = _load_json(LOGIC_ROOT / "language_registry.json")
     assert registry["schema_version"] == 1
-    assert registry["catalogue_revision"] == "2026-10-02"
+    assert registry["catalogue_revision"] == "2026-10-05"
 
     sources = registry["sources"]
     assert isinstance(sources, list)

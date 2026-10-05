@@ -409,6 +409,7 @@ class TTSHandlerTests(unittest.TestCase):
     def test_provider_model_ids_and_defaults_are_distinct(self):
         self.assertEqual(
             [
+                "gemini-3.8-flash-tts",
                 "gemini-3.1-flash-tts-preview",
                 "gemini-2.5-flash-preview-tts",
                 "gemini-2.5-pro-preview-tts",
@@ -417,6 +418,7 @@ class TTSHandlerTests(unittest.TestCase):
         )
         self.assertEqual(
             [
+                "gemini-3.8-flash-tts",
                 "gemini-3.1-flash-tts-preview",
                 "gemini-2.5-flash-tts",
                 "gemini-2.5-pro-tts",
