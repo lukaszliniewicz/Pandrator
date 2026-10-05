@@ -33,6 +33,10 @@ from .registrations.media_edit import (
 )
 from .registrations.prompts import register_prompts
 from .registrations.resources import register_resources
+from .registrations.session_settings import (
+    register_session_settings_read_tools,
+    register_session_settings_write_tools,
+)
 from .registrations.sessions import (
     register_session_library_tools,
     register_session_setup_tools,
@@ -58,7 +62,6 @@ from .schemas import (
     ExecuteComponentPlanInput,
     ExecuteWorkflowPlanInput,
     ExplainSystemInput,
-    GetSessionSettingsInput,
     GetSubtitleEvidenceInput,
     GetWorkflowInput,
     GetWorkInput,
@@ -70,7 +73,6 @@ from .schemas import (
     ListSourcesInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
-    PatchSessionSettingsInput,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
@@ -86,7 +88,6 @@ from .schemas import (
     SystemStatusInput,
     TargetStatusInput,
     TtsCatalogInput,
-    UpdateSessionSettingsInput,
     VoiceCatalogInput,
 )
 from .schemas.delegation import (
@@ -110,7 +111,6 @@ from .tools import (
     execute_component_plan,
     execute_workflow_plan,
     explain_system,
-    get_session_settings,
     get_subtitle_evidence,
     get_work,
     get_work_log,
@@ -122,7 +122,6 @@ from .tools import (
     list_work,
     manager_doctor,
     manager_status,
-    patch_session_settings,
     patch_subtitle_cues,
     plan_component_change,
     plan_export_variant,
@@ -137,7 +136,6 @@ from .tools import (
     system_status,
     target_status,
     tts_catalog,
-    update_session_settings,
     voice_catalog,
 )
 from .tools.e2e import audio_cpp_catalogue
@@ -703,36 +701,12 @@ def build_server(runtime: McpRuntime):
             ),
         )
 
-    @server.tool(
-        name="pandrator_get_session_settings",
-        title="Inspect effective Pandrator session settings",
-        annotations=read_only,
+    register_session_settings_read_tools(
+        server,
+        runtime,
+        _call_with_input_factory,
+        read_only=read_only,
     )
-    def session_settings_get_tool(
-        session_id: str,
-        section: Literal[
-            "text",
-            "stt",
-            "subtitles",
-            "correction",
-            "translation",
-            "tts",
-            "audio",
-            "rvc",
-            "source_cleaning",
-            "output",
-        ],
-    ) -> dict[str, Any]:
-        """Inspect one settings section, its effective values, and revision."""
-
-        return _call_with_input_factory(
-            get_session_settings,
-            runtime,
-            lambda: GetSessionSettingsInput(
-                session_id=session_id,
-                section=section,
-            ),
-        )
 
     @server.tool(
         name="pandrator_describe_parameters",
@@ -1015,91 +989,12 @@ def build_server(runtime: McpRuntime):
         write_action=write_action,
     )
 
-    @server.tool(
-        name="pandrator_update_session_settings",
-        title=(
-            "Replace full Pandrator session settings section; "
-            "omitted fields removed"
-        ),
-        annotations=write_action,
+    register_session_settings_write_tools(
+        server,
+        runtime,
+        _call_with_input_factory,
+        write_action=write_action,
     )
-    def session_settings_update_tool(
-        session_id: str,
-        section: Literal[
-            "text",
-            "stt",
-            "subtitles",
-            "correction",
-            "translation",
-            "tts",
-            "audio",
-            "rvc",
-            "source_cleaning",
-            "output",
-        ],
-        expected_revision: Annotated[int, Field(ge=0)],
-        value: dict[str, Any],
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        """Replace the complete settings override using revision-safe idempotency.
-
-        Omitted fields are removed. Use pandrator_patch_session_settings for
-        ordinary partial edits.
-        """
-
-        return _call_with_input_factory(
-            update_session_settings,
-            runtime,
-            lambda: UpdateSessionSettingsInput(
-                session_id=session_id,
-                section=section,
-                expected_revision=expected_revision,
-                value=value,
-                idempotency_key=idempotency_key,
-            ),
-        )
-
-    @server.tool(
-        name="pandrator_patch_session_settings",
-        title="Patch one Pandrator session settings section",
-        annotations=write_action,
-    )
-    def session_settings_patch_tool(
-        session_id: str,
-        section: Literal[
-            "text",
-            "stt",
-            "subtitles",
-            "correction",
-            "translation",
-            "tts",
-            "audio",
-            "rvc",
-            "source_cleaning",
-            "output",
-        ],
-        expected_revision: Annotated[int, Field(ge=0)],
-        value: dict[str, Any],
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        """Merge top-level fields into the stored override with revision-safe idempotency.
-
-        Use pandrator_update_session_settings for full replacement; omitted
-        fields are removed by that operation. Nested values replace whole
-        fields, and null remains a literal value.
-        """
-
-        return _call_with_input_factory(
-            patch_session_settings,
-            runtime,
-            lambda: PatchSessionSettingsInput(
-                session_id=session_id,
-                section=section,
-                expected_revision=expected_revision,
-                value=value,
-                idempotency_key=idempotency_key,
-            ),
-        )
 
     @server.tool(
         name="pandrator_delete_output",

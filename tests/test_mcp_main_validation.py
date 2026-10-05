@@ -11,6 +11,7 @@ import pytest
 from mcp import Client
 from pydantic import create_model, model_validator
 
+import pandrator_mcp.registrations.session_settings as settings_owner
 import pandrator_mcp.registrations.sessions as session_owner
 import pandrator_mcp.server as adapter
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
@@ -20,6 +21,12 @@ from tests.test_mcp_media_edit_registration import fixture_runtime
 SENTINEL = "main DTO validation stdout sentinel"
 MARKER = "private-main-validation-fixture-" * 8
 KEY = "guard:main:1"
+
+SETTINGS_MODELS = {
+    "GetSessionSettingsInput",
+    "UpdateSessionSettingsInput",
+    "PatchSessionSettingsInput",
+}
 
 SESSION_MODELS = {
     "ListSessionsInput",
@@ -33,6 +40,8 @@ SESSION_MODELS = {
 
 
 def binding_for_model(model: str) -> Any:
+    if model in SETTINGS_MODELS:
+        return settings_owner
     return session_owner if model in SESSION_MODELS else adapter
 
 
