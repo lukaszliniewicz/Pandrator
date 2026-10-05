@@ -24,6 +24,8 @@
   let volume = $state(1);
   let muted = $state(false);
   let failed = $state('');
+  let playbackSource = '';
+  let playbackGeneration = 0;
 
   $effect(() => {
     // `element` is a bindable output; assigning it intentionally updates the parent.
@@ -47,13 +49,36 @@
     failed = message;
   }
 
-  async function toggle() {
+  function resetPlaybackState() {
+    playing = false;
+    current = 0;
+    duration = 0;
     failed = '';
+  }
+
+  function sourceLoading() {
+    if (playbackSource !== src) {
+      playbackSource = src;
+      playbackGeneration += 1;
+    }
+    resetPlaybackState();
+  }
+
+  async function toggle() {
+    if (playbackSource !== src) sourceLoading();
+    failed = '';
+    const requestedSource = src;
+    const requestedGeneration = playbackGeneration;
     if (audio.paused) {
       try {
         await audio.play();
       } catch {
-        playbackError();
+        // A replaced resource can reject its Play promise after the new one loads.
+        if (
+          requestedSource === src &&
+          requestedGeneration === playbackGeneration
+        )
+          playbackError();
       }
     } else audio.pause();
   }
@@ -82,6 +107,8 @@
     {src}
     {preload}
     {autoplay}
+    onemptied={sourceLoading}
+    onloadstart={sourceLoading}
     onplay={() => (playing = true)}
     onpause={() => (playing = false)}
     onended={() => (playing = false)}
@@ -141,8 +168,9 @@
   {#if failed}<span class="failure" role="alert">{failed}</span><button
       type="button"
       onclick={() => {
+        playbackGeneration += 1;
+        resetPlaybackState();
         audio.load();
-        failed = '';
       }}
       class="quiet retry"
       title="Reload audio"
