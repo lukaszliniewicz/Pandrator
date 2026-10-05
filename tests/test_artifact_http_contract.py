@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import logging
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
+from io import TextIOWrapper
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 import pytest
 from flask.testing import FlaskClient
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.orm import Session
 from werkzeug.test import TestResponse
 
+from pandrator.web import artifact_routes
 from pandrator.web.api import create_app
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.auth import BootstrapTokenStore
@@ -285,3 +293,280 @@ def test_content_missing_file_and_unknown_artifact_controls(harness: Harness, mi
         assert response.get_json()["error"]["code"] == (
             "artifact_missing" if missing == "file" else "not_found"
         )
+
+
+@dataclass
+class PartialReviewWriter:
+    handle: TextIOWrapper
+    failure: OSError
+    events: list[dict[str, Any]]
+
+    def __enter__(self) -> PartialReviewWriter:
+        return self
+
+    def __exit__(
+        self,
+        _error_type: type[BaseException] | None,
+        _error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.handle.close()
+
+    def write(self, value: str) -> int:
+        self.handle.write(value[:12])
+        self.handle.flush()
+        self.events.append({"boundary": "partial_write", "partial": value[:12]})
+        raise self.failure
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "partial_write",
+        "prepare",
+        "registration_flush",
+        "connection_commit",
+        "after_commit",
+        "collision",
+        "inspection_failure",
+        "unlink_failure",
+        "normal",
+    ),
+)
+def test_review_file_ownership_at_native_registration_failure_boundaries(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    case: str,
+) -> None:
+    source_path = harness.directory / "optimized.json"
+    source_path.write_text(json.dumps(SOURCE_ROWS), encoding="utf-8")
+    source = harness.artifacts.register(
+        source_path,
+        kind="json",
+        role="tts_optimized",
+        session_id=harness.session_id,
+        metadata=SOURCE_METADATA,
+    )
+    fixed_destination = harness.directory / "tts-optimized-reviewed-fixed-fixture-id.json"
+    if case == "collision":
+        fixed_destination.write_bytes(b"preexisting file owned by another operation")
+    before_rows = row_inventory(harness)
+    before_files = file_inventory(harness.directory)
+    source_bytes = source_path.read_bytes()
+    events: list[dict[str, Any]] = []
+    listeners: list[tuple[Any, str, Any]] = []
+    fault = (
+        OSError(f"fixture {case} failure")
+        if case in {"partial_write", "prepare", "inspection_failure", "unlink_failure"}
+        else RuntimeError(f"fixture {case} failure")
+    )
+    secondary_message = f"fixture cleanup {case} failure"
+    real_open = Path.open
+    real_unlink = Path.unlink
+    real_prepare = harness.artifacts.prepare_registration
+    real_register = harness.artifacts.register_in_session
+    real_session = harness.database.session
+    preparation_failed = False
+
+    def is_destination(path: Path) -> bool:
+        return path.parent == harness.directory and path.name.startswith("tts-optimized-reviewed-")
+
+    def open_destination(path: Path, *args: Any, **kwargs: Any) -> Any:
+        handle = real_open(path, *args, **kwargs)
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if is_destination(path) and mode in {"w", "x"}:
+            assert isinstance(fault, OSError)
+            assert isinstance(handle, TextIOWrapper)
+            return PartialReviewWriter(handle, fault, events)
+        return handle
+
+    def prepare_destination(path: Path, *args: Any, **kwargs: Any) -> Any:
+        nonlocal preparation_failed
+        if is_destination(path):
+            events.append({"boundary": "prepare", "file_exists": path.is_file()})
+            preparation_failed = True
+            raise fault
+        return real_prepare(path, *args, **kwargs)
+
+    def register_destination(session: Session, path: Path, *args: Any, **kwargs: Any) -> Artifact:
+        artifact = real_register(session, path, *args, **kwargs)
+        if not is_destination(path):
+            return artifact
+        assert isinstance(session, Session)
+        session.flush()
+        ids = list(session.scalars(select(Artifact.id)).all())
+        edge = session.get(ArtifactEdge, (source.id, artifact.id))
+        assert source.id in ids and artifact.id in ids and len(ids) == 2
+        assert edge is not None
+        events.append(
+            {
+                "boundary": "native_flush",
+                "artifact_count": len(ids),
+                "parent": edge.parent_artifact_id,
+                "child": edge.child_artifact_id,
+                "in_transaction": session.in_transaction(),
+            }
+        )
+        if case == "registration_flush":
+            raise fault
+        if case == "connection_commit":
+            native_connection = session.connection()
+
+            def reject_commit(connection: Connection) -> None:
+                assert connection is native_connection
+                events.append({"boundary": "native_connection_commit", "same_connection": True})
+                raise fault
+
+            event.listen(native_connection, "commit", reject_commit, once=True)
+            listeners.append((native_connection, "commit", reject_commit))
+        else:
+
+            def fail_after_commit(committed_session: Session) -> None:
+                assert committed_session is session
+                events.append({"boundary": "native_after_commit", "same_session": True})
+                raise fault
+
+            event.listen(session, "after_commit", fail_after_commit, once=True)
+            listeners.append((session, "after_commit", fail_after_commit))
+        return artifact
+
+    def cleanup_session() -> Any:
+        if preparation_failed:
+            events.append({"boundary": "cleanup_inspection"})
+            raise RuntimeError(secondary_message)
+        return real_session()
+
+    def unlink_destination(path: Path, *args: Any, **kwargs: Any) -> None:
+        if is_destination(path):
+            events.append({"boundary": "cleanup_unlink"})
+            raise PermissionError(secondary_message)
+        real_unlink(path, *args, **kwargs)
+
+    raised: Exception | None = None
+    status: int | None = None
+    result: dict[str, Any] | None = None
+    caplog.set_level(logging.WARNING)
+    try:
+        with monkeypatch.context() as seams:
+            if case == "partial_write":
+                seams.setattr(Path, "open", open_destination)
+            if case in {"prepare", "inspection_failure", "unlink_failure"}:
+                seams.setattr(harness.artifacts, "prepare_registration", prepare_destination)
+            if case in {"registration_flush", "connection_commit", "after_commit"}:
+                seams.setattr(harness.artifacts, "register_in_session", register_destination)
+            if case == "collision":
+                seams.setattr(artifact_routes, "new_id", lambda: "fixed-fixture-id")
+            if case == "inspection_failure":
+                seams.setattr(harness.database, "session", cleanup_session)
+            if case == "unlink_failure":
+                seams.setattr(Path, "unlink", unlink_destination)
+            try:
+                with harness.client.post(
+                    f"/api/v1/artifacts/{source.id}/optimization-review",
+                    json={
+                        "items": [
+                            {"index": 0, "text": "Reviewed zero"},
+                            {"index": 1, "text": "Reviewed one"},
+                        ]
+                    },
+                    headers={"X-CSRF-Token": harness.csrf},
+                ) as response:
+                    status = response.status_code
+                    result = response.get_json()
+            except Exception as error:
+                raised = error
+    finally:
+        for target, name, callback in listeners:
+            if event.contains(target, name, callback):
+                event.remove(target, name, callback)
+    # All seams are restored before the independent fresh-session inspection.
+    after_rows = row_inventory(harness)
+    after_files = file_inventory(harness.directory)
+    added_files = set(after_files) - set(before_files)
+    original_source = before_rows[0][0]
+    persisted_source = next(row for row in after_rows[0] if row["id"] == source.id)
+    print(
+        "REVIEW_FAILURE_NATIVE_STATE:"
+        + json.dumps(
+            {
+                "case": case,
+                "status": status,
+                "exception": type(raised).__name__ if raised is not None else None,
+                "message": str(raised) if raised is not None else None,
+                "source_unchanged": source_path.read_bytes() == source_bytes,
+                "rows_unchanged": after_rows == before_rows,
+                "added_files": sorted(added_files),
+                "artifact_count": len(after_rows[0]),
+                "edge_count": len(after_rows[1]),
+                "events": events,
+                "secondary_logged": secondary_message in caplog.text,
+                "source_field_changes": {
+                    key: {"before": str(value), "after": str(persisted_source[key])}
+                    for key, value in original_source.items()
+                    if value != persisted_source[key]
+                },
+            }
+        )
+    )
+    assert source_path.read_bytes() == source_bytes
+    if case in {"normal", "after_commit"}:
+        assert persisted_source["state"] == "stale"
+        assert {
+            key: value
+            for key, value in persisted_source.items()
+            if key not in {"state", "updated_at"}
+        } == {
+            key: value
+            for key, value in original_source.items()
+            if key not in {"state", "updated_at"}
+        }
+        if case == "normal":
+            assert raised is None and status == 201 and result is not None
+        else:
+            assert isinstance(raised, InvalidRequestError)
+            assert str(raised) == (
+                "This session is in 'committed' state; no further SQL can be emitted within this transaction."
+            )
+            assert raised.__context__ is fault
+            assert sum(item["boundary"] == "native_after_commit" for item in events) == 1
+        assert len(after_rows[0]) == 2 and len(after_rows[1]) == 1 and len(added_files) == 1
+        child = next(row for row in after_rows[0] if row["id"] != source.id)
+        assert child["metadata_json"] == {
+            **SOURCE_METADATA,
+            "reviewed": True,
+            "reviewed_from": source.id,
+        }
+        assert child["session_id"] == harness.session_id and child["role"] == "tts_optimized"
+        assert after_rows[1] == [
+            {
+                "parent_artifact_id": source.id,
+                "child_artifact_id": child["id"],
+                "relation": "derived_from",
+            }
+        ]
+        reviewed_path = harness.directory / next(iter(added_files))
+        assert [row["text"] for row in json.loads(reviewed_path.read_bytes())] == [
+            "Reviewed zero",
+            "Reviewed one",
+        ]
+        if result is not None:
+            assert result["id"] == child["id"]
+        return
+    assert persisted_source == original_source
+    if case == "collision":
+        assert isinstance(raised, FileExistsError)
+        assert raised.errno == errno.EEXIST and raised.filename == str(fixed_destination)
+        assert after_rows == before_rows and after_files == before_files
+        return
+    assert raised is fault
+    assert str(raised) == f"fixture {case} failure"
+    assert after_rows == before_rows
+    if case in {"inspection_failure", "unlink_failure"}:
+        assert len(added_files) == 1
+        assert secondary_message in caplog.text
+        assert any(record.levelno >= logging.WARNING for record in caplog.records)
+    else:
+        assert after_files == before_files
+    if case == "connection_commit":
+        assert sum(item["boundary"] == "native_connection_commit" for item in events) == 1

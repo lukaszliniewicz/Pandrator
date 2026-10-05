@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 
 from flask import jsonify, request, send_file
@@ -157,19 +158,40 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             row["tts_optimized_sentence"] = edits[index]
             row["optimization_reviewed"] = True
         destination = source_path.parent / f"tts-optimized-reviewed-{new_id()}.json"
-        destination.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
-        reviewed = artifacts.register(
-            destination,
-            kind="json",
-            role="tts_optimized",
-            session_id=source.session_id,
-            parent_ids=[source.id],
-            metadata={
-                **(source.metadata_json or {}),
-                "reviewed": True,
-                "reviewed_from": source.id,
-            },
-        )
+        owns_destination = False
+        try:
+            with destination.open("x", encoding="utf-8") as stream:
+                owns_destination = True
+                stream.write(json.dumps(rows, ensure_ascii=False, indent=2))
+            reviewed = artifacts.register(
+                destination,
+                kind="json",
+                role="tts_optimized",
+                session_id=source.session_id,
+                parent_ids=[source.id],
+                metadata={
+                    **(source.metadata_json or {}),
+                    "reviewed": True,
+                    "reviewed_from": source.id,
+                },
+            )
+        except Exception:
+            if owns_destination:
+                try:
+                    # Commit hooks can fail after persistence. Keep any registered file.
+                    with database.session() as db_session:
+                        registered = db_session.scalar(
+                            select(Artifact.id).where(
+                                Artifact.relative_path == paths.relative_managed_path(destination)
+                            )
+                        )
+                    if registered is None:
+                        destination.unlink(missing_ok=True)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Could not clean up the failed optimization review."
+                    )
+            raise
         return jsonify(
             _model_dict(
                 reviewed,
