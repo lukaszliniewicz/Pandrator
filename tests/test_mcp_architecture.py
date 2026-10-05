@@ -156,7 +156,11 @@ class McpArchitectureTests(unittest.TestCase):
             self.assertIn("*.py[cod]", excluded)
 
     def test_application_client_never_uses_raw_job_creation(self):
-        source = inspect.getsource(ApplicationClient)
+        source = "\n".join(
+            inspect.getsource(owner)
+            for owner in ApplicationClient.__mro__
+            if owner.__module__.startswith("pandrator_mcp.clients.")
+        )
         self.assertNotIn("/api/v1/jobs", source)
         self.assertNotIn("session.post(", source)
         self.assertIn("/api/v1/work", source)
