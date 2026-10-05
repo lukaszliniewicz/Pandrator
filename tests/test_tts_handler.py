@@ -113,11 +113,14 @@ class TTSHandlerTests(unittest.TestCase):
             {"service": "OpenAI", "model": "gpt-4o-mini-tts"},
         )
 
+        assert usage is not None
         self.assertTrue(usage["commercial"])
         self.assertTrue(usage["estimated"])
         self.assertEqual(100, usage["input_tokens"])
         self.assertEqual(42, usage["output_audio_tokens"])
-        self.assertAlmostEqual(0.000564, usage["cost_usd"])
+        cost = usage["cost_usd"]
+        assert isinstance(cost, (int, float))
+        self.assertAlmostEqual(0.000564, cost)
 
     def test_gemini_and_vertex_price_aliases_reuse_existing_model_rates(self):
         cases = (
@@ -126,14 +129,17 @@ class TTSHandlerTests(unittest.TestCase):
             (tts_handler.VERTEX_SERVICE, "gemini-2.5-flash-tts"),
             (tts_handler.VERTEX_SERVICE, "gemini-2.5-flash-preview-tts"),
         )
-        costs = [
-            tts_handler.estimate_tts_usage(
+        costs = []
+        for service, model in cases:
+            usage = tts_handler.estimate_tts_usage(
                 "A" * 400,
                 2_000,
                 {"service": service, "model": model},
-            )["cost_usd"]
-            for service, model in cases
-        ]
+            )
+            assert usage is not None
+            cost = usage["cost_usd"]
+            assert isinstance(cost, (int, float))
+            costs.append(cost)
 
         self.assertEqual([0.00055] * len(cases), costs)
 
@@ -223,14 +229,11 @@ class TTSHandlerTests(unittest.TestCase):
 
         provider = tts_handler.get_service_config(settings, "azure-speech-mai-voice-2")
         self.assertIsNotNone(provider)
+        assert provider is not None
         self.assertIs(provider["credential_required"], True)
 
-        with patch(
-            "pandrator.logic.tts_handler.requests.post", return_value=response
-        ) as post:
-            actual = tts_handler._request_openai_compatible_audio(
-                'A & <tag> "quoted"', settings
-            )
+        with patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post:
+            actual = tts_handler._request_openai_compatible_audio('A & <tag> "quoted"', settings)
 
         self.assertIs(actual, response)
         self.assertEqual(
@@ -465,18 +468,30 @@ class TTSHandlerTests(unittest.TestCase):
             tts_handler.VERTEX_TTS_MODELS,
             services["vertex_ai"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
+        qwen_directions = services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD]
+        assert isinstance(qwen_directions, list)
         self.assertIn(
             "Prebuilt Voices",
-            services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+            qwen_directions,
         )
         self.assertNotIn(
             "Voice Cloning",
-            services["kobold_qwen"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
+            qwen_directions,
         )
         audio_directions = services["audio_cpp"][tts_handler.GENERATION_PROMPT_MODELS_FIELD]
-        self.assertTrue({"qwen3_tts_1_7b_customvoice_q8_0", "qwen3_tts_1_7b_voicedesign_q8_0",
-                        "fish_audio_s2_pro_q8_0", "breeze_tts_2_q8_0", "voxcpm2_q8_0",
-                        "omnivoice_q8_0", "fireredtts3_instruct_q8_0", "cosyvoice3_q8_0"}.issubset(audio_directions))
+        assert isinstance(audio_directions, list)
+        self.assertTrue(
+            {
+                "qwen3_tts_1_7b_customvoice_q8_0",
+                "qwen3_tts_1_7b_voicedesign_q8_0",
+                "fish_audio_s2_pro_q8_0",
+                "breeze_tts_2_q8_0",
+                "voxcpm2_q8_0",
+                "omnivoice_q8_0",
+                "fireredtts3_instruct_q8_0",
+                "cosyvoice3_q8_0",
+            }.issubset(audio_directions)
+        )
         self.assertNotIn("qwen3_tts_1_7b_base_q8_0", audio_directions)
         self.assertNotIn("qwen3_tts_0_6b_customvoice_q8_0", audio_directions)
 
@@ -695,16 +710,23 @@ class TTSHandlerTests(unittest.TestCase):
     def test_vertex_default_location_is_global(self):
         self.assertEqual("global", tts_handler.VERTEX_AUDIO_DEFAULT_LOCATION)
         service = tts_handler.get_service_config({}, tts_handler.VERTEX_PROVIDER)
+        assert service is not None
         self.assertEqual("global", service["vertex_location"])
         response = Mock(ok=True)
-        response.json.return_value = {"candidates": [{"content": {"parts": [
-            {"inlineData": {"data": base64.b64encode(b"\x00\x00").decode()}}
-        ]}}]}
+        response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"inlineData": {"data": base64.b64encode(b"\x00\x00").decode()}}]
+                    }
+                }
+            ]
+        }
         with (
-            patch("pandrator.logic.tts_handler._vertex_access_token",
-                  return_value=("token", "project")),
-            patch("pandrator.logic.tts_handler.requests.post",
-                  return_value=response) as post,
+            patch(
+                "pandrator.logic.tts_handler._vertex_access_token", return_value=("token", "project")
+            ),
+            patch("pandrator.logic.tts_handler.requests.post", return_value=response) as post,
         ):
             tts_handler._request_vertex_ai_audio("Hello.", {"service": tts_handler.VERTEX_SERVICE})
         self.assertIn("/locations/global/", post.call_args.args[0])
@@ -804,28 +826,38 @@ class TTSHandlerTests(unittest.TestCase):
         settings = {"service_configs": [{"id": "openai", "api_base": "https://one.example"}]}
         cache = {}
         with patch.object(
-            tts_handler, "_default_service_configs",
+            tts_handler,
+            "_default_service_configs",
             wraps=tts_handler._default_service_configs,
         ) as build:
             selected = tts_handler.get_service_config(settings, "OpenAI", cache)
+            assert selected is not None
             selected["api_base"] = "https://changed.example"
-            selected["models"].append("changed-model")
-            self.assertEqual(
-                tts_handler.get_service_config(settings, "openai", cache)["api_base"],
-                "https://one.example",
-            )
+            selected_models = selected["models"]
+            assert isinstance(selected_models, list)
+            selected_models.append("changed-model")
+            first_fresh = tts_handler.get_service_config(settings, "openai", cache)
+            assert first_fresh is not None
+            self.assertEqual(first_fresh["api_base"], "https://one.example")
+            first_fresh_models = first_fresh["models"]
+            assert isinstance(first_fresh_models, list)
+            self.assertNotIn("changed-model", first_fresh_models)
             catalogue = tts_handler.get_service_configs(settings, cache)
-            catalogue[0]["models"].append("another-model")
-            self.assertNotIn(
-                "another-model",
-                tts_handler.get_service_config(settings, "openai", cache)["models"],
-            )
+            catalogue_models = catalogue[0]["models"]
+            assert isinstance(catalogue_models, list)
+            catalogue_models.append("another-model")
+            second_fresh = tts_handler.get_service_config(settings, "openai", cache)
+            assert second_fresh is not None
+            second_fresh_models = second_fresh["models"]
+            assert isinstance(second_fresh_models, list)
+            self.assertNotIn("another-model", second_fresh_models)
             self.assertEqual(build.call_count, 1)
-            changed_settings = {"service_configs": [{"id": "openai", "api_base": "https://two.example"}]}
-            self.assertEqual(
-                tts_handler.get_service_config(changed_settings, "openai", cache)["api_base"],
-                "https://two.example",
-            )
+            changed_settings = {
+                "service_configs": [{"id": "openai", "api_base": "https://two.example"}]
+            }
+            changed = tts_handler.get_service_config(changed_settings, "openai", cache)
+            assert changed is not None
+            self.assertEqual(changed["api_base"], "https://two.example")
             self.assertEqual(build.call_count, 2)
 
     def test_first_class_cloud_service_and_custom_endpoint_resolve_separately(self):
@@ -846,6 +878,7 @@ class TTSHandlerTests(unittest.TestCase):
 
         endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
         self.assertEqual(error, "")
+        assert endpoint is not None
         self.assertEqual(endpoint["name"], "gemini")
         self.assertEqual(endpoint["base_url"], "https://gemini.example/openai")
 
@@ -934,9 +967,8 @@ class TTSHandlerTests(unittest.TestCase):
         )
 
     def test_audio_cpp_provider_round_trip_preserves_adapter(self):
-        profile = tts_provider_profiles.get_tts_provider_profile(
-            "audio-cpp-experimental"
-        )
+        profile = tts_provider_profiles.get_tts_provider_profile("audio-cpp-experimental")
+        assert profile is not None
         success, providers, provider_id, message = tts_handler.save_provider(
             {"provider_configs": []},
             provider_name=profile["name"],
@@ -952,8 +984,10 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertTrue(success, message)
         self.assertEqual("audio-cpp-experimental", provider_id)
         self.assertEqual("audio_cpp", providers[0]["adapter"])
-        self.assertIn("qwen3_tts_1_7b_base_q8_0", providers[0]["models"])
-        self.assertIn("fireredtts3_base_q8_0", providers[0]["models"])
+        models = providers[0]["models"]
+        assert isinstance(models, list)
+        self.assertIn("qwen3_tts_1_7b_base_q8_0", models)
+        self.assertIn("fireredtts3_base_q8_0", models)
 
     def test_audio_cpp_generation_sends_language_and_omits_empty_voice(self):
         settings = {
@@ -1603,12 +1637,11 @@ class TTSHandlerTests(unittest.TestCase):
         }
 
         with patch("pandrator.logic.tts_handler.requests.get", return_value=response):
-            capabilities = tts_handler.get_kobold_qwen_batch_capabilities(
-                "http://localhost:8042"
-            )
+            capabilities = tts_handler.get_kobold_qwen_batch_capabilities("http://localhost:8042")
 
         self.assertTrue(capabilities["supported"])
         self.assertTrue(capabilities["streaming"])
+        assert "protocol" in capabilities
         self.assertEqual("ndjson-v1", capabilities["protocol"])
         self.assertEqual(10, capabilities["default_batch_size"])
         self.assertEqual(32, capabilities["max_batch_size"])
@@ -1701,7 +1734,9 @@ class TTSHandlerTests(unittest.TestCase):
 
         self.assertEqual(["first", "second"], [event["id"] for event in events])
         self.assertIs(decoded, events[0]["audio"])
-        self.assertEqual("temporary failure", events[1]["error"]["detail"])
+        failure = events[1]["error"]
+        assert failure is not None
+        self.assertEqual("temporary failure", failure["detail"])
         self.assertEqual(
             "http://localhost:8042/v1/audio/speech/batch",
             post.call_args.args[0],

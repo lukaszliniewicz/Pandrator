@@ -71,6 +71,7 @@ def test_settings_fallback_preserves_revisions_without_writing(
                 if key not in persisted:
                     assert row is None
                 else:
+                    assert row is not None
                     assert (row.value_json, row.revision, row.updated_at) == persisted[key]
     finally:
         providers.close()

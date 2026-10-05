@@ -80,6 +80,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(profile)
+        assert profile is not None
         self.assertEqual("audio_cpp", profile["adapter"])
         self.assertEqual("http://127.0.0.1:8080", profile["api_base"])
         self.assertEqual("/v1/audio/speech", profile["speech_path"])
@@ -111,6 +112,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         profile = tts_provider_profiles.get_tts_provider_profile(
             "audio-cpp-experimental"
         )
+        assert profile is not None
         model = next(
             item
             for item in profile["model_catalog"]
@@ -177,6 +179,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(profile)
+        assert profile is not None
         self.assertEqual("Azure Speech · MAI Voice 2", profile["name"])
         self.assertEqual("azure_speech", profile["adapter"])
         self.assertEqual(
@@ -218,6 +221,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         profile = tts_provider_profiles.get_tts_provider_profile(
             "azure-speech-mai-voice-2"
         )
+        assert profile is not None
         adapter_config = dict(profile)
         success, providers, _, message = tts_handler.save_provider(
             {"provider_configs": []},
@@ -259,6 +263,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         fresh_azure = tts_provider_profiles.get_tts_provider_profile(
             "azure-speech-mai-voice-2"
         )
+        assert fresh_azure is not None
         self.assertNotIn(
             "changed",
             fresh_azure["voice_metadata"]["MAI-Voice-2:en-US-Ethan:MAI-Voice-2"][
@@ -268,6 +273,7 @@ class TTSProviderProfileTests(unittest.TestCase):
 
     def test_profile_id_persists_with_saved_custom_provider(self):
         profile = tts_provider_profiles.get_tts_provider_profile("styletts2-salad")
+        assert profile is not None
         adapter_config = dict(profile)
         adapter_config["profile_id"] = profile["id"]
 
