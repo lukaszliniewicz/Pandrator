@@ -32,6 +32,7 @@ from ..constants import (
     magpie_voice_catalog,
 )
 from . import kobold_qwen_http as _kobold_qwen_http
+from . import silero_catalogue_http as _silero_catalogue_http
 from . import xtts_catalogue_http as _xtts_catalogue_http
 from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .audio_cpp_parameters import validate_audio_cpp_model_options
@@ -4149,22 +4150,11 @@ def normalize_silero_language_code(value: object) -> str:
 
 def get_silero_model_catalog(base_url: str = SILERO_API_BASE_URL) -> list[dict]:
     """Return model metadata, including installation and licence state."""
-    try:
-        response = requests.get(
-            f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/v1/models",
-            timeout=10,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", []) if isinstance(payload, dict) else []
-        if not isinstance(data, list):
-            return []
-        return [
-            dict(item) for item in data if isinstance(item, dict) and item.get("id")
-        ]
-    except (requests.exceptions.RequestException, ValueError) as exc:
-        logging.error("Failed to fetch Silero models: %s", exc)
-        return []
+    return _silero_catalogue_http.get_silero_model_catalog(
+        base_url,
+        _normalize_base_url=lambda base, fallback: _normalize_base_url(base, fallback),
+        default_base_url=lambda: SILERO_API_BASE_URL,
+    )
 
 
 def get_silero_models(
@@ -4192,29 +4182,15 @@ def get_silero_voice_catalog(
     language: str = "",
     include_unavailable: bool = False,
 ) -> list[dict]:
-    params = {
-        "model": str(model or "").strip(),
-        "language": normalize_silero_language_code(language),
-        "include_unavailable": str(bool(include_unavailable)).lower(),
-    }
-    params = {key: value for key, value in params.items() if value != ""}
-    try:
-        response = requests.get(
-            f"{_normalize_base_url(base_url, SILERO_API_BASE_URL)}/v1/audio/voices",
-            params=params,
-            timeout=15,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", []) if isinstance(payload, dict) else []
-        if not isinstance(data, list):
-            return []
-        return [
-            dict(item) for item in data if isinstance(item, dict) and item.get("id")
-        ]
-    except (requests.exceptions.RequestException, ValueError) as exc:
-        logging.error("Failed to fetch Silero voices: %s", exc)
-        return []
+    return _silero_catalogue_http.get_silero_voice_catalog(
+        base_url,
+        model=model,
+        language=language,
+        include_unavailable=include_unavailable,
+        _normalize_base_url=lambda base, fallback: _normalize_base_url(base, fallback),
+        default_base_url=lambda: SILERO_API_BASE_URL,
+        normalize_silero_language_code=lambda value: normalize_silero_language_code(value),
+    )
 
 
 def get_silero_speakers(

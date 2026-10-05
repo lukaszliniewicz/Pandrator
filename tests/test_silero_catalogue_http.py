@@ -129,3 +129,100 @@ def test_voice_query_normalization_and_unavailable_flag(monkeypatch: pytest.Monk
         BASE, model=" v5_cis_base_nostress ", language="UK", include_unavailable=True
     ) == [{"id": "ukr_igor", "available": False}]
     assert calls == [BASE + "/v1/audio/voices"]
+
+
+@pytest.mark.parametrize("kind", ("models", "voices"))
+@pytest.mark.parametrize(
+    "error",
+    (
+        ValueError("invalid base fixture"),
+        requests.exceptions.ConnectionError("normalizer connection fixture"),
+        RuntimeError("unexpected normalizer fixture"),
+    ),
+)
+def test_base_normalization_retains_request_error_boundary(
+    monkeypatch: pytest.MonkeyPatch, kind: str, error: Exception
+):
+    normalized: list[tuple[str, str]] = []
+
+    def normalize(base: str, fallback: str) -> str:
+        normalized.append((base, fallback))
+        raise error
+
+    def forbidden_get(*args: object, **kwargs: object) -> requests.Response:
+        raise AssertionError("GET must not follow failed base normalization")
+
+    monkeypatch.setattr(tts_handler, "_normalize_base_url", normalize)
+    monkeypatch.setattr(tts_handler.requests, "get", forbidden_get)
+    call = (
+        tts_handler.get_silero_model_catalog
+        if kind == "models"
+        else tts_handler.get_silero_voice_catalog
+    )
+    if isinstance(error, RuntimeError):
+        with pytest.raises(RuntimeError) as raised:
+            call(BASE)
+        assert raised.value is error
+    else:
+        assert call(BASE) == []
+    assert normalized == [(BASE, "http://127.0.0.1:8001")]
+
+
+def test_voice_language_normalization_error_propagates_before_base_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    error = ValueError("invalid language fixture")
+    languages: list[object] = []
+
+    def normalize_language(value: object) -> str:
+        languages.append(value)
+        raise error
+
+    def forbidden_base(base: str, fallback: str) -> str:
+        raise AssertionError("Base resolution must not follow invalid language")
+
+    def forbidden_get(*args: object, **kwargs: object) -> requests.Response:
+        raise AssertionError("GET must not follow invalid language")
+
+    monkeypatch.setattr(tts_handler, "normalize_silero_language_code", normalize_language)
+    monkeypatch.setattr(tts_handler, "_normalize_base_url", forbidden_base)
+    monkeypatch.setattr(tts_handler.requests, "get", forbidden_get)
+    with pytest.raises(ValueError) as raised:
+        tts_handler.get_silero_voice_catalog(BASE, language="uk")
+    assert raised.value is error
+    assert languages == ["uk"]
+
+
+def test_voice_language_policy_can_replace_later_base_policy(monkeypatch: pytest.MonkeyPatch):
+    languages: list[object] = []
+    bases: list[tuple[str, str]] = []
+    gets: list[str] = []
+    original_base = tts_handler._normalize_base_url
+    late_base = "http://late-provider.invalid"
+
+    def normalize_base(base: str, fallback: str) -> str:
+        bases.append((base, fallback))
+        return original_base(base, fallback)
+
+    def normalize_language(value: object) -> str:
+        languages.append(value)
+        monkeypatch.setattr(tts_handler, "SILERO_API_BASE_URL", late_base)
+        monkeypatch.setattr(tts_handler, "_normalize_base_url", normalize_base)
+        return "late-language"
+
+    def get(url: str, **options: object) -> requests.Response:
+        assert not gets
+        assert url == late_base + "/v1/audio/voices"
+        assert options == {
+            "params": {"language": "late-language", "include_unavailable": "false"},
+            "timeout": 15,
+        }
+        gets.append(url)
+        return response({"data": [{"id": "late-voice"}]})
+
+    monkeypatch.setattr(tts_handler, "normalize_silero_language_code", normalize_language)
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    assert tts_handler.get_silero_voice_catalog("", language="uk") == [{"id": "late-voice"}]
+    assert languages == ["uk"]
+    assert bases == [("", late_base)]
+    assert gets == [late_base + "/v1/audio/voices"]
