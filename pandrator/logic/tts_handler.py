@@ -3448,7 +3448,7 @@ def get_elevenlabs_voice_catalog(
             next_page = str(payload.get("next_page_token") or "").strip()
             if not next_page:
                 break
-            params["page_token"] = next_page
+            params["next_page_token"] = next_page
     except (requests.exceptions.RequestException, ValueError) as error:
         if strict:
             raise ElevenLabsCatalogError(

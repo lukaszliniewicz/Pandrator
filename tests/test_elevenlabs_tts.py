@@ -374,7 +374,7 @@ class ElevenLabsCatalogueTests(unittest.TestCase):
         voices = tts_handler.get_elevenlabs_voice_catalog(api_key="secret")
 
         self.assertEqual(["voice-1", "voice-2"], [item["voice_id"] for item in voices])
-        self.assertEqual("next", get.call_args_list[1].kwargs["params"]["page_token"])
+        self.assertEqual("next", get.call_args_list[1].kwargs["params"]["next_page_token"])
         self.assertEqual(
             "https://api.elevenlabs.io/v2/voices", get.call_args.args[0]
         )
