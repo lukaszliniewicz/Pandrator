@@ -63,6 +63,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_speech_candidate_http.py",
         "tests/test_voxcpm_speech_http.py",
         "tests/test_native_speech_caller.py",
+        "tests/test_litellm_speech_policy.py",
         "tests/test_guided_dubbing_workflow.py",
         "tests/test_llm_handler.py",
         "tests/test_language_capabilities.py",

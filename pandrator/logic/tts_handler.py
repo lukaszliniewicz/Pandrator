@@ -4931,6 +4931,10 @@ def _request_litellm_audio(
 
     if provider == OPENAI_PROVIDER:
         request_kwargs["response_format"] = str(payload.get("response_format") or "wav")
+        # Keep the SDK timeout aligned with direct HTTP and avoid multiplying
+        # Pandrator's caller retry budget with another SDK retry loop.
+        request_kwargs["timeout"] = TTS_GENERATION_TIMEOUT_SECONDS
+        request_kwargs["max_retries"] = 0
 
     logging.info(
         "Generating OpenAI-compatible audio via LiteLLM provider=%s model=%s endpoint=%s",
