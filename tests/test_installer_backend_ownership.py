@@ -215,3 +215,22 @@ def test_poll_error_retains_live_child_without_numeric_lookup(owned: Ownership) 
     assert owned.child.poll() is None
     owned.installer.shutdown_xtts()
     assert_completed(owned)
+
+
+@pytest.mark.parametrize("lookup", ["backends", "rvc"])
+def test_discovery_poll_error_preserves_live_process_and_log(
+    owned: Ownership, lookup: str
+) -> None:
+    if lookup == "rvc":
+        owned.installer.xtts_process = None
+        owned.installer.rvc_process = owned.child
+    with mock.patch.object(owned.child, "poll", side_effect=OSError("poll failed")):
+        if lookup == "rvc":
+            assert owned.installer._get_running_rvc_process() is owned.child
+            assert owned.installer.rvc_process is owned.child
+        else:
+            running = owned.installer._collect_running_backends()
+            assert any(item[0] == "xtts" and item[2] is owned.child for item in running)
+            assert owned.installer.xtts_process is owned.child
+        assert owned.child.log_handle is owned.log and not owned.log.closed
+    assert owned.child.poll() is None

@@ -10,6 +10,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+from typing import TYPE_CHECKING
 
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
@@ -35,8 +36,13 @@ from .platforms import (
     pixi_temp_suffix,
 )
 
+if TYPE_CHECKING:
+    from .command_protocols import CommandProvider as _CommandProvider
+else:
+    _CommandProvider = object
 
-class PixiEnvironmentMixin:
+
+class PixiEnvironmentMixin(_CommandProvider):
     def get_pixi_executable(self, pandrator_path):
         return os.path.join(pandrator_path, 'bin', pixi_binary_name())
 
@@ -46,7 +52,7 @@ class PixiEnvironmentMixin:
     def get_pixi_manifest_path(self, pandrator_path, env_name):
         return os.path.join(self.get_pixi_env_dir(pandrator_path, env_name), 'pixi.toml')
 
-    def get_pixi_subprocess_env(self, pandrator_path):
+    def get_pixi_subprocess_env(self, pandrator_path) -> dict[str, str]:
         pixi_home = os.path.join(pandrator_path, PIXI_HOME_DIRNAME)
         pixi_cache = os.path.join(pandrator_path, PIXI_CACHE_DIRNAME)
         rattler_cache = os.path.join(pixi_cache, 'rattler')
@@ -154,7 +160,7 @@ class PixiEnvironmentMixin:
             '--executable',
         ] + command
 
-    def run_pixi_in_env(self, pandrator_path, env_name, command, cwd=None, log_errors=True):
+    def run_pixi_in_env(self, pandrator_path, env_name, command, cwd=None, log_errors=True) -> tuple[str, str]:
         return self.run_command(
             self.build_pixi_run_command(pandrator_path, env_name, command),
             cwd=cwd,

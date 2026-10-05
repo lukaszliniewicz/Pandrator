@@ -324,8 +324,8 @@ class OperationsMixin:
         cwd=None,
         env=None,
         log_errors=True,
-        timeout=DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    ):
+        timeout: float | None = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    ) -> tuple[str, str]:
         command_display = command if isinstance(command, str) else ' '.join(command)
         try:
             subprocess_kwargs = self.get_hidden_subprocess_kwargs()
@@ -377,7 +377,7 @@ class OperationsMixin:
             stderr_thread.start()
             try:
                 process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as error:
                 self._terminate_timed_out_process(process, drain=False)
                 stdout_thread.join(timeout=10)
                 stderr_thread.join(timeout=10)
@@ -385,7 +385,7 @@ class OperationsMixin:
                 stderr = self._command_output_text(stderr_tail, stderr_state)
                 raise subprocess.TimeoutExpired(
                     command,
-                    timeout,
+                    error.timeout,
                     output=stdout,
                     stderr=stderr,
                 ) from None

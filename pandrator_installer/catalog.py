@@ -35,6 +35,20 @@ class ComponentDefinition:
         return self.variant_of or self.key
 
 
+def require_repo_dirname(component: ComponentDefinition) -> str:
+    dirname = component.repo_dirname
+    if not dirname:
+        raise ValueError(f"Component '{component.key}' has no repository directory.")
+    return dirname
+
+
+def require_process_attr(component: ComponentDefinition) -> str:
+    process_attr = component.process_attr
+    if not process_attr:
+        raise ValueError(f"Component '{component.key}' has no process attribute.")
+    return process_attr
+
+
 COMPONENTS: dict[str, ComponentDefinition] = {
     "xtts": ComponentDefinition(
         key="xtts",

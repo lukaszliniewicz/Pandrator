@@ -7,6 +7,7 @@ from .catalog import (
 )
 from .catalog import (
     COMPONENTS,
+    require_repo_dirname,
 )
 from .catalog import (
     INSTALLER_STATE_FILENAME as INSTALLER_STATE_FILENAME,
@@ -101,25 +102,25 @@ WHISPERX_TORCHAUDIO_VERSION = '2.8.0'
 WHISPERX_TORCH_INDEX_URL = 'https://download.pytorch.org/whl/cu128'
 
 XTTS_API_REPO_URL = COMPONENTS['xtts'].repo_url
-XTTS_API_REPO_DIRNAME = COMPONENTS['xtts'].repo_dirname
+XTTS_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['xtts'])
 VOXCPM_API_REPO_URL = COMPONENTS['voxcpm'].repo_url
-VOXCPM_API_REPO_DIRNAME = COMPONENTS['voxcpm'].repo_dirname
+VOXCPM_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['voxcpm'])
 FISHS2_API_REPO_URL = COMPONENTS['fishs2'].repo_url
-FISHS2_API_REPO_DIRNAME = COMPONENTS['fishs2'].repo_dirname
+FISHS2_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['fishs2'])
 VOXTRAL_API_REPO_URL = COMPONENTS['voxtral'].repo_url
-VOXTRAL_API_REPO_DIRNAME = COMPONENTS['voxtral'].repo_dirname
+VOXTRAL_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['voxtral'])
 KOKORO_API_REPO_URL = COMPONENTS['kokoro'].repo_url
-KOKORO_API_REPO_DIRNAME = COMPONENTS['kokoro'].repo_dirname
+KOKORO_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['kokoro'])
 CHATTERBOX_API_REPO_URL = COMPONENTS['chatterbox'].repo_url
-CHATTERBOX_API_REPO_DIRNAME = COMPONENTS['chatterbox'].repo_dirname
+CHATTERBOX_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['chatterbox'])
 KOBOLD_QWEN_API_REPO_URL = COMPONENTS['kobold_qwen'].repo_url
-KOBOLD_QWEN_API_REPO_DIRNAME = COMPONENTS['kobold_qwen'].repo_dirname
+KOBOLD_QWEN_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['kobold_qwen'])
 MAGPIE_API_REPO_URL = COMPONENTS['magpie'].repo_url
-MAGPIE_API_REPO_DIRNAME = COMPONENTS['magpie'].repo_dirname
+MAGPIE_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['magpie'])
 SILERO_API_REPO_URL = COMPONENTS['silero'].repo_url
-SILERO_API_REPO_DIRNAME = COMPONENTS['silero'].repo_dirname
+SILERO_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['silero'])
 RVC_API_REPO_URL = COMPONENTS['rvc'].repo_url
-RVC_API_REPO_DIRNAME = COMPONENTS['rvc'].repo_dirname
+RVC_API_REPO_DIRNAME = require_repo_dirname(COMPONENTS['rvc'])
 PANDRATOR_REPO_URL = 'https://github.com/lukaszliniewicz/Pandrator.git'
 # Release installers always clone the current default application branch.
 PANDRATOR_REPO_BRANCH = os.environ.get('PANDRATOR_REPO_BRANCH', 'main').strip() or 'main'

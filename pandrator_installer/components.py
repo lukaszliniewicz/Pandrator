@@ -15,6 +15,7 @@ import time
 import traceback
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psutil
 import requests
@@ -62,8 +63,24 @@ from .process_identity import (
 from .process_paths import uses_installation_executable
 from .runtime_metadata import remove_stale_runtime_metadata
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
-class ComponentOperationsMixin:
+    from .command_protocols import CommandProvider as _CommandProvider
+    from .command_protocols import PathArgument
+    from .reporting import Reporter
+else:
+    _CommandProvider = object
+
+
+class ComponentOperationsMixin(_CommandProvider):
+    if TYPE_CHECKING:
+        reporter: Reporter
+        initial_working_dir: str
+        get_pixi_subprocess_env: Callable[[PathArgument], dict[str, str]]
+        notify_error: Callable[[str, str], None]
+        is_port_in_use: Callable[[int], bool]
+
     @staticmethod
     def _protected_installer_process_ids():
         """Return PIDs that must stay alive while the installer performs work.
@@ -201,6 +218,7 @@ class ComponentOperationsMixin:
                     installation_root, executable, process.info.get('cmdline')
                 ):
                     continue
+                creation_time = process.info.get('create_time')
                 running_processes.append(
                     {
                         'pid': process.pid,
@@ -212,8 +230,8 @@ class ComponentOperationsMixin:
                         ),
                         'exe': executable,
                         'create_time': float(
-                            process.info.get('create_time')
-                            if process.info.get('create_time') is not None
+                            creation_time
+                            if creation_time is not None
                             else process.create_time()
                         ),
                     }
@@ -759,6 +777,8 @@ class ComponentOperationsMixin:
                 kokoro_repo_path,
                 use_gpu=runtime_use_gpu,
             )
+            if process is None:
+                raise RuntimeError("Kokoro bootstrap did not start an owned server process.")
             if not self.check_kokoro_server_online(
                 'http://127.0.0.1:8880/health',
                 max_attempts=180,
@@ -1705,8 +1725,8 @@ class ComponentOperationsMixin:
             logging.warning(f"git pull failed, falling back to Dulwich: {str(git_error)}")
             try:
                 porcelain = self.get_dulwich_porcelain()
-                repo = porcelain.open_repo(repo_path)
-                porcelain.pull(repo)
+                with porcelain.open_repo(repo_path) as repo:
+                    porcelain.pull(repo)
                 logging.info("Repository updated successfully with Dulwich.")
             except Exception as dulwich_error:
                 if self.is_certificate_error(dulwich_error):
@@ -1717,8 +1737,8 @@ class ComponentOperationsMixin:
                     self.configure_tls_certificates(force=True)
                     try:
                         porcelain = self.get_dulwich_porcelain()
-                        repo = porcelain.open_repo(repo_path)
-                        porcelain.pull(repo)
+                        with porcelain.open_repo(repo_path) as repo:
+                            porcelain.pull(repo)
                         logging.info("Repository updated successfully with Dulwich after certificate refresh.")
                         return
                     except Exception as retry_error:

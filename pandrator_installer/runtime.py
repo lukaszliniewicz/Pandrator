@@ -16,7 +16,7 @@ try:
 except ImportError:
     PackagingSpecifierSet = None
 
-from .catalog import BACKEND_COMPONENT_KEYS, COMPONENTS
+from .catalog import BACKEND_COMPONENT_KEYS, COMPONENTS, require_process_attr
 from .constants import (
     CHATTERBOX_API_REPO_DIRNAME,
     FISHS2_API_REPO_DIRNAME,
@@ -37,9 +37,21 @@ from .crispasr import detect_compute_backends
 from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .command_protocols import PathArgument
+    from .reporting import Reporter
+
 
 class RuntimeMixin:
     if TYPE_CHECKING:
+        reporter: Reporter
+        initial_working_dir: str
+        backend_stop_targets: list[str]
+        get_pixi_subprocess_env: Callable[[PathArgument], dict[str, str]]
+        notify_error: Callable[[str, str], None]
+
         # Supplied by ComponentOperationsMixin in the installer host.
         def terminate_process_tree(self, process: subprocess.Popen | None, timeout: int = 10) -> None:
             ...
@@ -49,7 +61,7 @@ class RuntimeMixin:
             (
                 key,
                 COMPONENTS[key].label,
-                COMPONENTS[key].process_attr,
+                require_process_attr(COMPONENTS[key]),
                 getattr(self, f"shutdown_{key}"),
             )
             for key in BACKEND_COMPONENT_KEYS
@@ -75,7 +87,7 @@ class RuntimeMixin:
             try:
                 return_code = process.poll()
             except Exception:
-                return_code = 1
+                return_code = None
 
             if return_code is None:
                 running.append((backend_key, backend_label, process))
@@ -135,7 +147,7 @@ class RuntimeMixin:
         try:
             return_code = process.poll()
         except Exception:
-            return_code = 1
+            return_code = None
 
         if return_code is None:
             return process
@@ -793,7 +805,7 @@ class RuntimeMixin:
 
 
 
-    def is_port_in_use(self, port):
+    def is_port_in_use(self, port: int) -> bool:
         import socket
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(('localhost', port)) == 0

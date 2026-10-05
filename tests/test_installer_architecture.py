@@ -8,7 +8,10 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
+
+from dulwich.repo import Repo
 
 from pandrator_installer import platforms
 from pandrator_installer.catalog import (
@@ -55,6 +58,73 @@ from pandrator_manager.components.crispasr import (
 
 
 class InstallerArchitectureTests(unittest.TestCase):
+    def test_dulwich_pull_closes_native_repository_on_success_failure_and_retry(self):
+        for outcome in ("success", "failure", "tls_retry", "tls_retry_failure"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                repo_path = Path(directory) / "repository"
+                repo_path.mkdir()
+                with Repo.init(repo_path):
+                    pass
+                installer = HeadlessInstaller(working_dir=directory)
+                opened = []
+
+                def open_repo(path, captures=opened):
+                    repo = Repo(path)
+                    repo.close = Mock(wraps=repo.close)
+                    captures.append(repo)
+                    return repo
+
+                effects = {
+                    "success": [None],
+                    "failure": [RuntimeError("pull failed")],
+                    "tls_retry": [RuntimeError("certificate failed"), None],
+                    "tls_retry_failure": [RuntimeError("certificate failed"), RuntimeError("retry failed")],
+                }
+                porcelain = SimpleNamespace(open_repo=open_repo, pull=Mock(side_effect=effects[outcome]))
+                try:
+                    with (
+                        patch.object(installer, "configure_tls_certificates"),
+                        patch.object(installer, "run_git_command", side_effect=RuntimeError("git unavailable")),
+                        patch.object(installer, "get_dulwich_porcelain", return_value=porcelain),
+                        patch.object(installer, "is_certificate_error", return_value=outcome.startswith("tls_")),
+                    ):
+                        if outcome in {"failure", "tls_retry_failure"}:
+                            with self.assertRaises(RuntimeError):
+                                installer.pull_repo(str(repo_path))
+                        else:
+                            installer.pull_repo(str(repo_path))
+                    self.assertEqual(2 if outcome.startswith("tls_") else 1, len(opened))
+                    self.assertTrue(all(repo.close.call_count == 1 for repo in opened))
+                finally:
+                    for repo in opened:
+                        if not repo.close.called:
+                            repo.close()
+
+    def test_kokoro_bootstrap_rejects_port_race_without_owned_process(self):
+        for healthy in (False, True):
+            with self.subTest(unowned_health=healthy), tempfile.TemporaryDirectory() as directory:
+                installer = HeadlessInstaller(working_dir=directory)
+                repo = Path(directory) / "kokoro"
+                entry = repo / "api" / "src" / "main.py"
+                entry.parent.mkdir(parents=True)
+                entry.write_text("# disposable bootstrap fixture", encoding="utf-8")
+                with (
+                    patch.object(installer, "install_espeak_ng_direct", return_value=True),
+                    patch.object(installer, "run_pixi_in_env"),
+                    patch.object(installer, "find_bundled_pyopenjtalk_wheel", return_value=("", "")),
+                    patch.object(installer, "install_pytorch_for_kokoro"),
+                    patch.object(installer, "get_bundled_wheels_directories", return_value=[]),
+                    patch.object(installer, "is_port_in_use", side_effect=[False, True]),
+                    patch.object(installer, "notify_error"),
+                    patch.object(installer, "check_kokoro_server_online", return_value=healthy) as health,
+                    patch.object(installer, "terminate_process_tree") as terminate,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "owned server process"):
+                        installer.install_kokoro_api_server(directory, str(repo))
+                    health.assert_not_called()
+                    terminate.assert_not_called()
+                self.assertIsNone(installer.kokoro_process)
+
     def test_runtime_rediscovers_all_supervisor_managed_backends(self):
         with tempfile.TemporaryDirectory() as directory:
             installer = HeadlessInstaller(working_dir=directory)
@@ -559,11 +629,17 @@ class InstallerArchitectureTests(unittest.TestCase):
         )
         self.assertIn("ready", stdout)
         self.assertIn("warning", stderr)
-        with self.assertRaises(subprocess.TimeoutExpired):
+        stdout, stderr = installer.run_command(
+            [sys.executable, "-c", "print('unlimited')"], timeout=None
+        )
+        self.assertIn("unlimited", stdout)
+        self.assertEqual("", stderr)
+        with self.assertRaises(subprocess.TimeoutExpired) as expired:
             installer.run_command(
                 [sys.executable, "-c", "import time; time.sleep(60)"],
                 timeout=0.2,
             )
+        self.assertEqual(0.2, expired.exception.timeout)
 
     def test_calibre_msi_timeout_terminates_process_tree(self):
         with tempfile.TemporaryDirectory() as directory:

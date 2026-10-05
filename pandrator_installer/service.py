@@ -13,7 +13,7 @@ from .lifecycle_guard import LifecycleBusy, installation_lifecycle_guard
 from .models import DEFAULT_QWEN_MODEL_SIZE, InstallSelection
 from .operations import OperationsMixin
 from .pixi import PixiEnvironmentMixin
-from .reporting import HeadlessReporter
+from .reporting import HeadlessReporter, Reporter
 from .runtime import RuntimeMixin
 from .runtime_metadata import uninstall_runtime_may_be_active
 from .storage import StorageMixin
@@ -34,12 +34,12 @@ class HeadlessInstaller(
         self.headless = True
         self.initial_working_dir = os.path.abspath(working_dir or os.getcwd())
         self._installation_depth: int = 0
-        self.reporter = HeadlessReporter()
+        self.reporter: Reporter = HeadlessReporter()
         self.worker = None
         self.log_filename = None
         self.tls_configured = False
         self.ca_bundle_path = None
-        self.backend_stop_targets = []
+        self.backend_stop_targets: list[str] = []
 
         for process_attr in (
             "xtts_process",
@@ -107,7 +107,7 @@ class HeadlessInstaller(
     def update_status(self, text):
         self.reporter.status(text)
 
-    def notify_error(self, title, message):
+    def notify_error(self, title: str, message: str) -> None:
         logging.error("%s: %s", title, message)
 
     def notify_warning(self, title, message):

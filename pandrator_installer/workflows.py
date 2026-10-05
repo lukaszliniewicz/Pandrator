@@ -4,6 +4,7 @@ import concurrent.futures
 import logging
 import os
 import traceback
+from typing import TYPE_CHECKING
 
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
@@ -61,8 +62,18 @@ from .models import (
 from .platforms import is_windows
 from .reporting import HeadlessReporter, NullReporter
 
+if TYPE_CHECKING:
+    from .command_protocols import CommandProvider as _CommandProvider
+    from .reporting import Reporter
+else:
+    _CommandProvider = object
 
-class WorkflowMixin:
+
+class WorkflowMixin(_CommandProvider):
+    if TYPE_CHECKING:
+        reporter: Reporter
+        initial_working_dir: str
+
     @staticmethod
     def resolve_fishs2_runtime_options(*, gpu_support, backend="auto", model_quant="q6_k"):
         """Normalize FishS2 install/update options from one variant decision."""
