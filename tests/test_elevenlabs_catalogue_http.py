@@ -9,6 +9,7 @@ import pytest
 import requests
 
 from pandrator.logic import tts_handler
+from pandrator.web.tts_providers import ElevenLabsAdapter, TtsProviderError
 
 BASE = "http://provider.invalid"
 INITIAL_PARAMS: dict[str, str | int] = {"show_legacy": "true", "page_size": 100}
@@ -277,3 +278,194 @@ def test_unexpected_catalogue_error_is_not_wrapped(monkeypatch: pytest.MonkeyPat
         catalogue(kind, strict=True)
     assert raised.value is error
     script.assert_consumed()
+
+
+INCOMPLETE_MESSAGE = "ElevenLabs voice pagination did not finish; the catalogue may be incomplete."
+
+
+def assert_incomplete_catalogue(
+    strict: bool,
+    expected: list[dict[str, object]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    if strict:
+        with pytest.raises(tts_handler.ElevenLabsCatalogError) as raised:
+            catalogue("voices", strict=True)
+        assert raised.value.operation == "voices"
+        assert raised.value.status_code == 0
+        assert raised.value.incomplete is True
+        assert str(raised.value) == INCOMPLETE_MESSAGE
+        assert raised.value.__cause__ is None
+    else:
+        assert catalogue("voices", strict=False) == expected
+        assert "Incomplete ElevenLabs voice catalogue" in caplog.text
+
+
+@pytest.mark.parametrize("strict", (False, True))
+def test_explicit_final_page_ignores_stale_next_cursor(
+    monkeypatch: pytest.MonkeyPatch, strict: bool
+):
+    first = {"voice_id": "voice-1"}
+    script = GetScript(
+        "voices",
+        [
+            Step(
+                response({"voices": [first], "has_more": False, "next_page_token": "stale"}),
+                INITIAL_PARAMS.copy(),
+            )
+        ],
+    )
+    script.install(monkeypatch)
+    assert catalogue("voices", strict=strict) == [first]
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("strict", (False, True))
+@pytest.mark.parametrize("token", (None, "  "))
+def test_more_pages_without_usable_cursor_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    strict: bool,
+    token: str | None,
+):
+    first: dict[str, object] = {"voice_id": "voice-1"}
+    script = GetScript(
+        "voices",
+        [
+            Step(
+                response({"voices": [first], "has_more": True, "next_page_token": token}),
+                INITIAL_PARAMS.copy(),
+            )
+        ],
+    )
+    script.install(monkeypatch)
+    assert_incomplete_catalogue(strict, [first], caplog)
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("strict", (False, True))
+@pytest.mark.parametrize("tokens", (("repeat", "repeat"), ("a", "b", "a")))
+def test_repeated_cursor_stops_before_requesting_the_same_page_again(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    strict: bool,
+    tokens: tuple[str, ...],
+):
+    rows: list[dict[str, object]] = []
+    steps: list[Step] = []
+    params = INITIAL_PARAMS.copy()
+    for index, token in enumerate(tokens):
+        row: dict[str, object] = {"voice_id": f"voice-{index}"}
+        rows.append(row)
+        steps.append(
+            Step(
+                response({"voices": [row], "has_more": True, "next_page_token": token}),
+                params.copy(),
+            )
+        )
+        params["next_page_token"] = token
+    script = GetScript("voices", steps)
+    script.install(monkeypatch)
+    assert_incomplete_catalogue(strict, rows, caplog)
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("strict", (False, True))
+@pytest.mark.parametrize("complete", (False, True))
+def test_twentieth_page_distinguishes_complete_results_from_safety_limit(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, strict: bool, complete: bool
+):
+    rows: list[dict[str, object]] = []
+    steps: list[Step] = []
+    params = INITIAL_PARAMS.copy()
+    for index in range(20):
+        row: dict[str, object] = {"voice_id": f"voice-{index}"}
+        rows.append(row)
+        payload = {
+            "voices": [row],
+            "has_more": not (complete and index == 19),
+            "next_page_token": f"page-{index + 1}",
+        }
+        steps.append(Step(response(payload), params.copy()))
+        params["next_page_token"] = f"page-{index + 1}"
+    script = GetScript("voices", steps)
+    script.install(monkeypatch)
+    if complete:
+        assert catalogue("voices", strict=strict) == rows
+        assert "Incomplete ElevenLabs voice catalogue" not in caplog.text
+    else:
+        assert_incomplete_catalogue(strict, rows, caplog)
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("strict", (False, True))
+@pytest.mark.parametrize("legacy_envelope", (False, True))
+def test_empty_page_with_new_cursor_keeps_paging_and_missing_has_more_stays_compatible(
+    monkeypatch: pytest.MonkeyPatch, strict: bool, legacy_envelope: bool
+):
+    row = {"voice_id": "voice-1"}
+    first: dict[str, object] = {"voices": [], "next_page_token": "second"}
+    last: dict[str, object] = {"voices": [row]}
+    if not legacy_envelope:
+        first["has_more"] = True
+        last["has_more"] = False
+    script = GetScript(
+        "voices",
+        [
+            Step(response(first), INITIAL_PARAMS.copy()),
+            Step(response(last), {**INITIAL_PARAMS, "next_page_token": "second"}),
+        ],
+    )
+    script.install(monkeypatch)
+    assert catalogue("voices", strict=strict) == [row]
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("repeat", (False, True))
+def test_adapter_rejects_incomplete_catalogue_instead_of_enriching_partial_rows(
+    monkeypatch: pytest.MonkeyPatch, repeat: bool
+):
+    models = GetScript("models", [Step(response([{"model_id": "model"}]))])
+    steps = [
+        Step(
+            response(
+                {
+                    "voices": [{"voice_id": "first"}],
+                    "has_more": True,
+                    "next_page_token": "next" if repeat else None,
+                }
+            ),
+            INITIAL_PARAMS.copy(),
+        )
+    ]
+    if repeat:
+        steps.append(
+            Step(
+                response(
+                    {
+                        "voices": [{"voice_id": "second"}],
+                        "has_more": True,
+                        "next_page_token": "next",
+                    }
+                ),
+                {**INITIAL_PARAMS, "next_page_token": "next"},
+            )
+        )
+    voices = GetScript("voices", steps)
+
+    def get(url: str, **options: object) -> requests.Response:
+        return (models if url == models.url else voices).get(url, **options)
+
+    monkeypatch.setattr(tts_handler.requests, "get", get)
+    with pytest.raises(TtsProviderError) as raised:
+        ElevenLabsAdapter("elevenlabs").enrich_catalog(
+            {"id": "elevenlabs", "api_base": BASE}, api_key="fixture-key"
+        )
+    assert raised.value.retryable is True
+    assert str(raised.value) == INCOMPLETE_MESSAGE
+    cause = raised.value.__cause__
+    assert isinstance(cause, tts_handler.ElevenLabsCatalogError)
+    assert cause.incomplete is True
+    assert cause.status_code == 0
+    models.assert_consumed()
+    voices.assert_consumed()

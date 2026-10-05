@@ -572,10 +572,13 @@ ELEVENLABS_MODELS_WITHOUT_LANGUAGE_CODE = frozenset({"eleven_multilingual_v2"})
 class ElevenLabsCatalogError(RuntimeError):
     """Safe, status-aware failure from an ElevenLabs catalogue endpoint."""
 
-    def __init__(self, operation: str, status_code: int = 0):
+    def __init__(self, operation: str, status_code: int = 0, *, incomplete: bool = False):
         self.operation = operation
         self.status_code = int(status_code or 0)
-        if self.status_code in {401, 403}:
+        self.incomplete = incomplete
+        if incomplete:
+            message = "ElevenLabs voice pagination did not finish; the catalogue may be incomplete."
+        elif self.status_code in {401, 403}:
             message = f"ElevenLabs API key was rejected while listing {operation}."
         elif self.status_code == 429:
             message = f"ElevenLabs rate limit reached while listing {operation}."
@@ -3418,6 +3421,8 @@ def get_elevenlabs_voice_catalog(
     params: dict[str, str | int] = {"show_legacy": "true", "page_size": 100}
     voices: list[dict[str, object]] = []
     seen: set[str] = set()
+    seen_page_tokens: set[str] = set()
+    incomplete = False
     try:
         for _page in range(20):
             response = requests.get(
@@ -3445,16 +3450,29 @@ def get_elevenlabs_voice_catalog(
                     continue
                 seen.add(voice_id)
                 voices.append(dict(item))
+            if payload.get("has_more") is False:
+                break
             next_page = str(payload.get("next_page_token") or "").strip()
             if not next_page:
+                incomplete = payload.get("has_more") is True
                 break
+            if next_page in seen_page_tokens:
+                incomplete = True
+                break
+            seen_page_tokens.add(next_page)
             params["next_page_token"] = next_page
+        else:
+            incomplete = True
     except (requests.exceptions.RequestException, ValueError) as error:
         if strict:
             raise ElevenLabsCatalogError(
                 "voices", _elevenlabs_catalog_status(error)
             ) from error
         logging.warning("Could not list ElevenLabs voices: %s", error)
+    if incomplete:
+        if strict:
+            raise ElevenLabsCatalogError("voices", incomplete=True)
+        logging.warning("Incomplete ElevenLabs voice catalogue: pagination did not finish.")
     return voices
 
 
