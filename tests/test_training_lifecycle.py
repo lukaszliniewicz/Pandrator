@@ -122,6 +122,21 @@ class TrainingLifecycleTests(unittest.TestCase):
             training_id = training.id
         return training_id
 
+    def test_unsafe_names_refuse_start_and_retry_without_any_writes(self):
+        for name in ("../escape", "/absolute", "__pycache__/voice", " narrator ", "CON", "a\\b"):
+            with self.subTest(name=name):
+                before = self.snapshot()
+                self.assertEqual(
+                    422, self.post(payload={**self.payload, "model_name": name}).status_code
+                )
+                self.assertEqual(before, self.snapshot())
+        training_id = self.seed(status="failed", job_status="failed")
+        with self.database.session() as session:
+            session.get(TrainingRun, training_id).model_name = "../legacy-unsafe"
+        before = self.snapshot()
+        self.assertEqual(422, self.post(f"/{training_id}/retry").status_code)
+        self.assertEqual(before, self.snapshot())
+
     def assert_admission_rollback(self, suffix=""):
         before = self.snapshot()
         with mock.patch(

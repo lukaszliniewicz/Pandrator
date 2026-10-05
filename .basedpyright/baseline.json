@@ -772,16 +772,6 @@
                 }
             }
         ],
-        "./pandrator/logic/xtts_trainer_handler.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 73,
-                    "endColumn": 78,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/api_routes.py": [
             {
                 "code": "reportOptionalMemberAccess",
@@ -988,24 +978,6 @@
                 "range": {
                     "startColumn": 21,
                     "endColumn": 52,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/cli.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 29,
                     "lineCount": 1
                 }
             }

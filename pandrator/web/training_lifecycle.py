@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from pandrator.logic.xtts_model_paths import validate_training_model_name
 from pandrator.runtime import DataPaths
 
 from .credentials import contains_inline_secret, redact_inline_secrets
@@ -87,6 +88,7 @@ class TrainingService:
         return training, job
 
     def start(self, payload: TrainingCreateRequest) -> tuple[TrainingRun, Job]:
+        validate_training_model_name(payload.model_name)
         with self.database.immediate_session() as session:
             self._validate_inputs(
                 session,
@@ -120,6 +122,7 @@ class TrainingService:
             previous.updated_at = state.updated_at
             if previous.status not in TRAINING_RETRYABLE_STATUSES:
                 raise TrainingActive()
+            validate_training_model_name(previous.model_name)
             settings = deepcopy(previous.settings_json or {})
             self._validate_inputs(
                 session,

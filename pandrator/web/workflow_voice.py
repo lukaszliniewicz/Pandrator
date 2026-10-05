@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import subprocess
 import threading
@@ -22,7 +23,8 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService, sha256_file
 from .credentials import hydrate_stt_settings, hydrate_tts_settings, redact_inline_secrets
 from .database import Database
-from .models import AppSetting, Artifact, TrainingRun, Voice, VoiceSample, utcnow
+from .models import AppSetting, Artifact, Voice, VoiceSample, utcnow
+from .training_publication import publish_training_bundle, transition_training
 from .voice_library import (
     mark_provider_registrations_stale,
     remove_managed_files,
@@ -925,32 +927,8 @@ def train_xtts(
 ) -> dict[str, Any]:
     from pandrator.logic import xtts_trainer_handler
 
-    training_id = str(payload.get("training_id") or "")
-    source_artifact, source_path = context._resolve_input(
-        str(payload.get("source_artifact_id") or "")
-    )
-    source_text_path = ""
-    source_text_id = str(payload.get("source_text_artifact_id") or "")
-    if source_text_id:
-        _text_artifact, text_path = context._resolve_input(source_text_id)
-        source_text_path = str(text_path)
-    settings = dict(payload.get("settings") or {})
-    model_name = str(
-        payload.get("model_name") or settings.get("model_name") or ""
-    ).strip()
-    if not model_name:
-        raise ValueError("An XTTS model name is required.")
-    with context.database.session() as session:
-        training = session.get(TrainingRun, training_id)
-        if training is None:
-            raise ValueError("Training record not found.")
-        training.status = "running"
-        training.updated_at = utcnow()
-    progress(0.02, "Validating XTTS trainer")
-    try:
-        total_epochs = max(1, int(settings.get("epochs") or 6))
-    except (TypeError, ValueError):
-        total_epochs = 6
+    publication_result: dict[str, Any] | None = None
+    total_epochs = 6
     last_training_fraction = 0.0
     zero_based_epochs: bool | None = None
 
@@ -1013,7 +991,49 @@ def train_xtts(
             value = 0.1
         progress(value, detail)
 
+    def publish(staging: Path, target: Path) -> None:
+        nonlocal publication_result
+        publication_result = publish_training_bundle(
+            context.database,
+            context.paths,
+            context.artifacts,
+            payload,
+            cancel_event,
+            staging,
+            target,
+        )
+
+    def completed_result() -> dict[str, Any]:
+        assert publication_result is not None
+        try:
+            progress(1.0, "XTTS model ready")
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "XTTS model was published, but final progress could not be reported.",
+                exc_info=True,
+            )
+        return publication_result
+
     try:
+        from pandrator.logic.xtts_model_paths import validate_training_model_name
+
+        transition_training(context.database, payload, cancel_event, status="running")
+        settings = dict(payload.get("settings") or {})
+        try:
+            total_epochs = max(1, int(settings.get("epochs") or 6))
+        except (TypeError, ValueError):
+            total_epochs = 6
+        model_name = str(payload.get("model_name") or "")
+        validate_training_model_name(model_name)
+        _source_artifact, source_path = context._resolve_input(
+            str(payload.get("source_artifact_id") or "")
+        )
+        source_text_path = ""
+        source_text_id = str(payload.get("source_text_artifact_id") or "")
+        if source_text_id:
+            _text_artifact, text_path = context._resolve_input(source_text_id)
+            source_text_path = str(text_path)
+        progress(0.02, "Validating XTTS trainer")
         success, message = xtts_trainer_handler.start_training(
             {
                 **settings,
@@ -1024,55 +1044,36 @@ def train_xtts(
             output_callback=training_output,
             status_callback=training_status,
             stop_event=cancel_event,
+            model_root=context.paths.models / "xtts",
+            publish_callback=publish,
         )
+        if publication_result is not None:
+            return completed_result()
         if cancel_event.is_set():
-            with context.database.session() as session:
-                training = session.get(TrainingRun, training_id)
-                if training is None:
-                    raise ValueError("Training record not found.")
-                training.status = "canceled"
+            transition_training(context.database, payload, cancel_event, status="canceled")
             return {}
         if not success:
             raise RuntimeError(message)
-        manifest_dir = context.paths.models / "xtts" / model_name
-        manifest_dir.mkdir(parents=True, exist_ok=True)
-        manifest = manifest_dir / "pandrator-training.json"
-        manifest.write_text(
-            json.dumps(
-                {"kind": "xtts", "model_name": model_name, "message": message},
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        artifact = context.artifacts.register(
-            manifest,
-            kind="model",
-            role="xtts_model",
-            parent_ids=[source_artifact.id]
-            + ([source_text_id] if source_text_id else []),
-            settings=settings,
-            metadata={"model_name": model_name},
-        )
-        with context.database.session() as session:
-            training = session.get(TrainingRun, training_id)
-            if training is None:
-                raise ValueError("Training record not found.")
-            training.status = "succeeded"
-            training.output_artifact_id = artifact.id
-            training.updated_at = utcnow()
-        progress(1.0, "XTTS model ready")
-        return {
-            "training_id": training_id,
-            "artifact_id": artifact.id,
-            "model_name": model_name,
-            "message": message,
-        }
+        raise RuntimeError("XTTS trainer succeeded without publishing a model bundle.")
     except Exception as error:
-        with context.database.session() as session:
-            training = session.get(TrainingRun, training_id)
-            if training is not None:
-                training.status = "failed"
-                training.error_message = str(error)
-                training.updated_at = utcnow()
+        if publication_result is not None:
+            logging.getLogger(__name__).warning(
+                "XTTS model was published before a subsequent trainer error.",
+                exc_info=True,
+            )
+            return completed_result()
+        try:
+            transition_training(
+                context.database,
+                payload,
+                cancel_event,
+                status=(
+                    "canceled"
+                    if cancel_event.is_set() or isinstance(error, InterruptedError)
+                    else "failed"
+                ),
+                error_message=str(error),
+            )
+        except (InterruptedError, ValueError):
+            pass
         raise

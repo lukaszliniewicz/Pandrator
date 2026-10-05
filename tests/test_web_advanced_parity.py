@@ -9,6 +9,7 @@ from unittest import mock
 
 from sqlalchemy import select
 
+from pandrator.logic import xtts_trainer_handler
 from pandrator.logic.source_cleaning.deterministic import (
     EpubExtractionError,
     EpubExtractionResult,
@@ -175,6 +176,19 @@ class AdvancedApiTests(unittest.TestCase):
 
 
 class TrainingHandlerTests(unittest.TestCase):
+    @staticmethod
+    def publish_fixture(paths, callback):
+        trainer_root = paths.root / "fixture-trainer"
+        bundle = trainer_root / "narrator" / "models" / "xtts-final"
+        bundle.mkdir(parents=True)
+        for name in xtts_trainer_handler.XTTS_MODEL_BUNDLE_FILENAMES:
+            (bundle / name).write_bytes(b"tiny model fixture")
+        return xtts_trainer_handler._copy_trained_model(
+            "narrator",
+            {"trainer_dir": str(trainer_root), "xtts_models_dir": str(paths.models / "xtts")},
+            publish_callback=callback,
+        )
+
     def test_training_requires_its_terminal_record(self):
         # Synthetic disappearance checks the required-row invariant; the
         # supported training API does not delete an active training record.
@@ -194,12 +208,12 @@ class TrainingHandlerTests(unittest.TestCase):
                     cancel = threading.Event()
 
                     def train(*_args, _database=database, _training_id=training_id,
-                              _canceled=canceled, _cancel=cancel, **_kwargs):
+                              _canceled=canceled, _cancel=cancel, _paths=paths, **_kwargs):
                         with _database.session() as session:
                             session.delete(session.get(TrainingRun, _training_id))
                         if _canceled:
                             _cancel.set()
-                        return True, "trained"
+                        return self.publish_fixture(_paths, _kwargs["publish_callback"])
 
                     with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", side_effect=train):
                         with self.assertRaisesRegex(ValueError, "Training record not found"):
@@ -266,7 +280,10 @@ class TrainingHandlerTests(unittest.TestCase):
                     session.add(training)
                     session.flush()
                     training_id = training.id
-                with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", return_value=(True, "trained")):
+                def train(*_args, **kwargs):
+                    return self.publish_fixture(paths, kwargs["publish_callback"])
+
+                with mock.patch("pandrator.logic.xtts_trainer_handler.start_training", side_effect=train):
                     result = WorkflowHandlers(database, paths).train_xtts(
                         {
                             "training_id": training_id,

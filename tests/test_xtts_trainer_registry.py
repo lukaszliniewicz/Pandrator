@@ -39,7 +39,8 @@ class XttsTrainerRegistryTests(unittest.TestCase):
             {"PANDRATOR_MODELS_DIR": str(self.root / "manager-models")},
             clear=False,
         ), mock.patch(
-            "pandrator.logic.xtts_trainer_handler.os.replace", wraps=os.replace
+            "pandrator.logic.xtts_trainer_handler.promote_training_model_directory",
+            wraps=xtts_trainer_handler.promote_training_model_directory
         ) as promote:
             copied, _message = xtts_trainer_handler._copy_trained_model(
                 "custom/narrator", self._paths()

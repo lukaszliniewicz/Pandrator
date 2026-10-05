@@ -3,10 +3,15 @@ import os
 import shutil
 import subprocess
 import time
-import unicodedata
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Callable
 from uuid import uuid4
+
+from pandrator.logic.xtts_model_paths import (
+    promote_training_model_directory,
+    resolve_training_model_target,
+    validate_training_model_name,
+)
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 WORKSPACE_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, '..'))
@@ -23,13 +28,6 @@ XTTS_MODEL_BUNDLE_FILENAMES = (
     'speakers_xtts.pth',
     'vocab.json',
 )
-_XTTS_MODEL_DISCOVERY_IGNORE_PARTS = {'.downloads', '__pycache__'}
-_XTTS_WINDOWS_RESERVED_PARTS = {
-    'con', 'prn', 'aux', 'nul',
-    *(f'com{number}' for number in range(1, 10)),
-    *(f'lpt{number}' for number in range(1, 10)),
-}
-_XTTS_INVALID_MODEL_ID_CHARS = set('<>:"|?*\\')
 
 
 def _deduplicate_paths(paths: list[str]) -> list[str]:
@@ -304,9 +302,23 @@ def start_training(
     output_callback: Callable[[str], None] | None = None,
     status_callback: Callable[[str], None] | None = None,
     stop_event=None,
+    *,
+    model_root: Path | None = None,
+    publish_callback: Callable[[Path, Path], None] | None = None,
 ) -> tuple[bool, str]:
     """Runs XTTS training and returns `(success, message)`."""
-    model_name = str(settings.get("model_name", "")).strip()
+    publication_error = False
+
+    def publish(staging: Path, target: Path) -> None:
+        nonlocal publication_error
+        assert publish_callback is not None
+        try:
+            publish_callback(staging, target)
+        except BaseException:
+            publication_error = True
+            raise
+
+    model_name = str(settings.get("model_name", ""))
     source_audio_path = str(settings.get("source_audio_path", "")).strip()
     source_text_path = str(settings.get('source_text_path', '')).strip()
 
@@ -325,6 +337,22 @@ def start_training(
         logging.error(message)
         return False, message
 
+    try:
+        validate_training_model_name(model_name)
+    except ValueError as error:
+        return False, str(error)
+    if stop_event is not None and stop_event.is_set():
+        return False, "XTTS training was canceled."
+    paths = dict(get_training_paths())
+    if model_root is not None:
+        paths['xtts_models_dir'] = str(model_root)
+    try:
+        _root, target = resolve_training_model_target(model_name, paths['xtts_models_dir'])
+        if target.exists() or target.is_symlink():
+            return False, f"Trained model '{model_name}' already exists; existing bundles are never overwritten."
+    except (ValueError, OSError) as error:
+        return False, str(error)
+
     sample_method = _normalize_sample_method(settings.get('sample_method', 'mixed'))
 
     chapter_per_audio = 1
@@ -337,7 +365,6 @@ def start_training(
     if not setup_ok:
         return False, setup_message
 
-    paths = get_training_paths()
     _emit_status(status_callback, "Building XTTS training command...")
 
     command = [
@@ -384,8 +411,9 @@ def start_training(
     if settings.get('voice_sample_only_sentence'):
         command.append('--voice-sample-only-sentence')
 
-    if settings.get('alignment_model', '').strip():
-        command.extend(['--align-model', settings.get('alignment_model').strip()])
+    alignment_model = str(settings.get('alignment_model') or '').strip()
+    if alignment_model:
+        command.extend(['--align-model', alignment_model])
 
     if source_text_path:
         command.extend(['--source-text', source_text_path])
@@ -414,6 +442,8 @@ def start_training(
 
     _emit_status(status_callback, "XTTS training in progress...")
     try:
+        if stop_event is not None and stop_event.is_set():
+            return False, "XTTS training was canceled."
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, universal_newlines=True, encoding='utf-8', errors='replace',
@@ -436,10 +466,14 @@ def start_training(
                     output_callback(cleaned)
         
         process.wait()
+        if stop_event is not None and stop_event.is_set():
+            return False, "XTTS training was canceled."
 
         if process.returncode == 0:
             _emit_status(status_callback, "Training finished. Copying model artifacts...")
-            copy_ok, copy_message = _copy_trained_model(model_name, paths)
+            copy_ok, copy_message = _copy_trained_model(
+                model_name, paths, publish_callback=publish if publish_callback is not None else None
+            )
             if copy_ok:
                 success_message = "Training completed and model copied successfully."
                 logging.info(success_message)
@@ -451,54 +485,26 @@ def start_training(
             logging.error(message)
             return False, message
 
+    except InterruptedError:
+        raise
     except Exception as e:
+        if publication_error:
+            raise
         message = f"An exception occurred during XTTS training: {e}"
         logging.error(message, exc_info=True)
         return False, message
 
 
 def _trained_model_target(model_name: str, models_dir: str) -> tuple[Path, Path]:
-    """Resolve a wrapper-compatible relative training identifier safely."""
-
-    candidate = str(model_name or '')
-    if not candidate or candidate != candidate.strip():
-        raise ValueError('Model name must be a non-empty relative identifier without surrounding spaces.')
-    if any(unicodedata.category(character).startswith('C') for character in candidate):
-        raise ValueError('Model name must not contain control characters.')
-    if '\\' in candidate or candidate.startswith('/') or PureWindowsPath(candidate).is_absolute():
-        raise ValueError('Model name must be a relative slash-separated path.')
-    parts = candidate.split('/')
-    if any(not part for part in parts):
-        raise ValueError('Model name must not contain empty path parts.')
-    for part in parts:
-        windows_basename = part.split('.', maxsplit=1)[0].casefold()
-        if (
-            part in {'.', '..'}
-            or part.startswith('.')
-            or part != part.rstrip('. ')
-            or part in _XTTS_MODEL_DISCOVERY_IGNORE_PARTS
-            or windows_basename in _XTTS_WINDOWS_RESERVED_PARTS
-            or any(character in _XTTS_INVALID_MODEL_ID_CHARS for character in part)
-        ):
-            raise ValueError('Model name contains a reserved, hidden, or unsafe path part.')
-
-    root = Path(models_dir).expanduser()
-    root.mkdir(parents=True, exist_ok=True)
-    root = root.resolve(strict=True)
-    target = root.joinpath(*parts)
-    try:
-        target.resolve(strict=False).relative_to(root)
-    except (OSError, RuntimeError, ValueError) as error:
-        raise ValueError('Model name must resolve inside the XTTS model root.') from error
-    current = root
-    for part in parts[:-1]:
-        current = current / part
-        if current.is_symlink():
-            raise ValueError('Model name must not pass through a symlink.')
-    return root, target
+    return resolve_training_model_target(model_name, models_dir)
 
 
-def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, str]:
+def _copy_trained_model(
+    model_name: str,
+    paths: dict[str, str],
+    *,
+    publish_callback: Callable[[Path, Path], None] | None = None,
+) -> tuple[bool, str]:
     """Atomically publish a trusted local training bundle to the XTTS registry.
 
     Manager provides the same stable root to the trainer and wrapper. Training
@@ -506,6 +512,7 @@ def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, s
     but it is staged beneath ``.downloads`` (ignored by the wrapper) and only
     the wrapper's exact four-file bundle is promoted into the visible registry.
     """
+    callback_started = False
     try:
         models_root, target_dir = _trained_model_target(
             model_name, paths['xtts_models_dir']
@@ -569,9 +576,16 @@ def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, s
             # avoids ever intentionally replacing an existing registry entry.
             if target_dir.exists() or target_dir.is_symlink():
                 return False, f"Trained model '{model_name}' already exists; existing bundles are never overwritten."
-            target_dir.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staging_dir, target_dir)
+            if publish_callback is not None:
+                callback_started = True
+                publish_callback(staging_dir, target_dir)
+            else:
+                promote_training_model_directory(staging_dir, target_dir)
+        except InterruptedError:
+            raise
         except OSError as error:
+            if callback_started:
+                raise
             message = f"Trained model '{model_name}' could not be published safely: {error}"
             logging.error(message)
             return False, message
@@ -582,7 +596,11 @@ def _copy_trained_model(model_name: str, paths: dict[str, str]) -> tuple[bool, s
         message = f"Trained model '{model_name}' published to {target_dir}"
         logging.info(message)
         return True, message
+    except InterruptedError:
+        raise
     except Exception as e:
+        if callback_started:
+            raise
         message = f"Error copying trained model: {e}"
         logging.error(message, exc_info=True)
         return False, message
