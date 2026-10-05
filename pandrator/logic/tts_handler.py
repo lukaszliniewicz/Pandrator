@@ -35,6 +35,7 @@ from . import elevenlabs_catalogue_http as _elevenlabs_catalogue_http
 from . import kobold_qwen_http as _kobold_qwen_http
 from . import native_speech_http as _native_speech_http
 from . import silero_catalogue_http as _silero_catalogue_http
+from . import voxcpm_speech_http as _voxcpm_speech_http
 from . import xtts_catalogue_http as _xtts_catalogue_http
 from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .audio_cpp_parameters import validate_audio_cpp_model_options
@@ -138,6 +139,9 @@ from .tts_voice_upload_http import (
 )
 from .tts_voice_upload_http import (
     _upload_speaker_voice_openai_compatible as _upload_speaker_voice_openai_compatible,
+)
+from .voxcpm_speech_http import (
+    _is_voxcpm_prompt_pairing_error as _is_voxcpm_prompt_pairing_error,
 )
 
 _litellm_speech = None
@@ -4196,74 +4200,26 @@ def _build_voxcpm_payload(text: str, tts_settings: dict) -> dict:
     return payload
 
 
-def _is_voxcpm_prompt_pairing_error(response: requests.Response) -> bool:
-    if response.status_code != 422:
-        return False
-
-    error_message = ""
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-
-    if isinstance(payload, dict):
-        error_payload = payload.get("error")
-        if isinstance(error_payload, dict):
-            error_message = str(error_payload.get("message") or "").strip()
-
-    if not error_message:
-        error_message = str(response.text or "").strip()
-
-    normalized = error_message.lower()
-    return (
-        "prompt_wav_path and prompt_text must both be provided or both be none"
-        in normalized
-    )
-
-
 def _request_voxcpm_audio(
     text: str, tts_settings: dict, voxcpm_base_url: str
 ) -> requests.Response:
     normalized_base_url = _normalize_base_url(voxcpm_base_url, VOXCPM_API_BASE_URL)
     api_key = _resolve_voxcpm_api_key(tts_settings)
     payload = _build_voxcpm_payload(text, tts_settings)
-    last_response = None
-
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            headers=_openai_auth_headers(api_key),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-
-        if (
-            _is_voxcpm_prompt_pairing_error(response)
-            and str(payload.get("mode") or "").strip().lower() != "hifi"
-        ):
-            hifi_payload = dict(payload)
-            hifi_payload["mode"] = "hifi"
-            logging.warning(
-                "Retrying VoxCPM request in hifi mode after prompt pairing error for voice '%s'.",
-                hifi_payload.get("voice", ""),
-            )
-            response = requests.post(
-                speech_url,
-                headers=_openai_auth_headers(api_key),
-                json=hifi_payload,
-                timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-            )
-
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No VoxCPM speech endpoint could be resolved for '{normalized_base_url}'."
+    return _voxcpm_speech_http.post_voxcpm_speech(
+        _openai_audio_speech_urls(normalized_base_url),
+        payload,
+        request_options=lambda current_payload: {
+            "headers": _openai_auth_headers(api_key),
+            "json": current_payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        prompt_pairing_error=lambda response: _is_voxcpm_prompt_pairing_error(response),
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        warn=lambda message, voice: logging.warning(message, voice),
+        no_endpoint_message=(
+            f"No VoxCPM speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
@@ -4299,26 +4255,17 @@ def _request_fishs2_audio(
     normalized_base_url = _normalize_base_url(fishs2_base_url, FISHS2_API_BASE_URL)
     api_key = _resolve_fishs2_api_key(tts_settings)
     payload = _build_fishs2_payload(text, tts_settings)
-    last_response = None
-
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            headers=_openai_auth_headers(api_key),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No FishS2 speech endpoint could be resolved for '{normalized_base_url}'."
+    return _native_speech_http.post_speech_candidates(
+        _openai_audio_speech_urls(normalized_base_url),
+        request_options=lambda: {
+            "headers": _openai_auth_headers(api_key),
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=(
+            f"No FishS2 speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
@@ -4367,24 +4314,17 @@ def _request_voxtral_audio(
     api_key = _resolve_voxtral_api_key(tts_settings)
     payload = _build_voxtral_payload(text, tts_settings)
 
-    last_response = None
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            headers=_openai_auth_headers(api_key),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No Voxtral speech endpoint could be resolved for '{normalized_base_url}'."
+    return _native_speech_http.post_speech_candidates(
+        _openai_audio_speech_urls(normalized_base_url),
+        request_options=lambda: {
+            "headers": _openai_auth_headers(api_key),
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=(
+            f"No Voxtral speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
