@@ -1964,31 +1964,33 @@ def build_server(runtime: McpRuntime):
         """Inspect the current target without requiring authentication."""
 
         return _resource_call(
-            target_status,
-            runtime,
-            TargetStatusInput(include_authenticated_identity=False),
+            lambda: target_status(
+                runtime,
+                TargetStatusInput(include_authenticated_identity=False),
+            ),
         )
 
     @server.resource("pandrator://live/status")
     def live_status_resource() -> str:
         """Inspect current application and Manager status."""
 
-        return _resource_call(system_status, runtime, SystemStatusInput())
+        return _resource_call(lambda: system_status(runtime, SystemStatusInput()))
 
     @server.resource("pandrator://live/capabilities")
     def live_capabilities_resource() -> str:
         """Inspect current capabilities."""
 
-        return _resource_call(capabilities, runtime, CapabilitiesInput())
+        return _resource_call(lambda: capabilities(runtime, CapabilitiesInput()))
 
     @server.resource("pandrator://sessions/{session_id}/workflow")
     def workflow_resource(session_id: str) -> str:
         """Inspect one live workflow snapshot."""
 
         return _resource_call(
-            get_workflow,
-            runtime,
-            GetWorkflowInput(session_id=session_id),
+            lambda: get_workflow(
+                runtime,
+                GetWorkflowInput(session_id=session_id),
+            ),
         )
 
     @server.resource("pandrator://work/{work_type}/{work_id}")
@@ -1998,12 +2000,16 @@ def build_server(runtime: McpRuntime):
     ) -> str:
         """Inspect one application or Manager work item."""
 
-        arguments = GetWorkInput(
-            work_type=work_type,
-            work_id=work_id,
-            include_events=False,
+        return _resource_call(
+            lambda: get_work(
+                runtime,
+                GetWorkInput(
+                    work_type=work_type,
+                    work_id=work_id,
+                    include_events=False,
+                ),
+            ),
         )
-        return _resource_call(get_work, runtime, arguments)
 
     @server.prompt(name="start_audiobook")
     def start_audiobook_prompt(goal: str) -> str:
