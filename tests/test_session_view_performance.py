@@ -16,10 +16,13 @@ import tempfile
 import unittest
 import uuid
 import wave
+from collections import Counter
 from datetime import datetime, timedelta
+from time import perf_counter
 from unittest.mock import patch
 
 from sqlalchemy import event, func, select
+from sqlalchemy.orm import Session as OrmSession
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
@@ -32,10 +35,12 @@ from pandrator.web.generation_review import revision_history
 from pandrator.web.models import (
     Artifact,
     AudioTake,
+    GenerationPlanRevision,
     GenerationRun,
     GenerationSegment,
     Job,
     OutputAssembly,
+    UsageEvent,
     utcnow,
 )
 
@@ -425,7 +430,14 @@ class SessionViewPerformanceTests(unittest.TestCase):
                             [],
                             [sql for sql in selects if "FROM jobs" in sql and "WHERE jobs.id =" in sql],
                         )
-                        self.assertLessEqual(len(selects), 9 if job_status == "queued" else 8)
+                        # Bounded reads add exactly one lightweight ancestry
+                        # query; payload queries stay batched independently of N.
+                        budget = 9 if job_status == "queued" else 8
+                        self.assertLessEqual(len(selects), budget + (read_name != "full"))
+                        self.assertEqual(
+                            0 if read_name == "full" else 1,
+                            sum("json_type(" in sql for sql in selects),
+                        )
                         self.assertEqual(1 if job_status == "queued" else 0, len(blockers))
 
     def test_assembly_job_batch_skips_missing_reused_and_older_jobs(self):
@@ -523,7 +535,8 @@ class SessionViewPerformanceTests(unittest.TestCase):
                         selects, blockers = self._history_selects(log)
                         self.assertEqual(run_ids[-1], latest["id"])
                         self.assertEqual(count, latest["sequence_number"])
-                        self.assertLessEqual(len(selects), 8)
+                        self.assertLessEqual(len(selects), 9)
+                        self.assertEqual(1, sum("json_type(" in sql for sql in selects))
                         self.assertLessEqual(len(blockers), 1)
 
     def test_database_only_history_reader_preserves_service_payloads(self):
@@ -537,6 +550,170 @@ class SessionViewPerformanceTests(unittest.TestCase):
         self.assertEqual(
             self.generation.latest_run(session_id), reader.latest_run(session_id)
         )
+
+    def test_limited_and_latest_history_hydrate_only_selected_ordinary_runs(self):
+        for count in (10, 200):
+            session_id, _ = self._run_history_fixture(
+                count, run_status="completed", job_status="succeeded"
+            )
+            with self.database.session() as session:
+                runs = session.scalars(select(GenerationRun).where(
+                    GenerationRun.session_id == session_id
+                )).all()
+                for run in runs:
+                    run.settings_snapshot_json = {
+                        "tts": {"voice": "history-voice"}, "unused": "x" * 4096,
+                    }
+                    session.add(UsageEvent(
+                        session_id=session_id, generation_run_id=run.id,
+                        provider_key="fixture", model_id="fixture-model", input_tokens=1,
+                    ))
+                    for offset in (0, 1):
+                        session.add(OutputAssembly(
+                            session_id=session_id, generation_run_id=run.id,
+                            job_id=run.job_id, status="completed",
+                            settings_json={"large_setting": "x" * 4096},
+                            created_at=utcnow() + timedelta(seconds=offset),
+                        ))
+            reader = GenerationHistoryReader(self.database)
+            all_items = reader.list_runs(session_id)
+            for latest in (False, True):
+                loaded = Counter()
+
+                def record_load(_session, instance, counts=loaded):
+                    counts[type(instance).__name__] += 1
+
+                event.listen(OrmSession, "loaded_as_persistent", record_load)
+                started = perf_counter()
+                try:
+                    actual = (
+                        reader.latest_run(session_id)
+                        if latest else reader.list_runs(session_id, limit=3)
+                    )
+                finally:
+                    elapsed = perf_counter() - started
+                    event.remove(OrmSession, "loaded_as_persistent", record_load)
+                self.assertEqual(all_items[0] if latest else all_items[:3], actual)
+                print({"history_size": count, "latest": latest, "loaded": dict(loaded), "seconds": elapsed})
+                self.assertEqual(1 if latest else 3, loaded["GenerationRun"])
+                self.assertEqual(1 if latest else 3, loaded["Job"])
+                self.assertEqual(2 if latest else 6, loaded["OutputAssembly"])
+                self.assertEqual(1 if latest else 3, loaded["UsageEvent"])
+
+    def test_bounded_history_preserves_repairs_grouped_usage_and_malformed_markers(self):
+        session_id, run_ids = self._run_history_fixture(
+            18, run_status="completed", job_status="succeeded"
+        )
+        other_id, foreign_runs = self._run_history_fixture(
+            1, run_status="completed", job_status="succeeded"
+        )
+        with self.database.session() as session:
+            runs = [session.get(GenerationRun, run_id) for run_id in run_ids]
+            base = session.get(GenerationPlanRevision, runs[0].plan_revision_id)
+            root = runs[0]
+            root.settings_snapshot_json = {
+                "tts": {"voice": "root-voice", "early_timing_repair": True}
+            }
+            for index, run in enumerate(runs[1:14], start=1):
+                revision = GenerationPlanRevision(
+                    plan_id=base.plan_id,
+                    revision_number=base.revision_number + index,
+                    content_hash=f"history-revision-{index}",
+                    settings_json={"large_unused_setting": "x" * 4096},
+                    operation_json={
+                        "reason": "passage_regroup" if index == 2 else "early_timing_repair",
+                        "source_generation_run_id": root.id,
+                        "repair_status": "not_applied" if index == 3 else "applied",
+                    },
+                )
+                session.add(revision)
+                session.flush()
+                run.plan_revision_id = revision.id
+                run.source_generation_run_id = root.id if index == 1 else runs[1].id
+                run.settings_snapshot_json = {
+                    "tts": {"voice": f"child-{index}"},
+                    "early_repair_parent_run_id": f"  {root.id}  ",
+                }
+                if index == 2:
+                    run.settings_snapshot_json = {"regroup_parent_run_id": root.id}
+                elif index == 4:
+                    run.status = "failed"
+                elif 5 <= index < 13:
+                    marker = [True, 1, 1.5, None, {"bad": root.id}, [root.id], "", foreign_runs[0]]
+                    run.settings_snapshot_json = {"early_repair_parent_run_id": marker[index - 5]}
+                if index == 13:
+                    run.settings_snapshot_json = {
+                        "early_repair_parent_run_id": root.id,
+                        "regroup_parent_run_id": runs[2].id,
+                    }
+            # A grouped replacement owns the root's output and usage; a newer
+            # unrelated plan must not enter its logical usage summary.
+            runs[14].output_generation_run_id = root.id
+            runs[14].status = "running"
+            runs[15].output_generation_run_id = root.id
+            runs[15].plan_revision_id = runs[1].plan_revision_id
+            runs[16].output_generation_run_id = root.id
+            runs[16].plan_revision_id = runs[5].plan_revision_id
+            runs[17].source_generation_run_id = foreign_runs[0]
+            for index, run in enumerate(runs):
+                session.add(UsageEvent(
+                    session_id=session_id, generation_run_id=run.id,
+                    provider_key="fixture", model_id="fixture-model",
+                    input_tokens=index + 1, output_tokens=2, cost_usd=0.01 * (index + 1),
+                ))
+
+        reader = GenerationHistoryReader(self.database)
+        for include_repairs in (True, False):
+            all_items = reader.list_runs(session_id, include_repairs=include_repairs)
+            for limit in (0, 1, 3, 13, 30):
+                with self.subTest(include_repairs=include_repairs, limit=limit):
+                    self.assertEqual(
+                        all_items[:limit],
+                        reader.list_runs(session_id, include_repairs=include_repairs, limit=limit),
+                    )
+        full = reader.list_runs(session_id)
+        root_payload = next(item for item in full if item["id"] == run_ids[0])
+        self.assertEqual(run_ids[2], root_payload["result_generation_run_id"])
+        self.assertEqual(4, root_payload["timing_repair"]["attempt_count"])
+        # The newest ordinary run follows the active grouped replacement in
+        # list order, but latest must still prefer the active replacement.
+        expected_latest = next(item for item in full if item["id"] == run_ids[14])
+        self.assertEqual(expected_latest, reader.latest_run(session_id))
+        self.assertEqual(foreign_runs[0], reader.latest_run(other_id)["id"])
+
+    def test_history_selection_and_hydration_share_a_read_snapshot(self):
+        session_id, run_ids = self._run_history_fixture(
+            2, run_status="completed", job_status="succeeded"
+        )
+        reader = GenerationHistoryReader(self.database)
+        expected = reader.list_runs(session_id)[0]
+        read_index = reader._history_index
+        writer_connections = []
+
+        def write_after_index(session, selected_session_id):
+            indexed = read_index(session, selected_session_id)
+            with self.database.immediate_session() as writer:
+                self.assertIsNot(session.connection().connection, writer.connection().connection)
+                writer_connections.append(True)
+                run = writer.get(GenerationRun, run_ids[-1])
+                run.status = "failed"
+                job = writer.get(Job, run.job_id)
+                job.status = "failed"
+                job.error_message = "committed during history read"
+            return indexed
+
+        with patch.object(reader, "_history_index", side_effect=write_after_index):
+            self.assertEqual(expected, reader.latest_run(session_id))
+        self.assertEqual([True], writer_connections)
+        current = reader.latest_run(session_id)
+        self.assertEqual("failed", current["status"])
+        self.assertEqual("committed during history read", current["error_message"])
+
+    def test_empty_history_remains_empty(self):
+        reader = GenerationHistoryReader(self.database)
+        session_id = self._create_session("Empty history")
+        self.assertEqual([], reader.list_runs(session_id, limit=3))
+        self.assertIsNone(reader.latest_run(session_id))
 
     def test_history_payload_reads_changes_in_caller_session(self):
         session_id, run_ids = self._run_history_fixture(

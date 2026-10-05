@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, TypedDict, overload
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from .database import Database
 from .generation_run_history import (
+    EARLY_REPAIR_MARKER_KEY,
     EARLY_REPAIR_REASON,
+    REGROUP_MARKER_KEY,
     REGROUP_REASON,
     GenerationRunHistory,
     build_generation_run_history,
@@ -25,6 +30,25 @@ from .models import (
     UsageEvent,
     utcnow,
 )
+
+
+@dataclass(frozen=True)
+class _RunHistoryIndex:
+    id: str
+    session_id: str
+    plan_revision_id: str
+    source_generation_run_id: str | None
+    output_generation_run_id: str | None
+    sequence_number: int
+    operation: str
+    status: str
+    created_at: datetime
+    settings_snapshot_json: dict[str, str | None]
+
+
+@dataclass(frozen=True)
+class _RevisionHistoryIndex:
+    operation_json: object
 
 
 class RepairHistoryContext(TypedDict):
@@ -212,22 +236,7 @@ class GenerationHistoryReader:
                 if event.generation_run_id is not None:
                     usage_by_run_id.setdefault(event.generation_run_id, []).append(event)
 
-        visible_runs = [
-            run
-            for run in runs
-            if run.output_generation_run_id is None
-            and not histories[run.id].is_repair_child(run.id)
-        ]
-        visible_runs.sort(
-            key=lambda item: (
-                int(item.sequence_number or 0),
-                str(item.created_at or ""),
-                str(item.id),
-            )
-        )
-        visible_sequences = {
-            run.id: index for index, run in enumerate(visible_runs, start=1)
-        }
+        visible_sequences = self._visible_run_sequences(runs, histories)
         return {
             "workflow_kind": getattr(session.get(SessionRecord, session_id), "workflow_kind", None),
             "runs": runs,
@@ -243,18 +252,196 @@ class GenerationHistoryReader:
         }
 
     @staticmethod
+    def _visible_run_sequences(
+        runs: Sequence[GenerationRun | _RunHistoryIndex],
+        histories: dict[str, GenerationRunHistory],
+    ) -> dict[str, int]:
+        visible_runs = [
+            run
+            for run in runs
+            if run.output_generation_run_id is None
+            and not histories[run.id].is_repair_child(run.id)
+        ]
+        visible_runs.sort(
+            key=lambda item: (
+                int(item.sequence_number or 0),
+                str(item.created_at or ""),
+                str(item.id),
+            )
+        )
+        return {
+            run.id: index for index, run in enumerate(visible_runs, start=1)
+        }
+
+    @staticmethod
+    def _history_index(
+        session: Session,
+        session_id: str,
+    ) -> tuple[list[_RunHistoryIndex], dict[str, _RevisionHistoryIndex]]:
+        """Read ancestry columns without hydrating historical payloads."""
+        early_marker = case(
+            (
+                func.json_type(
+                    GenerationRun.settings_snapshot_json,
+                    f"$.{EARLY_REPAIR_MARKER_KEY}",
+                ) == "text",
+                GenerationRun.settings_snapshot_json[EARLY_REPAIR_MARKER_KEY].as_string(),
+            ),
+            else_=None,
+        )
+        regroup_marker = case(
+            (
+                func.json_type(
+                    GenerationRun.settings_snapshot_json,
+                    f"$.{REGROUP_MARKER_KEY}",
+                ) == "text",
+                GenerationRun.settings_snapshot_json[REGROUP_MARKER_KEY].as_string(),
+            ),
+            else_=None,
+        )
+        rows = session.execute(
+            select(
+                GenerationRun.id,
+                GenerationRun.session_id,
+                GenerationRun.plan_revision_id,
+                GenerationRun.source_generation_run_id,
+                GenerationRun.output_generation_run_id,
+                GenerationRun.sequence_number,
+                GenerationRun.operation,
+                GenerationRun.status,
+                GenerationRun.created_at,
+                early_marker,
+                regroup_marker,
+                GenerationPlanRevision.operation_json,
+            )
+            .outerjoin(
+                GenerationPlanRevision,
+                GenerationPlanRevision.id == GenerationRun.plan_revision_id,
+            )
+            .where(GenerationRun.session_id == session_id)
+            .order_by(
+                GenerationRun.sequence_number.desc(),
+                GenerationRun.created_at.desc(),
+            )
+        )
+        runs: list[_RunHistoryIndex] = []
+        revisions: dict[str, _RevisionHistoryIndex] = {}
+        for row in rows:
+            run = _RunHistoryIndex(
+                id=row[0],
+                session_id=row[1],
+                plan_revision_id=row[2],
+                source_generation_run_id=row[3],
+                output_generation_run_id=row[4],
+                sequence_number=row[5],
+                operation=row[6],
+                status=row[7],
+                created_at=row[8],
+                settings_snapshot_json={
+                    EARLY_REPAIR_MARKER_KEY: row[9],
+                    REGROUP_MARKER_KEY: row[10],
+                },
+            )
+            operation: object = row[11]
+            runs.append(run)
+            revisions[run.plan_revision_id] = _RevisionHistoryIndex(operation)
+        return runs, revisions
+
+    def _selected_run_context(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        include_repairs: bool = True,
+        limit: int | None = None,
+        latest: bool = False,
+    ) -> tuple[RunHistoryContext | None, list[GenerationRun]]:
+        index_runs, revisions = self._history_index(session, session_id)
+        histories = build_generation_run_history(index_runs, revisions)
+        if latest:
+            active_grouped = next(
+                (
+                    candidate
+                    for candidate in index_runs
+                    if candidate.output_generation_run_id
+                    and candidate.status
+                    in {"queued", "running", "pausing", "cancel_requested"}
+                ),
+                None,
+            )
+            run = active_grouped or next(
+                (
+                    candidate
+                    for candidate in index_runs
+                    if candidate.output_generation_run_id is None
+                    and not histories[candidate.id].is_repair_child(candidate.id)
+                ),
+                None,
+            )
+            selected = [run] if run is not None else []
+        else:
+            selected = index_runs
+            if not include_repairs:
+                selected = [
+                    run for run in selected
+                    if not histories[run.id].is_repair_child(run.id)
+                ]
+            if limit is not None:
+                selected = selected[:limit]
+        if not selected:
+            return None, []
+
+        by_id = {run.id: run for run in index_runs}
+        needed_ids = {run.id for run in selected}
+        label_runs = list(selected)
+        for selected_run in selected:
+            output_run = by_id.get(selected_run.output_generation_run_id or "")
+            if output_run is not None:
+                needed_ids.add(output_run.id)
+                label_runs.append(output_run)
+        for label_run in label_runs:
+            history = histories[label_run.id]
+            needed_ids.add(history.root.id)
+            needed_ids.update(child.id for child in history.repair_children)
+            needed_ids.update(self._logical_run_ids(index_runs, history))
+        hydrated = list(
+            session.scalars(
+                select(GenerationRun)
+                .where(
+                    GenerationRun.session_id == session_id,
+                    GenerationRun.id.in_(needed_ids),
+                )
+                .order_by(
+                    GenerationRun.sequence_number.desc(),
+                    GenerationRun.created_at.desc(),
+                )
+            ).all()
+        )
+        context = self._run_history_context(session, session_id, runs=hydrated)
+        context["visible_sequences"] = self._visible_run_sequences(index_runs, histories)
+        return context, [context["runs_by_id"][run.id] for run in selected]
+
+    @staticmethod
+    def _logical_run_ids(
+        runs: Sequence[GenerationRun | _RunHistoryIndex],
+        history: GenerationRunHistory,
+    ) -> set[str]:
+        logical_ids = {history.root.id}
+        logical_ids.update(child.id for child in history.repair_children)
+        plan_ids = {history.root.plan_revision_id, *(child.plan_revision_id for child in history.repair_children)}
+        for run in runs:
+            if run.output_generation_run_id in logical_ids and run.plan_revision_id in plan_ids:
+                logical_ids.add(run.id)
+        return logical_ids
+
+    @staticmethod
     def _logical_usage_events(
         context: RepairHistoryContext,
         history: GenerationRunHistory,
     ) -> list[UsageEvent]:
         """Collect usage for a logical run, de-duplicating shared ownership."""
 
-        logical_ids = {history.root.id}
-        logical_ids.update(child.id for child in history.repair_children)
-        plan_ids = {history.root.plan_revision_id, *(child.plan_revision_id for child in history.repair_children)}
-        for run in context["runs"]:
-            if run.output_generation_run_id in logical_ids and run.plan_revision_id in plan_ids:
-                logical_ids.add(run.id)
+        logical_ids = GenerationHistoryReader._logical_run_ids(context["runs"], history)
         events: list[UsageEvent] = []
         for run_id in logical_ids:
             events.extend(context["usage_by_run_id"].get(run_id, ()))
@@ -578,6 +765,14 @@ class GenerationHistoryReader:
     def list_runs(
         self, session_id: str, *, include_repairs: bool = True, limit: int | None = None
     ) -> list[dict[str, Any]]:
+        if limit is not None:
+            with self.database.snapshot_session() as session:
+                context, runs = self._selected_run_context(
+                    session, session_id, include_repairs=include_repairs, limit=limit
+                )
+                if context is None:
+                    return []
+                return [self._run_payload(session, run, _context=context) for run in runs]
         with self.database.session() as session:
             context = self._run_history_context(session, session_id)
             runs = context["runs"]
@@ -586,36 +781,14 @@ class GenerationHistoryReader:
                     run for run in runs
                     if not context["histories"][run.id].is_repair_child(run.id)
                 ]
-            if limit is not None:
-                runs = runs[:limit]
             return [self._run_payload(session, run, _context=context) for run in runs]
 
     def latest_run(self, session_id: str) -> dict[str, Any] | None:
-        with self.database.session() as session:
-            context = self._run_history_context(session, session_id)
-            runs = context["runs"]
-            active_grouped = next(
-                (
-                    candidate
-                    for candidate in runs
-                    if candidate.output_generation_run_id
-                    and candidate.status
-                    in {"queued", "running", "pausing", "cancel_requested"}
-                ),
-                None,
-            )
-            run = active_grouped or next(
-                (
-                    candidate
-                    for candidate in runs
-                    if candidate.output_generation_run_id is None
-                    and not context["histories"][candidate.id].is_repair_child(
-                        candidate.id
-                    )
-                ),
-                None,
-            )
-            return self._run_payload(session, run, _context=context)
+        with self.database.snapshot_session() as session:
+            context, runs = self._selected_run_context(session, session_id, latest=True)
+            if context is None:
+                return None
+            return self._run_payload(session, runs[0], _context=context)
 
     @staticmethod
     def _assembly_payload(
