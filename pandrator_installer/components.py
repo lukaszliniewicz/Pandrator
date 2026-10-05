@@ -1,5 +1,7 @@
 """Component-specific installation and bootstrap operations."""
 
+from __future__ import annotations
+
 import errno
 import hashlib
 import json
@@ -67,6 +69,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Protocol
 
+    from .command_protocols import PathArgument
+    from .component_protocols import (
+        BackendHealthProvider,
+        CrispAsrInstallResult,
+        ProcessStatus,
+    )
     from .environment_protocols import (
         ArtifactDownloadProvider,
         EnvironmentProvider,
@@ -74,10 +82,25 @@ if TYPE_CHECKING:
     )
     from .reporting import Reporter
 
-    class _ComponentProviders(EnvironmentProvider, SubprocessEnvironmentProvider, ArtifactDownloadProvider, Protocol):
+    class _ComponentProviders(
+        EnvironmentProvider,
+        SubprocessEnvironmentProvider,
+        ArtifactDownloadProvider,
+        BackendHealthProvider,
+        Protocol,
+    ):
         pass
 else:
     _ComponentProviders = object
+
+
+def _require_no_crispasr_backup(backup: Path) -> None:
+    """Preserve any recovery entry from an interrupted installation."""
+    if os.path.lexists(backup):
+        raise RuntimeError(
+            f"A previous CrispASR backup exists at {backup}. "
+            "Recover or move it before reinstalling."
+        )
 
 
 class ComponentOperationsMixin(_ComponentProviders):
@@ -505,7 +528,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         logging.info("Using short Kokoro site-packages path for eSpeak: %s", alias)
         return str(alias)
 
-    def is_kokoro_runtime_ready(self, pandrator_path, kokoro_repo_path, use_gpu=False):
+    def is_kokoro_runtime_ready(
+        self, pandrator_path: str, kokoro_repo_path: str, use_gpu: bool = False
+    ) -> bool:
         manifest_path = self.get_pixi_manifest_path(pandrator_path, KOKORO_ENV_NAME)
         model_path = os.path.join(
             kokoro_repo_path,
@@ -641,7 +666,9 @@ class ComponentOperationsMixin(_ComponentProviders):
 
         return '', ''
 
-    def install_xtts_finetuning_bundled_wheel(self, pandrator_path, env_name, easy_xtts_trainer_path):
+    def install_xtts_finetuning_bundled_wheel(
+        self, pandrator_path: str, env_name: str, easy_xtts_trainer_path: str
+    ) -> bool:
         bundled_wheel_path, bundled_wheel_directory = self.find_bundled_xtts_finetuning_wheel(
             pandrator_path,
             easy_xtts_trainer_path,
@@ -667,7 +694,13 @@ class ComponentOperationsMixin(_ComponentProviders):
         )
         return True
 
-    def check_kokoro_server_online(self, url, max_attempts=90, wait_interval=5, process=None):
+    def check_kokoro_server_online(
+        self,
+        url: str,
+        max_attempts: int = 90,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the Kokoro server is online and responding."""
         for attempt in range(1, max_attempts + 1):
             if process is not None and process.poll() is not None:
@@ -690,12 +723,12 @@ class ComponentOperationsMixin(_ComponentProviders):
 
     def install_kokoro_api_server(
         self,
-        pandrator_path,
-        kokoro_repo_path,
-        env_name=KOKORO_ENV_NAME,
-        use_gpu=False,
-        runtime_use_gpu=None,
-    ):
+        pandrator_path: str,
+        kokoro_repo_path: str,
+        env_name: str = KOKORO_ENV_NAME,
+        use_gpu: bool = False,
+        runtime_use_gpu: bool | None = None,
+    ) -> None:
         if runtime_use_gpu is None:
             runtime_use_gpu = use_gpu
 
@@ -810,7 +843,9 @@ class ComponentOperationsMixin(_ComponentProviders):
                 if self.kokoro_process is process:
                     self.kokoro_process = None
 
-    def run_kokoro_api_server(self, pandrator_path, env_name, kokoro_server_path, use_gpu=False):
+    def run_kokoro_api_server(
+        self, pandrator_path: str, env_name: str, kokoro_server_path: str, use_gpu: bool = False
+    ) -> subprocess.Popen[bytes] | None:
         """Run the Kokoro API server in a dedicated Pixi environment."""
         logging.info(
             "Running Kokoro API server from %s (%s mode)...",
@@ -868,7 +903,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         self.kokoro_process = process
         return process
 
-    def build_xtts_launcher_command(self, use_cpu=False, pixi_path=None):
+    def build_xtts_launcher_command(
+        self, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> list[str]:
         backend = 'cpu' if use_cpu else ('cuda' if is_windows() else 'auto')
         options = ['--backend', backend]
         if is_windows():
@@ -882,7 +919,7 @@ class ComponentOperationsMixin(_ComponentProviders):
             command.extend(['--pixi-path', pixi_path])
         return command
 
-    def build_voxcpm_launcher_command(self, pixi_path=None):
+    def build_voxcpm_launcher_command(self, pixi_path: str | None = None) -> list[str]:
         if is_windows():
             command = ['cmd', '/c', 'run.bat']
             if pixi_path:
@@ -894,7 +931,7 @@ class ComponentOperationsMixin(_ComponentProviders):
             command.extend(['--pixi-path', pixi_path])
         return command
 
-    def build_fishs2_launcher_command(self, pixi_path=None):
+    def build_fishs2_launcher_command(self, pixi_path: str | None = None) -> list[str]:
         if is_windows():
             command = ['cmd', '/c', 'run.bat']
             if pixi_path:
@@ -906,7 +943,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             command.extend(['--pixi-path', pixi_path])
         return command
 
-    def build_chatterbox_launcher_command(self, use_cpu=False, pixi_path=None):
+    def build_chatterbox_launcher_command(
+        self, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> list[str]:
         backend = 'cpu' if use_cpu else 'cuda'
         if is_windows():
             command = ['cmd', '/c', 'run.bat', '--backend', backend]
@@ -919,13 +958,13 @@ class ComponentOperationsMixin(_ComponentProviders):
 
     def build_kobold_qwen_launcher_command(
         self,
-        use_cpu=False,
-        pixi_path=None,
-        backend=None,
-        model_size=DEFAULT_QWEN_MODEL_SIZE,
-        quantization="f16",
-        initial_model="base",
-    ):
+        use_cpu: bool = False,
+        pixi_path: str | None = None,
+        backend: str | None = None,
+        model_size: str = DEFAULT_QWEN_MODEL_SIZE,
+        quantization: str = "f16",
+        initial_model: str = "base",
+    ) -> list[str]:
         backend = 'cpu' if use_cpu else (backend or 'auto')
         options = [
             '--backend', backend,
@@ -948,7 +987,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             *options,
         ]
 
-    def build_magpie_launcher_command(self, use_cpu=False, pixi_path=None):
+    def build_magpie_launcher_command(
+        self, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> list[str]:
         options = ['--device', 'cpu' if use_cpu else 'cuda']
         if is_windows():
             command = ['cmd', '/c', 'run.bat', *options]
@@ -961,7 +1002,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             command.extend(['--pixi-path', pixi_path])
         return command
 
-    def build_silero_launcher_command(self, pandrator_path, pixi_path=None):
+    def build_silero_launcher_command(
+        self, pandrator_path: str, pixi_path: str | None = None
+    ) -> list[str]:
         """Build the first-party Silero service command with persistent model storage."""
         model_dir = os.path.join(pandrator_path, "models", "silero")
         return [
@@ -980,7 +1023,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             "cpu",
         ]
 
-    def build_voxtral_launcher_command(self, voxtral_repo_path, prepare_only=False):
+    def build_voxtral_launcher_command(
+        self, voxtral_repo_path: str, prepare_only: bool = False
+    ) -> list[str]:
         run_script_path = os.path.join(
             voxtral_repo_path,
             'run.ps1' if is_windows() else 'run.sh',
@@ -1030,7 +1075,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         except OSError:
             return ""
 
-    def _read_log_tail_if_exists(self, file_path, max_lines=40):
+    def _read_log_tail_if_exists(self, file_path: PathArgument | None, max_lines: int = 40) -> str:
         content = self._read_text_if_exists(file_path)
         if not content:
             return ""
@@ -1041,7 +1086,7 @@ class ComponentOperationsMixin(_ComponentProviders):
 
         return "\n".join(lines[-max_lines:])
 
-    def get_xtts_pixi_argument(self, xtts_repo_path, pixi_path):
+    def get_xtts_pixi_argument(self, xtts_repo_path: str, pixi_path: str | None) -> str | None:
         if not pixi_path:
             return None
 
@@ -1053,7 +1098,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         logging.info("XTTS launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
-    def get_voxcpm_pixi_argument(self, voxcpm_repo_path, pixi_path):
+    def get_voxcpm_pixi_argument(self, voxcpm_repo_path: str, pixi_path: str | None) -> str | None:
         if not pixi_path:
             return None
 
@@ -1065,7 +1110,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         logging.info("VoxCPM launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
-    def get_fishs2_pixi_argument(self, fishs2_repo_path, pixi_path):
+    def get_fishs2_pixi_argument(self, fishs2_repo_path: str, pixi_path: str | None) -> str | None:
         if not pixi_path:
             return None
 
@@ -1077,7 +1122,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         logging.info("FishS2 launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
-    def get_chatterbox_pixi_argument(self, chatterbox_repo_path, pixi_path):
+    def get_chatterbox_pixi_argument(
+        self, chatterbox_repo_path: str, pixi_path: str | None
+    ) -> str | None:
         if not pixi_path:
             return None
 
@@ -1089,7 +1136,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         logging.info("Chatterbox launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
-    def get_kobold_qwen_pixi_argument(self, kobold_qwen_repo_path, pixi_path):
+    def get_kobold_qwen_pixi_argument(
+        self, kobold_qwen_repo_path: str, pixi_path: str | None
+    ) -> str | None:
         if not pixi_path:
             return None
 
@@ -1101,7 +1150,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         logging.info("Qwen3 TTS launcher does not advertise --pixi-path, skipping shared Pixi argument.")
         return None
 
-    def get_magpie_pixi_argument(self, magpie_repo_path, pixi_path):
+    def get_magpie_pixi_argument(self, magpie_repo_path: str, pixi_path: str | None) -> str | None:
         if not pixi_path:
             return None
 
@@ -1164,7 +1213,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         env_python_path = pixi_env_python_path(os.path.join(xtts_repo_path, '.pixi', 'envs', 'default'))
         return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
-    def install_xtts_api_server(self, xtts_repo_path, use_cpu=False, pixi_path=None):
+    def install_xtts_api_server(
+        self, xtts_repo_path: str, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> None:
         logging.info(f"Bootstrapping XTTS2 API server in {xtts_repo_path}...")
         logging.info(
             "XTTS bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1222,7 +1273,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         env_python_path = pixi_env_python_path(os.path.join(voxcpm_repo_path, '.pixi', 'envs', 'default'))
         return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
-    def install_voxcpm_api_server(self, voxcpm_repo_path, pixi_path=None):
+    def install_voxcpm_api_server(self, voxcpm_repo_path: str, pixi_path: str | None = None) -> None:
         logging.info(f"Bootstrapping VoxCPM API server in {voxcpm_repo_path}...")
         logging.info(
             "VoxCPM bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1280,7 +1331,13 @@ class ComponentOperationsMixin(_ComponentProviders):
         env_python_path = pixi_env_python_path(os.path.join(fishs2_repo_path, '.pixi', 'envs', 'default'))
         return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
-    def install_fishs2_api_server(self, fishs2_repo_path, backend="auto", model_quant="q6_k", pixi_path=None):
+    def install_fishs2_api_server(
+        self,
+        fishs2_repo_path: str,
+        backend: str = "auto",
+        model_quant: str = "q6_k",
+        pixi_path: str | None = None,
+    ) -> None:
         logging.info(f"Bootstrapping FishS2 API server in {fishs2_repo_path} (backend={backend}, quant={model_quant})...")
         logging.info(
             "FishS2 bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1352,7 +1409,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             required_paths.append(run_bat_path)
         return all(os.path.exists(path) for path in required_paths)
 
-    def install_chatterbox_api_server(self, chatterbox_repo_path, use_cpu=False, pixi_path=None):
+    def install_chatterbox_api_server(
+        self, chatterbox_repo_path: str, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> None:
         logging.info(f"Bootstrapping Chatterbox API server in {chatterbox_repo_path}...")
         logging.info(
             "Chatterbox bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1419,14 +1478,14 @@ class ComponentOperationsMixin(_ComponentProviders):
 
     def install_kobold_qwen_api_server(
         self,
-        kobold_qwen_repo_path,
-        use_cpu=False,
-        pixi_path=None,
-        backend=None,
-        model_size=DEFAULT_QWEN_MODEL_SIZE,
-        quantization="f16",
-        initial_model="base",
-    ):
+        kobold_qwen_repo_path: str,
+        use_cpu: bool = False,
+        pixi_path: str | None = None,
+        backend: str | None = None,
+        model_size: str = DEFAULT_QWEN_MODEL_SIZE,
+        quantization: str = "f16",
+        initial_model: str = "base",
+    ) -> None:
         logging.info(f"Bootstrapping Qwen3 TTS API server in {kobold_qwen_repo_path}...")
         logging.info(
             "Qwen3 TTS bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1491,7 +1550,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         env_python_path = pixi_env_python_path(os.path.join(magpie_repo_path, '.pixi', 'envs', 'default'))
         return all(os.path.exists(path) for path in (run_script_path, env_python_path))
 
-    def install_magpie_api_server(self, magpie_repo_path, use_cpu=False, pixi_path=None):
+    def install_magpie_api_server(
+        self, magpie_repo_path: str, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> None:
         logging.info(f"Bootstrapping Magpie API server in {magpie_repo_path}...")
         logging.info(
             "Magpie bootstrap starts the server temporarily to validate runtime and will stop it after health checks."
@@ -1561,7 +1622,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         venv_python_path = pixi_env_python_path(os.path.join(voxtral_repo_path, '.runtime', 'venv'))
         return os.path.exists(venv_python_path)
 
-    def install_voxtral_api_server(self, voxtral_repo_path):
+    def install_voxtral_api_server(self, voxtral_repo_path: str) -> None:
         logging.info(f"Bootstrapping Voxtral API server in {voxtral_repo_path}...")
         run_script_path = os.path.join(voxtral_repo_path, 'run.ps1' if is_windows() else 'run.sh')
         if not os.path.exists(run_script_path):
@@ -1591,7 +1652,9 @@ class ComponentOperationsMixin(_ComponentProviders):
                 logging.error(traceback.format_exc())
                 raise
 
-    def install_silero_api_server(self, silero_repo_path, pandrator_path=None, pixi_path=None):
+    def install_silero_api_server(
+        self, silero_repo_path: str, pandrator_path: str | None = None, pixi_path: str | None = None
+    ) -> None:
         """Install the locked Silero runtime and every supported voice pack."""
         pandrator_path = pandrator_path or os.path.dirname(silero_repo_path)
         pixi_executable = pixi_path or self.get_pixi_executable(pandrator_path)
@@ -1657,7 +1720,7 @@ class ComponentOperationsMixin(_ComponentProviders):
         git_metadata_path = os.path.join(repo_path, '.git')
         return os.path.isdir(git_metadata_path) or os.path.isfile(git_metadata_path)
 
-    def clone_repo(self, repo_url, target_dir, branch=None):
+    def clone_repo(self, repo_url: str, target_dir: str, branch: str | None = None) -> None:
         branch_description = f" (branch {branch})" if branch else ""
         logging.info(f"Cloning repository {repo_url}{branch_description} to {target_dir}...")
         self.configure_tls_certificates()
@@ -1680,10 +1743,11 @@ class ComponentOperationsMixin(_ComponentProviders):
                     self.pull_repo(target_dir)
                 return
 
-            if any(os.scandir(target_dir)):
-                raise RuntimeError(
-                    f"Cannot clone repository because target directory already exists and is not empty: {target_dir}"
-                )
+            with os.scandir(target_dir) as entries:
+                if any(entries):
+                    raise RuntimeError(
+                        f"Cannot clone repository because target directory already exists and is not empty: {target_dir}"
+                    )
 
         try:
             clone_arguments = ['clone']
@@ -1696,8 +1760,12 @@ class ComponentOperationsMixin(_ComponentProviders):
             logging.warning(f"git clone failed, falling back to Dulwich: {str(git_error)}")
             try:
                 porcelain = self.get_dulwich_porcelain()
-                clone_options = {'branch': branch.encode('utf-8')} if branch else {}
-                porcelain.clone(repo_url, target_dir, **clone_options)
+                with (
+                    porcelain.clone(repo_url, target_dir, branch=branch.encode('utf-8'))
+                    if branch
+                    else porcelain.clone(repo_url, target_dir)
+                ):
+                    pass
                 logging.info("Repository cloned successfully with Dulwich.")
             except Exception as dulwich_error:
                 if self.is_certificate_error(dulwich_error):
@@ -1708,8 +1776,12 @@ class ComponentOperationsMixin(_ComponentProviders):
                     self.configure_tls_certificates(force=True)
                     try:
                         porcelain = self.get_dulwich_porcelain()
-                        clone_options = {'branch': branch.encode('utf-8')} if branch else {}
-                        porcelain.clone(repo_url, target_dir, **clone_options)
+                        with (
+                            porcelain.clone(repo_url, target_dir, branch=branch.encode('utf-8'))
+                            if branch
+                            else porcelain.clone(repo_url, target_dir)
+                        ):
+                            pass
                         logging.info("Repository cloned successfully with Dulwich after certificate refresh.")
                         return
                     except Exception as retry_error:
@@ -1770,7 +1842,13 @@ class ComponentOperationsMixin(_ComponentProviders):
         )
         return os.path.exists(run_script_path) and environment_ready
 
-    def build_rvc_launcher_command(self, use_cpu=False, pixi_path=None, prepare_only=False, models_dir=None):
+    def build_rvc_launcher_command(
+        self,
+        use_cpu: bool = False,
+        pixi_path: str | None = None,
+        prepare_only: bool = False,
+        models_dir: str | None = None,
+    ) -> list[str]:
         if is_windows():
             command = ['cmd', '/c', 'run.bat']
         else:
@@ -1784,7 +1862,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             command.extend(['--models-dir', models_dir])
         return command
 
-    def install_rvc_api_server(self, rvc_repo_path, use_cpu=False, pixi_path=None):
+    def install_rvc_api_server(
+        self, rvc_repo_path: str, use_cpu: bool = False, pixi_path: str | None = None
+    ) -> None:
         """Prepare the dedicated RVC service environment without starting it."""
         run_script_path = os.path.join(rvc_repo_path, 'run.bat' if is_windows() else 'run.sh')
         if not os.path.exists(run_script_path):
@@ -1808,7 +1888,9 @@ class ComponentOperationsMixin(_ComponentProviders):
                 **self.get_hidden_subprocess_kwargs(),
             )
 
-    def ensure_nemo_text_processing_runtime(self, pandrator_path, env_name='pandrator_installer'):
+    def ensure_nemo_text_processing_runtime(
+        self, pandrator_path: str, env_name: str = "pandrator_installer"
+    ) -> None:
         """Verify and repair the required NeMo text-normalization runtime."""
         check_command = [
             'python',
@@ -1848,7 +1930,9 @@ class ComponentOperationsMixin(_ComponentProviders):
         )
         logging.info("NeMo text-processing runtime repair completed successfully.")
 
-    def ensure_wtpsplit_runtime(self, pandrator_path, env_name='pandrator_installer'):
+    def ensure_wtpsplit_runtime(
+        self, pandrator_path: str, env_name: str = "pandrator_installer"
+    ) -> None:
         """Verify, repair, and prefetch the default wtpsplit-lite model."""
         check_command = [
             'python',
@@ -1920,7 +2004,9 @@ class ComponentOperationsMixin(_ComponentProviders):
                 except OSError as exc:
                     logging.warning("Could not remove retired wtpsplit model cache %s: %s", cache_path, exc)
 
-    def ensure_pdf_ocr_runtime(self, pandrator_path, env_name='pandrator_installer'):
+    def ensure_pdf_ocr_runtime(
+        self, pandrator_path: str, env_name: str = "pandrator_installer"
+    ) -> None:
         """Verify, repair, and prefetch the default PP-OCRv6 medium ONNX models."""
         check_command = [
             'python',
@@ -1990,7 +2076,7 @@ class ComponentOperationsMixin(_ComponentProviders):
 
         self.remove_legacy_rvc_from_pandrator_env(pandrator_path)
 
-    def remove_legacy_rvc_from_pandrator_env(self, pandrator_path):
+    def remove_legacy_rvc_from_pandrator_env(self, pandrator_path: str) -> None:
         """Remove the former in-process RVC packages after service migration."""
         manifest_path = self.get_pixi_manifest_path(pandrator_path, 'pandrator_installer')
         if not os.path.exists(manifest_path):
@@ -2012,7 +2098,7 @@ class ComponentOperationsMixin(_ComponentProviders):
             ['python', '-m', 'pip', 'uninstall', '--yes', *legacy_packages],
         )
 
-    def install_whisperx(self, pandrator_path, env_name):
+    def install_whisperx(self, pandrator_path: str, env_name: str) -> None:
         logging.info(f"Installing WhisperX in {env_name}...")
         try:
             self.add_pixi_conda_package(pandrator_path, env_name, 'cudnn=8.9.7.29')
@@ -2046,8 +2132,11 @@ class ComponentOperationsMixin(_ComponentProviders):
             logging.error(f"Error message: {str(e)}")
             raise
 
-    def install_crispasr(self, pandrator_path, requested_backend="auto"):
+    def install_crispasr(
+        self, pandrator_path: str, requested_backend: str = "auto"
+    ) -> CrispAsrInstallResult:
         """Install a verified native CrispASR release without a compiler toolchain."""
+        _require_no_crispasr_backup(Path(pandrator_path) / ".CrispASR-backup")
         detected = detect_compute_backends()
         asset, effective_backend = resolve_asset(requested_backend, detected=detected)
         target_dir = Path(pandrator_path) / "CrispASR"
@@ -2140,8 +2229,7 @@ class ComponentOperationsMixin(_ComponentProviders):
             )
 
             backup = target_dir.with_name(".CrispASR-backup")
-            if backup.exists():
-                shutil.rmtree(backup)
+            _require_no_crispasr_backup(backup)
             if target_dir.exists():
                 target_dir.replace(backup)
             try:

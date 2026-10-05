@@ -1,5 +1,7 @@
 """Backend launch, health checking, and process lifecycle management."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -41,10 +43,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Protocol
 
+    from .component_protocols import KokoroProvider, LaunchPreparationProvider, ProcessStatus
     from .environment_protocols import EnvironmentProvider, SubprocessEnvironmentProvider
     from .reporting import Reporter
 
-    class _RuntimeProviders(EnvironmentProvider, SubprocessEnvironmentProvider, Protocol):
+    class _RuntimeProviders(
+        EnvironmentProvider,
+        SubprocessEnvironmentProvider,
+        KokoroProvider,
+        LaunchPreparationProvider,
+        Protocol,
+    ):
         pass
 else:
     _RuntimeProviders = object
@@ -1049,7 +1058,13 @@ class RuntimeMixin(_RuntimeProviders):
 
         return False
 
-    def check_xtts_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+    def check_xtts_server_online(
+        self,
+        base_url: str,
+        max_attempts: int = 120,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the XTTS server is online and responding."""
         probe_paths = ['/health', '/v1/models', '/docs']
         for attempt in range(1, max_attempts + 1):
@@ -1111,7 +1126,13 @@ class RuntimeMixin(_RuntimeProviders):
         self.voxcpm_process = process
         return process
 
-    def check_voxcpm_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+    def check_voxcpm_server_online(
+        self,
+        base_url: str,
+        max_attempts: int = 120,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the VoxCPM server is online and responding."""
         probe_paths = ['/health', '/v1/models', '/v1/audio/voices']
         for attempt in range(1, max_attempts + 1):
@@ -1188,7 +1209,13 @@ class RuntimeMixin(_RuntimeProviders):
         self.fishs2_process = process
         return process
 
-    def check_fishs2_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+    def check_fishs2_server_online(
+        self,
+        base_url: str,
+        max_attempts: int = 120,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the FishS2 server is online and responding."""
         probe_paths = ['/health', '/v1/models', '/v1/audio/voices']
         for attempt in range(1, max_attempts + 1):
@@ -1355,7 +1382,13 @@ class RuntimeMixin(_RuntimeProviders):
         self.magpie_process = process
         return process
 
-    def check_magpie_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+    def check_magpie_server_online(
+        self,
+        base_url: str,
+        max_attempts: int = 120,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the Magpie server is online and responding."""
         probe_paths = ['/v1/models', '/v1/audio/voices']
         for attempt in range(1, max_attempts + 1):
@@ -1384,7 +1417,13 @@ class RuntimeMixin(_RuntimeProviders):
         logging.error("Magpie server failed to come online within the specified attempts.")
         return False
 
-    def check_chatterbox_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+    def check_chatterbox_server_online(
+        self,
+        base_url: str,
+        max_attempts: int = 120,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the Chatterbox server is online and responding."""
         probe_paths = ['/v1/models', '/v1/audio/voices']
         for attempt in range(1, max_attempts + 1):
@@ -1413,7 +1452,13 @@ class RuntimeMixin(_RuntimeProviders):
         logging.error("Chatterbox server failed to come online within the specified attempts.")
         return False
 
-    def check_kobold_qwen_server_online(self, base_url, max_attempts=120, wait_interval=5, process=None):
+    def check_kobold_qwen_server_online(
+        self,
+        base_url: str,
+        max_attempts: int = 120,
+        wait_interval: float = 5,
+        process: ProcessStatus | None = None,
+    ) -> bool:
         """Check if the Qwen3 TTS server is online and responding."""
         probe_paths = ['/health', '/v1/models', '/v1/audio/voices']
         for attempt in range(1, max_attempts + 1):

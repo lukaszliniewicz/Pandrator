@@ -100,6 +100,60 @@ class InstallerArchitectureTests(unittest.TestCase):
                         if not repo.close.called:
                             repo.close()
 
+    def test_dulwich_clone_closes_native_repository_and_preserves_branch_options(self):
+        for retry, branch in ((False, None), (False, "main"), (True, None), (True, "main")):
+            with (
+                self.subTest(retry=retry, branch=branch),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                installer = HeadlessInstaller(working_dir=directory)
+                target = Path(directory) / "clone"
+                opened = []
+                options_seen = []
+
+                def clone(
+                    _source,
+                    destination,
+                    captures=opened,
+                    options=options_seen,
+                    retry_once=retry,
+                    **kwargs,
+                ):
+                    options.append(kwargs)
+                    if retry_once and len(options) == 1:
+                        raise RuntimeError("certificate verify failed")
+                    Path(destination).mkdir()
+                    repo = Repo.init(destination)
+                    repo.close = Mock(wraps=repo.close)
+                    captures.append(repo)
+                    return repo
+
+                try:
+                    with (
+                        patch.object(installer, "configure_tls_certificates"),
+                        patch.object(
+                            installer,
+                            "run_git_command",
+                            side_effect=RuntimeError("git unavailable"),
+                        ),
+                        patch.object(
+                            installer,
+                            "get_dulwich_porcelain",
+                            return_value=SimpleNamespace(clone=clone),
+                        ),
+                    ):
+                        installer.clone_repo("fixture-local-repository", str(target), branch=branch)
+                    expected = {"branch": b"main"} if branch else {}
+                    self.assertEqual(options_seen, [expected] * (2 if retry else 1))
+                    self.assertEqual(len(opened), 1)
+                    self.assertEqual(opened[0].close.call_count, 1)
+                    with Repo(target):
+                        pass
+                finally:
+                    for repo in opened:
+                        if not repo.close.called:
+                            repo.close()
+
     def test_kokoro_bootstrap_rejects_port_race_without_owned_process(self):
         for healthy in (False, True):
             with self.subTest(unowned_health=healthy), tempfile.TemporaryDirectory() as directory:
@@ -418,6 +472,120 @@ class InstallerArchitectureTests(unittest.TestCase):
                 restored = installer.get_external_subprocess_env(bundle_environment)
 
         self.assertEqual(restored["LD_LIBRARY_PATH"], user_library_path)
+
+    def test_crispasr_reinstall_refuses_existing_recovery_entries_before_download(self):
+        for kind in ("directory", "file", "dangling_link"):
+            with self.subTest(backup_kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = root / "CrispASR"
+                target.mkdir()
+                current = target / "partial-install"
+                current.write_bytes(b"current installation witness")
+                backup = root / ".CrispASR-backup"
+                if kind == "directory":
+                    backup.mkdir()
+                    witness = backup / "previous-install"
+                    witness.write_bytes(b"recovery installation witness")
+                elif kind == "file":
+                    witness = backup
+                    witness.write_bytes(b"recovery file witness")
+                else:
+                    try:
+                        backup.symlink_to(root / "missing-recovery", target_is_directory=True)
+                    except (OSError, NotImplementedError):
+                        continue
+                    witness = None
+                installer = HeadlessInstaller(working_dir=directory)
+                with (
+                    patch(
+                        "pandrator_installer.components.detect_compute_backends", return_value={}
+                    ),
+                    patch(
+                        "pandrator_installer.components.resolve_asset",
+                        return_value=(
+                            SimpleNamespace(
+                                name="fixture.zip",
+                                url="https://example.invalid/fixture.zip",
+                                runtime_variant="cpu",
+                            ),
+                            "cpu",
+                        ),
+                    ),
+                    patch.object(installer, "configure_tls_certificates"),
+                    patch(
+                        "pandrator_installer.components.requests.get",
+                        side_effect=RuntimeError(
+                            "fixture reached download before recovery admission"
+                        ),
+                    ) as download,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "previous CrispASR backup"):
+                        installer.install_crispasr(directory)
+                    download.assert_not_called()
+                self.assertEqual(current.read_bytes(), b"current installation witness")
+                self.assertTrue(os.path.lexists(backup))
+                if witness is not None:
+                    expected = (
+                        b"recovery installation witness"
+                        if kind == "directory"
+                        else b"recovery file witness"
+                    )
+                    self.assertEqual(witness.read_bytes(), expected)
+
+    def test_crispasr_preserves_recovery_backup_created_during_preparation(self):
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("crispasr-release/crispasr", b"linux executable")
+            archive.writestr("crispasr-release/crispasr.exe", b"windows executable")
+        archive_bytes = archive_buffer.getvalue()
+        asset = SimpleNamespace(
+            name="crispasr-test.zip",
+            url="https://example.invalid/crispasr-test.zip",
+            sha256=hashlib.sha256(archive_bytes).hexdigest(),
+            runtime_variant="cpu",
+            compiled_backends=("cpu",),
+        )
+        response = MagicMock()
+        response.__enter__.return_value = response
+        probe = subprocess.CompletedProcess(
+            args=["crispasr", "--version"],
+            returncode=0,
+            stdout=f"version       : {CRISPASR_VERSION}\n",
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "CrispASR"
+            target.mkdir()
+            current = target / "partial-install"
+            current.write_bytes(b"current installation witness")
+            backup = root / ".CrispASR-backup"
+            witness = backup / "previous-install"
+
+            def download_chunks(**_kwargs):
+                backup.mkdir()
+                witness.write_bytes(b"recovery installation witness")
+                return [archive_bytes]
+
+            response.iter_content.side_effect = download_chunks
+            installer = HeadlessInstaller(working_dir=directory)
+            failure = None
+            with (
+                patch("pandrator_installer.components.detect_compute_backends", return_value={}),
+                patch("pandrator_installer.components.resolve_asset", return_value=(asset, "cpu")),
+                patch.object(installer, "configure_tls_certificates"),
+                patch("pandrator_installer.components.requests.get", return_value=response),
+                patch("pandrator_installer.components.subprocess.run", return_value=probe),
+            ):
+                try:
+                    installer.install_crispasr(directory)
+                except RuntimeError as error:
+                    failure = error
+            self.assertTrue(witness.exists(), "Preparation deleted the surviving recovery backup")
+            self.assertEqual(witness.read_bytes(), b"recovery installation witness")
+            self.assertEqual(current.read_bytes(), b"current installation witness")
+            self.assertIsNotNone(failure)
+            self.assertIn("previous CrispASR backup", str(failure))
 
     def test_crispasr_probe_uses_sanitized_external_environment(self):
         installer = HeadlessInstaller(working_dir="workspace")

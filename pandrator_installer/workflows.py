@@ -65,10 +65,16 @@ from .reporting import HeadlessReporter, NullReporter
 if TYPE_CHECKING:
     from typing import Protocol
 
+    from .component_protocols import ComponentInstallationProvider
     from .environment_protocols import ArtifactDownloadProvider, EnvironmentProvider
     from .reporting import Reporter
 
-    class _WorkflowProviders(EnvironmentProvider, ArtifactDownloadProvider, Protocol):
+    class _WorkflowProviders(
+        EnvironmentProvider,
+        ArtifactDownloadProvider,
+        ComponentInstallationProvider,
+        Protocol,
+    ):
         pass
 else:
     _WorkflowProviders = object
