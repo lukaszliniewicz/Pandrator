@@ -85,6 +85,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_kobold_qwen_recovery.py",
         "tests/test_tts_openai_http_policy.py",
         "tests/test_tts_provider_discovery_http.py",
+        "tests/test_silero_catalogue_http.py",
         "tests/test_tts_voice_upload_http.py",
         "tests/test_tts_voice_delete_http.py",
         "tests/test_tts_language_projection.py",

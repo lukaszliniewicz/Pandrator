@@ -4157,6 +4157,8 @@ def get_silero_model_catalog(base_url: str = SILERO_API_BASE_URL) -> list[dict]:
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(data, list):
+            return []
         return [
             dict(item) for item in data if isinstance(item, dict) and item.get("id")
         ]
@@ -4205,6 +4207,8 @@ def get_silero_voice_catalog(
         response.raise_for_status()
         payload = response.json()
         data = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(data, list):
+            return []
         return [
             dict(item) for item in data if isinstance(item, dict) and item.get("id")
         ]
