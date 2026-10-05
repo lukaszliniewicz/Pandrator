@@ -56,6 +56,15 @@ Record test counts and durations separately from implementation time and
 setup failures. Use those measurements to adjust batch sizes; do not treat
 smaller test counts or file sizes as evidence of better maintainability.
 
+Run independent acceptance checks concurrently when their inputs and outputs
+do not conflict. Preserve a passing result across commit boundaries when its
+inputs remain unchanged. Scope evidence to the risk: ordinary edits need a
+reviewed diff and relevant tests; large mechanical moves may justify an AST or
+contract comparison. Prefer existing checks and one concise acceptance receipt
+over a new verification script for every small edit. Packaging checks belong at
+the final batch boundary when packaged modules, imports, assets, or build inputs
+change.
+
 ## Lint and formatting
 
 Ruff checks production code, scripts, and tests with `E4`, `E7`, `E9`, `F`, `I`,
