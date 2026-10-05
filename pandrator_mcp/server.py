@@ -16,6 +16,7 @@ from . import __version__
 from .argument_validation import create_argument_validation_extension
 from .context import McpRuntime
 from .errors import FailureCode, PandratorMcpError, ToolFailure
+from .native_text import NativeNullableString
 from .registrations.dispatch import (
     register_dispatch_batch_tools,
     register_dispatch_lifecycle_tools,
@@ -414,8 +415,8 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def recommendations_tool(
-        session_id: str | None = None,
-        goal: str | None = None,
+        session_id: NativeNullableString = None,
+        goal: NativeNullableString = None,
     ) -> dict[str, Any]:
         """Recommend inspect-first steps without changing Pandrator."""
 
@@ -479,9 +480,9 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def local_sources_browse_tool(
-        root: Annotated[str | None, Field(max_length=80)] = None,
+        root: Annotated[NativeNullableString, Field(max_length=80)] = None,
         directory: Annotated[str, Field(max_length=1024)] = "",
-        query: Annotated[str | None, Field(max_length=160)] = None,
+        query: Annotated[NativeNullableString, Field(max_length=160)] = None,
         recursive: bool = False,
         sort: Literal["modified_desc", "name_asc"] = "modified_desc",
         limit: Annotated[int, Field(ge=1, le=200)] = 50,
@@ -510,8 +511,8 @@ def build_server(runtime: McpRuntime):
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
         workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
         include_trashed: bool = False,
-        state: str | None = None,
-        query: str | None = None,
+        state: NativeNullableString = None,
+        query: NativeNullableString = None,
     ) -> dict[str, Any]:
         """List bounded session summaries from the configured target."""
 
@@ -618,7 +619,7 @@ def build_server(runtime: McpRuntime):
     )
 
     @server.tool(name="pandrator_get_subtitle_evidence_routes", title="Inspect available audio evidence engines", annotations=read_only)
-    def subtitle_evidence_routes_tool(language: Annotated[str | None, Field(min_length=2, max_length=40)] = None, include_languages: bool = False) -> dict[str, Any]:
+    def subtitle_evidence_routes_tool(language: Annotated[NativeNullableString, Field(min_length=2, max_length=40)] = None, include_languages: bool = False) -> dict[str, Any]:
         """Read the live shared engine catalogue; language arrays are opt-in."""
         return _call_with_validated_input(get_subtitle_evidence_routes, runtime, GetSubtitleEvidenceRoutesInput,
             {"language": language, "include_languages": include_languages})
@@ -641,10 +642,10 @@ def build_server(runtime: McpRuntime):
     def preview_subtitles_tool(
         session_id: str,
         stage: SubtitleStage | None = None,
-        artifact_id: str | None = None,
+        artifact_id: NativeNullableString = None,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
-        query: str | None = None,
+        query: NativeNullableString = None,
         around_ordinal: Annotated[int | None, Field(ge=1)] = None,
         context: Annotated[int, Field(ge=0, le=20)] = 3,
         start_ordinal: Annotated[int | None, Field(ge=1)] = None,
@@ -753,8 +754,8 @@ def build_server(runtime: McpRuntime):
         stage: SubtitleStage,
         expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
-        srt_content: str | None = None,
-        filename: str | None = None,
+        srt_content: NativeNullableString = None,
+        filename: NativeNullableString = None,
     ) -> dict[str, Any]:
         """Import reviewed subtitles from raw SRT text or file."""
 
@@ -825,7 +826,7 @@ def build_server(runtime: McpRuntime):
         ] = (),
         names: tuple[Annotated[str, Field(min_length=1, max_length=50)], ...] = (),
         workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
-        query: Annotated[str | None, Field(max_length=100)] = None,
+        query: Annotated[NativeNullableString, Field(max_length=100)] = None,
         limit: Annotated[int, Field(ge=1, le=300)] = 100,
     ) -> dict[str, Any]:
         """Discover only definitions matching at least one supplied filter."""
@@ -849,9 +850,9 @@ def build_server(runtime: McpRuntime):
     )
     def sources_tool(
         state: Literal["current", "trashed"] = "current",
-        query: Annotated[str | None, Field(max_length=160)] = None,
-        kind: Annotated[str | None, Field(max_length=80)] = None,
-        mime_type: Annotated[str | None, Field(max_length=160)] = None,
+        query: Annotated[NativeNullableString, Field(max_length=160)] = None,
+        kind: Annotated[NativeNullableString, Field(max_length=80)] = None,
+        mime_type: Annotated[NativeNullableString, Field(max_length=160)] = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> dict[str, Any]:
         """List bounded source metadata without paths or source contents."""
@@ -1019,10 +1020,10 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         candidate_id: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=120),
         ] = None,
-        text: Annotated[str | None, Field(max_length=16_000)] = None,
+        text: Annotated[NativeNullableString, Field(max_length=16_000)] = None,
         note: Annotated[str, Field(max_length=4_000)] = "",
     ) -> dict[str, Any]:
         """Record the explicit editorial disposition of an evidence request."""
@@ -1093,7 +1094,7 @@ def build_server(runtime: McpRuntime):
             Field(min_length=2, max_length=40),
         ] = "auto",
         target_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=40),
         ] = None,
         workflow_preset: Annotated[
@@ -1148,7 +1149,7 @@ def build_server(runtime: McpRuntime):
         expected_revision: Annotated[int, Field(ge=1)],
         idempotency_key: str,
         name: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=200),
         ] = None,
         workflow_kind: Literal[
@@ -1160,15 +1161,15 @@ def build_server(runtime: McpRuntime):
         | None = None,
         multilingual_setup: MultilingualSetup | None | MISSING = MISSING,
         source_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=40),
         ] = None,
         target_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=40),
         ] = None,
         workflow_preset: Annotated[
-            str | None,
+            NativeNullableString,
             Field(
                 min_length=1,
                 max_length=64,
@@ -1407,7 +1408,7 @@ def build_server(runtime: McpRuntime):
         max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
         context_capsule: DelegationContextCapsuleInput | None = None,
         materialize: bool = False,
-        filename: Annotated[str | None, Field(max_length=255)] = None,
+        filename: Annotated[NativeNullableString, Field(max_length=255)] = None,
         wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
     ) -> dict[str, Any]:
@@ -1433,7 +1434,7 @@ def build_server(runtime: McpRuntime):
     )
     def export_variant_plan_tool(
         session_id: str,
-        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
+        generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
         export_mode: Literal["media", "audio", "subtitles", "text"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
@@ -1488,9 +1489,9 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def artifacts_tool(
-        session_id: str | None = None,
-        kind: str | None = None,
-        role: str | None = None,
+        session_id: NativeNullableString = None,
+        kind: NativeNullableString = None,
+        role: NativeNullableString = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
     ) -> dict[str, Any]:
         """List bounded artifact metadata without paths or content."""
@@ -1513,7 +1514,7 @@ def build_server(runtime: McpRuntime):
     )
     def artifact_download_tool(
         artifact_id: Annotated[str, Field(min_length=1, max_length=80)],
-        filename: Annotated[str | None, Field(max_length=255)] = None,
+        filename: Annotated[NativeNullableString, Field(max_length=255)] = None,
     ) -> dict[str, Any]:
         """Resume and verify one immutable artifact without exposing server paths."""
 
@@ -1548,10 +1549,10 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def tts_catalog_tool(
-        service_id: Annotated[str | None, Field(max_length=160)] = None,
+        service_id: Annotated[NativeNullableString, Field(max_length=160)] = None,
         include_compatibility: bool = False,
-        model: Annotated[str | None, Field(max_length=300)] = None,
-        query: Annotated[str | None, Field(max_length=160)] = None,
+        model: Annotated[NativeNullableString, Field(max_length=300)] = None,
+        query: Annotated[NativeNullableString, Field(max_length=160)] = None,
         available_only: bool = False,
         detail: Literal["summary", "full"] = "summary",
         refresh: bool = False,
@@ -1630,14 +1631,14 @@ def build_server(runtime: McpRuntime):
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        model: Annotated[str | None, Field(max_length=300)] = None,
-        voice: Annotated[str | None, Field(max_length=300)] = None,
+        model: Annotated[NativeNullableString, Field(max_length=300)] = None,
+        voice: Annotated[NativeNullableString, Field(max_length=300)] = None,
         language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=40),
         ] = None,
         style_instructions: Annotated[
-            str | None,
+            NativeNullableString,
             Field(max_length=12_000),
         ] = None,
         tts_context_mode: Literal["off", "before", "both"] | None = None,
@@ -1692,7 +1693,7 @@ def build_server(runtime: McpRuntime):
         reviewed_only: bool = False,
         sort: Literal["relevance", "name", "recently_added", "recently_updated"] = "relevance",
         limit: Annotated[int, Field(ge=1, le=200)] = 30,
-        cursor: Annotated[str | None, Field(max_length=1024)] = None,
+        cursor: Annotated[NativeNullableString, Field(max_length=1024)] = None,
     ) -> dict[str, Any]:
         """Inspect the normalized voice catalog with bounded filters and cursors."""
 
@@ -1741,7 +1742,7 @@ def build_server(runtime: McpRuntime):
         annotations=read_only,
     )
     def work_list_tool(
-        session_id: str | None = None,
+        session_id: NativeNullableString = None,
         kinds: tuple[str, ...] = (),
         states: tuple[str, ...] = (),
         limit: Annotated[int, Field(ge=1, le=100)] = 50,

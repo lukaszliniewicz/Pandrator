@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_text import NativeNullableString
 from ..schemas.source_cleaning_dispatch import (
     ClaimSourceCleaningDispatchBatchInput,
     CreateSourceCleaningDispatchRunInput,
@@ -57,7 +58,7 @@ def register_source_cleaning_dispatch_tools(
             ),
         ],
         source_artifact_id: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=80),
         ] = None,
         instructions: Annotated[str, Field(max_length=16_000)] = "",
@@ -66,7 +67,7 @@ def register_source_cleaning_dispatch_tools(
         filter_citations: bool | None = None,
         pdf_ocr_mode: Literal["auto", "off", "force"] | None = None,
         pdf_ocr_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=80),
         ] = None,
         pdf_ocr_dpi: Annotated[int | None, Field(ge=120, le=400)] = None,

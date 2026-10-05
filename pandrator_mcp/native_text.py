@@ -1,32 +1,28 @@
-"""Runtime annotation bridges for opaque nullable MCP input text."""
+"""Runtime annotation bridges for opaque nullable MCP input strings."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeAlias
 
-from pydantic import Field, ValidatorFunctionWrapHandler, WrapValidator
+from pydantic import Field, GetCoreSchemaHandler, GetPydanticSchema
+from pydantic_core import core_schema
 
 _MAX_LEGACY_TEXT_CHARACTERS = 524_288
 
 
-def _nullable_response_text(value: Any, handler: ValidatorFunctionWrapHandler) -> str | None:
-    if value is None:
-        return None
-    return cast(str, handler(value))
+def _nullable_string_schema(
+    source_type: Any, handler: GetCoreSchemaHandler
+) -> core_schema.CoreSchema:
+    return core_schema.nullable_schema(handler(source_type))
 
 
 if TYPE_CHECKING:
-    NativeResponseText: TypeAlias = str | None
+    NativeNullableString: TypeAlias = str | None
 else:
-    # The SDK pre-parses JSON for union fields. A string base preserves opaque
-    # text; the public validator and schema retain the nullable input contract.
-    NativeResponseText = Annotated[
-        str,
-        Field(max_length=_MAX_LEGACY_TEXT_CHARACTERS),
-        WrapValidator(
-            _nullable_response_text,
-            json_schema_input_type=Annotated[
-                str | None, Field(max_length=_MAX_LEGACY_TEXT_CHARACTERS)
-            ],
-        ),
-    ]
+    # The SDK pre-parses JSON for union fields. A string base preserves input;
+    # the public nullable schema retains None and each parameter's constraints.
+    NativeNullableString = Annotated[str, GetPydanticSchema(_nullable_string_schema)]
+
+NativeResponseText: TypeAlias = Annotated[
+    NativeNullableString, Field(max_length=_MAX_LEGACY_TEXT_CHARACTERS)
+]

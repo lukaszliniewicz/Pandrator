@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
-from ..native_text import NativeResponseText
+from ..native_text import NativeNullableString, NativeResponseText
 from ..schemas.delegation import DelegationContextCapsuleInput, DelegationContextDeltaInput
 from ..schemas.dispatch import (
     ClaimDispatchBatchInput,
@@ -79,7 +79,7 @@ def register_dispatch_lifecycle_tools(
         action: Literal["cancelled", "superseded"],
         reason: str,
         idempotency_key: str,
-        replacement_run_id: str | None = None,
+        replacement_run_id: NativeNullableString = None,
     ) -> dict[str, Any]:
         """Terminate an open correction/translation run, retaining accepted work. Retry with the same key."""
         return _call_with_validated_input(
@@ -122,15 +122,15 @@ def register_dispatch_run_tools(
         ],
         instructions: Annotated[str, Field(max_length=16_000)] = "",
         source_artifact_id: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=80),
         ] = None,
         source_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=40),
         ] = None,
         target_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=2, max_length=40),
         ] = None,
         char_limit: Annotated[int, Field(ge=1, le=100_000)] = 6_000,
@@ -253,7 +253,9 @@ def register_dispatch_batch_tools(
         ],
         lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
         packet_format: Literal["standard", "compact"] = "standard",
-        known_manifest_hash: Annotated[str | None, Field(pattern=r"^[a-f0-9]{64}$")] = None,
+        known_manifest_hash: Annotated[
+            NativeNullableString, Field(pattern=r"^[a-f0-9]{64}$")
+        ] = None,
         response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Claim one canonical task packet; each cue and timing value appears once."""

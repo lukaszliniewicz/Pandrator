@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_text import NativeNullableString
 from ..schemas.transcription import (
     CancelTranscriptionInput,
     DeleteTranscriptionInput,
@@ -60,11 +61,11 @@ def register_transcription_tools(
             ),
         ] = "auto",
         engine: Annotated[
-            str | None,
+            NativeNullableString,
             Field(max_length=80, pattern=r"^[A-Za-z0-9_-]+$"),
         ] = None,
         model_quantization: Annotated[
-            str | None,
+            NativeNullableString,
             Field(max_length=40, pattern=r"^[A-Za-z0-9_.-]+$"),
         ] = None,
         compute_backend: Literal["auto", "cpu", "cuda", "vulkan", "metal"] | None = None,

@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_text import NativeNullableString
 from ..schemas.delegation import DelegationContextCapsuleInput, DelegationContextDeltaInput
 from ..schemas.speech_optimization_dispatch import (
     ClaimSpeechOptimizationDispatchBatchInput,
@@ -56,19 +57,19 @@ def register_speech_optimization_dispatch_tools(
             ),
         ],
         source_artifact_id: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=80),
         ] = None,
         language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=40),
         ] = None,
         voice_language: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=40),
         ] = None,
         tts_service: Annotated[
-            str | None,
+            NativeNullableString,
             Field(min_length=1, max_length=80),
         ] = None,
         instructions: Annotated[str, Field(max_length=16_000)] = "",

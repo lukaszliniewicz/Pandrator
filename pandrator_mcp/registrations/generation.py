@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_text import NativeNullableString
 from ..schemas import (
     AssembleGenerationRunInput,
     GenerateSpeechPlanInput,
@@ -89,13 +90,13 @@ def register_generation_plan_tools(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         cursor: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
-        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
-        plan_revision_id: str | None = None,
+        generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
+        plan_revision_id: NativeNullableString = None,
         view: Literal["full", "compact", "provenance"] = "full",
         fields: list[str] | None = None,
         end_ordinal: int | None = None,
         around_ordinal: int | None = None,
-        source_cue_id: str | None = None,
+        source_cue_id: NativeNullableString = None,
         radius: Annotated[int, Field(ge=0, le=25)] = 2,
     ) -> dict[str, Any]:
         """List generation segments, assigned voices, takes, and text."""
@@ -146,7 +147,7 @@ def register_generation_plan_tools(
         expected_revision: int,
         source_artifact_id: str,
         idempotency_key: str,
-        expected_plan_revision_id: str | None = None,
+        expected_plan_revision_id: NativeNullableString = None,
     ) -> dict[str, Any]:
         """Deterministically rebuild speech blocks from the selected subtitle/text artifact without starting synthesis."""
         return _call_with_validated_input(
@@ -283,12 +284,16 @@ def register_generation_execution_tools(
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        segment_id: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
+        segment_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
         cursor: Annotated[int | None, Field(strict=True)] = None,
         text_layer: Literal["display", "speech"] | None = None,
-        left_segment_id: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
-        right_segment_id: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
-        target_revision_id: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
+        left_segment_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
+        right_segment_id: Annotated[
+            NativeNullableString, Field(min_length=1, max_length=80)
+        ] = None,
+        target_revision_id: Annotated[
+            NativeNullableString, Field(min_length=1, max_length=80)
+        ] = None,
         segment_ids: list[str] | None = None,
         boundaries: list[int] | None = None,
         max_chars: int | None = None,
@@ -326,12 +331,14 @@ def register_generation_execution_tools(
         segment_id: Annotated[str, Field(min_length=1, max_length=80)],
         expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
-        text: Annotated[str | None, Field(min_length=1, max_length=2000, pattern=r"\S")] = None,
-        optimized_text: Annotated[str | None, Field(max_length=2000)] = None,
+        text: Annotated[
+            NativeNullableString, Field(min_length=1, max_length=2000, pattern=r"\S")
+        ] = None,
+        optimized_text: Annotated[NativeNullableString, Field(max_length=2000)] = None,
         removed: bool | None = None,
-        voice_id: Annotated[str | None, Field(max_length=100)] = None,
-        voice: Annotated[str | None, Field(max_length=100)] = None,
-        language: Annotated[str | None, Field(max_length=20)] = None,
+        voice_id: Annotated[NativeNullableString, Field(max_length=100)] = None,
+        voice: Annotated[NativeNullableString, Field(max_length=100)] = None,
+        language: Annotated[NativeNullableString, Field(max_length=20)] = None,
     ) -> dict[str, Any]:
         """Update a generation segment's text or voice override with revision guard."""
 
@@ -432,7 +439,7 @@ def register_generation_execution_tools(
     def generation_assemble_tool(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
-        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
+        generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
     ) -> dict[str, Any]:
         """Assemble the whole session, using the selected/current takes at that run. For a single review clip, download the generation take artifact exposed by pandrator_list_generation_segments instead."""
 

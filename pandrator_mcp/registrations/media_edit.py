@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_text import NativeNullableString
 from ..schemas import (
     ClaimMediaEditDispatchBatchInput,
     CreateMediaEditDispatchRunInput,
@@ -198,7 +199,7 @@ def register_media_edit_tools(
             ),
         ] = False,
         filename: Annotated[
-            str | None,
+            NativeNullableString,
             Field(
                 max_length=255,
                 description="Optional plain output filename; requires materialize=true.",
@@ -279,7 +280,7 @@ def register_media_edit_tools(
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        instructions: Annotated[str | None, Field(max_length=10_000)] = None,
+        instructions: Annotated[NativeNullableString, Field(max_length=10_000)] = None,
         reviewed: bool | None = None,
     ) -> dict[str, Any]:
         """Apply keep ranges only when the supplied media-edit revision is current."""
@@ -353,7 +354,7 @@ def register_media_edit_tools(
                 pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
             ),
         ],
-        model: Annotated[str | None, Field(max_length=512)] = None,
+        model: Annotated[NativeNullableString, Field(max_length=512)] = None,
         wait: bool = True,
         timeout_seconds: Annotated[int, Field(ge=0, le=3_600)] = 60,
     ) -> dict[str, Any]:
