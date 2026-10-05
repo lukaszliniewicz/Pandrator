@@ -59,3 +59,14 @@ def post_speech_candidates(
         return last_response
 
     raise RuntimeError(no_endpoint_message)
+
+
+def post_prepared_speech(
+    url: Callable[[], str],
+    *,
+    request_options: Callable[[], SpeechCandidatePostOptions],
+    request_session: requests.Session | None = None,
+) -> requests.Response:
+    """POST once, preserving transport errors and the caller's session ownership."""
+    transport = request_session or requests
+    return transport.post(url(), **request_options())

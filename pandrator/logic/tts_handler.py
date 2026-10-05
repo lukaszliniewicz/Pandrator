@@ -4335,24 +4335,17 @@ def _request_kokoro_audio(
     api_key = _resolve_kokoro_api_key(tts_settings)
     payload = _build_kokoro_payload(text, tts_settings)
 
-    last_response = None
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            headers=_openai_auth_headers(api_key),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No Kokoro speech endpoint could be resolved for '{normalized_base_url}'."
+    return _native_speech_http.post_speech_candidates(
+        _openai_audio_speech_urls(normalized_base_url),
+        request_options=lambda: {
+            "headers": _openai_auth_headers(api_key),
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=(
+            f"No Kokoro speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
@@ -4962,12 +4955,14 @@ def _request_openai_compatible_audio(
     if _normalize_custom_adapter(endpoint.get("adapter")) == AUDIO_CPP_ADAPTER:
         payload = _build_audio_cpp_audio_payload(text, tts_settings, endpoint)
         speech_path = str(endpoint.get("speech_path") or "/v1/audio/speech")
-        transport = request_session or requests
-        return transport.post(
-            _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
-            headers=_configured_endpoint_auth_headers(endpoint),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        return _native_speech_http.post_prepared_speech(
+            lambda: _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+            request_options=lambda: {
+                "headers": _configured_endpoint_auth_headers(endpoint),
+                "json": payload,
+                "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            },
+            request_session=request_session,
         )
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == AZURE_SPEECH_ADAPTER:
@@ -5010,11 +5005,13 @@ def _request_openai_compatible_audio(
             raise RuntimeError(
                 f"Endpoint '{endpoint['name']}' has no configured speech route."
             )
-        return requests.post(
-            _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
-            headers=_configured_endpoint_auth_headers(endpoint),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        return _native_speech_http.post_prepared_speech(
+            lambda: _configured_endpoint_url(str(endpoint["base_url"]), speech_path),
+            request_options=lambda: {
+                "headers": _configured_endpoint_auth_headers(endpoint),
+                "json": payload,
+                "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            },
         )
 
     payload = _build_openai_compatible_audio_payload(text, tts_settings, endpoint)
@@ -5047,28 +5044,19 @@ def _request_openai_compatible_audio(
             payload, endpoint, request_session=request_session
         )
 
-    last_response = None
-    for speech_url in _configured_openai_urls(
-        endpoint,
-        "speech_path",
-        _openai_audio_speech_urls(str(endpoint["base_url"])),
-    ):
-        response = requests.post(
-            speech_url,
-            headers=_configured_endpoint_auth_headers(endpoint),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No speech endpoint could be resolved for '{endpoint['name']}'."
+    return _native_speech_http.post_speech_candidates(
+        _configured_openai_urls(
+            endpoint,
+            "speech_path",
+            _openai_audio_speech_urls(str(endpoint["base_url"])),
+        ),
+        request_options=lambda: {
+            "headers": _configured_endpoint_auth_headers(endpoint),
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=f"No speech endpoint could be resolved for '{endpoint['name']}'.",
     )
 
 
@@ -5201,15 +5189,17 @@ def _request_gemini_native_audio(
             },
         },
     }
-    transport = request_session or requests
-    response = transport.post(
-        url,
-        headers={
-            "x-goog-api-key": _resolve_openai_audio_api_key(endpoint),
-            "Content-Type": "application/json",
+    response = _native_speech_http.post_prepared_speech(
+        lambda: url,
+        request_options=lambda: {
+            "headers": {
+                "x-goog-api-key": _resolve_openai_audio_api_key(endpoint),
+                "Content-Type": "application/json",
+            },
+            "json": body,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
         },
-        json=body,
-        timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+        request_session=request_session,
     )
     return _google_tts_pcm_response(response, url, "Gemini")
 
@@ -5254,14 +5244,16 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
             },
         },
     }
-    response = requests.post(
-        endpoint,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
+    response = _native_speech_http.post_prepared_speech(
+        lambda: endpoint,
+        request_options=lambda: {
+            "headers": {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
         },
-        json=payload,
-        timeout=TTS_GENERATION_TIMEOUT_SECONDS,
     )
     return _google_tts_pcm_response(response, endpoint, "Vertex AI")
 
@@ -5395,25 +5387,17 @@ def _request_chatterbox_audio(
         True,
     )
 
-    last_response = None
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            headers=_openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'."
+    return _native_speech_http.post_speech_candidates(
+        _openai_audio_speech_urls(normalized_base_url),
+        request_options=lambda: {
+            "headers": _openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=(
+            f"No Chatterbox speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
@@ -5824,10 +5808,12 @@ def text_to_audio(
                         tts_settings.get("silero_stress_mode") or "auto"
                     ),
                 }
-                response = requests.post(
-                    f"{normalized_silero_base_url}/v1/audio/speech",
-                    json=data,
-                    timeout=TTS_GENERATION_TIMEOUT_SECONDS,
+                response = _native_speech_http.post_prepared_speech(
+                    lambda: f"{normalized_silero_base_url}/v1/audio/speech",
+                    request_options=lambda data=data: {
+                        "json": data,
+                        "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+                    },
                 )
             else:
                 raise ValueError(f"Unsupported TTS service: {service}")
