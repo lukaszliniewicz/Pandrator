@@ -2266,7 +2266,8 @@ async function updateFailureContext() {
       `/v1/operations/${encodeURIComponent(selected.id)}/tasks`,
     );
     failedOperationTasks = payload.items || [];
-  } catch {
+  } catch (error) {
+    if (error.code === "authentication_required") throw error;
     // The operation-level error is still useful if task detail is unavailable.
   }
 }

@@ -451,3 +451,133 @@ for (const width of [1280, 390]) {
     expect(f.errors).toEqual([]);
   });
 }
+
+for (const width of [1280, 390]) {
+  for (const detailStatus of [401, 503]) {
+    test(`Manager failure detail ${detailStatus} preserves the correct authorization state at ${width}px`, async ({
+      page
+    }, info) => {
+      await page.setViewportSize({ width, height: 950 });
+      const f = await fixture(page);
+      const snapshotPaths = new Set<string>();
+      const expectedSnapshotPaths = [
+        '/v1/status',
+        '/v1/application',
+        '/v1/network',
+        '/v1/components',
+        '/v1/services',
+        '/v1/operations',
+        '/v1/activity',
+        '/v1/releases'
+      ];
+      page.on('response', (response) => {
+        const path = new URL(response.url()).pathname;
+        if (
+          response.request().method() === 'GET' &&
+          response.status() === 200 &&
+          expectedSnapshotPaths.includes(path)
+        ) {
+          snapshotPaths.add(path);
+        }
+      });
+      let detailRequests = 0;
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolveGate) => {
+        release = resolveGate;
+      });
+      await page.route('**/v1/operations', (route) =>
+        route.fulfill({
+          json: {
+            items: [
+              {
+                id: 'failed-update',
+                kind: 'update',
+                state: 'failed',
+                error_code: 'update_failed',
+                error_message: 'The saved update failed safely.'
+              }
+            ]
+          }
+        })
+      );
+      await page.route(
+        '**/v1/operations/failed-update/tasks',
+        async (route) => {
+          detailRequests += 1;
+          await gate;
+          await route.fulfill({
+            status: detailStatus,
+            json: {
+              error: {
+                code:
+                  detailStatus === 401
+                    ? 'authentication_required'
+                    : 'unavailable',
+                message:
+                  detailStatus === 401
+                    ? 'This browser authorization expired.'
+                    : 'Task details are temporarily unavailable.'
+              }
+            }
+          });
+        }
+      );
+      try {
+        // The real polling loop loads all eight snapshots before task detail.
+        await expect.poll(() => detailRequests).toBeGreaterThan(0);
+        expect([...snapshotPaths].sort()).toEqual(
+          [...expectedSnapshotPaths].sort()
+        );
+        await expect(f.dialog).toBeVisible();
+        await expect(page.locator('#manager-health-text')).toHaveText(
+          'Manager ready'
+        );
+      } finally {
+        release();
+      }
+      if (detailStatus === 401) {
+        await expect(page.locator('#manager-health-text')).toHaveText(
+          'Authorization required'
+        );
+        await expect(f.dialog).not.toBeVisible();
+        await expect(page.locator('#application-primary')).toBeDisabled();
+        await expect(page.locator('#refresh')).toBeDisabled();
+        await expect(page.locator('#session-menu')).not.toBeVisible();
+        await expect(page.locator('#message')).toHaveText(
+          'This browser authorization expired.'
+        );
+        await expect(page.locator('#components')).toHaveText(
+          'Authorize this browser to view providers and models.'
+        );
+      } else {
+        await expect(page.locator('#operation-failure')).toBeVisible();
+        await expect(page.locator('#failure-message')).toHaveText(
+          'The saved update failed safely.'
+        );
+        await expect(page.locator('#failure-code')).toHaveText('update_failed');
+        await expect(page.locator('#manager-health-text')).toHaveText(
+          'Manager ready'
+        );
+        await expect(page.locator('#session-menu')).toBeVisible();
+        await expect(f.dialog).toBeVisible();
+        await expect(
+          f.dialog.getByRole('button', { name: 'Apply reviewed update' })
+        ).toBeEnabled();
+        await page.keyboard.press('Escape');
+        await expect(f.dialog).not.toBeVisible();
+        await expect(page.locator('#application-primary')).toBeEnabled();
+      }
+      await page.screenshot({
+        path: info.outputPath(`task-detail-${detailStatus}.png`),
+        fullPage: true
+      });
+      expect(f.payloads).toEqual([]);
+      expect(f.errors).toEqual([]);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth
+        )
+      ).toBe(true);
+    });
+  }
+}
