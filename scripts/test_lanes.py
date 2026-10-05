@@ -262,6 +262,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     ),
     "web-02-serial": (
         "tests/test_web_foundation.py",
+        "tests/test_source_http_contracts.py",
         "tests/test_web_database_bootstrap_lifetime.py",
         "tests/test_web_legacy_probe_lifetime.py",
         "tests/test_web_legacy_database_lifetime.py",
