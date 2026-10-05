@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 from ..context import McpRuntime
 from ..errors import NextAction
+from ..native_enums import native_nullable_enum
 from ..performance_actions import PERFORMANCE_ACTIONS
 from ..results import ToolOutcome
 from ..schemas import performance as schemas
@@ -62,7 +63,12 @@ def register_performance_tools(
         parameters = []
         annotations: dict[str, object] = {"return": dict[str, Any]}
         for field_name, field in model.model_fields.items():
-            annotation = Annotated[field.annotation, field]
+            field_annotation = (
+                native_nullable_enum(field.annotation)
+                if model is schemas.PreviewPerformancePlanInput and field_name == "context_mode"
+                else field.annotation
+            )
+            annotation = Annotated[field_annotation, field]
             annotations[field_name] = annotation
             parameters.append(
                 inspect.Parameter(

@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_enums import NativeNullableEnum
 from ..native_text import NativeNullableString
 from ..schemas.transcription import (
     CancelTranscriptionInput,
@@ -68,12 +69,13 @@ def register_transcription_tools(
             NativeNullableString,
             Field(max_length=40, pattern=r"^[A-Za-z0-9_.-]+$"),
         ] = None,
-        compute_backend: Literal["auto", "cpu", "cuda", "vulkan", "metal"] | None = None,
-        qwen_asr_model: Literal["qwen3_asr_0_6b", "qwen3_asr_1_7b"] | None = None,
-        transcription_vocal_isolation: Literal[
-            "off", "bs_roformer", "mel_band_roformer", "htdemucs"
-        ]
-        | None = None,
+        compute_backend: NativeNullableEnum[
+            Literal["auto", "cpu", "cuda", "vulkan", "metal"]
+        ] = None,
+        qwen_asr_model: NativeNullableEnum[Literal["qwen3_asr_0_6b", "qwen3_asr_1_7b"]] = None,
+        transcription_vocal_isolation: NativeNullableEnum[
+            Literal["off", "bs_roformer", "mel_band_roformer", "htdemucs"]
+        ] = None,
         wait_seconds: Annotated[int, Field(ge=0, le=30)] = 30,
     ) -> dict[str, Any]:
         """Upload one bounded source, resume its chunks, and start transcription."""
@@ -103,7 +105,7 @@ def register_transcription_tools(
     )
     def transcription_get_tool(
         id: Annotated[str, Field(min_length=1, max_length=120)],
-        format: Literal["txt", "srt", "json"] | None = None,
+        format: NativeNullableEnum[Literal["txt", "srt", "json"]] = None,
         wait_seconds: Annotated[int, Field(ge=0, le=30)] = 0,
     ) -> dict[str, Any]:
         """Return the bounded status snapshot for one transcription."""

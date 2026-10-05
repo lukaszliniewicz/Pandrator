@@ -204,6 +204,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_dispatch_split_strictness.py",
         "tests/test_mcp_legacy_response_text.py",
         "tests/test_mcp_nullable_strings.py",
+        "tests/test_mcp_nullable_enums.py",
         "tests/test_mcp_subtitle_evidence.py",
         "tests/test_mcp_targets_cli.py",
         "tests/test_mcp_tts_provider_switch.py",

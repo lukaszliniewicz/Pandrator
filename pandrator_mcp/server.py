@@ -16,6 +16,7 @@ from . import __version__
 from .argument_validation import create_argument_validation_extension
 from .context import McpRuntime
 from .errors import FailureCode, PandratorMcpError, ToolFailure
+from .native_enums import NativeNullableEnum
 from .native_text import NativeNullableString
 from .registrations.dispatch import (
     register_dispatch_batch_tools,
@@ -509,7 +510,9 @@ def build_server(runtime: McpRuntime):
     )
     def sessions_tool(
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
-        workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
+        workflow_kind: NativeNullableEnum[
+            Literal["audiobook", "subtitles", "voiceover", "media_edit"]
+        ] = None,
         include_trashed: bool = False,
         state: NativeNullableString = None,
         query: NativeNullableString = None,
@@ -641,7 +644,7 @@ def build_server(runtime: McpRuntime):
     )
     def preview_subtitles_tool(
         session_id: str,
-        stage: SubtitleStage | None = None,
+        stage: NativeNullableEnum[SubtitleStage] = None,
         artifact_id: NativeNullableString = None,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
@@ -825,7 +828,9 @@ def build_server(runtime: McpRuntime):
             ...,
         ] = (),
         names: tuple[Annotated[str, Field(min_length=1, max_length=50)], ...] = (),
-        workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None = None,
+        workflow_kind: NativeNullableEnum[
+            Literal["audiobook", "subtitles", "voiceover", "media_edit"]
+        ] = None,
         query: Annotated[NativeNullableString, Field(max_length=100)] = None,
         limit: Annotated[int, Field(ge=1, le=300)] = 100,
     ) -> dict[str, Any]:
@@ -1152,13 +1157,14 @@ def build_server(runtime: McpRuntime):
             NativeNullableString,
             Field(min_length=1, max_length=200),
         ] = None,
-        workflow_kind: Literal[
-            "audiobook",
-            "subtitles",
-            "voiceover",
-            "media_edit",
-        ]
-        | None = None,
+        workflow_kind: NativeNullableEnum[
+            Literal[
+                "audiobook",
+                "subtitles",
+                "voiceover",
+                "media_edit",
+            ]
+        ] = None,
         multilingual_setup: MultilingualSetup | None | MISSING = MISSING,
         source_language: Annotated[
             NativeNullableString,
@@ -1641,7 +1647,7 @@ def build_server(runtime: McpRuntime):
             NativeNullableString,
             Field(max_length=12_000),
         ] = None,
-        tts_context_mode: Literal["off", "before", "both"] | None = None,
+        tts_context_mode: NativeNullableEnum[Literal["off", "before", "both"]] = None,
         performance_context_before: Annotated[int | None, Field(ge=0, le=20)] = None,
         performance_context_after: Annotated[int | None, Field(ge=0, le=20)] = None,
         performance_context_max_chars: Annotated[int | None, Field(ge=0, le=16_000)] = None,

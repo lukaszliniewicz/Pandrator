@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_enums import NativeNullableEnum
 from ..native_text import NativeNullableString
 from ..schemas.source_cleaning_dispatch import (
     ClaimSourceCleaningDispatchBatchInput,
@@ -65,7 +66,7 @@ def register_source_cleaning_dispatch_tools(
         evidence_limit: Annotated[int, Field(ge=20, le=2_000)] = 500,
         remove_footnotes: bool | None = None,
         filter_citations: bool | None = None,
-        pdf_ocr_mode: Literal["auto", "off", "force"] | None = None,
+        pdf_ocr_mode: NativeNullableEnum[Literal["auto", "off", "force"]] = None,
         pdf_ocr_language: Annotated[
             NativeNullableString,
             Field(min_length=2, max_length=80),

@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from ..context import McpRuntime
+from ..native_enums import NativeNullableEnum
 from ..native_text import NativeNullableString
 from ..schemas import (
     AssembleGenerationRunInput,
@@ -286,7 +287,7 @@ def register_generation_execution_tools(
         ],
         segment_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
         cursor: Annotated[int | None, Field(strict=True)] = None,
-        text_layer: Literal["display", "speech"] | None = None,
+        text_layer: NativeNullableEnum[Literal["display", "speech"]] = None,
         left_segment_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
         right_segment_id: Annotated[
             NativeNullableString, Field(min_length=1, max_length=80)
