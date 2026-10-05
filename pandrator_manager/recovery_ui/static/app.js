@@ -13,6 +13,7 @@ let snapshot = {
 };
 let selectedPlan = null;
 let selectedPlanTitle = "";
+let planSubmitting = false;
 let activeOperation = null;
 let refreshInFlight = null;
 let refreshQueued = false;
@@ -108,7 +109,7 @@ function blockManagerAccess(message) {
   )) {
     if (!control.classList.contains("manager-tab")) control.disabled = true;
   }
-  if (byId("plan-dialog").open) closePlan();
+  if (byId("plan-dialog").open) closePlan({ force: true });
   showMessage(message, true);
 }
 
@@ -2785,6 +2786,7 @@ function showPlanError(message) {
 }
 
 function showPlan(plan, title = "") {
+  if (planSubmitting) return;
   selectedPlan = plan;
   selectedPlanTitle = title || stateLabel(plan.kind);
   byId("plan-title").textContent = selectedPlanTitle;
@@ -2898,7 +2900,7 @@ function showPlan(plan, title = "") {
 }
 
 async function executePlan() {
-  if (!selectedPlan) return;
+  if (!selectedPlan || planSubmitting) return;
   let postInstallAccess;
   try {
     postInstallAccess = collectPlanAccess();
@@ -2907,8 +2909,14 @@ async function executePlan() {
     return;
   }
   showPlanError("");
+  planSubmitting = true;
+  const dialog = byId("plan-dialog");
+  const enabledControls = [
+    ...dialog.querySelectorAll("button, input, select"),
+  ].filter((control) => !control.disabled);
+  for (const control of enabledControls) control.disabled = true;
+  dialog.setAttribute("aria-busy", "true");
   const confirm = byId("confirm-plan");
-  confirm.disabled = true;
   confirm.classList.add("busy");
   try {
     activeOperation = await requestJson("/v1/operations", {
@@ -2926,9 +2934,7 @@ async function executePlan() {
       pendingInstallOperationId = activeOperation.id;
       pendingPostInstallAccess = postInstallAccess;
     }
-    selectedPlan = null;
-    selectedPlanTitle = "";
-    byId("plan-dialog").close();
+    closePlan({ force: true });
     focusActiveOperation();
     if (kind === "uninstall") {
       pollingStopped = true;
@@ -2943,12 +2949,17 @@ async function executePlan() {
   } catch (error) {
     showPlanError(error.message);
   } finally {
+    planSubmitting = false;
+    dialog.removeAttribute("aria-busy");
     confirm.classList.remove("busy");
-    confirm.disabled = false;
+    if (csrf) {
+      for (const control of enabledControls) control.disabled = false;
+    }
   }
 }
 
-function closePlan() {
+function closePlan({ force = false } = {}) {
+  if (planSubmitting && !force) return;
   selectedPlan = null;
   selectedPlanTitle = "";
   byId("plan-owner-password").value = "";
@@ -3464,6 +3475,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     option.addEventListener("change", updatePlanAccessFields);
   }
   byId("confirm-plan").addEventListener("click", executePlan);
+  byId("plan-dialog").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closePlan();
+  });
   byId("close-plan").addEventListener("click", closePlan);
   byId("cancel-plan").addEventListener("click", closePlan);
   byId("cancel-operation").addEventListener("click", cancelOperation);
