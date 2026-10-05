@@ -401,7 +401,7 @@ def _xtts_lifecycle_item(item: Any) -> dict[str, Any] | None:
         created = 0
     try:
         created_at = max(0, int(created or 0))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         created_at = 0
     return {
         "id": model_id,
