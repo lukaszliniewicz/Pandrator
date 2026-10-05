@@ -48,7 +48,7 @@ class ModelCatalogueApiTests(unittest.TestCase):
             "providers": [{"id": "azure", "name": "Azure", "kind": "commercial"}],
         }
         with mock.patch(
-            "pandrator.web.api_routes.model_catalogue_page",
+            "pandrator.web.service_routes.model_catalogue_page",
             return_value=payload,
         ) as catalogue_page:
             response = self.client.get(

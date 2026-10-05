@@ -47,7 +47,7 @@ class AudioCppCatalogueApiTests(unittest.TestCase):
             "families": [],
         }
         with mock.patch(
-            "pandrator.web.api_routes.catalogue_page",
+            "pandrator.web.service_routes.catalogue_page",
             return_value=payload,
         ) as catalogue_page:
             response = self.client.get(

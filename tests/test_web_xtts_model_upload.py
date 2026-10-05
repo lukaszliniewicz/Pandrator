@@ -72,7 +72,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         self.assertEqual(401, response.status_code)
 
     def test_rejects_incomplete_bundle_before_proxying(self):
-        with mock.patch("pandrator.web.api_routes.requests.post") as post:
+        with mock.patch("pandrator.web.service_routes.requests.post") as post:
             response = self.client.post(
                 XTTS_MODEL_ENDPOINT,
                 data={
@@ -91,7 +91,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         post.assert_not_called()
 
     def test_rejects_invalid_model_id_before_proxying(self):
-        with mock.patch("pandrator.web.api_routes.requests.post") as post:
+        with mock.patch("pandrator.web.service_routes.requests.post") as post:
             bundle = self._bundle()
             bundle["model_id"] = "../../training-output"
             response = self.client.post(
@@ -127,7 +127,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
                 return_value=(managed_catalogue, 0),
             ),
             mock.patch(
-                "pandrator.web.api_routes.requests.post",
+                "pandrator.web.service_routes.requests.post",
                 return_value=wrapper_response,
             ) as post,
         ):
@@ -173,7 +173,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         bundle["model_id"] = "custom/acme-voice"
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
-            mock.patch("pandrator.web.api_routes.requests.post", return_value=wrapper_response) as post,
+            mock.patch("pandrator.web.service_routes.requests.post", return_value=wrapper_response) as post,
         ):
             response = self.client.post(
                 XTTS_MODEL_ENDPOINT,
@@ -196,7 +196,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
                 return_value=self._catalogue(),
             ),
             mock.patch(
-                "pandrator.web.api_routes.requests.post",
+                "pandrator.web.service_routes.requests.post",
                 return_value=wrapper_response,
             ),
         ):
@@ -233,7 +233,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
                 return_value=self._catalogue(),
             ),
             mock.patch(
-                "pandrator.web.api_routes.requests.post",
+                "pandrator.web.service_routes.requests.post",
                 return_value=wrapper_response,
             ),
         ):
@@ -261,7 +261,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
                 return_value=self._catalogue(),
             ),
             mock.patch(
-                "pandrator.web.api_routes.requests.post",
+                "pandrator.web.service_routes.requests.post",
                 side_effect=requests.ConnectionError,
             ),
         ):
@@ -310,7 +310,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
             mock.patch(
-                "pandrator.web.api_routes.requests.get",
+                "pandrator.web.service_routes.requests.get",
                 side_effect=[lifecycle_response, health_response],
             ),
         ):
@@ -330,7 +330,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         }
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
-            mock.patch("pandrator.web.api_routes.requests.get", return_value=old_response),
+            mock.patch("pandrator.web.service_routes.requests.get", return_value=old_response),
         ):
             response = self.client.get(XTTS_MODEL_ENDPOINT, headers=self.headers)
 
@@ -350,7 +350,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         }
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
-            mock.patch("pandrator.web.api_routes.requests.delete", return_value=wrapper_response) as delete,
+            mock.patch("pandrator.web.service_routes.requests.delete", return_value=wrapper_response) as delete,
         ):
             response = self.client.delete(
                 f"{XTTS_MODEL_ENDPOINT}/custom/acme-voice", headers=self.headers
@@ -367,7 +367,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         old_wrapper.json.return_value = {"detail": "Method Not Allowed"}
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
-            mock.patch("pandrator.web.api_routes.requests.delete", return_value=old_wrapper),
+            mock.patch("pandrator.web.service_routes.requests.delete", return_value=old_wrapper),
         ):
             response = self.client.delete(
                 f"{XTTS_MODEL_ENDPOINT}/custom/acme-voice", headers=self.headers
@@ -389,7 +389,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         }
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
-            mock.patch("pandrator.web.api_routes.requests.delete", return_value=missing_model),
+            mock.patch("pandrator.web.service_routes.requests.delete", return_value=missing_model),
         ):
             response = self.client.delete(
                 f"{XTTS_MODEL_ENDPOINT}/custom/missing", headers=self.headers
@@ -406,7 +406,7 @@ class XttsModelUploadApiTests(unittest.TestCase):
         route_missing.json.return_value = {"detail": "Not Found"}
         with (
             mock.patch.object(self.catalogue, "snapshot", return_value=self._catalogue()),
-            mock.patch("pandrator.web.api_routes.requests.delete", return_value=route_missing),
+            mock.patch("pandrator.web.service_routes.requests.delete", return_value=route_missing),
         ):
             response = self.client.delete(
                 f"{XTTS_MODEL_ENDPOINT}/custom/acme-voice", headers=self.headers
