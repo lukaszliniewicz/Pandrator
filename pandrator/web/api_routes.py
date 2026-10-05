@@ -6,7 +6,6 @@ import ipaddress
 import json
 import os
 import secrets
-import shutil
 import time
 import uuid
 from datetime import timedelta
@@ -41,7 +40,6 @@ from .artifact_selection import (
     stage_history,
     trash_stage_artifact,
 )
-from .artifacts import sha256_file
 from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, normalize_scopes
 from .automation_routes import register_automation_routes
 from .credentials import (
@@ -67,9 +65,7 @@ from .models import (
     AgentStep,
     AppSetting,
     AppSettingHistory,
-    Artifact,
     SessionRecord,
-    SourceRecord,
     new_id,
     utcnow,
 )
@@ -122,6 +118,8 @@ from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
 from .training_routes import register_training_routes
+from .upload_publication import publish_multipart_upload
+from .uploads import cleanup_initialized_directories
 from .voice_routes import register_voice_routes
 from .workflow_improvements_routes import register_workflow_improvements_routes
 from .workflow_plan_routes import register_workflow_plan_routes
@@ -1936,7 +1934,6 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return error_response("missing_file", "A multipart file is required.", 400)
         filename = secure_filename(incoming.filename) or f"upload-{uuid.uuid4()}"
         temporary = paths.temporary / f"upload-{uuid.uuid4()}.part"
-        destination = paths.uploads / f"{uuid.uuid4()}-{filename}"
         requested_session_id = str(request.form.get("session_id") or "") or None
         purpose = str(request.form.get("purpose") or "source").strip().lower()
         if purpose not in {"source", "cover"}:
@@ -1961,9 +1958,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         "Cover artwork must be 25 MiB or smaller.",
                         413,
                     )
+                from PIL import Image, UnidentifiedImageError
                 try:
-                    from PIL import Image, UnidentifiedImageError
-
                     with Image.open(temporary) as image:
                         if image.format not in {"JPEG", "PNG", "WEBP"}:
                             raise ValueError("Use JPEG, PNG, or WebP artwork.")
@@ -1984,55 +1980,27 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         f"Cover artwork is not a readable image: {error}",
                         422,
                     )
-            digest = sha256_file(temporary)
-            os.replace(temporary, destination)
-            artifact = artifacts.register(
-                destination,
-                kind="image" if purpose == "cover" else "source",
-                role="cover" if purpose == "cover" else "upload",
+            result = publish_multipart_upload(
+                temporary,
+                filename=filename,
+                original_filename=incoming.filename,
                 session_id=requested_session_id,
-                calculate_hash=False,
-                metadata={"original_filename": incoming.filename, "purpose": purpose},
+                purpose=purpose,
+                database=database,
+                paths=paths,
+                artifacts=artifacts,
+                sources=source_library,
             )
-            with database.session() as db_session:
-                managed = db_session.get(Artifact, artifact.id)
-                managed.content_hash = digest
-                if requested_session_id and purpose == "source":
-                    db_session.add(
-                        SourceRecord(
-                            session_id=requested_session_id,
-                            kind=Path(filename).suffix.lower().lstrip(".") or "file",
-                            display_name=incoming.filename,
-                            artifact_id=artifact.id,
-                            content_hash=digest,
-                        )
-                    )
-            source_asset = None
-            attachment = None
-            if purpose == "source":
-                source_asset = source_library.ensure_for_artifact(
-                    artifact.id,
-                    display_name=incoming.filename,
-                    kind=Path(filename).suffix.lower().lstrip(".") or "file",
-                )
-                attachment = (
-                    source_library.attach(requested_session_id, source_asset.id)
-                    if requested_session_id
-                    else None
-                )
-            return jsonify(
-                {
-                    "artifact_id": artifact.id,
-                    "source_asset_id": source_asset.id if source_asset else None,
-                    "attachment": attachment,
-                    "filename": filename,
-                    "size_bytes": destination.stat().st_size,
-                    "sha256": digest,
-                }
-            ), 201
+            return jsonify(result), 201
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         finally:
-            if temporary.exists():
-                temporary.unlink()
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                flask_app.logger.warning("Could not remove staged upload %s", temporary, exc_info=True)
 
     @app.post("/api/v1/uploads/init")
     @require_auth
@@ -2045,12 +2013,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return idempotency_error
         if idempotency_key is not None:
             upload_id = str(uuid.uuid4())
-            created_directory: Path | None = None
+            created_directories = []
             try:
                 with database.immediate_session() as db_session:
                     reservation = services.idempotency.begin(
                         db_session,
-                        principal=context.guards.principal(),
+                        principal=idempotency.principal(),
                         operation_id="initializeChunkUpload",
                         idempotency_key=idempotency_key,
                         payload=payload.model_dump(mode="json"),
@@ -2076,9 +2044,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             )
                         ),
                         upload_id=upload_id,
-                    )
-                    created_directory = paths.managed_path(
-                        record.temporary_relative_path
+                        created_directories=created_directories,
                     )
                     result = chunk_uploads.status_payload(record)
                     services.idempotency.complete(
@@ -2091,20 +2057,17 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     )
                 return jsonify(result), 201
             except KeyError:
-                if created_directory is not None:
-                    shutil.rmtree(created_directory, ignore_errors=True)
+                cleanup_initialized_directories(created_directories)
                 return error_response("not_found", "Session not found.", 404)
             except (
                 IdempotencyConflict,
                 IdempotencyInProgress,
                 ValueError,
             ) as error:
-                if created_directory is not None:
-                    shutil.rmtree(created_directory, ignore_errors=True)
+                cleanup_initialized_directories(created_directories)
                 return idempotency_failure(error)
             except Exception:
-                if created_directory is not None:
-                    shutil.rmtree(created_directory, ignore_errors=True)
+                cleanup_initialized_directories(created_directories)
                 raise
         try:
             result = chunk_uploads.initialize(

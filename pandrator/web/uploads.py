@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import mimetypes
 import os
@@ -11,7 +12,7 @@ import shutil
 import stat
 import threading
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, timedelta
 from pathlib import Path
 from typing import BinaryIO
@@ -24,13 +25,35 @@ from pandrator.runtime import DataPaths
 
 from .artifacts import ArtifactService
 from .database import Database
-from .models import SessionRecord, UploadSessionRecord, utcnow
+from .models import UploadSessionRecord, utcnow
 from .source_library import SourceLibraryService
-from .upload_activity import UploadBusy, upload_activity
+from .upload_activity import UploadBusy, require_writable_upload_owner, upload_activity
 
 DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
 MAX_CHUNK_SIZE = 16 * 1024 * 1024
 DEFAULT_MAX_UPLOAD_SIZE = 100 * 1024 * 1024 * 1024
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedUploadDirectory:
+    path: Path
+    device: int
+    inode: int
+
+
+def cleanup_initialized_directories(directories: list[_OwnedUploadDirectory]) -> None:
+    """Remove only directories created by this initialization attempt."""
+    for owned in directories:
+        try:
+            visible = owned.path.lstat()
+            if (visible.st_dev, visible.st_ino) == (owned.device, owned.inode):
+                shutil.rmtree(owned.path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.warning("Could not remove failed upload directory %s", owned.path, exc_info=True)
 
 
 def managed_upload_directory(paths: DataPaths, upload_id: str, relative: str) -> Path:
@@ -88,18 +111,24 @@ class ChunkUploadService:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_size: int = DEFAULT_MAX_UPLOAD_SIZE,
     ) -> dict:
-        with self._lock, self.database.immediate_session() as session:
-            record = self.initialize_in_session(
-                session,
-                filename=filename,
-                size_bytes=size_bytes,
-                mime_type=mime_type,
-                session_id=session_id,
-                expected_hash=expected_hash,
-                chunk_size=chunk_size,
-                max_size=max_size,
-            )
-            result = self.status_payload(record)
+        created_directories: list[_OwnedUploadDirectory] = []
+        try:
+            with self._lock, self.database.immediate_session() as session:
+                record = self.initialize_in_session(
+                    session,
+                    filename=filename,
+                    size_bytes=size_bytes,
+                    mime_type=mime_type,
+                    session_id=session_id,
+                    expected_hash=expected_hash,
+                    chunk_size=chunk_size,
+                    max_size=max_size,
+                    created_directories=created_directories,
+                )
+                result = self.status_payload(record)
+        except Exception:
+            cleanup_initialized_directories(created_directories)
+            raise
         return result
 
     def initialize_in_session(
@@ -114,6 +143,7 @@ class ChunkUploadService:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_size: int = DEFAULT_MAX_UPLOAD_SIZE,
         upload_id: str | None = None,
+        created_directories: list[_OwnedUploadDirectory] | None = None,
     ) -> UploadSessionRecord:
         safe_name = secure_filename(filename) or f"upload-{uuid.uuid4()}"
         size_bytes = int(size_bytes)
@@ -132,32 +162,34 @@ class ChunkUploadService:
         relative = (self.paths.temporary / "uploads" / upload_id).relative_to(self.paths.root).as_posix()
         directory = managed_upload_directory(self.paths, upload_id, relative)
         directory.mkdir(parents=True, exist_ok=False)
-        record = UploadSessionRecord(
-            id=upload_id,
-            session_id=session_id,
-            filename=safe_name,
-            mime_type=mime_type,
-            size_bytes=size_bytes,
-            chunk_size=chunk_size,
-            chunk_count=math.ceil(size_bytes / chunk_size),
-            received_json={},
-            expected_hash=expected_hash.lower() if expected_hash else None,
-            temporary_relative_path=relative,
-            expires_at=utcnow() + timedelta(hours=24),
-        )
-        db_session.add(record)
-        db_session.flush()
+        visible = directory.lstat()
+        owned = _OwnedUploadDirectory(directory, visible.st_dev, visible.st_ino)
+        if created_directories is not None:
+            created_directories.append(owned)
+        try:
+            record = UploadSessionRecord(
+                id=upload_id,
+                session_id=session_id,
+                filename=safe_name,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+                chunk_size=chunk_size,
+                chunk_count=math.ceil(size_bytes / chunk_size),
+                received_json={},
+                expected_hash=expected_hash.lower() if expected_hash else None,
+                temporary_relative_path=relative,
+                expires_at=utcnow() + timedelta(hours=24),
+            )
+            db_session.add(record)
+            db_session.flush()
+        except Exception:
+            cleanup_initialized_directories([owned])
+            raise
         return record
 
     @staticmethod
     def _writable_owner(session: Session, session_id: str | None) -> None:
-        if session_id is None:
-            return
-        owner = session.get(SessionRecord, session_id)
-        if owner is None:
-            raise KeyError(session_id)
-        if owner.trashed_at is not None or owner.status in {"trashed", "purging"}:
-            raise ValueError("Upload session is trashed or purging.")
+        require_writable_upload_owner(session, session_id)
 
     def _current(self, session: Session, upload_id: str, *, replay: bool = False) -> UploadSessionRecord:
         record = session.get(UploadSessionRecord, upload_id)

@@ -11,7 +11,22 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from sqlalchemy.orm import Session
+
 from pandrator.runtime import DataPaths
+
+from .models import SessionRecord
+
+
+def require_writable_upload_owner(session: Session, session_id: str | None) -> None:
+    """Require the optional upload owner to exist and remain writable."""
+    if session_id is None:
+        return
+    owner = session.get(SessionRecord, session_id)
+    if owner is None:
+        raise KeyError(session_id)
+    if owner.trashed_at is not None or owner.status in {"trashed", "purging"}:
+        raise ValueError("Upload session is trashed or purging.")
 
 
 class UploadBusy(ValueError):
