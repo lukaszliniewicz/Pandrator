@@ -301,3 +301,51 @@ def test_partial_catalogue_preserves_presence_and_requires_interpretable_absence
                     VOICE_ID, service="Chatterbox", base_url=BASE_URL, api_key=API_KEY
                 )
     script.assert_calls(VOICE_ID, deletes=2, gets=len(gets))
+
+
+def test_delete_observes_remote_confirmation_replaced_during_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = HttpScript((response(404), response(404)), ())
+    confirmations: list[tuple[str, str, str]] = []
+
+    def confirm(voice_id: str, *, base_url: str, api_key: str = "") -> bool:
+        confirmations.append((voice_id, base_url, api_key))
+        return False
+
+    def delete(url: str, *, headers: dict[str, str], timeout: int) -> requests.Response:
+        monkeypatch.setattr(tts_handler, "_remote_voice_exists", confirm)
+        return script.delete(url, headers=headers, timeout=timeout)
+
+    with script.installed(), mock.patch.object(tts_handler.requests, "delete", side_effect=delete):
+        assert (
+            tts_handler.delete_speaker_voice(
+                VOICE_ID, service="Chatterbox", base_url=BASE_URL, api_key=API_KEY
+            )
+            is False
+        )
+    assert confirmations == [(VOICE_ID, BASE_URL, API_KEY)]
+    script.assert_calls(VOICE_ID, deletes=2, gets=0)
+
+
+def test_confirmation_observes_catalogue_parser_replaced_during_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = HttpScript((response(404), response(404)), (response(200, {"data": []}),))
+    parsed: list[object] = []
+
+    def extract(payload: object) -> list[str]:
+        parsed.append(payload)
+        return [VOICE_ID]
+
+    def get(url: str, *, headers: dict[str, str], timeout: int) -> requests.Response:
+        monkeypatch.setattr(tts_handler, "_extract_voices_from_openai_payload", extract)
+        return script.get(url, headers=headers, timeout=timeout)
+
+    with script.installed(), mock.patch.object(tts_handler.requests, "get", side_effect=get):
+        with pytest.raises(RuntimeError, match="still lists"):
+            tts_handler.delete_speaker_voice(
+                VOICE_ID, service="Chatterbox", base_url=BASE_URL, api_key=API_KEY
+            )
+    assert parsed == [{"data": []}]
+    script.assert_calls(VOICE_ID, deletes=2, gets=1)
