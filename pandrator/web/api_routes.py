@@ -4642,10 +4642,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 422,
             )
         edits = {item.index: item.text.strip() for item in payload.items}
-        if set(edits) != set(range(len(rows))):
+        if len(payload.items) != len(rows) or set(edits) != set(range(len(rows))):
             return error_response(
                 "validation_error",
                 "Reviewed text must preserve every item index exactly once.",
+                422,
+            )
+        if any(not text for text in edits.values()):
+            return error_response(
+                "validation_error",
+                "Reviewed text cannot be empty.",
                 422,
             )
         for index, row in enumerate(rows):
@@ -4812,7 +4818,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             path,
             mimetype=artifact.mime_type,
             conditional=True,
-            etag=artifact.content_hash,
+            etag=artifact.content_hash if artifact.content_hash is not None else False,
         )
 
     @app.get("/api/v1/artifacts/<artifact_id>/video-preview")
@@ -4967,7 +4973,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 peak_path,
                 mimetype="application/json",
                 conditional=True,
-                etag=_artifact.content_hash,
+                etag=_artifact.content_hash if _artifact.content_hash is not None else False,
             )
 
         cached = cached_response(cached_peak_id())
