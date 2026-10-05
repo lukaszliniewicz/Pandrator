@@ -16,6 +16,7 @@ from . import __version__
 from .argument_validation import create_argument_validation_extension
 from .context import McpRuntime
 from .errors import FailureCode, PandratorMcpError, ToolFailure
+from .native_text import NativeResponseText
 from .registrations.generation import (
     register_generation_execution_tools,
     register_generation_plan_tools,
@@ -1268,7 +1269,7 @@ def build_server(runtime: McpRuntime):
         ],
         result: DispatchStructuredResultInput | None = None,
         context_delta: DelegationContextDeltaInput | None = None,
-        response_text: Annotated[str | None, Field(max_length=524_288)] = None,
+        response_text: NativeResponseText = None,
     ) -> dict[str, Any]:
         """Submit one typed result; response_text is a legacy compatibility path."""
 
