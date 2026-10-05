@@ -10,11 +10,10 @@ import os
 import re
 import time
 import wave
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from contextlib import ExitStack, contextmanager
 from datetime import date
-from queue import Queue
 from threading import Event, Lock, RLock, Thread
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
@@ -36,6 +35,7 @@ from . import audio_cpp_speech_payload as _audio_cpp_speech_payload
 from . import elevenlabs_catalogue_http as _elevenlabs_catalogue_http
 from . import google_tts_audio as _google_tts_audio
 from . import kobold_qwen_http as _kobold_qwen_http
+from . import kobold_qwen_stream as _kobold_qwen_stream
 from . import native_speech_http as _native_speech_http
 from . import silero_catalogue_http as _silero_catalogue_http
 from . import voxcpm_speech_http as _voxcpm_speech_http
@@ -54,7 +54,9 @@ from .audio_cpp_speech_payload import (
 from .kobold_qwen_contracts import (
     KoboldQwenBatchAudioEvent,
     KoboldQwenBatchCapabilities,
-    KoboldQwenBatchMessage,
+)
+from .kobold_qwen_contracts import (
+    KoboldQwenBatchMessage as KoboldQwenBatchMessage,
 )
 from .kobold_qwen_http import (
     KOBOLD_QWEN_API_BASE_URL as KOBOLD_QWEN_API_BASE_URL,
@@ -5275,6 +5277,7 @@ def _iter_kobold_qwen_batch_audio_http(
     api_key: str = "",
     stop_event: Event | None = None,
     cancel_event: Event | None = None,
+    response_callback: Callable[[requests.Response | None], None] | None = None,
 ) -> Iterator[KoboldQwenBatchAudioEvent]:
     yield from _kobold_qwen_http._iter_kobold_qwen_batch_audio_http(
         items,
@@ -5282,6 +5285,7 @@ def _iter_kobold_qwen_batch_audio_http(
         api_key=api_key,
         stop_event=stop_event,
         cancel_event=cancel_event,
+        response_callback=response_callback,
         resolve_api_key=lambda settings: _resolve_kobold_qwen_api_key(settings),
         build_payload=lambda text, settings: _build_kobold_qwen_payload(text, settings),
         decode_audio=lambda audio, *, format_hint: _decode_audio_bytes(
@@ -5298,45 +5302,19 @@ def iter_kobold_qwen_batch_audio(
     cancel_event: Event | None = None,
 ) -> Iterator[KoboldQwenBatchAudioEvent]:
     """Read the batch stream ahead so inference overlaps local take handling."""
-    if not items:
-        return
-    stop_event = Event()
-    messages: Queue[KoboldQwenBatchMessage] = Queue(maxsize=len(items) + 2)
-
-    def read_stream() -> None:
-        try:
-            for event in _iter_kobold_qwen_batch_audio_http(
-                items,
-                base_url=base_url,
-                api_key=api_key,
-                stop_event=stop_event,
-                cancel_event=cancel_event,
-            ):
-                messages.put(("event", event))
-        except Exception as error:  # noqa: BLE001 - cross-thread projection
-            messages.put(("error", error))
-        finally:
-            messages.put(("done", None))
-
-    worker = Thread(
-        target=read_stream,
-        name="qwen-batch-reader",
-        daemon=True,
+    yield from _kobold_qwen_stream.iter_read_ahead_batch(
+        len(items),
+        producer=lambda stop_event, response_callback: _iter_kobold_qwen_batch_audio_http(
+            items,
+            base_url=base_url,
+            api_key=api_key,
+            stop_event=stop_event,
+            cancel_event=cancel_event,
+            response_callback=response_callback,
+        ),
+        cancel_event=cancel_event,
+        thread_factory=Thread,
     )
-    worker.start()
-    try:
-        while True:
-            message = messages.get()
-            if message[0] == "done":
-                return
-            if message[0] == "error":
-                payload = message[1]
-                if isinstance(payload, BaseException):
-                    raise payload
-                raise RuntimeError(str(payload))
-            yield message[1]
-    finally:
-        stop_event.set()
 
 
 # Audio Generation
@@ -5364,8 +5342,8 @@ def text_to_audio(
     Generates audio from text using the specified TTS service.
     `tts_settings` is a dictionary-like object (e.g., a dataclass).
     """
-    service_hint = str(tts_settings.get("service") or "").strip().lower()
-    if service_hint in {"audio.cpp", "audio_cpp", "audio-cpp", "audiocpp"}:
+    service_hint = _normalize_service_id(tts_settings.get("service"))
+    if service_hint == AUDIO_CPP_ADAPTER:
         tts_settings = dict(tts_settings)
         tts_settings.setdefault("audio_cpp_base_url", audio_cpp_base_url)
     if not _audio_cpp_lock_held:
@@ -5448,7 +5426,7 @@ def text_to_audio(
                 )
             elif service == "Magpie":
                 response = _request_magpie_audio(text, tts_settings, magpie_base_url)
-            elif service_hint in {"audio.cpp", "audio_cpp", "audio-cpp"} or service in {
+            elif service_hint == AUDIO_CPP_ADAPTER or service in {
                 OPENAI_SERVICE,
                 GEMINI_SERVICE,
                 LEGACY_GEMINI_SERVICE,

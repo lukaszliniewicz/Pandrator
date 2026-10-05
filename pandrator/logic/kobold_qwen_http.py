@@ -168,6 +168,7 @@ def _iter_kobold_qwen_batch_audio_http(
     resolve_api_key: Callable[[dict | None], str],
     build_payload: Callable[[str, dict], dict[str, str | float]],
     decode_audio: AudioDecoder,
+    response_callback: Callable[[requests.Response | None], None] | None = None,
 ) -> Iterator[KoboldQwenBatchAudioEvent]:
     if not items:
         return
@@ -204,6 +205,8 @@ def _iter_kobold_qwen_batch_audio_http(
     }
     last_response = None
     for batch_url in _openai_audio_speech_batch_urls(normalized_base_url):
+        if stop_event is not None and stop_event.is_set():
+            return
         response = requests.post(
             batch_url,
             headers=_openai_auth_headers(resolved_api_key),
@@ -211,63 +214,70 @@ def _iter_kobold_qwen_batch_audio_http(
             stream=True,
             timeout=(10, KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS),
         )
-        if _should_try_next_openai_candidate(response.status_code):
-            response.close()
-            last_response = response
-            continue
-        with response:
-            response.raise_for_status()
-            for raw_line in response.iter_lines(decode_unicode=True):
+        try:
+            with response:
+                if response_callback is not None:
+                    response_callback(response)
+                if _should_try_next_openai_candidate(response.status_code):
+                    last_response = response
+                    continue
+                response.raise_for_status()
                 if stop_event is not None and stop_event.is_set():
                     return
-                line = (
-                    raw_line.decode("utf-8")
-                    if isinstance(raw_line, bytes)
-                    else str(raw_line or "")
-                ).strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except ValueError as error:
-                    raise RuntimeError(
-                        "Qwen batch synthesis returned invalid NDJSON."
-                    ) from error
-                if not isinstance(event, dict) or event.get("type") != "item":
-                    continue
-                item_id = str(event.get("id") or "").strip()
-                if event.get("status") == "completed":
+                for raw_line in response.iter_lines(decode_unicode=True):
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    line = (
+                        raw_line.decode("utf-8")
+                        if isinstance(raw_line, bytes)
+                        else str(raw_line or "")
+                    ).strip()
+                    if not line:
+                        continue
                     try:
-                        audio_bytes = base64.b64decode(
-                            str(event.get("audio_base64") or ""),
-                            validate=True,
-                        )
-                        audio = decode_audio(
-                            audio_bytes,
-                            format_hint=str(event.get("response_format") or "wav"),
-                        )
-                    except (ValueError, TypeError) as error:
+                        event = json.loads(line)
+                    except ValueError as error:
                         raise RuntimeError(
-                            f"Qwen batch item '{item_id}' returned invalid audio."
+                            "Qwen batch synthesis returned invalid NDJSON."
                         ) from error
+                    if not isinstance(event, dict) or event.get("type") != "item":
+                        continue
+                    item_id = str(event.get("id") or "").strip()
+                    if event.get("status") == "completed":
+                        try:
+                            audio_bytes = base64.b64decode(
+                                str(event.get("audio_base64") or ""),
+                                validate=True,
+                            )
+                            audio = decode_audio(
+                                audio_bytes,
+                                format_hint=str(event.get("response_format") or "wav"),
+                            )
+                        except (ValueError, TypeError) as error:
+                            raise RuntimeError(
+                                f"Qwen batch item '{item_id}' returned invalid audio."
+                            ) from error
+                        yield {
+                            "id": item_id,
+                            "audio": audio,
+                            "error": None,
+                        }
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        continue
+                    error_payload = event.get("error")
+                    if not isinstance(error_payload, dict):
+                        error_payload = {"detail": "Qwen batch item failed."}
                     yield {
                         "id": item_id,
-                        "audio": audio,
-                        "error": None,
+                        "audio": None,
+                        "error": error_payload,
                     }
                     if cancel_event is not None and cancel_event.is_set():
                         return
-                    continue
-                error_payload = event.get("error")
-                if not isinstance(error_payload, dict):
-                    error_payload = {"detail": "Qwen batch item failed."}
-                yield {
-                    "id": item_id,
-                    "audio": None,
-                    "error": error_payload,
-                }
-                if cancel_event is not None and cancel_event.is_set():
-                    return
+        finally:
+            if response_callback is not None:
+                response_callback(None)
         return
 
     if last_response is not None:
