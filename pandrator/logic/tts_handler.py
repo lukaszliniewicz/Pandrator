@@ -33,6 +33,7 @@ from ..constants import (
 )
 from . import elevenlabs_catalogue_http as _elevenlabs_catalogue_http
 from . import kobold_qwen_http as _kobold_qwen_http
+from . import native_speech_http as _native_speech_http
 from . import silero_catalogue_http as _silero_catalogue_http
 from . import xtts_catalogue_http as _xtts_catalogue_http
 from .audio_cpp_execution import local_tts_audio_cpp_guard
@@ -3148,14 +3149,10 @@ def _azure_speech_ssml(text: str, model: str, voice: str, tts_settings: dict) ->
 def _request_azure_speech_audio(
     text: str, tts_settings: dict, endpoint: dict[str, object]
 ) -> requests.Response:
-    base_url, model, voice, api_key = _validate_azure_speech_request(
-        endpoint, tts_settings
-    )
+    base_url, model, voice, api_key = _validate_azure_speech_request(endpoint, tts_settings)
     request_defaults = endpoint.get("request_defaults")
     default_output_format = (
-        request_defaults.get("output_format")
-        if isinstance(request_defaults, dict)
-        else ""
+        request_defaults.get("output_format") if isinstance(request_defaults, dict) else ""
     )
     output_format = (
         str(
@@ -3169,21 +3166,19 @@ def _request_azure_speech_audio(
     speech_path = str(endpoint.get("speech_path") or "/cognitiveservices/v1").strip()
     ssml = _azure_speech_ssml(text, model, voice, tts_settings)
     url = _configured_endpoint_url(base_url, speech_path)
-    try:
-        return requests.post(
-            url,
-            headers={
+    return _native_speech_http.post_native_speech(
+        url,
+        request_label="Azure Speech",
+        request_options=lambda: {
+            "headers": {
                 "Content-Type": "application/ssml+xml",
                 "X-Microsoft-OutputFormat": output_format,
                 "Ocp-Apim-Subscription-Key": api_key,
             },
-            data=ssml,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-    except requests.exceptions.Timeout as error:
-        raise RuntimeError("Azure Speech request timed out.") from error
-    except requests.exceptions.RequestException as error:
-        raise RuntimeError(f"Azure Speech request failed: {error}") from error
+            "data": ssml,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+    )
 
 
 def _elevenlabs_base_url(base_url: str | None = "") -> str:
@@ -3301,9 +3296,7 @@ def _request_elevenlabs_audio(
         raise ValueError("Select an ElevenLabs model before generating speech.")
     request_defaults = selected_endpoint.get("request_defaults")
     default_output_format = (
-        request_defaults.get("output_format")
-        if isinstance(request_defaults, dict)
-        else ""
+        request_defaults.get("output_format") if isinstance(request_defaults, dict) else ""
     )
     output_format = (
         str(
@@ -3325,10 +3318,7 @@ def _request_elevenlabs_audio(
     payload = {"text": compiled.input, "model_id": model_id}
     payload.update(compiled.request_options)
     language_code = normalize_elevenlabs_language_code(tts_settings.get("language"))
-    if (
-        language_code
-        and model_id.lower() not in ELEVENLABS_MODELS_WITHOUT_LANGUAGE_CODE
-    ):
+    if language_code and model_id.lower() not in ELEVENLABS_MODELS_WITHOUT_LANGUAGE_CODE:
         payload["language_code"] = language_code
     base_url = _elevenlabs_base_url(
         str(
@@ -3338,18 +3328,16 @@ def _request_elevenlabs_audio(
         )
     )
     url = f"{base_url}/v1/text-to-speech/{quote(voice_id, safe='')}"
-    try:
-        return requests.post(
-            url,
-            headers=_elevenlabs_auth_headers(api_key, audio=True),
-            params={"output_format": output_format},
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-    except requests.exceptions.Timeout as error:
-        raise RuntimeError("ElevenLabs speech request timed out.") from error
-    except requests.exceptions.RequestException as error:
-        raise RuntimeError(f"ElevenLabs speech request failed: {error}") from error
+    return _native_speech_http.post_native_speech(
+        url,
+        request_label="ElevenLabs speech",
+        request_options=lambda: {
+            "headers": _elevenlabs_auth_headers(api_key, audio=True),
+            "params": {"output_format": output_format},
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+    )
 
 
 def get_elevenlabs_model_catalog(
