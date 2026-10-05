@@ -1747,6 +1747,7 @@ def build_server(runtime: McpRuntime):
             ),
         ],
         character_proposals: list[dict[str, Any]] | None = None,
+        context_delta: DelegationContextDeltaInput | None = None,
     ) -> dict[str, Any]:
         """Return every unit exactly once so Pandrator can materialize the revision."""
 
@@ -1758,6 +1759,7 @@ def build_server(runtime: McpRuntime):
                 lease_token=lease_token,
                 result=result,
                 character_proposals=character_proposals or [],
+                context_delta=context_delta or DelegationContextDeltaInput(),
                 idempotency_key=idempotency_key,
             ),
         )
