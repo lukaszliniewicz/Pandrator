@@ -8,20 +8,7 @@ from urllib.parse import urlparse
 
 from pandrator.logic.tts_language_support import tts_language_support
 from pandrator.logic.tts_provider_profiles import AUDIO_CPP_MODEL_CATALOG
-
-
-def normalize_service_id(value: object) -> str:
-    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return {
-        "qwen3_tts": "kobold_qwen",
-        "qwen3": "kobold_qwen",
-        "qwen": "kobold_qwen",
-        "kobold_qwen3": "kobold_qwen",
-        "audio.cpp": "audio_cpp",
-        "audio-cpp": "audio_cpp",
-        "audiocpp": "audio_cpp",
-        "openai_compatible": "openai_compatible",
-    }.get(normalized, normalized)
+from pandrator.logic.tts_service_identity import normalize_service_id as normalize_service_id
 
 
 def _dedupe_catalogue_values(values: Iterable[object]) -> list[str]:
@@ -671,5 +658,4 @@ def _supports_parallel_cloud_synthesis(service: Mapping[str, Any]) -> bool:
             )
         )
     return False
-
 

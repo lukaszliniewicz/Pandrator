@@ -11,6 +11,7 @@ from werkzeug.datastructures import MultiDict
 
 from pandrator.logic.audio_cpp_catalogue import catalogue_page
 from pandrator.logic.model_catalogue import catalogue_page as model_catalogue_page
+from pandrator.logic.tts_service_identity import normalize_service_id
 
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
@@ -621,6 +622,9 @@ def register_service_routes(
             return error_response("validation_error", str(error), 422)
         if settings is None:
             return error_response("not_found", "TTS service not found.", 404)
+        resource_keys = [
+            f"service:tts:{normalize_service_id(settings.get('preview_service_id') or service_id)}"
+        ]
         if idempotency_key is not None:
             try:
                 with database.immediate_session() as db_session:
@@ -646,7 +650,7 @@ def register_service_routes(
                         "tts.preview",
                         {"text": payload.text, "settings": settings},
                         max_attempts=2,
-                        resource_keys=[f"service:tts:{service_id}"],
+                        resource_keys=resource_keys,
                     )
                     result = _job_payload(job)
                     services.idempotency.complete(
@@ -668,6 +672,6 @@ def register_service_routes(
             "tts.preview",
             {"text": payload.text, "settings": settings},
             max_attempts=2,
-            resource_keys=[f"service:tts:{service_id}"],
+            resource_keys=resource_keys,
         )
         return jsonify(_job_payload(job)), 202

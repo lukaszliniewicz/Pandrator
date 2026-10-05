@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+from pandrator.logic.tts_service_identity import normalize_service_id
+
 from .credentials import SecretRedactor
 from .database import Database
 from .model_maintenance import ensure_app_job_allowed
@@ -24,6 +26,14 @@ JobHandler = Callable[
     [dict[str, Any], Callable[[float, str | None], None], threading.Event],
     dict[str, Any] | None,
 ]
+
+
+def _canonical_tts_resource_key(key: str) -> str:
+    candidate = key.strip()
+    prefix = "service:tts:"
+    if candidate.startswith(prefix):
+        return prefix + normalize_service_id(candidate.removeprefix(prefix))
+    return key
 
 
 class JobQueue:
@@ -518,7 +528,11 @@ class JobQueue:
             workflow_run_id=workflow_run_id,
             max_attempts=max(1, int(max_attempts)),
             resource_keys_json=sorted(
-                {str(key) for key in (resource_keys or []) if str(key).strip()}
+                {
+                    _canonical_tts_resource_key(str(key))
+                    for key in (resource_keys or [])
+                    if str(key).strip()
+                }
             ),
         )
         session.add(job)
@@ -528,7 +542,9 @@ class JobQueue:
         if session_id:
             owner = session.get(SessionRecord, session_id, populate_existing=True)
             if owner is None or owner.trashed_at is not None or owner.status == "purging":
-                raise ValueError("Restore the session before starting work; permanent deletion cannot be resumed as a session.")
+                raise ValueError(
+                    "Restore the session before starting work; permanent deletion cannot be resumed as a session."
+                )
         # The flush has acquired the app SQLite writer transaction.  The
         # manager guard must run before the queue event and return so a busy
         # check raises into the caller's transaction and removes this job.
@@ -551,7 +567,9 @@ class JobQueue:
         lease_generation: int,
         lease_seconds: int = 30,
     ) -> bool:
-        normalized_keys = sorted({str(key).strip() for key in keys if str(key).strip()})
+        normalized_keys = sorted(
+            {_canonical_tts_resource_key(str(key).strip()) for key in keys if str(key).strip()}
+        )
         now = utcnow()
         expires = now + timedelta(seconds=max(5, lease_seconds))
         with self.database.immediate_session() as session:
@@ -571,12 +589,23 @@ class JobQueue:
             )
             if conflict is not None:
                 return False
+            tts_keys = {key for key in normalized_keys if key.startswith("service:tts:")}
+            if tts_keys:
+                # Older workers may hold an alias key. Match its identity
+                # without rewriting another worker's active lease.
+                legacy_keys = session.scalars(
+                    select(ResourceClaim.resource_key).where(
+                        ResourceClaim.resource_key.like("service:tts:%"),
+                        ResourceClaim.expires_at > now,
+                        ResourceClaim.job_id != job_id,
+                    )
+                )
+                if any(_canonical_tts_resource_key(key) in tts_keys for key in legacy_keys):
+                    return False
             claims = {
                 claim.resource_key: claim
                 for claim in session.scalars(
-                    select(ResourceClaim).where(
-                        ResourceClaim.resource_key.in_(normalized_keys)
-                    )
+                    select(ResourceClaim).where(ResourceClaim.resource_key.in_(normalized_keys))
                 ).all()
             }
             for key in normalized_keys:
