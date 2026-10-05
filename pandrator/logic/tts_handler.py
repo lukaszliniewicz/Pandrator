@@ -3331,7 +3331,11 @@ def _request_elevenlabs_audio(
     ):
         payload["language_code"] = language_code
     base_url = _elevenlabs_base_url(
-        str(selected_endpoint.get("api_base") or ELEVENLABS_API_BASE_URL)
+        str(
+            selected_endpoint.get("base_url")
+            or selected_endpoint.get("api_base")
+            or ELEVENLABS_API_BASE_URL
+        )
     )
     url = f"{base_url}/v1/text-to-speech/{quote(voice_id, safe='')}"
     try:
