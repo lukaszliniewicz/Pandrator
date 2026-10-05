@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import pytest
@@ -508,4 +508,158 @@ def test_speakers_file_parser_replaced_during_voice_get_is_used(
         (user_payload, {"user_data", "assistants"}),
         (assistant_payload, {"user_data", "assistants"}),
     ]
+    script.assert_consumed()
+
+
+def test_models_default_and_merge_replaced_during_get_are_used(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    merged: list[tuple[list[str], list[str]]] = []
+
+    def merge(preferred: list[str], discovered: list[str]) -> list[str]:
+        merged.append((preferred.copy(), discovered.copy()))
+        return preferred + discovered + ["merged"]
+
+    def replace() -> None:
+        monkeypatch.setattr(tts_handler, "XTTS_DEFAULT_MODEL", "late-default")
+        monkeypatch.setattr(tts_handler, "_merge_catalog_with_discovered", merge)
+
+    script = GetScript(
+        [catalog_step(MODELS_URLS[0], response(payload={"data": [{"id": "model"}]}))],
+        hook=replace,
+    )
+    script.install(monkeypatch)
+    assert tts_handler.get_xtts_models(BASE) == ["late-default", "model", "merged"]
+    assert merged == [(["late-default"], ["model"])]
+    script.assert_consumed()
+
+
+def test_speakers_late_file_policy_headers_and_dedupe_are_used(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_dedupe = tts_handler._dedupe_ordered
+    deduped: list[list[object]] = []
+    file_bases: list[str] = []
+
+    def dedupe(items: Iterable[object]) -> list[str]:
+        values = list(items)
+        deduped.append(values)
+        return original_dedupe(values)
+
+    def files_urls(base: str) -> list[str]:
+        file_bases.append(base)
+        return ["http://provider.invalid/custom/files"]
+
+    def replace() -> None:
+        monkeypatch.setattr(tts_handler, "XTTS_DISCOVERABLE_FILE_PURPOSES", ("assistants",))
+        monkeypatch.setattr(tts_handler, "_openai_files_urls", files_urls)
+        monkeypatch.setattr(tts_handler, "_openai_auth_headers", lambda: KEY_HEADERS.copy())
+        monkeypatch.setattr(tts_handler, "_dedupe_ordered", dedupe)
+
+    script = GetScript(
+        [
+            catalog_step(VOICES_URLS[0], response(payload={"voices": ["voice"]})),
+            Step(
+                "http://provider.invalid/custom/files",
+                {
+                    "headers": KEY_HEADERS,
+                    "params": {"purpose": "assistants", "limit": 10000},
+                    "timeout": 8,
+                },
+                response(
+                    payload={
+                        "data": [
+                            {"id": "allowed", "purpose": "assistants"},
+                            {"id": "filtered", "purpose": "user_data"},
+                            {"id": "no-purpose"},
+                        ]
+                    }
+                ),
+            ),
+        ],
+        hook=replace,
+    )
+    script.install(monkeypatch)
+    assert tts_handler.get_xtts_speakers(BASE) == ["voice", "allowed", "no-purpose"]
+    assert file_bases == [BASE]
+    assert deduped == [["allowed", "no-purpose"], ["voice", "allowed", "no-purpose"]]
+    script.assert_consumed()
+
+
+def test_models_status_policy_replaced_during_get_is_used(monkeypatch: pytest.MonkeyPatch):
+    statuses: list[int] = []
+
+    def fallback(status: int) -> bool:
+        statuses.append(status)
+        return status == 200
+
+    def replace() -> None:
+        monkeypatch.setattr(tts_handler, "_should_try_next_openai_candidate", fallback)
+
+    script = GetScript(
+        [catalog_step(url, response(payload={"data": [{"id": "ignored"}]})) for url in MODELS_URLS],
+        hook=replace,
+    )
+    script.install(monkeypatch)
+    assert tts_handler.get_xtts_models(BASE) == [DEFAULT_MODEL]
+    assert statuses == [200, 200]
+    script.assert_consumed()
+
+
+def test_models_url_policy_replaced_during_normalization_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_normalize = tts_handler._normalize_base_url
+    normalized: list[tuple[str, str]] = []
+    model_bases: list[str] = []
+
+    def models_urls(base: str) -> list[str]:
+        model_bases.append(base)
+        return [f"{base}/custom/models"]
+
+    def normalize(base: str, fallback: str) -> str:
+        normalized.append((base, fallback))
+        monkeypatch.setattr(tts_handler, "_openai_models_urls", models_urls)
+        return original_normalize(base, fallback)
+
+    monkeypatch.setattr(tts_handler, "_normalize_base_url", normalize)
+    script = GetScript(
+        [catalog_step("http://provider.invalid/custom/models", response(payload={"data": []}))]
+    )
+    script.install(monkeypatch)
+    assert tts_handler.get_xtts_models("  http://provider.invalid///  ") == [DEFAULT_MODEL]
+    assert normalized == [("  http://provider.invalid///  ", "http://127.0.0.1:8020")]
+    assert model_bases == [BASE]
+    script.assert_consumed()
+
+
+def test_models_parser_value_error_tries_next_candidate(monkeypatch: pytest.MonkeyPatch):
+    parsed: list[object] = []
+
+    def parse(payload: object) -> list[str]:
+        parsed.append(payload)
+        if len(parsed) == 1:
+            raise ValueError("fixture parser failure")
+        return ["recovered"]
+
+    monkeypatch.setattr(tts_handler, "_extract_models_from_openai_payload", parse)
+    script = GetScript(
+        [
+            catalog_step(MODELS_URLS[0], response(payload={"first": True})),
+            catalog_step(MODELS_URLS[1], response(payload={"second": True})),
+        ]
+    )
+    script.install(monkeypatch)
+    assert tts_handler.get_xtts_models(BASE) == [DEFAULT_MODEL, "recovered"]
+    assert parsed == [{"first": True}, {"second": True}]
+    script.assert_consumed()
+
+
+@pytest.mark.parametrize("kind", ("models", "speakers"))
+def test_xtts_catalogue_unexpected_get_error_propagates(monkeypatch: pytest.MonkeyPatch, kind: str):
+    url = MODELS_URLS[0] if kind == "models" else VOICES_URLS[0]
+    script = GetScript([catalog_step(url, RuntimeError("unexpected catalogue error"))])
+    script.install(monkeypatch)
+    with pytest.raises(RuntimeError, match="unexpected catalogue error"):
+        getattr(tts_handler, f"get_xtts_{kind}")(BASE)
     script.assert_consumed()

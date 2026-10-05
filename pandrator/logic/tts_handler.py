@@ -32,6 +32,7 @@ from ..constants import (
     magpie_voice_catalog,
 )
 from . import kobold_qwen_http as _kobold_qwen_http
+from . import xtts_catalogue_http as _xtts_catalogue_http
 from .audio_cpp_execution import local_tts_audio_cpp_guard
 from .audio_cpp_parameters import validate_audio_cpp_model_options
 from .kobold_qwen_contracts import (
@@ -3809,79 +3810,39 @@ def _request_magpie_audio(
 def get_xtts_speakers(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     """Fetches discoverable XTTS voice identifiers from server."""
     normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
-    # Preferred path: voice catalog endpoints (/v1/audio/voices, /v1/voices).
-    discovered_voice_ids: list[str] = []
-    for voices_url in _openai_voice_catalog_urls(normalized_base_url):
-        try:
-            response = requests.get(
-                voices_url,
-                headers=_openai_auth_headers(),
-                timeout=8,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-
-            response.raise_for_status()
-            discovered_voice_ids = _extract_voices_from_openai_payload(response.json())
-            break
-        except (requests.exceptions.RequestException, ValueError) as e:
-            logging.debug("Could not fetch voices from %s: %s", voices_url, e)
-            continue
-
-    discovered_file_ids: list[str] = []
-    discoverable_purposes = set(XTTS_DISCOVERABLE_FILE_PURPOSES)
-
-    # Legacy path: OpenAI-compatible files endpoint (/v1/files).
-    for purpose in XTTS_DISCOVERABLE_FILE_PURPOSES:
-        for files_url in _openai_files_urls(normalized_base_url):
-            try:
-                response = requests.get(
-                    files_url,
-                    headers=_openai_auth_headers(),
-                    params={"purpose": purpose, "limit": 10000},
-                    timeout=8,
-                )
-                if _should_try_next_openai_candidate(response.status_code):
-                    continue
-
-                response.raise_for_status()
-                discovered_file_ids.extend(
-                    _extract_file_ids_from_openai_payload(
-                        response.json(),
-                        allowed_purposes=discoverable_purposes,
-                    )
-                )
-                break
-            except (requests.exceptions.RequestException, ValueError) as e:
-                logging.debug("Could not fetch files from %s: %s", files_url, e)
-                continue
-
-    return _dedupe_ordered(discovered_voice_ids + discovered_file_ids)
+    return _xtts_catalogue_http.get_xtts_speakers(
+        normalized_base_url,
+        _openai_voice_catalog_urls=lambda base: _openai_voice_catalog_urls(base),
+        _openai_auth_headers=lambda: _openai_auth_headers(),
+        _should_try_next_openai_candidate=lambda status: _should_try_next_openai_candidate(status),
+        _extract_voices_from_openai_payload=lambda payload: _extract_voices_from_openai_payload(
+            payload
+        ),
+        _openai_files_urls=lambda base: _openai_files_urls(base),
+        _extract_file_ids_from_openai_payload=lambda payload, *, allowed_purposes: (
+            _extract_file_ids_from_openai_payload(payload, allowed_purposes=allowed_purposes)
+        ),
+        discoverable_file_purposes=lambda: XTTS_DISCOVERABLE_FILE_PURPOSES,
+        _dedupe_ordered=lambda items: _dedupe_ordered(items),
+    )
 
 
 def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     """Fetches available XTTS models from server."""
     normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
-    discovered_models: list[str] = []
-
-    for models_url in _openai_models_urls(normalized_base_url):
-        try:
-            response = requests.get(
-                models_url,
-                headers=_openai_auth_headers(),
-                timeout=8,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-
-            response.raise_for_status()
-            discovered_models = _extract_models_from_openai_payload(response.json())
-            break
-        except (requests.exceptions.RequestException, ValueError) as e:
-            logging.debug("Could not fetch models from %s: %s", models_url, e)
-            continue
-
-    return _merge_catalog_with_discovered([XTTS_DEFAULT_MODEL], discovered_models)
+    return _xtts_catalogue_http.get_xtts_models(
+        normalized_base_url,
+        _openai_models_urls=lambda base: _openai_models_urls(base),
+        _openai_auth_headers=lambda: _openai_auth_headers(),
+        _should_try_next_openai_candidate=lambda status: _should_try_next_openai_candidate(status),
+        _extract_models_from_openai_payload=lambda payload: _extract_models_from_openai_payload(
+            payload
+        ),
+        default_model=lambda: XTTS_DEFAULT_MODEL,
+        _merge_catalog_with_discovered=lambda preferred, discovered: _merge_catalog_with_discovered(
+            preferred, discovered
+        ),
+    )
 
 
 def _remote_voice_exists(
