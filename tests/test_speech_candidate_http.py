@@ -13,12 +13,12 @@ from pandrator.logic import tts_handler
 BASE = "http://fixture.invalid"
 TEXT = "  Hello  世界 "
 URLS = ("http://fixture.invalid/v1/audio/speech", "http://fixture.invalid/audio/speech")
-PROVIDERS = ("magpie", "xtts", "voxcpm", "fishs2", "voxtral")
+PROVIDERS = ("magpie", "xtts", "voxcpm", "fishs2", "voxtral", "kokoro", "chatterbox")
 
 
 @pytest.fixture(autouse=True)
 def synthetic_provider_key_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("VOXCPM_API_KEY", "FISHS2_API_KEY", "VOXTRAL_API_KEY"):
+    for name in ("VOXCPM_API_KEY", "FISHS2_API_KEY", "VOXTRAL_API_KEY", "KOKORO_API_KEY"):
         monkeypatch.setenv(name, "")
 
 
@@ -40,8 +40,12 @@ def request(provider: str, settings: dict[str, object], base: str = BASE) -> req
         return tts_handler._request_voxcpm_audio(TEXT, settings, base)
     if provider == "fishs2":
         return tts_handler._request_fishs2_audio(TEXT, settings, base)
-    assert provider == "voxtral"
-    return tts_handler._request_voxtral_audio(TEXT, settings, base)
+    if provider == "voxtral":
+        return tts_handler._request_voxtral_audio(TEXT, settings, base)
+    if provider == "kokoro":
+        return tts_handler._request_kokoro_audio(TEXT, settings, base)
+    assert provider == "chatterbox"
+    return tts_handler._request_chatterbox_audio(TEXT, settings, base)
 
 
 def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
@@ -114,6 +118,38 @@ def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
                     '"max_chunk_chars": 500, "chunk_silence_ms": 0, "strip_quotes": false, '
                     '"strip_diacritics": false, "level_audio": false}'
                 ),
+            },
+            "timeout": timeout,
+        }
+    if provider == "kokoro":
+        return {
+            "headers": {"Authorization": "Bearer sk-placeholder"},
+            "json": {
+                "model": "kokoro",
+                "input": TEXT,
+                "voice": "af_heart",
+                "response_format": "wav",
+                "speed": 1.0,
+            },
+            "timeout": timeout,
+        }
+    if provider == "chatterbox":
+        return {
+            "headers": {"Authorization": "Bearer sk-placeholder"},
+            "json": {
+                "model": "chatterbox-turbo",
+                "input": TEXT,
+                "voice": None,
+                "speed": 1.0,
+                "language": "en",
+                "temperature": 0.8,
+                "exaggeration": 0.5,
+                "cfg_weight": 0.5,
+                "repetition_penalty": 1.2,
+                "min_p": 0.05,
+                "top_p": 0.95,
+                "top_k": 1000,
+                "norm_loudness": True,
             },
             "timeout": timeout,
         }
@@ -275,6 +311,8 @@ def test_empty_root_candidates_raise_without_post(
         "voxcpm": "VoxCPM",
         "fishs2": "FishS2",
         "voxtral": "Voxtral",
+        "kokoro": "Kokoro",
+        "chatterbox": "Chatterbox",
     }[provider]
     assert str(raised.value) == f"No {name} speech endpoint could be resolved for '{BASE}'."
     assert calls == []
@@ -317,7 +355,7 @@ def test_candidate_loop_preserves_root_resolution_and_option_evaluation_order(
         return list(URLS)
 
     def second_headers(api_key: str = "sk-placeholder") -> dict[str, str]:
-        assert api_key == "sk-placeholder"
+        assert api_key == ("updated-placeholder" if provider == "chatterbox" else "sk-placeholder")
         events.append("headers-2")
         monkeypatch.setattr(tts_handler.requests, "post", unexpected_post)
         monkeypatch.setattr(tts_handler, "TTS_GENERATION_TIMEOUT_SECONDS", 333)
@@ -353,6 +391,10 @@ def test_candidate_loop_preserves_root_resolution_and_option_evaluation_order(
         calls.append((url, deepcopy(options)))
         monkeypatch.setattr(tts_handler.requests, "post", second_post)
         monkeypatch.setattr(tts_handler, "TTS_GENERATION_TIMEOUT_SECONDS", 222)
+        if provider == "chatterbox":
+            monkeypatch.setattr(
+                tts_handler, "XTTS_OPENAI_PLACEHOLDER_API_KEY", "updated-placeholder"
+            )
         if provider != "magpie":
             monkeypatch.setattr(tts_handler, "_openai_auth_headers", second_headers)
         return first
@@ -409,7 +451,7 @@ def test_malformed_speed_keeps_provider_specific_preparation_behavior(
     assert settings == original
 
 
-@pytest.mark.parametrize("provider", ("voxcpm", "fishs2", "voxtral"))
+@pytest.mark.parametrize("provider", ("voxcpm", "fishs2", "voxtral", "kokoro"))
 def test_local_custom_payload_and_environment_key_precedence(
     monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
@@ -456,6 +498,15 @@ def test_local_custom_payload_and_environment_key_precedence(
             "normalize": True,
             "prosody": {"speed": 1.25, "volume": 0.0, "normalize_loudness": True},
         }
+    elif provider == "kokoro":
+        settings["xtts_model"] = "openai/kokoro"
+        expected_payload = {
+            "model": "kokoro",
+            "input": TEXT,
+            "voice": "demo",
+            "response_format": "wav",
+            "speed": 1.25,
+        }
     else:
         settings.update(
             {
@@ -493,6 +544,62 @@ def test_local_custom_payload_and_environment_key_precedence(
             {
                 "headers": {"Authorization": "Bearer env-key"},
                 "json": expected_payload,
+                "timeout": 300,
+            },
+        )
+    ]
+    assert settings == original
+
+
+def test_chatterbox_custom_payload_preserves_raw_voice_and_ignores_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings: dict[str, object] = {
+        "xtts_model": "multilingual",
+        "speaker": " demo ",
+        "language": "pt_BR",
+        "speed": 1.25,
+        "temperature": 0.99,
+        "chatterbox_temperature": 0,
+        "chatterbox_repetition_penalty": 0,
+        "chatterbox_top_k": 0,
+        "chatterbox_norm_loudness": False,
+        "provider_configs": [
+            {"id": "chatterbox", "api_key_env": "LOCAL_PACKET_KEY", "api_key": "ignored-key"}
+        ],
+    }
+    original = deepcopy(settings)
+    result = response(200)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def post(url: str, **options: object) -> requests.Response:
+        assert not calls
+        calls.append((url, deepcopy(options)))
+        return result
+
+    monkeypatch.setenv("LOCAL_PACKET_KEY", "ignored-env-key")
+    monkeypatch.setattr(tts_handler.requests, "post", post)
+    assert request("chatterbox", settings) is result
+    assert calls == [
+        (
+            URLS[0],
+            {
+                "headers": {"Authorization": "Bearer sk-placeholder"},
+                "json": {
+                    "model": "chatterbox-multilingual",
+                    "input": TEXT,
+                    "voice": " demo ",
+                    "speed": 1.25,
+                    "language": "pt",
+                    "temperature": 0.0,
+                    "exaggeration": 0.5,
+                    "cfg_weight": 0.5,
+                    "repetition_penalty": 1.0,
+                    "min_p": 0.05,
+                    "top_p": 0.95,
+                    "top_k": 0,
+                    "norm_loudness": False,
+                },
                 "timeout": 300,
             },
         )
