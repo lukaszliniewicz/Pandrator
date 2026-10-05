@@ -35,6 +35,13 @@ changed surface. At the batch boundary, run the combined relevant regressions
 and production quality checks once. Keep independently reviewable fixes in
 separate commits when useful; a batch need not mean one large commit.
 
+Before implementation, record the batch's behavior boundaries, focused
+regressions, combined acceptance selection, and checks whose inputs will remain
+unchanged in the active plan. Share the final gate across related fixes and
+ownership changes. Do not open a new acceptance boundary solely because a
+helper moved or a commit was made. End the batch when it crosses into a
+different contract or a material unresolved design decision.
+
 After a failure, rerun the affected checks. Repeat broader checks when another
 change affects shared behavior, imports, configuration, or the validity of the
 earlier result. Record the revision and scope each result covers; an earlier
@@ -55,6 +62,12 @@ an expensive run.
 Record test counts and durations separately from implementation time and
 setup failures. Use those measurements to adjust batch sizes; do not treat
 smaller test counts or file sizes as evidence of better maintainability.
+For workflow comparisons, record batch start/end and acceptance start/end
+alongside individual check durations in the existing receipt. Overlapping
+durations cannot be added to obtain waiting time, and elapsed batch time is
+not a measurement of active implementation time. Include research, setup and
+reporting overhead when assessing the workflow; do not optimize test counts
+in isolation. No separate timing harness is required.
 
 Run independent acceptance checks concurrently when their inputs and outputs
 do not conflict. Preserve a passing result across commit boundaries when its
