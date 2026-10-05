@@ -200,6 +200,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_dispatch_guarded_validation.py",
         "tests/test_mcp_passive_dispatch_registration.py",
         "tests/test_mcp_generic_dispatch_validation.py",
+        "tests/test_mcp_generic_dispatch_registration.py",
         "tests/test_mcp_dispatch_split_strictness.py",
         "tests/test_mcp_legacy_response_text.py",
         "tests/test_mcp_subtitle_evidence.py",

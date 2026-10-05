@@ -12,6 +12,7 @@ from mcp import Client
 from mcp.types import TextContent
 from pydantic import model_validator
 
+import pandrator_mcp.registrations.dispatch as dispatch_owner
 import pandrator_mcp.server as adapter
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
@@ -132,7 +133,7 @@ def test_generic_get_validator_stdout_and_correlation_are_guarded(
             observed.append(correlation_headers())
             raise ValueError("Fixture guarded generic validation")
 
-    monkeypatch.setattr(adapter, "GetDispatchRunInput", PrintingInput)
+    monkeypatch.setattr(dispatch_owner, "GetDispatchRunInput", PrintingInput)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
     tool = "pandrator_get_dispatch_run"
     result = asyncio.run(invoke(runtime, tool, {"run_id": "run-1"}))
