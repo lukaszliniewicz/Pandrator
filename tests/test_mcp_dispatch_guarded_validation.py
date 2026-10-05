@@ -13,6 +13,7 @@ from mcp import Client
 from mcp.types import TextContent
 from pydantic import model_validator
 
+import pandrator_mcp.registrations.source_cleaning_dispatch as source_registrations
 import pandrator_mcp.server as adapter
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
@@ -184,7 +185,7 @@ def test_source_get_validation_print_and_correlation_are_guarded(
             observed.append(correlation_headers())
             raise ValueError("Fixture guard validation")
 
-    monkeypatch.setattr(adapter, "GetSourceCleaningDispatchRunInput", PrintingInput)
+    monkeypatch.setattr(source_registrations, "GetSourceCleaningDispatchRunInput", PrintingInput)
     before = (_REQUEST_ID.get(), _TRACE_ID.get())
     tool = "pandrator_get_source_cleaning_dispatch_run"
     result = asyncio.run(invoke(runtime, tool, {"run_id": "run-1"}))

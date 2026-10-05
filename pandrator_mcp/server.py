@@ -24,6 +24,8 @@ from .registrations.media_edit import (
     register_media_edit_dispatch_tools,
     register_media_edit_tools,
 )
+from .registrations.source_cleaning_dispatch import register_source_cleaning_dispatch_tools
+from .registrations.speech_optimization_dispatch import register_speech_optimization_dispatch_tools
 from .registrations.transcription import register_transcription_tools
 from .request_context import begin_request, end_request
 from .results import ToolOutcome
@@ -34,14 +36,10 @@ from .schemas import (
     CancelWorkInput,
     CapabilitiesInput,
     ClaimDispatchBatchInput,
-    ClaimSourceCleaningDispatchBatchInput,
-    ClaimSpeechOptimizationDispatchBatchInput,
     ConfigureTtsInput,
     ControlRuntimeInput,
     CreateDispatchRunInput,
     CreateSessionInput,
-    CreateSourceCleaningDispatchRunInput,
-    CreateSpeechOptimizationDispatchRunInput,
     CreateTextSourceInput,
     CuePatchInput,
     DeleteOutputInput,
@@ -55,8 +53,6 @@ from .schemas import (
     GetDispatchRunInput,
     GetSessionInput,
     GetSessionSettingsInput,
-    GetSourceCleaningDispatchRunInput,
-    GetSpeechOptimizationDispatchRunInput,
     GetSubtitleEvidenceInput,
     GetWorkflowInput,
     GetWorkInput,
@@ -65,13 +61,10 @@ from .schemas import (
     ImportLocalSourceInput,
     ImportSubtitlesInput,
     InspectDispatchSplitBoundariesInput,
-    InspectSourceCleaningDispatchExtractionInput,
     ListArtifactsInput,
     ListDispatchRunsInput,
     ListSessionsInput,
-    ListSourceCleaningDispatchRunsInput,
     ListSourcesInput,
-    ListSpeechOptimizationDispatchRunsInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
     MultilingualSetup,
@@ -85,20 +78,12 @@ from .schemas import (
     ProviderStatusInput,
     RecommendNextStepsInput,
     ReleaseDispatchBatchInput,
-    ReleaseSourceCleaningDispatchBatchInput,
-    ReleaseSpeechOptimizationDispatchBatchInput,
     RenewDispatchBatchInput,
-    RenewSourceCleaningDispatchBatchInput,
-    RenewSpeechOptimizationDispatchBatchInput,
     ReplaceSubtitleTextInput,
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
     RestoreSessionInput,
-    SourceCleaningDispatchResultInput,
-    SpeechOptimizationDispatchResultInput,
     SubmitDispatchBatchInput,
-    SubmitSourceCleaningDispatchBatchInput,
-    SubmitSpeechOptimizationDispatchBatchInput,
     SubtitleStage,
     SystemStatusInput,
     TargetStatusInput,
@@ -124,14 +109,10 @@ from .tools import (
     cancel_work,
     capabilities,
     claim_dispatch_batch,
-    claim_source_cleaning_dispatch_batch,
-    claim_speech_optimization_dispatch_batch,
     configure_tts,
     control_runtime,
     create_dispatch_run,
     create_session,
-    create_source_cleaning_dispatch_run,
-    create_speech_optimization_dispatch_run,
     create_text_source,
     delete_output,
     describe_parameters,
@@ -142,8 +123,6 @@ from .tools import (
     get_dispatch_run,
     get_session,
     get_session_settings,
-    get_source_cleaning_dispatch_run,
-    get_speech_optimization_dispatch_run,
     get_subtitle_evidence,
     get_work,
     get_work_log,
@@ -151,13 +130,10 @@ from .tools import (
     import_local_source,
     import_subtitles,
     inspect_dispatch_split_boundaries,
-    inspect_source_cleaning_dispatch_extraction,
     list_artifacts,
     list_dispatch_runs,
     list_sessions,
-    list_source_cleaning_dispatch_runs,
     list_sources,
-    list_speech_optimization_dispatch_runs,
     list_work,
     manager_doctor,
     manager_status,
@@ -171,18 +147,12 @@ from .tools import (
     provider_status,
     recommend_next_steps,
     release_dispatch_batch,
-    release_source_cleaning_dispatch_batch,
-    release_speech_optimization_dispatch_batch,
     renew_dispatch_batch,
-    renew_source_cleaning_dispatch_batch,
-    renew_speech_optimization_dispatch_batch,
     replace_subtitle_text,
     request_subtitle_evidence,
     resolve_subtitle_evidence,
     restore_session,
     submit_dispatch_batch,
-    submit_source_cleaning_dispatch_batch,
-    submit_speech_optimization_dispatch_batch,
     system_status,
     target_status,
     trash_session,
@@ -1295,492 +1265,21 @@ def build_server(runtime: McpRuntime):
              if key in SubmitDispatchBatchInput.model_fields and value is not None},
         )
 
-    @server.tool(
-        name="pandrator_create_source_cleaning_dispatch_run",
-        title="Create a passive PDF/EPUB cleanup run",
-        annotations=write_action,
+    register_source_cleaning_dispatch_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        read_only=read_only,
+        write_action=write_action,
     )
-    def source_cleaning_dispatch_create_tool(
-        session_id: str,
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        source_artifact_id: Annotated[
-            str | None,
-            Field(min_length=1, max_length=80),
-        ] = None,
-        instructions: Annotated[str, Field(max_length=16_000)] = "",
-        evidence_limit: Annotated[int, Field(ge=20, le=2_000)] = 500,
-        remove_footnotes: bool | None = None,
-        filter_citations: bool | None = None,
-        pdf_ocr_mode: Literal["auto", "off", "force"] | None = None,
-        pdf_ocr_language: Annotated[
-            str | None,
-            Field(min_length=2, max_length=80),
-        ] = None,
-        pdf_ocr_dpi: Annotated[int | None, Field(ge=120, le=400)] = None,
-        pdf_remove_toc: bool | None = None,
-        pdf_remove_repeated_marginals: bool | None = None,
-    ) -> dict[str, Any]:
-        """Queue deterministic preparation; no model provider or token budget is used."""
 
-        return _call_with_validated_input(
-            create_source_cleaning_dispatch_run,
-            runtime,
-            CreateSourceCleaningDispatchRunInput,
-            {
-                "session_id": session_id,
-                "source_artifact_id": source_artifact_id,
-                "instructions": instructions,
-                "evidence_limit": evidence_limit,
-                "remove_footnotes": remove_footnotes,
-                "filter_citations": filter_citations,
-                "pdf_ocr_mode": pdf_ocr_mode,
-                "pdf_ocr_language": pdf_ocr_language,
-                "pdf_ocr_dpi": pdf_ocr_dpi,
-                "pdf_remove_toc": pdf_remove_toc,
-                "pdf_remove_repeated_marginals": pdf_remove_repeated_marginals,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_list_source_cleaning_dispatch_runs",
-        title="List passive PDF/EPUB cleanup runs",
-        annotations=read_only,
+    register_speech_optimization_dispatch_tools(
+        server,
+        runtime,
+        _call_with_validated_input,
+        read_only=read_only,
+        write_action=write_action,
     )
-    def source_cleaning_dispatch_list_tool(
-        session_id: str,
-        limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> dict[str, Any]:
-        """List run metadata without exposing book text or phase evidence."""
-
-        return _call_with_validated_input(
-            list_source_cleaning_dispatch_runs,
-            runtime,
-            ListSourceCleaningDispatchRunsInput,
-            {
-                "session_id": session_id,
-                "limit": limit,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_get_source_cleaning_dispatch_run",
-        title="Inspect a passive PDF/EPUB cleanup run",
-        annotations=read_only,
-    )
-    def source_cleaning_dispatch_get_tool(run_id: str) -> dict[str, Any]:
-        """Inspect preparation, progress, validation, and final artifact metadata."""
-
-        return _call_with_validated_input(
-            get_source_cleaning_dispatch_run,
-            runtime,
-            GetSourceCleaningDispatchRunInput,
-            {
-                "run_id": run_id,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_claim_source_cleaning_dispatch_batch",
-        title="Claim a PDF/EPUB cleanup phase",
-        annotations=write_action,
-    )
-    def source_cleaning_dispatch_claim_tool(
-        run_id: str,
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
-    ) -> dict[str, Any]:
-        """Claim one rich editorial packet with bounded book evidence."""
-
-        return _call_with_validated_input(
-            claim_source_cleaning_dispatch_batch,
-            runtime,
-            ClaimSourceCleaningDispatchBatchInput,
-            {
-                "run_id": run_id,
-                "lease_seconds": lease_seconds,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_renew_source_cleaning_dispatch_batch",
-        title="Renew a PDF/EPUB cleanup lease",
-        annotations=write_action,
-    )
-    def source_cleaning_dispatch_renew_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
-    ) -> dict[str, Any]:
-        """Renew only the matching editorial phase lease."""
-
-        return _call_with_validated_input(
-            renew_source_cleaning_dispatch_batch,
-            runtime,
-            RenewSourceCleaningDispatchBatchInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "lease_seconds": lease_seconds,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_release_source_cleaning_dispatch_batch",
-        title="Release a PDF/EPUB cleanup lease",
-        annotations=write_action,
-    )
-    def source_cleaning_dispatch_release_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-    ) -> dict[str, Any]:
-        """Return an unfinished editorial phase to the ready queue."""
-
-        return _call_with_validated_input(
-            release_source_cleaning_dispatch_batch,
-            runtime,
-            ReleaseSourceCleaningDispatchBatchInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_inspect_source_cleaning_dispatch_extraction",
-        title="Inspect a leased PDF/EPUB extraction",
-        annotations=write_action,
-    )
-    def source_cleaning_dispatch_inspect_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        action: Literal[
-            "batch",
-            "inspect_document_structure",
-            "inspect_navigation",
-            "search",
-            "regex_search",
-            "preview",
-            "inspect_block",
-            "get_epub_markup_for_text",
-            "preview_raw_markup_range",
-            "list_epub_selectors",
-            "preview_selector",
-            "list_repeated_lines",
-            "find_heading_candidates",
-            "analyze_chapter_structure",
-            "analyze_cleanup_structure",
-            "find_footnote_candidates",
-            "find_metadata_candidates",
-        ],
-        arguments: Annotated[dict[str, Any], Field(max_length=100)],
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        view: Literal["working", "baseline", "source"] = "working",
-    ) -> dict[str, Any]:
-        """Browse/search the full pinned extraction and authorize returned blocks."""
-
-        return _call_with_validated_input(
-            inspect_source_cleaning_dispatch_extraction,
-            runtime,
-            InspectSourceCleaningDispatchExtractionInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "action": action,
-                "arguments": arguments,
-                "view": view,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_submit_source_cleaning_dispatch_batch",
-        title="Submit a PDF/EPUB cleanup phase",
-        annotations=write_action,
-    )
-    def source_cleaning_dispatch_submit_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        result: SourceCleaningDispatchResultInput,
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-    ) -> dict[str, Any]:
-        """Submit typed proposal decisions and optional phase-scoped operations."""
-
-        return _call_with_validated_input(
-            submit_source_cleaning_dispatch_batch,
-            runtime,
-            SubmitSourceCleaningDispatchBatchInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "result": result,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_create_speech_optimization_dispatch_run",
-        title="Create a passive speech-optimization run",
-        annotations=write_action,
-    )
-    def speech_optimization_dispatch_create_tool(
-        session_id: str,
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        source_artifact_id: Annotated[
-            str | None,
-            Field(min_length=1, max_length=80),
-        ] = None,
-        language: Annotated[
-            str | None,
-            Field(min_length=1, max_length=40),
-        ] = None,
-        voice_language: Annotated[
-            str | None,
-            Field(min_length=1, max_length=40),
-        ] = None,
-        tts_service: Annotated[
-            str | None,
-            Field(min_length=1, max_length=80),
-        ] = None,
-        instructions: Annotated[str, Field(max_length=16_000)] = "",
-        char_limit: Annotated[int, Field(ge=1, le=1_000_000)] = 20_000,
-        max_units_per_batch: Annotated[int, Field(ge=1, le=500)] = 100,
-        context_before: Annotated[int, Field(ge=0, le=20)] = 4,
-        context_after: Annotated[int, Field(ge=0, le=20)] = 2,
-        include_timing: bool = True,
-        annotation_mode: Literal["off", "dialogue", "speakers"] = "off",
-        annotation_only: bool = False,
-        execution_mode: Literal["serial", "parallel"] = "serial",
-        max_parallel_batches: Annotated[int, Field(ge=1, le=8)] = 1,
-        context_capsule: DelegationContextCapsuleInput | None = None,
-    ) -> dict[str, Any]:
-        """Queue serial or bounded-parallel speech-text batches for this MCP model."""
-
-        return _call_with_validated_input(
-            create_speech_optimization_dispatch_run, runtime, CreateSpeechOptimizationDispatchRunInput,
-            {key: value for key, value in locals().items()
-             if key in CreateSpeechOptimizationDispatchRunInput.model_fields and value is not None},
-        )
-
-    @server.tool(
-        name="pandrator_list_speech_optimization_dispatch_runs",
-        title="List passive speech-optimization runs",
-        annotations=read_only,
-    )
-    def speech_optimization_dispatch_list_tool(
-        session_id: str,
-        limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> dict[str, Any]:
-        """List run metadata without exposing speech text or lease capabilities."""
-
-        return _call_with_validated_input(
-            list_speech_optimization_dispatch_runs,
-            runtime,
-            ListSpeechOptimizationDispatchRunsInput,
-            {
-                "session_id": session_id,
-                "limit": limit,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_get_speech_optimization_dispatch_run",
-        title="Inspect a passive speech-optimization run",
-        annotations=read_only,
-    )
-    def speech_optimization_dispatch_get_tool(run_id: str) -> dict[str, Any]:
-        """Inspect progress and final artifact metadata without batch contents."""
-
-        return _call_with_validated_input(
-            get_speech_optimization_dispatch_run,
-            runtime,
-            GetSpeechOptimizationDispatchRunInput,
-            {
-                "run_id": run_id,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_claim_speech_optimization_dispatch_batch",
-        title="Claim a passive speech-text batch",
-        annotations=write_action,
-    )
-    def speech_optimization_dispatch_claim_tool(
-        run_id: str,
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
-    ) -> dict[str, Any]:
-        """Claim the next sequential units plus read-only boundary context."""
-
-        return _call_with_validated_input(
-            claim_speech_optimization_dispatch_batch,
-            runtime,
-            ClaimSpeechOptimizationDispatchBatchInput,
-            {
-                "run_id": run_id,
-                "lease_seconds": lease_seconds,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_renew_speech_optimization_dispatch_batch",
-        title="Renew a speech-optimization lease",
-        annotations=write_action,
-    )
-    def speech_optimization_dispatch_renew_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
-    ) -> dict[str, Any]:
-        """Renew only the matching speech-text batch lease."""
-
-        return _call_with_validated_input(
-            renew_speech_optimization_dispatch_batch,
-            runtime,
-            RenewSpeechOptimizationDispatchBatchInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "lease_seconds": lease_seconds,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_release_speech_optimization_dispatch_batch",
-        title="Release a speech-optimization lease",
-        annotations=write_action,
-    )
-    def speech_optimization_dispatch_release_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-    ) -> dict[str, Any]:
-        """Return an unfinished speech-text batch to the ready queue."""
-
-        return _call_with_validated_input(
-            release_speech_optimization_dispatch_batch,
-            runtime,
-            ReleaseSpeechOptimizationDispatchBatchInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "idempotency_key": idempotency_key,
-            },
-        )
-
-    @server.tool(
-        name="pandrator_submit_speech_optimization_dispatch_batch",
-        title="Submit a passive speech-text batch",
-        annotations=write_action,
-    )
-    def speech_optimization_dispatch_submit_tool(
-        batch_id: str,
-        lease_token: Annotated[str, Field(min_length=1, max_length=160)],
-        result: SpeechOptimizationDispatchResultInput,
-        idempotency_key: Annotated[
-            str,
-            Field(
-                min_length=8,
-                max_length=200,
-                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$",
-            ),
-        ],
-        character_proposals: list[dict[str, Any]] | None = None,
-        context_delta: DelegationContextDeltaInput | None = None,
-    ) -> dict[str, Any]:
-        """Return every unit exactly once so Pandrator can materialize the revision."""
-
-        return _call_with_validated_input(
-            submit_speech_optimization_dispatch_batch,
-            runtime,
-            SubmitSpeechOptimizationDispatchBatchInput,
-            {
-                "batch_id": batch_id,
-                "lease_token": lease_token,
-                "result": result,
-                "character_proposals": character_proposals or [],
-                "context_delta": context_delta or DelegationContextDeltaInput(),
-                "idempotency_key": idempotency_key,
-            },
-        )
 
     register_media_edit_dispatch_tools(
         server,
