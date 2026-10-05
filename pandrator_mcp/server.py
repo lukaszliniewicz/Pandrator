@@ -738,12 +738,14 @@ def build_server(runtime: McpRuntime):
 
         def make_arguments() -> PatchSubtitleCuesInput:
             parsed_cues = [
-                CuePatchInput(
-                    ordinal=int(item["ordinal"]),
-                    text=item.get("text"),
-                    speaker=item.get("speaker"),
-                    start_ms=item.get("start_ms"),
-                    end_ms=item.get("end_ms"),
+                CuePatchInput.model_validate(
+                    {
+                        "ordinal": item.get("ordinal"),
+                        "text": item.get("text"),
+                        "speaker": item.get("speaker"),
+                        "start_ms": item.get("start_ms"),
+                        "end_ms": item.get("end_ms"),
+                    }
                 )
                 for item in cues
             ]
