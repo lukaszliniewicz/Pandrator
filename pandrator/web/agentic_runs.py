@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
 from .database import Database
 from .models import AgentRun, AgentStep, Artifact, Job, UsageEvent, new_id, utcnow
@@ -213,38 +214,29 @@ class AgenticRunStore:
     def prepare_resume(self, run_id: str) -> tuple[AgentRun, Job]:
         """Atomically claim a failed run and return snapshots for requeueing."""
         with self.database.immediate_session() as session:
-            run = session.get(AgentRun, run_id)
-            if run is None:
-                raise KeyError(run_id)
-            if run.status not in {"failed", "interrupted"}:
-                raise ValueError(
-                    "Only a failed or interrupted operation can be resumed."
-                )
-            source = (
-                session.get(Artifact, run.source_artifact_id)
-                if run.source_artifact_id
-                else None
-            )
-            if source is None or str(source.content_hash or "") != str(
-                run.source_content_hash or ""
-            ):
-                raise ValueError(
-                    "The source changed; this operation cannot be resumed safely."
-                )
-            job = session.get(Job, run.job_id) if run.job_id else None
-            if job is None:
-                raise ValueError(
-                    "The original job is unavailable; start the stage again."
-                )
-            # Claim the resume before the new job is created. This makes a
-            # double click (or two browser tabs) deterministic instead of
-            # enqueueing duplicate paid work. Startup reconciliation returns
-            # this run to ``failed`` if the process dies before the new job ID
-            # is attached.
-            run.status = "retrying"
-            run.error_message = None
-            run.updated_at = utcnow()
-            session.flush()
+            run, job = self.prepare_resume_in_session(session, run_id)
             session.expunge(run)
             session.expunge(job)
             return run, job
+
+    def prepare_resume_in_session(self, session: Session, run_id: str) -> tuple[AgentRun, Job]:
+        """Claim a failed run within the caller's atomic queue handoff."""
+        run = session.get(AgentRun, run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if run.status not in {"failed", "interrupted"}:
+            raise ValueError("Only a failed or interrupted operation can be resumed.")
+        source = session.get(Artifact, run.source_artifact_id) if run.source_artifact_id else None
+        if source is None or str(source.content_hash or "") != str(run.source_content_hash or ""):
+            raise ValueError("The source changed; this operation cannot be resumed safely.")
+        job = session.get(Job, run.job_id) if run.job_id else None
+        if job is None:
+            raise ValueError("The original job is unavailable; start the stage again.")
+        # Claim before enqueueing so competing requests cannot both resume.
+        # A caller-owned transaction can commit the claim, new job and link
+        # together; the standalone wrapper retains its separate claim API.
+        run.status = "retrying"
+        run.error_message = None
+        run.updated_at = utcnow()
+        session.flush()
+        return run, job

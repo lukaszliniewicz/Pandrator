@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -48,6 +49,18 @@ from .workspace_settings import WorkspaceSettingsService
 
 STAGE_ORDER = ("transcription", "correction", "translation", "tts_optimization")
 MAX_REVIEW_ARTIFACTS = 4
+logger = logging.getLogger(__name__)
+
+
+def cleanup_review_publications(paths: Sequence[Path]) -> None:
+    """Best-effort removal must preserve the publication's primary outcome."""
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning(
+                "Could not remove subtitle publication %s", path, exc_info=True,
+            )
 
 
 class ReviewedSubtitleSegment(TypedDict):
@@ -1048,9 +1061,8 @@ class SubtitleReviewService:
                         ),
                         _prepared_composition_hash=_prepared_composition_hash,
                     )
-            except Exception:
-                for path in owned_paths:
-                    path.unlink(missing_ok=True)
+            except BaseException:
+                cleanup_review_publications(owned_paths)
                 raise
         if stage not in STAGE_ORDER:
             raise ValueError(f"Unsupported subtitle stage: {stage}")
@@ -1645,9 +1657,9 @@ class SubtitleReviewService:
                     source_passage_settings_revision=source_packet.get("source_passage_settings_revision"),
                     policy_version=source_packet.get("policy_version"),
                 )
-            except Exception:
+            except BaseException:
                 if newly_published:
-                    destination.unlink(missing_ok=True)
+                    cleanup_review_publications([destination])
                     if published_paths is not None:
                         published_paths.remove(destination)
                 raise
@@ -1684,9 +1696,8 @@ class SubtitleReviewService:
                     expected_composition_hash=expected_composition_hash,
                     published_paths=published_paths,
                 )
-        except Exception:
-            for path in published_paths:
-                path.unlink(missing_ok=True)
+        except BaseException:
+            cleanup_review_publications(published_paths)
             raise
 
     def save_passage_review_in_session(
@@ -2057,7 +2068,7 @@ class SubtitleReviewService:
                 pass
             return newly_published
         finally:
-            temporary.unlink(missing_ok=True)
+            cleanup_review_publications([temporary])
 
 
 class _SessionContext:

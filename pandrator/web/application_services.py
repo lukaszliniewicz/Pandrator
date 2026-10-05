@@ -11,6 +11,7 @@ from typing import Any
 
 from pandrator.runtime import DataPaths
 
+from .agent_run_commands import AgentRunCommands
 from .artifacts import ArtifactService
 from .audit import AuditService
 from .auth import AuthService, BootstrapTokenStore, LoginThrottle
@@ -19,6 +20,7 @@ from .capabilities import CapabilityService, crispasr_install_preferences
 from .credentials import SecretRedactor
 from .database import Database
 from .dispatch import DispatchRunService
+from .global_settings import GlobalSettingsService
 from .idempotency import IdempotencyService
 from .identity import ApplicationIdentityService
 from .jobs import JobQueue
@@ -38,6 +40,7 @@ from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
 from .startup import StartupMaintenance
 from .subtitle_evidence import SubtitleEvidenceService
 from .subtitle_review import SubtitleReviewService
+from .subtitle_review_mutations import SubtitleReviewMutationService
 from .training_lifecycle import TrainingService
 from .tts_catalogue_service import TtsCatalogueService
 from .tts_providers import TtsProviderRegistry
@@ -72,6 +75,9 @@ class ApplicationServices:
     session_forks: SessionForkService
     artifacts: ArtifactService
     training: TrainingService
+    global_settings: GlobalSettingsService
+    agent_runs: AgentRunCommands
+    subtitle_mutations: SubtitleReviewMutationService
     workflows: WorkflowService
     workflow_plans: WorkflowExecutionPlanService
     workflow_handlers: WorkflowHandlers
@@ -261,6 +267,9 @@ class ApplicationServices:
                 session_forks=session_forks,
                 artifacts=artifacts,
                 training=training,
+                global_settings=GlobalSettingsService(database, paths),
+                agent_runs=AgentRunCommands(database, jobs, artifacts),
+                subtitle_mutations=SubtitleReviewMutationService(database, idempotency, subtitle_review),
                 workflows=workflows,
                 workflow_plans=workflow_plans,
                 workflow_handlers=workflow_handlers,

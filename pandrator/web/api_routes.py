@@ -25,13 +25,9 @@ from flask import (
 from sqlalchemy import select
 from werkzeug.utils import secure_filename
 
-from pandrator.logic.tts_provider_switch import (
-    normalize_tts_voice_aliases,
-    prepare_tts_provider_switch,
-)
 from pandrator.version import PANDRATOR_VERSION
 
-from .agentic_runs import AgenticRunStore
+from .agent_run_commands import AgentRunAdmissionError, AgentRunStateError
 from .artifact_routes import register_artifact_routes
 from .artifact_selection import (
     choose_artifact,
@@ -43,14 +39,12 @@ from .artifact_selection import (
 from .auth import ALL_SCOPES, MCP_BOOTSTRAP_SCOPES, normalize_scopes
 from .automation_routes import register_automation_routes
 from .credentials import (
-    contains_inline_secret,
-    prepare_stt_settings_for_storage,
-    prepare_tts_settings_for_storage,
     redact_inline_secrets,
 )
 from .dispatch_routes import register_dispatch_routes
 from .domain_blueprints import DomainBlueprints
 from .generation_routes import register_generation_routes
+from .global_settings import SettingPreconditionError
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .http_serialization import model_payload as _model_dict
@@ -64,9 +58,7 @@ from .models import (
     AgentRun,
     AgentStep,
     AppSetting,
-    AppSettingHistory,
     SessionRecord,
-    new_id,
     utcnow,
 )
 from .openapi import build_openapi_document
@@ -104,7 +96,6 @@ from .session_routes import (
     register_session_list_routes,
 )
 from .session_settings_routes import register_session_settings_routes
-from .settings_policy import BUILTIN_DEFAULTS, SETTING_SECTIONS
 from .settings_policy import RevisionConflict as WorkspaceRevisionConflict
 from .source_cleaning_dispatch_routes import (
     register_source_cleaning_dispatch_routes,
@@ -709,57 +700,24 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/defaults/<section>")
     @require_auth
     def global_default_get(section: str):
-        from .settings_policy import split_legacy_stt_settings
-
-        if section not in SETTING_SECTIONS:
+        try:
+            result = services.global_settings.defaults(section)
+        except KeyError:
             return error_response("not_found", "Settings section not found.", 404)
-        with database.session() as db_session:
-            record = db_session.get(AppSetting, f"defaults.{section}")
-            value = (
-                dict(record.value_json or {})
-                if record and isinstance(record.value_json, dict)
-                else {}
-            )
-            revision = record.revision if record else 0
-            if section == "stt":
-                value, _ = split_legacy_stt_settings(value, reject_conflicts=False)
-            elif section == "subtitles":
-                legacy = db_session.get(AppSetting, "defaults.stt")
-                _, legacy_subtitles = split_legacy_stt_settings(
-                    dict(legacy.value_json or {}) if legacy else {}, reject_conflicts=False,
-                )
-                value = {**legacy_subtitles, **value}
-        response = jsonify(
-            redact_inline_secrets(
-                {
-                    "section": section,
-                    "builtin": BUILTIN_DEFAULTS[section],
-                    "value": value,
-                    "effective": {**BUILTIN_DEFAULTS[section], **value},
-                    "revision": revision,
-                }
-            )
-        )
-        response.headers["ETag"] = f'"{revision}"'
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
         return response
 
     @app.get("/api/v1/settings/<setting_key>")
     @require_auth
     def setting_get(setting_key: str):
-        with database.session() as db_session:
-            record = db_session.get(AppSetting, setting_key)
-            if record is None:
-                return error_response("not_found", "Setting not found.", 404)
-            response = jsonify(
-                {
-                    "key": record.key,
-                    "value": redact_inline_secrets(record.value_json),
-                    "revision": record.revision,
-                    "updated_at": record.updated_at.isoformat(),
-                }
-            )
-            response.headers["ETag"] = f'"{record.revision}"'
-            return response
+        try:
+            result = services.global_settings.get(setting_key)
+        except KeyError:
+            return error_response("not_found", "Setting not found.", 404)
+        response = jsonify(result)
+        response.headers["ETag"] = f'"{result["revision"]}"'
+        return response
 
     @app.put("/api/v1/settings/<setting_key>")
     @require_auth
@@ -769,121 +727,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         payload = SettingUpdate.model_validate(request.get_json(silent=True) or {})
         raw_etag = request.headers.get("If-Match", "").strip('W/" ')
         try:
-            with database.immediate_session() as db_session:
-                record = db_session.get(AppSetting, setting_key)
-                if record is None:
-                    if raw_etag not in {"", "0", "*"}:
-                        return error_response(
-                            "revision_conflict",
-                            "The setting does not exist at that revision.",
-                            409,
-                        )
-                else:
-                    try:
-                        expected = int(raw_etag)
-                    except ValueError:
-                        return error_response(
-                            "precondition_required",
-                            "If-Match must contain the current setting revision.",
-                            428,
-                        )
-                    if expected != record.revision:
-                        return error_response(
-                            "revision_conflict",
-                            "The setting changed in another client.",
-                            409,
-                        )
-                prepared_value = (
-                    prepare_tts_settings_for_storage(
-                        db_session,
-                        database,
-                        paths,
-                        payload.value,
-                        record.value_json if record is not None else {},
-                    )
-                    if setting_key == "services.tts"
-                    else prepare_stt_settings_for_storage(
-                        db_session,
-                        database,
-                        paths,
-                        payload.value,
-                        record.value_json if record is not None else {},
-                    )
-                    if setting_key == "services.stt"
-                    else payload.value
-                )
-                if setting_key == "defaults.stt":
-                    from .settings_policy import split_legacy_stt_settings, validate_stt_replacement
-                    from .workspace_settings import migrate_legacy_subtitle_settings
-
-                    prepared_value, incoming_subtitles = split_legacy_stt_settings(prepared_value)
-                    previous_stt, previous_subtitles = split_legacy_stt_settings(
-                        dict(record.value_json or {}) if record else {}, reject_conflicts=False,
-                    )
-                    validate_stt_replacement(prepared_value, previous_stt)
-                    migrate_legacy_subtitle_settings(db_session, {**previous_subtitles, **incoming_subtitles})
-                if setting_key == "defaults.tts":
-                    from .settings_policy import validate_voiceover_repair_settings
-
-                    validate_voiceover_repair_settings(prepared_value)
-                    previous = {
-                        **BUILTIN_DEFAULTS["tts"],
-                        **(record.value_json if record is not None else {}),
-                    }
-                    prepared_value = normalize_tts_voice_aliases(
-                        prepare_tts_provider_switch(previous, prepared_value)
-                    )
-                if setting_key == "defaults.source_passages":
-                    from pandrator.logic.dubbing.source_passage_settings import (
-                        SOURCE_PASSAGE_DEFAULTS,
-                        normalize_source_passage_settings,
-                    )
-
-                    if not isinstance(prepared_value, dict):
-                        raise ValueError(
-                            "source_passages defaults must be an object."
-                        )
-                    unknown = set(prepared_value) - set(SOURCE_PASSAGE_DEFAULTS)
-                    if unknown:
-                        raise ValueError(
-                            f"Unknown source_passages keys: {sorted(unknown)}"
-                        )
-                    # Like other settings, PUT replaces the sparse defaults.
-                    # In particular, {} restores built-in defaults.
-                    try:
-                        normalize_source_passage_settings(prepared_value)
-                    except TypeError as error:
-                        raise ValueError(str(error)) from error
-                if setting_key not in {
-                    "services.tts",
-                    "services.stt",
-                } and contains_inline_secret(prepared_value):
-                    raise ValueError(
-                        "API keys and other credentials must be saved in provider settings."
-                    )
-                if record is None:
-                    record = AppSetting(
-                        key=setting_key, value_json=prepared_value, revision=1
-                    )
-                    db_session.add(record)
-                else:
-                    db_session.add(
-                        AppSettingHistory(
-                            key=record.key,
-                            value_json=record.value_json,
-                            revision=record.revision,
-                        )
-                    )
-                    record.value_json = prepared_value
-                    record.revision += 1
-                    record.updated_at = utcnow()
-                db_session.flush()
-                result = {
-                    "key": record.key,
-                    "value": redact_inline_secrets(record.value_json),
-                    "revision": record.revision,
-                    "updated_at": record.updated_at.isoformat(),
-                }
+            result = services.global_settings.replace(setting_key, payload.value, raw_etag)
+        except SettingPreconditionError as error:
+            return error_response(error.code, str(error), error.status_code)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
         except (OSError, RuntimeError) as error:
@@ -1004,73 +850,16 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/sessions/<session_id>/agent-runs")
     @require_auth
     def agent_run_create(session_id: str):
-        payload = AgentRunCreateRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
+        payload = AgentRunCreateRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.settings):
             return rejected
         try:
-            sessions.get(session_id)
-            source_artifact, source_path = artifacts.resolve(payload.source_artifact_id)
+            result = services.agent_runs.create(session_id, payload.source_artifact_id, payload.settings)
         except KeyError:
-            return error_response(
-                "not_found", "Session or source artifact not found.", 404
-            )
-        attached_source = next(
-            (
-                item
-                for item in source_library.list(session_id=session_id)
-                if item.get("artifact_id") == source_artifact.id
-                and bool((item.get("attachment") or {}).get("is_current"))
-            ),
-            None,
-        )
-        if attached_source is None:
-            return error_response(
-                "invalid_source",
-                "Source cleaning requires a source attached to this session.",
-                422,
-            )
-        if source_path.suffix.lower() not in {
-            ".docx",
-            ".epub",
-            ".mobi",
-            ".pdf",
-            ".txt",
-        }:
-            return error_response(
-                "unsupported_source",
-                "Source cleaning is available for text documents, not audio, video, or subtitle sources.",
-                422,
-            )
-        run_id = new_id()
-        with database.session() as db_session:
-            db_session.add(
-                AgentRun(
-                    id=run_id,
-                    kind="source_cleaning",
-                    session_id=session_id,
-                    source_artifact_id=payload.source_artifact_id,
-                    status="queued",
-                    settings_json={**payload.settings, "agentic": True},
-                )
-            )
-        job = jobs.enqueue(
-            "source.clean",
-            {
-                "session_id": session_id,
-                "source_artifact_id": payload.source_artifact_id,
-                "agent_run_id": run_id,
-                "settings": {**payload.settings, "agentic": True},
-            },
-            session_id=session_id,
-            resource_keys=[f"session:{session_id}", "service:llm"],
-        )
-        with database.session() as db_session:
-            run = db_session.get(AgentRun, run_id)
-            run.job_id = job.id
-            run.updated_at = utcnow()
-        return jsonify({"id": run_id, "job_id": job.id, "status": "queued"}), 202
+            return error_response("not_found", "Session or source artifact not found.", 404)
+        except AgentRunAdmissionError as error:
+            return error_response(error.code, str(error), error.status)
+        return jsonify(result), 202
 
     @app.get("/api/v1/agent-runs/<run_id>/steps")
     @require_auth
@@ -1116,39 +905,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/agent-runs/<run_id>/resume")
     @require_auth
     def agent_run_resume(run_id: str):
-        store = AgenticRunStore(database)
         try:
-            run, previous_job = store.prepare_resume(run_id)
+            result = services.agent_runs.resume(run_id)
         except KeyError:
             return error_response("not_found", "Agentic operation not found.", 404)
-        except ValueError as error:
+        except AgentRunStateError as error:
             return error_response("invalid_state", str(error), 409)
-        payload = dict(previous_job.payload_json or {})
-        run_ids = dict(payload.get("_agent_run_ids") or {})
-        run_ids[run.kind] = run.id
-        payload["_agent_run_ids"] = run_ids
-        payload["_agent_run_id"] = run.id
-        payload["agent_run_id"] = run.id
-        try:
-            job = jobs.enqueue(
-                previous_job.kind,
-                payload,
-                session_id=run.session_id,
-                workflow_run_id=previous_job.workflow_run_id,
-                max_attempts=previous_job.max_attempts,
-                resource_keys=list(previous_job.resource_keys_json or []),
-            )
-        except Exception as error:
-            store.fail(run.id, error)
-            raise
-        with database.session() as db_session:
-            managed = db_session.get(AgentRun, run.id)
-            if managed is not None:
-                managed.job_id = job.id
-                managed.status = "retrying"
-                managed.error_message = None
-                managed.updated_at = utcnow()
-        return jsonify({"id": run.id, "job_id": job.id, "status": "retrying"}), 202
+        return jsonify(result), 202
 
     @app.get("/api/v1/sessions/<session_id>/knowledge/<kind>")
     @require_auth
@@ -1202,23 +965,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.post("/api/v1/agent-runs/<run_id>/accept")
     @require_auth
     def agent_run_accept(run_id: str):
-        with database.session() as db_session:
-            run = db_session.get(AgentRun, run_id)
-            if run is None:
-                return error_response(
-                    "not_found", "Agentic cleaning run not found.", 404
-                )
-            if run.status != "completed" or not run.result_artifact_id:
-                return error_response(
-                    "invalid_state",
-                    "Only a completed cleaning result can be accepted.",
-                    409,
-                )
-            run.status = "accepted"
-            run.updated_at = utcnow()
-            return jsonify(
-                _model_dict(run, ("id", "status", "result_artifact_id", "updated_at"))
-            )
+        try:
+            result = services.agent_runs.accept(run_id)
+        except KeyError:
+            return error_response("not_found", "Agentic cleaning run not found.", 404)
+        except AgentRunStateError as error:
+            return error_response("invalid_state", str(error), 409)
+        return jsonify(result)
 
     @app.post("/api/v1/sessions/<session_id>/bundle")
     @require_auth
@@ -1496,185 +1249,47 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         except ValueError as error:
             return error_response("validation_error", str(error), 422)
 
+    def save_subtitle_mutation(session_id: str, stage: str, *, canonical: bool):
+        body = request.get_json(silent=True) or {}
+        payload = (SubtitlePassageReviewRequest.model_validate(body) if canonical
+                   else SubtitleReviewRequest.model_validate(body))
+        idempotency_key, idempotency_error = mutation_idempotency_key()
+        if idempotency_error is not None:
+            return idempotency_error
+        try:
+            if isinstance(payload, SubtitlePassageReviewRequest):
+                result = services.subtitle_mutations.save_passage_review(
+                    session_id, stage, payload, principal=idempotency.principal(),
+                    idempotency_key=idempotency_key,
+                )
+            else:
+                result = services.subtitle_mutations.save_review(
+                    session_id, stage, payload, principal=idempotency.principal(),
+                    idempotency_key=idempotency_key,
+                )
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except KeyError:
+            return error_response("not_found", "Subtitle document not found.", 404)
+        except RuntimeError as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        response = jsonify(result.payload)
+        response.status_code = result.status_code
+        if result.replayed:
+            response.headers["Idempotency-Replayed"] = "true"
+        return response
+
     @app.post("/api/v1/sessions/<session_id>/subtitles/<stage>/review")
     @require_auth
     def subtitle_save_review(session_id: str, stage: str):
-        payload = SubtitleReviewRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
-        idempotency_key, idempotency_error = mutation_idempotency_key()
-        if idempotency_error is not None:
-            return idempotency_error
-        if idempotency_key is not None:
-            published_paths: list[Path] = []
+        return save_subtitle_mutation(session_id, stage, canonical=False)
 
-            def cleanup_published() -> None:
-                for published_path in published_paths:
-                    try:
-                        published_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-
-            try:
-                with database.immediate_session() as db_session:
-                    reservation = services.idempotency.begin(
-                        db_session,
-                        principal=context.guards.principal(),
-                        operation_id="saveSubtitleReview",
-                        idempotency_key=idempotency_key,
-                        payload={
-                            "session_id": session_id,
-                            "stage": stage,
-                            **payload.model_dump(mode="json"),
-                        },
-                    )
-                    if reservation.response is not None:
-                        result, status_code = reservation.response
-                        response = jsonify(result)
-                        response.status_code = status_code
-                        response.headers["Idempotency-Replayed"] = "true"
-                        return response
-                    result = subtitle_review.save_review_in_session(
-                        db_session,
-                        session_id,
-                        stage,
-                        payload.expected_revision,
-                        [item.model_dump() for item in payload.segments],
-                        source_artifact_id=payload.source_artifact_id,
-                        expected_source_hash=payload.expected_source_hash,
-                        published_paths=published_paths,
-                    )
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=201,
-                        resource_kind="subtitle_document",
-                        resource_id=str(result["document_id"]),
-                    )
-            except (IdempotencyConflict, IdempotencyInProgress) as error:
-                return idempotency_failure(error)
-            except KeyError:
-                cleanup_published()
-                return error_response("not_found", "Subtitle document not found.", 404)
-            except RuntimeError as error:
-                cleanup_published()
-                return error_response("revision_conflict", str(error), 409)
-            except ValueError as error:
-                cleanup_published()
-                return error_response("validation_error", str(error), 422)
-            except Exception:
-                cleanup_published()
-                raise
-            return jsonify(result), 201
-        try:
-            result = subtitle_review.save_review(
-                session_id,
-                stage,
-                payload.expected_revision,
-                [item.model_dump() for item in payload.segments],
-                source_artifact_id=payload.source_artifact_id,
-                expected_source_hash=payload.expected_source_hash,
-            )
-        except KeyError:
-            return error_response("not_found", "Subtitle document not found.", 404)
-        except RuntimeError as error:
-            return error_response("revision_conflict", str(error), 409)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        return jsonify(result), 201
-
-    @app.post(
-        "/api/v1/sessions/<session_id>/subtitles/<stage>/passage-review"
-    )
+    @app.post("/api/v1/sessions/<session_id>/subtitles/<stage>/passage-review")
     @require_auth
     def subtitle_save_passage_review(session_id: str, stage: str):
-        payload = SubtitlePassageReviewRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
-        idempotency_key, idempotency_error = mutation_idempotency_key()
-        if idempotency_error is not None:
-            return idempotency_error
-        if idempotency_key is not None:
-            published_paths: list[Path] = []
-
-            def cleanup_published() -> None:
-                for published_path in published_paths:
-                    try:
-                        published_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-
-            try:
-                with database.immediate_session() as db_session:
-                    reservation = services.idempotency.begin(
-                        db_session,
-                        principal=context.guards.principal(),
-                        operation_id="saveSubtitlePassageReview",
-                        idempotency_key=idempotency_key,
-                        payload={
-                            "session_id": session_id,
-                            "stage": stage,
-                            **payload.model_dump(mode="json"),
-                        },
-                    )
-                    if reservation.response is not None:
-                        result, status_code = reservation.response
-                        response = jsonify(result)
-                        response.status_code = status_code
-                        response.headers["Idempotency-Replayed"] = "true"
-                        return response
-                    result = subtitle_review.save_passage_review_in_session(
-                        db_session,
-                        session_id,
-                        stage,
-                        payload.expected_revision,
-                        [item.model_dump() for item in payload.passages],
-                        source_artifact_id=payload.source_artifact_id,
-                        expected_source_hash=payload.expected_source_hash,
-                        expected_composition_hash=payload.expected_composition_hash,
-                        published_paths=published_paths,
-                    )
-                    services.idempotency.complete(
-                        db_session,
-                        reservation,
-                        response=result,
-                        status_code=201,
-                        resource_kind="subtitle_document",
-                        resource_id=str(result["document_id"]),
-                    )
-            except (IdempotencyConflict, IdempotencyInProgress) as error:
-                return idempotency_failure(error)
-            except KeyError:
-                cleanup_published()
-                return error_response("not_found", "Subtitle document not found.", 404)
-            except RuntimeError as error:
-                cleanup_published()
-                return error_response("revision_conflict", str(error), 409)
-            except ValueError as error:
-                cleanup_published()
-                return error_response("validation_error", str(error), 422)
-            except Exception:
-                cleanup_published()
-                raise
-            return jsonify(result), 201
-        try:
-            result = subtitle_review.save_passage_review(
-                session_id,
-                stage,
-                payload.expected_revision,
-                [item.model_dump() for item in payload.passages],
-                source_artifact_id=payload.source_artifact_id,
-                expected_source_hash=payload.expected_source_hash,
-                expected_composition_hash=payload.expected_composition_hash,
-            )
-        except KeyError:
-            return error_response("not_found", "Subtitle document not found.", 404)
-        except RuntimeError as error:
-            return error_response("revision_conflict", str(error), 409)
-        except ValueError as error:
-            return error_response("validation_error", str(error), 422)
-        return jsonify(result), 201
+        return save_subtitle_mutation(session_id, stage, canonical=True)
 
     @app.post("/api/v1/sessions/<session_id>/subtitle-evidence")
     @require_auth
