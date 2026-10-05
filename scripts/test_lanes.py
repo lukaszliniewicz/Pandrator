@@ -362,6 +362,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     "web-08-serial": (
         "tests/test_session_source_plan_controls.py",
         "tests/test_session_purge.py",
+        "tests/test_web_session_lifecycle.py",
         "tests/test_session_source_paths.py",
         "tests/test_session_output_storage.py",
         "tests/test_session_view_performance.py",
