@@ -1144,7 +1144,7 @@ def build_server(runtime: McpRuntime):
         )
 
     @server.tool(name="pandrator_inspect_dispatch_split_boundaries", title="Inspect verified subtitle split boundaries", annotations=read_only)
-    def dispatch_split_boundaries_tool(batch_id: str, lease_token: str, cue_id: Annotated[int, Field(ge=1)], offset: Annotated[int, Field(ge=0)] = 0, limit: Annotated[int, Field(ge=1, le=100)] = 30) -> dict[str, Any]:
+    def dispatch_split_boundaries_tool(batch_id: str, lease_token: str, cue_id: Annotated[int, Field(ge=1, strict=True)], offset: Annotated[int, Field(ge=0)] = 0, limit: Annotated[int, Field(ge=1, le=100)] = 30) -> dict[str, Any]:
         """Inspect bounded source-word anchors for one actionable passage under its current lease."""
         return _call_with_validated_input(
             inspect_dispatch_split_boundaries,
