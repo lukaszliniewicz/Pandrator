@@ -32,6 +32,7 @@ class ElevenLabsRequestTests(unittest.TestCase):
         service = tts_handler.get_service_config({}, "ElevenLabs")
 
         self.assertIsNotNone(service)
+        assert service is not None
         self.assertEqual("elevenlabs", service["id"])
         self.assertEqual("https://api.elevenlabs.io", service["api_base"])
         self.assertEqual("elevenlabs_native", service["adapter"])
@@ -92,7 +93,7 @@ class ElevenLabsRequestTests(unittest.TestCase):
             },
             "elevenlabs_voice_settings": {"stability": 0.5},
         })
-        endpoint = {
+        endpoint: dict[str, object] = {
             "id": "my-eleven-endpoint", "adapter": "elevenlabs_native",
             "api_base": "https://custom.example.test", "api_key": "custom-key",
         }
@@ -477,6 +478,7 @@ class ElevenLabsProfileTests(unittest.TestCase):
     def test_native_profile_is_not_openai_compatible(self):
         profile = tts_provider_profiles.get_tts_provider_profile("elevenlabs")
         self.assertIsNotNone(profile)
+        assert profile is not None
         self.assertEqual("elevenlabs_native", profile["adapter"])
         self.assertEqual("xi-api-key", profile["auth_mode"])
         self.assertIn("not an OpenAI-compatible", profile["description"])
