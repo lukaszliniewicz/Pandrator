@@ -1034,10 +1034,11 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """List dispatch metadata only; canonical task packets appear on claim."""
 
-        return _call(
+        return _call_with_validated_input(
             list_dispatch_runs,
             runtime,
-            ListDispatchRunsInput(session_id=session_id, limit=limit),
+            ListDispatchRunsInput,
+            {"session_id": session_id, "limit": limit},
         )
 
     @server.tool(
@@ -1048,10 +1049,11 @@ def build_server(runtime: McpRuntime):
     def dispatch_get_tool(run_id: str) -> dict[str, Any]:
         """Inspect run metadata and final artifact state without batch content."""
 
-        return _call(
+        return _call_with_validated_input(
             get_dispatch_run,
             runtime,
-            GetDispatchRunInput(run_id=run_id),
+            GetDispatchRunInput,
+            {"run_id": run_id},
         )
 
     @server.tool(
@@ -1144,9 +1146,18 @@ def build_server(runtime: McpRuntime):
     @server.tool(name="pandrator_inspect_dispatch_split_boundaries", title="Inspect verified subtitle split boundaries", annotations=read_only)
     def dispatch_split_boundaries_tool(batch_id: str, lease_token: str, cue_id: Annotated[int, Field(ge=1)], offset: Annotated[int, Field(ge=0)] = 0, limit: Annotated[int, Field(ge=1, le=100)] = 30) -> dict[str, Any]:
         """Inspect bounded source-word anchors for one actionable passage under its current lease."""
-        return _call(inspect_dispatch_split_boundaries, runtime, InspectDispatchSplitBoundariesInput(
-            batch_id=batch_id, lease_token=lease_token, cue_id=cue_id, offset=offset, limit=limit,
-        ))
+        return _call_with_validated_input(
+            inspect_dispatch_split_boundaries,
+            runtime,
+            InspectDispatchSplitBoundariesInput,
+            {
+                "batch_id": batch_id,
+                "lease_token": lease_token,
+                "cue_id": cue_id,
+                "offset": offset,
+                "limit": limit,
+            },
+        )
 
     @server.tool(
         name="pandrator_claim_dispatch_batch",
@@ -1197,15 +1208,16 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Renew only the matching batch lease; keep lease_token scoped to this batch."""
 
-        return _call(
+        return _call_with_validated_input(
             renew_dispatch_batch,
             runtime,
-            RenewDispatchBatchInput(
-                batch_id=batch_id,
-                lease_token=lease_token,
-                lease_seconds=lease_seconds,
-                idempotency_key=idempotency_key,
-            ),
+            RenewDispatchBatchInput,
+            {
+                "batch_id": batch_id,
+                "lease_token": lease_token,
+                "lease_seconds": lease_seconds,
+                "idempotency_key": idempotency_key,
+            },
         )
 
     @server.tool(
@@ -1227,14 +1239,15 @@ def build_server(runtime: McpRuntime):
     ) -> dict[str, Any]:
         """Release a claimed batch with its matching lease_token before retrying later."""
 
-        return _call(
+        return _call_with_validated_input(
             release_dispatch_batch,
             runtime,
-            ReleaseDispatchBatchInput(
-                batch_id=batch_id,
-                lease_token=lease_token,
-                idempotency_key=idempotency_key,
-            ),
+            ReleaseDispatchBatchInput,
+            {
+                "batch_id": batch_id,
+                "lease_token": lease_token,
+                "idempotency_key": idempotency_key,
+            },
         )
 
     @server.tool(
