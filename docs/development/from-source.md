@@ -72,9 +72,14 @@ is the authoritative serial Python suite. `test-profile` runs the serial suite
 and reports the slowest tests.
 
 Use focused tests while developing, then the lane appropriate to the changed
-surface. Web changes also need the locked formatter, linter, Svelte check,
-dead-code check, and production build. MCP changes should include real-stdio
-and compatibility tests when protocol framing or metadata is affected.
+surface. Group related changes and run their combined regressions at the batch
+boundary; see [development batches](code-quality.md#development-batches).
+Svelte client or build-input changes also need the locked formatter, linter,
+Svelte check, dead-code check, unit tests, and production build. Standalone
+Manager recovery UI changes need their JavaScript checks and relevant browser
+tests; an unchanged Svelte bundle does not need rebuilding. MCP changes should
+include real-stdio and compatibility tests when protocol framing or metadata
+is affected.
 
 Run the documentation checker for Markdown changes:
 
