@@ -13,6 +13,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
 from . import __version__
+from .argument_validation import create_argument_validation_extension
 from .context import McpRuntime
 from .errors import FailureCode, PandratorMcpError, ToolFailure
 from .registrations.generation import (
@@ -322,9 +323,14 @@ def build_server(runtime: McpRuntime):
             "pandrator-mcp requires the pinned mcp==2.2.0 runtime dependency."
         ) from error
 
+    def registered_tool_schema(name: str) -> dict[str, Any] | None:
+        registered = server._tool_manager.get_tool(name)
+        return registered.parameters if registered is not None else None
+
     server = MCPServer(
         "Pandrator",
         version=__version__,
+        extensions=[create_argument_validation_extension(registered_tool_schema, _tool_failure)],
         instructions=(
             "Use only the configured target and approved roots; never pass credentials "
             "or connection URLs. For unfamiliar work read recommend_next_steps and "
@@ -2791,5 +2797,10 @@ def build_server(runtime: McpRuntime):
         if registered_tool is None:  # pragma: no cover - registration invariant
             raise RuntimeError(f"Missing registered MCP tool: {tool_name}")
         execution_policy_json_schema(registered_tool.parameters)
+
+    # The native-call extension enforces this before generated argument models
+    # can discard extra keys; nested schemas keep their own existing policies.
+    for registered_tool in server._tool_manager.list_tools():
+        registered_tool.parameters["additionalProperties"] = False
 
     return server

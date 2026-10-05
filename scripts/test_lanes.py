@@ -183,6 +183,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_quick_transcription.py",
         "tests/test_mcp_transcription_registration.py",
         "tests/test_mcp_transcription_options.py",
+        "tests/test_mcp_unknown_arguments.py",
         "tests/test_mcp_recommendations.py",
         "tests/test_mcp_generation_controls.py",
         "tests/test_mcp_performance.py",
