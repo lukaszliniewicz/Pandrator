@@ -4798,6 +4798,32 @@ def get_xtts_models(base_url: str = XTTS_API_BASE_URL) -> list[str]:
     return _merge_catalog_with_discovered([XTTS_DEFAULT_MODEL], discovered_models)
 
 
+def _voice_catalog_can_confirm_absence(payload: object) -> bool:
+    """Only an interpretable catalogue can establish that a voice is absent."""
+
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        if payload.get("error"):
+            return False
+        collections = [payload[key] for key in ("data", "voices") if key in payload]
+        if not collections or any(not isinstance(items, list) for items in collections):
+            return False
+        candidates = [item for items in collections for item in items]
+    else:
+        return False
+
+    for candidate in candidates:
+        identifier = (
+            candidate.get("voice_id") or candidate.get("id") or candidate.get("name")
+            if isinstance(candidate, dict)
+            else candidate
+        )
+        if not isinstance(identifier, (str, int, float)) or not str(identifier or "").strip():
+            return False
+    return True
+
+
 def _remote_voice_exists(
     voice_id: str,
     *,
@@ -4821,10 +4847,14 @@ def _remote_voice_exists(
         if response.status_code >= 400:
             continue
         try:
-            discovered = _extract_voices_from_openai_payload(response.json())
+            payload = response.json()
+            discovered = _extract_voices_from_openai_payload(payload)
         except ValueError:
             continue
-        return any(str(item).strip().casefold() == expected for item in discovered)
+        if any(str(item).strip().casefold() == expected for item in discovered):
+            return True
+        if _voice_catalog_can_confirm_absence(payload):
+            return False
     return None
 
 
