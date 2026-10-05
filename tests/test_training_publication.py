@@ -376,7 +376,7 @@ def test_wrapper_unsafe_name_refuses_before_environment_or_process(native, model
         mock.patch.object(
             trainer, "validate_training_environment", return_value=(False, "environment witness")
         ) as environment,
-        mock.patch.object(trainer.subprocess, "Popen") as process,
+        mock.patch("subprocess.Popen") as process,
     ):
         success, _message = trainer.start_training(
             {"model_name": model_name, "source_audio_path": str(native.audio)}
@@ -393,7 +393,7 @@ def test_wrapper_preexisting_cancellation_never_starts_process_or_copies(native)
         mock.patch.object(
             trainer, "validate_training_environment", return_value=(False, "environment witness")
         ),
-        mock.patch.object(trainer.subprocess, "Popen") as process,
+        mock.patch("subprocess.Popen") as process,
         mock.patch.object(trainer, "_copy_trained_model") as copy_model,
     ):
         success, message = trainer.start_training(
@@ -500,9 +500,12 @@ def test_wrapper_uses_managed_root_and_checks_stop_after_process_wait(native, mo
     native.seed()
     native.make_bundle()
     legacy_root = native.paths.root / "unused-legacy-models"
-    process = mock.Mock(stdout=[], returncode=0)
-    if cancel_after_wait:
-        process.wait.side_effect = native.cancel_event.set
+
+    def run_process(*_args, **_kwargs):
+        if cancel_after_wait:
+            native.cancel_event.set()
+        return 0
+
     paths = {
         "trainer_dir": str(native.trainer_root),
         "xtts_models_dir": str(legacy_root),
@@ -514,7 +517,7 @@ def test_wrapper_uses_managed_root_and_checks_stop_after_process_wait(native, mo
         mock.patch.object(trainer, "get_training_paths", return_value=paths),
         mock.patch.object(trainer, "validate_training_environment", return_value=(True, "ready")),
         mock.patch.object(trainer, "_build_trainer_subprocess_env", return_value={}),
-        mock.patch.object(trainer.subprocess, "Popen", return_value=process) as launch,
+        mock.patch.object(trainer, "run_training_process", side_effect=run_process) as launch,
     ):
 
         def missing_record(_staging, _target):

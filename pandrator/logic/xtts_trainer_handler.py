@@ -1,17 +1,18 @@
 import logging
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
+from pandrator.logic.cancellable_process import ProcessCancelled
 from pandrator.logic.xtts_model_paths import (
     promote_training_model_directory,
     resolve_training_model_target,
     validate_training_model_name,
 )
+from pandrator.logic.xtts_training_process import run_training_process
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 WORKSPACE_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, '..'))
@@ -444,32 +445,22 @@ def start_training(
     try:
         if stop_event is not None and stop_event.is_set():
             return False, "XTTS training was canceled."
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, universal_newlines=True, encoding='utf-8', errors='replace',
+        def output(line: str) -> None:
+            logging.info("XTTS Trainer: %s", line)
+            if output_callback is not None:
+                output_callback(line)
+
+        returncode = run_training_process(
+            command,
             cwd=paths['trainer_dir'],
             env=process_env,
+            cancel_event=stop_event,
+            output_callback=output,
         )
-        
-        if process.stdout is not None:
-            for line in process.stdout:
-                if stop_event is not None and stop_event.is_set():
-                    process.terminate()
-                    process.wait(timeout=15)
-                    return False, "XTTS training was canceled."
-                cleaned = line.strip()
-                if not cleaned:
-                    continue
-
-                logging.info("XTTS Trainer: %s", cleaned)
-                if output_callback:
-                    output_callback(cleaned)
-        
-        process.wait()
         if stop_event is not None and stop_event.is_set():
             return False, "XTTS training was canceled."
 
-        if process.returncode == 0:
+        if returncode == 0:
             _emit_status(status_callback, "Training finished. Copying model artifacts...")
             copy_ok, copy_message = _copy_trained_model(
                 model_name, paths, publish_callback=publish if publish_callback is not None else None
@@ -481,10 +472,12 @@ def start_training(
                 return True, success_message
             return False, copy_message
         else:
-            message = f"Training failed with return code {process.returncode}."
+            message = f"Training failed with return code {returncode}."
             logging.error(message)
             return False, message
 
+    except ProcessCancelled:
+        return False, "XTTS training was canceled."
     except InterruptedError:
         raise
     except Exception as e:
