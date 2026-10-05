@@ -3166,6 +3166,16 @@ def _request_azure_speech_audio(
     speech_path = str(endpoint.get("speech_path") or "/cognitiveservices/v1").strip()
     ssml = _azure_speech_ssml(text, model, voice, tts_settings)
     url = _configured_endpoint_url(base_url, speech_path)
+    try:
+        parsed = urlparse(url)
+        hostname = str(parsed.hostname or "").lower()
+        valid_url = parsed.scheme.lower() == "https" and bool(hostname) and "your" not in hostname
+    except ValueError:
+        valid_url = False
+    if not valid_url:
+        raise ValueError(
+            "Azure Speech requires a non-placeholder HTTPS speech URL for your Speech resource."
+        )
     return _native_speech_http.post_native_speech(
         url,
         request_label="Azure Speech",

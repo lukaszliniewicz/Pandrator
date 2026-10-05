@@ -343,3 +343,146 @@ def test_azure_timeout_remains_late_after_ssml_preparation(monkeypatch: pytest.M
     monkeypatch.setattr(tts_handler.requests, "post", post)
     assert native_request("azure", monkeypatch) is result
     assert calls == ["ssml", "post"]
+
+
+def azure_settings(
+    monkeypatch: pytest.MonkeyPatch, path: str, *, base: str = "https://azure.invalid"
+) -> dict[str, object]:
+    monkeypatch.setenv("FIXTURE_NATIVE_KEY", "fixture-key")
+    return {
+        "service": tts_handler.OPENAI_COMPAT_SERVICE,
+        "openai_audio_endpoint": "azure-fixture",
+        "model": "MAI-Voice-2",
+        "voice": "de-DE-Klaus:MAI-Voice-2",
+        "speed": 1.25,
+        "provider_configs": [
+            {
+                "id": "azure-fixture",
+                "provider": "azure",
+                "adapter": "azure_speech",
+                "api_base": base,
+                "speech_path": path,
+                "api_key": "fixture-key",
+                "api_key_env": "FIXTURE_NATIVE_KEY",
+                "request_defaults": {"output_format": "fixture-format"},
+            }
+        ],
+    }
+
+
+def azure_configured_request(route: str, settings: dict[str, object]) -> requests.Response:
+    if route == "dispatcher":
+        return tts_handler._request_openai_compatible_audio("Hello", settings)
+    assert route == "resolved"
+    endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
+    assert endpoint is not None and not error
+    return tts_handler._request_azure_speech_audio("Hello", settings, endpoint)
+
+
+@pytest.mark.parametrize("route", ("dispatcher", "resolved"))
+@pytest.mark.parametrize(
+    "path,url",
+    (
+        ("/custom/speech", AZURE_URL),
+        ("custom/speech", AZURE_URL),
+        ("", "https://azure.invalid/cognitiveservices/v1"),
+        ("   ", "https://azure.invalid/cognitiveservices/v1"),
+        ("/custom/speech?api-version=fixture", AZURE_URL + "?api-version=fixture"),
+        (
+            "https://alternate.invalid/speech?api-version=fixture",
+            "https://alternate.invalid/speech?api-version=fixture",
+        ),
+        (
+            "https://azure.invalid:443/cognitiveservices/v1",
+            "https://azure.invalid:443/cognitiveservices/v1",
+        ),
+    ),
+)
+def test_azure_valid_effective_destination_keeps_relative_and_absolute_https_requests(
+    monkeypatch: pytest.MonkeyPatch, route: str, path: str, url: str
+):
+    settings = azure_settings(monkeypatch, path)
+    result = native_response()
+    calls: list[str] = []
+
+    def post(actual_url: str, **options: object) -> requests.Response:
+        assert not calls
+        assert actual_url == url
+        assert options == expected_request("azure")[1]
+        calls.append(actual_url)
+        return result
+
+    monkeypatch.setattr(tts_handler.requests, "post", post)
+    assert azure_configured_request(route, settings) is result
+    assert calls == [url]
+
+
+@pytest.mark.parametrize("route", ("dispatcher", "resolved"))
+@pytest.mark.parametrize(
+    "path",
+    (
+        "http://alternate.invalid/speech",
+        "https://YOUR-REGION.tts.speech.microsoft.com/cognitiveservices/v1",
+        "https:///speech",
+        "https://?not=host",
+        "https://[broken",
+        "ftp://alternate.invalid/speech",
+        "file:///speech",
+        "/http://alternate.invalid/speech",
+    ),
+)
+def test_azure_invalid_effective_destination_is_rejected_before_sending_the_key(
+    monkeypatch: pytest.MonkeyPatch, route: str, path: str
+):
+    settings = azure_settings(monkeypatch, path)
+    calls: list[str] = []
+
+    def post(url: str, **options: object) -> requests.Response:
+        calls.append(url)
+        return native_response()
+
+    monkeypatch.setattr(tts_handler.requests, "post", post)
+    with pytest.raises(ValueError, match="HTTPS speech URL"):
+        azure_configured_request(route, settings)
+    assert calls == []
+
+
+@pytest.mark.parametrize("route", ("dispatcher", "resolved"))
+@pytest.mark.parametrize(
+    "base,path,message",
+    (
+        ("http://azure.invalid", "/custom/speech", "HTTPS base URL"),
+        ("https://YOUR-REGION.tts.speech.microsoft.com", "/custom/speech", "HTTPS base URL"),
+    ),
+)
+def test_azure_existing_base_and_blank_path_validation_stays_before_post(
+    monkeypatch: pytest.MonkeyPatch, route: str, base: str, path: str, message: str
+):
+    settings = azure_settings(monkeypatch, path, base=base)
+    calls: list[str] = []
+
+    def post(url: str, **options: object) -> requests.Response:
+        calls.append(url)
+        return native_response()
+
+    monkeypatch.setattr(tts_handler.requests, "post", post)
+    with pytest.raises(ValueError, match=message):
+        azure_configured_request(route, settings)
+    assert calls == []
+
+
+def test_raw_azure_endpoint_blank_path_is_rejected_before_post(monkeypatch: pytest.MonkeyPatch):
+    settings = azure_settings(monkeypatch, "/custom/speech")
+    endpoint, error = tts_handler.resolve_openai_audio_endpoint(settings)
+    assert endpoint is not None and not error
+    endpoint["speech_path"] = "   "
+    calls: list[str] = []
+
+    def post(url: str, **options: object) -> requests.Response:
+        calls.append(url)
+        return native_response()
+
+    monkeypatch.setattr(tts_handler.requests, "post", post)
+    with pytest.raises(ValueError, match="configured speech path"):
+        tts_handler._request_azure_speech_audio("Hello", settings, endpoint)
+    assert calls == []
