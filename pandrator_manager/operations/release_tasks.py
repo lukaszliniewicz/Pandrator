@@ -161,15 +161,15 @@ class ReleaseTasks:
         selected = ArtifactDownloader(
             cancellation=execution.cancellation,
             environment=execution.context.environment,
-        ).download(
+        ).download_with_result(
             specification,
             destination,
             offline=bool(task.inputs.get("offline")),
         )
         return {
-            "artifact_path": str(selected),
+            "artifact_path": str(selected.path),
             "artifact": artifact.model_dump(mode="json"),
-            "cache_reused": selected.is_file(),
+            "cache_reused": selected.cache_reused,
         }
 
     def _execute_stage_release(

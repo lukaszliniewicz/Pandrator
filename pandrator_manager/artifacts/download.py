@@ -33,6 +33,14 @@ class ArtifactSpec:
             raise ValueError("Artifact size cannot be negative.")
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactDownloadResult:
+    """Verified artifact path and the acquisition decision that produced it."""
+
+    path: Path
+    cache_reused: bool
+
+
 class ArtifactDownloader:
     def __init__(
         self,
@@ -74,12 +82,21 @@ class ArtifactDownloader:
         *,
         offline: bool = False,
     ) -> Path:
+        return self.download_with_result(spec, destination, offline=offline).path
+
+    def download_with_result(
+        self,
+        spec: ArtifactSpec,
+        destination: Path,
+        *,
+        offline: bool = False,
+    ) -> ArtifactDownloadResult:
         destination = destination.expanduser().resolve(strict=False)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if spec.size_bytes is not None and spec.size_bytes > self.maximum_bytes:
             raise ValueError("Artifact exceeds the configured maximum size.")
         if destination.is_file() and self.matches(destination, spec):
-            return destination
+            return ArtifactDownloadResult(destination, True)
         if offline:
             raise FileNotFoundError(
                 "The verified artifact is not available in the local cache."
@@ -133,7 +150,7 @@ class ArtifactDownloader:
             if digest.hexdigest().lower() != spec.sha256.lower():
                 raise ValueError("Artifact SHA-256 verification failed.")
             os.replace(temporary, destination)
-            return destination
+            return ArtifactDownloadResult(destination, False)
         finally:
             try:
                 temporary.unlink()
