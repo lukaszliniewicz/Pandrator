@@ -86,6 +86,8 @@
   let voices = $state<Voice[]>([]);
   let selected = $state<Voice | null>(null);
   let samples = $state<Sample[]>([]);
+  let sampleRequest = 0;
+  let voiceSelection = 0;
   let capabilities = $state<RuntimeCapabilities>({});
   let ttsServices = $state<TtsService[]>([]);
   let error = $state('');
@@ -285,21 +287,56 @@
   }
 
   async function choose(voice: Voice) {
-    stopPlayback();
+    const sameVoice = selected?.id === voice.id;
+    const request = ++sampleRequest;
+    error = '';
+    if (!sameVoice) {
+      notice = '';
+      ++voiceSelection;
+      stopPlayback();
+      samples = [];
+      transcripts = {};
+    }
     selected = voice;
     pickerOpen = false;
-    samples = [];
     editingVoice = false;
     editName = voice.name;
     editLanguage = voice.language ?? '';
     editDescription = voice.description ?? '';
     editCategory =
       (voice.metadata_json?.voice_category as VoiceCategory) ?? 'unspecified';
-    const result = await voiceApi.samples<Sample>(voice.id);
-    samples = result.items;
-    transcripts = Object.fromEntries(
-      samples.map((sample) => [sample.id, sample.transcript ?? ''])
-    );
+    try {
+      const result = await voiceApi.samples<Sample>(voice.id);
+      if (request !== sampleRequest || selected?.id !== voice.id) return;
+      const previous = new Map(samples.map((sample) => [sample.id, sample]));
+      // Read drafts when the response arrives: typing during a refresh belongs
+      // to the user too. A replacement artifact starts a new transcript.
+      transcripts = Object.fromEntries(
+        result.items.map((sample) => {
+          const old = previous.get(sample.id);
+          const draft = transcripts[sample.id];
+          const dirty =
+            old?.artifact_id === sample.artifact_id &&
+            draft !== undefined &&
+            draft !== (old.transcript ?? '');
+          return [sample.id, dirty ? draft : (sample.transcript ?? '')];
+        })
+      );
+      if (
+        playingKey &&
+        playingKey !== 'recording' &&
+        !result.items.some(
+          (sample) =>
+            sample.id === playingKey &&
+            sample.available !== false &&
+            sample.artifact_id === previous.get(sample.id)?.artifact_id
+        )
+      )
+        stopPlayback();
+      samples = result.items;
+    } catch (caught) {
+      if (request === sampleRequest && selected?.id === voice.id) throw caught;
+    }
   }
 
   async function createVoice() {
@@ -856,10 +893,20 @@
       return;
     }
     error = '';
+    const voiceId = selected.id;
+    const selection = voiceSelection;
+    const draft = transcripts[sample.id];
+    const currentSample = () =>
+      selection === voiceSelection &&
+      selected?.id === voiceId &&
+      samples.some(
+        (item) =>
+          item.id === sample.id && item.artifact_id === sample.artifact_id
+      );
     transcribing = { ...transcribing, [sample.id]: true };
     notice = `Transcribing sample with ${sttEngineName()}${sttModelInfo.download_on_demand ? ' (the model will download first)' : ''}…`;
     try {
-      const job = await voiceApi.transcribeSample(selected.id, sample.id, {
+      const job = await voiceApi.transcribeSample(voiceId, sample.id, {
         stt_engine: engine,
         stt_backend: engine,
         stt_compute_backend: computeBackend,
@@ -873,10 +920,19 @@
         crispasr_vad_threshold: vadThreshold
       });
       const completed = await waitJob(job.id);
-      transcripts[sample.id] = String(completed.result_json?.transcript ?? '');
-      notice = 'Transcript ready for review. Save it when the text is correct.';
+      if (!currentSample()) return;
+      if (transcripts[sample.id] === draft) {
+        transcripts[sample.id] = String(
+          completed.result_json?.transcript ?? ''
+        );
+        notice =
+          'Transcript ready for review. Save it when the text is correct.';
+      } else {
+        notice =
+          'Transcription finished. Your newer transcript edits were kept.';
+      }
     } catch (caught) {
-      report(caught);
+      if (currentSample()) report(caught);
     } finally {
       const next = { ...transcribing };
       delete next[sample.id];
@@ -885,11 +941,17 @@
   }
 
   async function transcribeMissing() {
-    if (transcribingMissing) return;
+    if (!selected || transcribingMissing) return;
+    const voiceId = selected.id;
+    const selection = voiceSelection;
     transcribingMissing = true;
     try {
-      for (const sample of samples.filter((item) => !item.transcript_reviewed))
+      for (const sample of samples.filter(
+        (item) => !item.transcript_reviewed
+      )) {
+        if (selection !== voiceSelection || selected?.id !== voiceId) break;
         await transcribe(sample);
+      }
     } finally {
       transcribingMissing = false;
     }
@@ -947,18 +1009,33 @@
 
   async function saveTranscript(sample: Sample) {
     if (!selected || !transcripts[sample.id]?.trim()) return;
+    const voiceId = selected.id;
+    const selection = voiceSelection;
+    const draft = transcripts[sample.id];
     try {
-      await voiceApi.reviewTranscript<Sample>(selected.id, sample.id, {
-        transcript: transcripts[sample.id].trim(),
-        language: sampleLanguage,
-        expected_voice_revision: selected.revision
-      });
+      const saved = await voiceApi.reviewTranscript<Sample>(
+        voiceId,
+        sample.id,
+        {
+          transcript: draft.trim(),
+          language: sampleLanguage,
+          expected_voice_revision: selected.revision
+        }
+      );
+      if (selection !== voiceSelection || selected?.id !== voiceId) return;
+      // Advance the saved baseline without overwriting a newer local edit.
+      if (transcripts[sample.id] === draft)
+        transcripts[sample.id] = saved.transcript ?? '';
+      samples = samples.map((item) => (item.id === sample.id ? saved : item));
       notice = 'Reviewed transcript saved.';
       await loadVoices();
-      if (selected) await choose(selected);
+      if (selection !== voiceSelection || selected?.id !== voiceId) return;
+      await choose(selected);
+      if (selection !== voiceSelection || selected?.id !== voiceId) return;
       await maybePublishRequestedVoice();
     } catch (caught) {
-      report(caught);
+      if (selection === voiceSelection && selected?.id === voiceId)
+        report(caught);
     }
   }
 
@@ -1019,6 +1096,8 @@
   });
 
   onDestroy(() => {
+    ++sampleRequest;
+    ++voiceSelection;
     if (recorder && recorder.state !== 'inactive') recorder.stop();
     activeStream?.getTracks().forEach((track) => track.stop());
     if (timer) window.clearInterval(timer);
@@ -1192,7 +1271,7 @@
               {#each voices.filter((voice) => (!focused || !voice.bundled) && `${voice.name} ${voice.language ?? ''}`
                     .toLowerCase()
                     .includes(referenceSearch.toLowerCase())) as voice}<button
-                  onclick={() => choose(voice)}
+                  onclick={() => void choose(voice).catch(report)}
                   class:active={selected?.id === voice.id}
                   class="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left"
                   ><Library size={17} /><span
@@ -1716,7 +1795,7 @@
           </section>
 
           <div class="space-y-4">
-            {#each samples as sample, sampleIndex}
+            {#each samples as sample, sampleIndex (sample.id)}
               <article class="rounded-2xl border border-[var(--line)] p-4">
                 <div class="mb-3 flex flex-wrap items-center gap-2">
                   <h4 class="font-semibold">Sample {sampleIndex + 1}</h4>
