@@ -153,23 +153,37 @@ def build_llm_settings(
     paths: DataPaths,
     *,
     requested_model: str | None = None,
+    requested_provider_id: str | None = None,
     request_timeout_seconds: int | None = None,
 ) -> tuple[SimpleNamespace, str]:
-    """Build the legacy-compatible settings object consumed by the shared LLM engine."""
+    """Build worker settings or scope a diagnostic to one database provider.
 
+    Explicit provider diagnostics may test disabled providers without changing
+    their enabled state. Unscoped workers retain enabled-provider selection.
+    """
+
+    provider_scope = str(requested_provider_id or "").strip()
     with database.session() as session:
+        provider_statement = select(Provider).where(Provider.kind == "llm")
+        model_statement = select(ProviderModel)
+        if provider_scope:
+            provider_statement = provider_statement.where(Provider.id == provider_scope)
+            model_statement = model_statement.where(ProviderModel.provider_id == provider_scope)
+        else:
+            provider_statement = provider_statement.where(Provider.enabled.is_(True))
         providers = list(
             session.scalars(
-                select(Provider)
-                .where(Provider.kind == "llm", Provider.enabled.is_(True))
-                .order_by(Provider.created_at)
+                provider_statement.order_by(Provider.created_at)
             ).all()
         )
         model_rows = list(
             session.scalars(
-                select(ProviderModel).order_by(ProviderModel.created_at)
+                model_statement.order_by(ProviderModel.created_at)
             ).all()
         )
+
+    if provider_scope and not providers:
+        raise ValueError("The requested LLM provider is unavailable.")
 
     models_by_provider: dict[str, list[ProviderModel]] = {}
     for model in model_rows:
@@ -187,6 +201,11 @@ def build_llm_settings(
             for row in models_by_provider.get(provider.id, [])
             if row.is_active or row.is_default
         ]
+        if provider_scope and (
+            not rows
+            or (selected_model and not any(row.model_id == selected_model for row in rows))
+        ):
+            raise ValueError("Activate the selected model on this provider before testing it.")
         if not rows:
             continue
         fallback_env = str(

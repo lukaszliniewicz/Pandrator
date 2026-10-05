@@ -4908,9 +4908,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                     "Activate at least one model before testing this provider.",
                     422,
                 )
-        settings, model_name = build_llm_settings(
-            database, paths, requested_model=selected
-        )
+        try:
+            settings, model_name = build_llm_settings(
+                database, paths, requested_model=selected, requested_provider_id=provider_id
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         result = chat_completion_with_metadata(
             messages=[{"role": "user", "content": "Reply with exactly OK."}],
             model_name=model_name,
