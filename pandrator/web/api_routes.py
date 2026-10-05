@@ -2092,9 +2092,6 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return idempotency_error
         if idempotency_key is not None:
             try:
-                prepared = generation.prepare_assembly(
-                    session_id, run_override=payload.run_override
-                )
                 with database.immediate_session() as db_session:
                     reservation = services.idempotency.begin(
                         db_session,
@@ -2112,6 +2109,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
+                    prepared = generation.prepare_assembly(
+                        session_id, run_override=payload.run_override
+                    )
                     result = generation.create_assembly_in_session(
                         db_session,
                         session_id,
