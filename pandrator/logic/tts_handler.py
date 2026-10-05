@@ -3715,23 +3715,16 @@ def _request_magpie_audio(
         "response_format": "wav",
     }
 
-    last_response = None
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No Magpie speech endpoint could be resolved for '{normalized_base_url}'."
+    return _native_speech_http.post_speech_candidates(
+        _openai_audio_speech_urls(normalized_base_url),
+        request_options=lambda: {
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=(
+            f"No Magpie speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
@@ -4166,25 +4159,17 @@ def _request_xtts_audio(
 ) -> requests.Response:
     normalized_base_url = _normalize_base_url(xtts_base_url, XTTS_API_BASE_URL)
     payload = _build_xtts_openai_payload(text, tts_settings)
-    last_response = None
-
-    for speech_url in _openai_audio_speech_urls(normalized_base_url):
-        response = requests.post(
-            speech_url,
-            headers=_openai_auth_headers(),
-            json=payload,
-            timeout=TTS_GENERATION_TIMEOUT_SECONDS,
-        )
-        if _should_try_next_openai_candidate(response.status_code):
-            last_response = response
-            continue
-        return response
-
-    if last_response is not None:
-        return last_response
-
-    raise RuntimeError(
-        f"No XTTS speech endpoint could be resolved for '{normalized_base_url}'."
+    return _native_speech_http.post_speech_candidates(
+        _openai_audio_speech_urls(normalized_base_url),
+        request_options=lambda: {
+            "headers": _openai_auth_headers(),
+            "json": payload,
+            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+        },
+        should_try_next=lambda status: _should_try_next_openai_candidate(status),
+        no_endpoint_message=(
+            f"No XTTS speech endpoint could be resolved for '{normalized_base_url}'."
+        ),
     )
 
 
