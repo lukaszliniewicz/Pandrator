@@ -297,3 +297,157 @@ for (const width of [1280, 390]) {
     expect(f.errors).toEqual([]);
   });
 }
+
+for (const width of [1280, 390]) {
+  test(`Manager manual retry recovers a lost acceptance response at ${width}px`, async ({
+    page
+  }, info) => {
+    await page.setViewportSize({ width, height: 950 });
+    const f = await fixture(page);
+    const attempts: { key: string | undefined; body: unknown }[] = [];
+    const operation = { id: 'accepted-once', kind: 'update', state: 'queued' };
+    let accepted = false;
+    await page.route('**/v1/operations', async (route) => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        await route.fulfill({ json: { items: accepted ? [operation] : [] } });
+        return;
+      }
+      attempts.push({
+        key: request.headers()['idempotency-key'],
+        body: request.postDataJSON()
+      });
+      if (!accepted) {
+        accepted = true;
+        await route.abort('failed');
+      } else if (attempts.at(-1)?.key === attempts[0].key) {
+        await route.fulfill({ status: 202, json: operation });
+      } else {
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: 'conflict',
+              message: 'Another manager operation is already in progress.'
+            }
+          }
+        });
+      }
+    });
+    const confirm = f.dialog.getByRole('button', {
+      name: 'Apply reviewed update'
+    });
+    await confirm.click();
+    await expect(f.dialog.getByRole('alert')).toBeVisible();
+    await expect(confirm).toBeEnabled();
+    expect(attempts).toHaveLength(1);
+    await page.screenshot({
+      path: info.outputPath('lost-acceptance-response.png'),
+      fullPage: true
+    });
+    await confirm.click();
+    await expect.poll(() => attempts.length).toBe(2);
+    await info.attach('operation-attempts', {
+      body: JSON.stringify(attempts, null, 2),
+      contentType: 'application/json'
+    });
+    expect(attempts[0].key).toBeTruthy();
+    expect(attempts[1].key).toBe(attempts[0].key);
+    expect(attempts.map((attempt) => attempt.body)).toEqual([
+      expectedRequest,
+      expectedRequest
+    ]);
+    await expect(f.dialog).not.toBeVisible();
+    await expect(page.locator('#message')).toContainText('Plan accepted.');
+    await expect(page.locator('#active-operation')).toBeVisible();
+    await page.screenshot({
+      path: info.outputPath('recovered-acceptance.png'),
+      fullPage: true
+    });
+    expect(f.errors).toEqual([]);
+  });
+
+  test(`Manager fresh reviewed plan receives a fresh request identity at ${width}px`, async ({
+    page
+  }, info) => {
+    await page.setViewportSize({ width, height: 950 });
+    const f = await fixture(page);
+    const attempts: { key: string | undefined; body: unknown }[] = [];
+    const operations: { id: string; kind: string; state: string }[] = [];
+    await page.route('**/v1/operations', async (route) => {
+      const request = route.request();
+      if (request.method() === 'GET') {
+        await route.fulfill({
+          json: {
+            items: operations.map((operation) => ({
+              ...operation,
+              state: 'succeeded'
+            }))
+          }
+        });
+        return;
+      }
+      attempts.push({
+        key: request.headers()['idempotency-key'],
+        body: request.postDataJSON()
+      });
+      const operation = {
+        id: `accepted-${attempts.length}`,
+        kind: 'update',
+        state: 'queued'
+      };
+      operations.push(operation);
+      await route.fulfill({ status: 202, json: operation });
+    });
+    await f.dialog
+      .getByRole('button', { name: 'Apply reviewed update' })
+      .click();
+    await expect(f.dialog).not.toBeVisible();
+    await page.locator('#refresh').click();
+    await expect(f.review).toBeEnabled();
+    await page.route('**/v1/plans', (route) =>
+      route.fulfill({
+        json: {
+          id: 'new-reviewed-plan',
+          digest: 'new-reviewed-digest',
+          kind: 'update',
+          desired: { kokoro: { present: true, compute: 'cpu', options: {} } },
+          tasks: [{ id: 'update-kokoro', label: 'Update Kokoro' }],
+          confirmations: [
+            {
+              key: 'reviewed-confirmation',
+              message: 'Keep the existing workspace.'
+            }
+          ],
+          preflight: [],
+          warnings: [],
+          estimated_download_bytes: 0,
+          estimated_disk_bytes: 0
+        }
+      })
+    );
+    await f.review.click();
+    await expect(f.dialog).toBeVisible();
+    await f.dialog
+      .getByRole('button', { name: 'Apply reviewed update' })
+      .click();
+    await expect(f.dialog).not.toBeVisible();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0].key).toBeTruthy();
+    expect(attempts[1].key).toBeTruthy();
+    expect(attempts[1].key).not.toBe(attempts[0].key);
+    expect(attempts.map((attempt) => attempt.body)).toEqual([
+      expectedRequest,
+      {
+        ...expectedRequest,
+        plan_id: 'new-reviewed-plan',
+        plan_digest: 'new-reviewed-digest'
+      }
+    ]);
+    await info.attach('fresh-plan-attempts', {
+      body: JSON.stringify(attempts, null, 2),
+      contentType: 'application/json'
+    });
+    expect(f.errors).toEqual([]);
+  });
+}

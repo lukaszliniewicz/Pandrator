@@ -13,6 +13,7 @@ let snapshot = {
 };
 let selectedPlan = null;
 let selectedPlanTitle = "";
+let selectedPlanAttempt = null;
 let planSubmitting = false;
 let activeOperation = null;
 let refreshInFlight = null;
@@ -345,7 +346,9 @@ async function requestJson(path, options = {}) {
       throw new Error("Open a fresh recovery link before making changes.");
     }
     headers.set("X-CSRF-Token", csrf);
-    headers.set("Idempotency-Key", idempotencyKey());
+    if (!headers.has("Idempotency-Key")) {
+      headers.set("Idempotency-Key", idempotencyKey());
+    }
     headers.set("Content-Type", "application/json");
   }
   const response = await fetch(path, { ...options, method, headers });
@@ -2788,6 +2791,7 @@ function showPlanError(message) {
 function showPlan(plan, title = "") {
   if (planSubmitting) return;
   selectedPlan = plan;
+  selectedPlanAttempt = null;
   selectedPlanTitle = title || stateLabel(plan.kind);
   byId("plan-title").textContent = selectedPlanTitle;
   showPlanError("");
@@ -2908,6 +2912,17 @@ async function executePlan() {
     showPlanError(error.message);
     return;
   }
+  const body = JSON.stringify({
+    plan_id: selectedPlan.id,
+    plan_digest: selectedPlan.digest,
+    accepted_confirmations: (selectedPlan.confirmations || []).map(
+      (confirmation) => confirmation.key,
+    ),
+  });
+  // A manual retry must recover an acceptance whose response may have been lost.
+  if (selectedPlanAttempt?.body !== body) {
+    selectedPlanAttempt = { body, key: idempotencyKey() };
+  }
   showPlanError("");
   planSubmitting = true;
   const dialog = byId("plan-dialog");
@@ -2921,13 +2936,8 @@ async function executePlan() {
   try {
     activeOperation = await requestJson("/v1/operations", {
       method: "POST",
-      body: JSON.stringify({
-        plan_id: selectedPlan.id,
-        plan_digest: selectedPlan.digest,
-        accepted_confirmations: (selectedPlan.confirmations || []).map(
-          (confirmation) => confirmation.key,
-        ),
-      }),
+      headers: { "Idempotency-Key": selectedPlanAttempt.key },
+      body: selectedPlanAttempt.body,
     });
     const kind = activeOperation.kind;
     if (postInstallAccess) {
@@ -2961,6 +2971,7 @@ async function executePlan() {
 function closePlan({ force = false } = {}) {
   if (planSubmitting && !force) return;
   selectedPlan = null;
+  selectedPlanAttempt = null;
   selectedPlanTitle = "";
   byId("plan-owner-password").value = "";
   byId("plan-owner-confirm").value = "";
