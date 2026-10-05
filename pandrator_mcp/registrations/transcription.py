@@ -68,6 +68,11 @@ def register_transcription_tools(
             Field(max_length=40, pattern=r"^[A-Za-z0-9_.-]+$"),
         ] = None,
         compute_backend: Literal["auto", "cpu", "cuda", "vulkan", "metal"] | None = None,
+        qwen_asr_model: Literal["qwen3_asr_0_6b", "qwen3_asr_1_7b"] | None = None,
+        transcription_vocal_isolation: Literal[
+            "off", "bs_roformer", "mel_band_roformer", "htdemucs"
+        ]
+        | None = None,
         wait_seconds: Annotated[int, Field(ge=0, le=30)] = 30,
     ) -> dict[str, Any]:
         """Upload one bounded source, resume its chunks, and start transcription."""
@@ -83,6 +88,8 @@ def register_transcription_tools(
                 "engine": engine,
                 "model_quantization": model_quantization,
                 "compute_backend": compute_backend,
+                "qwen_asr_model": qwen_asr_model,
+                "transcription_vocal_isolation": transcription_vocal_isolation,
                 "wait_seconds": wait_seconds,
                 "idempotency_key": idempotency_key,
             },
