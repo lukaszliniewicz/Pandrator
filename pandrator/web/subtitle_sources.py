@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -24,6 +27,36 @@ from .source_resolution import PrimarySourceResolution
 
 _SUBTITLE_KINDS = {"srt", "vtt"}
 _VTT_TIMESTAMP = re.compile(r"^(?:(\d{2,}):)?(\d{2}):(\d{2})[.,](\d{3})$")
+
+
+def _publish_subtitle_derivative(destination: Path, content: str) -> None:
+    """Publish complete immutable bytes, retaining candidates for DB retries."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        if destination.read_text(encoding="utf-8") != content:
+            raise ValueError("The existing imported subtitle derivative has changed.")
+        return
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # Windows rename refuses an existing destination; POSIX rename
+            # would overwrite it, so use an exclusive same-directory hard link.
+            if os.name == "nt":
+                os.rename(temporary, destination)
+            else:
+                os.link(temporary, destination)
+        except FileExistsError:
+            if destination.read_text(encoding="utf-8") != content:
+                raise ValueError("The existing imported subtitle derivative has changed.") from None
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def parse_subtitle_source(content: str, kind: str) -> list:
@@ -126,13 +159,9 @@ def adopt_subtitle_source_in_session(
     # An immutable content-addressed derivative avoids duplicate uploads, makes
     # interrupted imports retryable and never overwrites a user's reviewed file.
     destination = artifacts.paths.managed_path(f"sessions/{session_id}/imported-subtitles/{digest}.srt")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        if destination.read_text(encoding="utf-8") != content:
-            raise ValueError("The existing imported subtitle derivative has changed.")
-    else:
-        with destination.open("x", encoding="utf-8") as handle:
-            handle.write(content)
+    # A rolled-back DB publication leaves only a complete candidate. Retrying
+    # can register it; deleting it here could race another caller's adoption.
+    _publish_subtitle_derivative(destination, content)
     document = Document(
         session_id=session_id,
         stage="transcription",

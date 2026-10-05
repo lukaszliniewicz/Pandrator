@@ -14127,7 +14127,10 @@ export interface operations {
     adoptSubtitleSource: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional current session revision. Missing or empty headers omit the precondition; malformed values return 422 and stale revisions return 409. */
+                "If-Match"?: string;
+            };
             path: {
                 sessionId: string;
             };
@@ -14139,8 +14142,40 @@ export interface operations {
             };
         };
         responses: {
-            /** @description adoptSubtitleSource */
+            /** @description An existing imported subtitle revision was reused. */
+            200: {
+                headers: {
+                    /** @description The current session revision after adoption or reuse. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A subtitle transcription revision was imported. */
             201: {
+                headers: {
+                    /** @description The current session revision after adoption or reuse. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Attach this subtitle source as the session's primary source first. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The session revision changed before adoption. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The subtitle source, role or If-Match value is invalid. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16295,7 +16330,7 @@ export interface operations {
                 "multipart/form-data": {
                     /** Format: binary */
                     file: string;
-                    /** @description JSON object with format, language, engine, model_quantization, compute_backend, qwen_asr_model (qwen3_asr_0_6b or qwen3_asr_1_7b), and transcription_vocal_isolation (off, bs_roformer, or mel_band_roformer) overrides. */
+                    /** @description JSON object with format, language, engine, model_quantization, compute_backend, qwen_asr_model (qwen3_asr_0_6b or qwen3_asr_1_7b), and transcription_vocal_isolation (off, bs_roformer, mel_band_roformer, or htdemucs) overrides. */
                     options?: string;
                 };
             };

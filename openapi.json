@@ -18661,6 +18661,15 @@
         "operationId": "adoptSubtitleSource",
         "parameters": [
           {
+            "description": "Optional current session revision. Missing or empty headers omit the precondition; malformed values return 422 and stale revisions return 409.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -18680,8 +18689,36 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "An existing imported subtitle revision was reused.",
+            "headers": {
+              "ETag": {
+                "description": "The current session revision after adoption or reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "201": {
-            "description": "adoptSubtitleSource"
+            "description": "A subtitle transcription revision was imported.",
+            "headers": {
+              "ETag": {
+                "description": "The current session revision after adoption or reuse.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Attach this subtitle source as the session's primary source first."
+          },
+          "409": {
+            "description": "The session revision changed before adoption."
+          },
+          "422": {
+            "description": "The subtitle source, role or If-Match value is invalid."
           }
         },
         "security": [
@@ -21783,7 +21820,7 @@
                     "type": "string"
                   },
                   "options": {
-                    "description": "JSON object with format, language, engine, model_quantization, compute_backend, qwen_asr_model (qwen3_asr_0_6b or qwen3_asr_1_7b), and transcription_vocal_isolation (off, bs_roformer, or mel_band_roformer) overrides.",
+                    "description": "JSON object with format, language, engine, model_quantization, compute_backend, qwen_asr_model (qwen3_asr_0_6b or qwen3_asr_1_7b), and transcription_vocal_isolation (off, bs_roformer, mel_band_roformer, or htdemucs) overrides.",
                     "type": "string"
                   }
                 },

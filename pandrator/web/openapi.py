@@ -3642,6 +3642,36 @@ def build_openapi_document() -> dict:
         definition = operation(name, name, schema, status)
         definition["security"] = [{"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read" if method == "get" else "app.write"]}]
         paths.setdefault(path, {})[method] = definition
+    adoption = paths["/api/v1/sessions/{sessionId}/sources/adopt-subtitles"]["post"]
+    adoption["parameters"] = [
+        {
+            "name": "If-Match",
+            "in": "header",
+            "required": False,
+            "description": (
+                "Optional current session revision. Missing or empty headers omit the "
+                "precondition; malformed values return 422 and stale revisions return 409."
+            ),
+            "schema": {"type": "string"},
+        }
+    ]
+    adoption["responses"] = {
+        status: {"description": description}
+        for status, description in (
+            ("200", "An existing imported subtitle revision was reused."),
+            ("201", "A subtitle transcription revision was imported."),
+            ("404", "Attach this subtitle source as the session's primary source first."),
+            ("409", "The session revision changed before adoption."),
+            ("422", "The subtitle source, role or If-Match value is invalid."),
+        )
+    }
+    for status in ("200", "201"):
+        adoption["responses"][status]["headers"] = {
+            "ETag": {
+                "description": "The current session revision after adoption or reuse.",
+                "schema": {"type": "string"},
+            }
+        }
     passage_operations = [
         ("/api/v1/sessions/{sessionId}/sources/{artifactId}/passages", "get", "getSourcePassages", None, "200", "app.read", False),
         ("/api/v1/sessions/{sessionId}/sources/{artifactId}/passages/preview", "post", "previewSourcePassages", "SourcePassagePreviewRequest", "200", "app.read", False),
