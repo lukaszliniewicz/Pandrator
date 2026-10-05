@@ -43,6 +43,8 @@ def response(status: int = 200, *, audio: bytes | None = None) -> requests.Respo
 
 
 def settings(provider: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    if provider in {"magpie", "xtts"}:
+        return {"service": "Magpie" if provider == "magpie" else "XTTS"}
     monkeypatch.setenv("FIXTURE_CALLER_KEY", "fixture-key")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fixture-key")
     if provider == "elevenlabs":
@@ -106,7 +108,7 @@ def script(mode: str) -> list[requests.Response | Exception]:
     return results
 
 
-@pytest.mark.parametrize("provider", ("elevenlabs", "azure"))
+@pytest.mark.parametrize("provider", ("elevenlabs", "azure", "magpie", "xtts"))
 @pytest.mark.parametrize(
     "mode",
     (
@@ -138,25 +140,54 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
     def post(url: str, **options: object) -> requests.Response:
         index = len(calls)
         assert index < len(steps), "Unexpected additional native synthesis attempt"
-        expected_url = (
-            "https://elevenlabs.invalid/v1/text-to-speech/voice%2Ffixture"
-            if provider == "elevenlabs"
-            else "https://azure.invalid/custom/speech"
-        )
+        expected_url = {
+            "elevenlabs": "https://elevenlabs.invalid/v1/text-to-speech/voice%2Ffixture",
+            "azure": "https://azure.invalid/custom/speech",
+            "magpie": "http://127.0.0.1:8030/v1/audio/speech",
+            "xtts": "http://127.0.0.1:8020/v1/audio/speech",
+        }[provider]
         assert url == expected_url
         assert options["timeout"] == 300
-        headers = options["headers"]
-        assert isinstance(headers, dict)
-        assert (
-            headers["xi-api-key" if provider == "elevenlabs" else "Ocp-Apim-Subscription-Key"]
-            == "fixture-key"
-        )
+        if provider == "magpie":
+            assert "headers" not in options
+        elif provider == "xtts":
+            assert options["headers"] == {"Authorization": "Bearer sk-placeholder"}
+        else:
+            headers = options["headers"]
+            assert isinstance(headers, dict)
+            assert (
+                headers["xi-api-key" if provider == "elevenlabs" else "Ocp-Apim-Subscription-Key"]
+                == "fixture-key"
+            )
         if provider == "elevenlabs":
             assert options["json"] == {"text": "Hello", "model_id": "eleven_multilingual_v2"}
             assert "data" not in options
-        else:
+        elif provider == "azure":
             assert "json" not in options
             assert isinstance(options["data"], str) and ">Hello</prosody>" in options["data"]
+        elif provider == "magpie":
+            assert options["json"] == {
+                "model": "magpie-tts",
+                "input": "Hello",
+                "voice": "Magpie-Multilingual.EN-US.Aria",
+                "language": None,
+                "speed": 1.0,
+                "use_cfg": True,
+                "apply_text_normalization": False,
+                "response_format": "wav",
+            }
+            assert "data" not in options
+        else:
+            assert options["json"] == {
+                "model": "tts_models/multilingual/multi-dataset/xtts_v2",
+                "input": "Hello",
+                "voice": "default",
+                "language": "en",
+                "speed": 1.0,
+                "response_format": "wav",
+                "instructions": '{"language": "en"}',
+            }
+            assert "data" not in options
         calls.append(url)
         result = steps[index]
         if isinstance(result, Exception):
@@ -209,7 +240,11 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
             assert isinstance(cause, requests.exceptions.HTTPError)
             assert cause.response is steps[-1]
         elif mode == "wrapped_nonretryable":
-            assert isinstance(cause, RuntimeError) and cause.__cause__ is steps[0]
+            if provider in {"magpie", "xtts"}:
+                assert cause is steps[0]
+                assert isinstance(cause, requests.exceptions.HTTPError)
+            else:
+                assert isinstance(cause, RuntimeError) and cause.__cause__ is steps[0]
         else:
             assert isinstance(cause, RuntimeError)
         status = (
