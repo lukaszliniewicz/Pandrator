@@ -68,11 +68,8 @@ from .models import (
     AppSetting,
     AppSettingHistory,
     Artifact,
-    Job,
     SessionRecord,
     SourceRecord,
-    TrainingRun,
-    Voice,
     new_id,
     utcnow,
 )
@@ -104,7 +101,6 @@ from .schemas import (
     SubtitlePassageReviewRequest,
     SubtitleReviewRequest,
     TokenCreateRequest,
-    TrainingCreateRequest,
 )
 from .service_routes import register_service_routes
 from .session_routes import (
@@ -125,6 +121,7 @@ from .source_routes import (
 from .speech_optimization_dispatch_routes import (
     register_speech_optimization_dispatch_routes,
 )
+from .training_routes import register_training_routes
 from .voice_routes import register_voice_routes
 from .workflow_improvements_routes import register_workflow_improvements_routes
 from .workflow_plan_routes import register_workflow_plan_routes
@@ -2385,170 +2382,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
         return jsonify(_job_payload(job)), 202
 
-    @app.get("/api/v1/training")
-    @require_auth
-    def training_list():
-        with database.session() as db_session:
-            records = list(
-                db_session.scalars(
-                    select(TrainingRun)
-                    .order_by(TrainingRun.created_at.desc())
-                    .limit(200)
-                ).all()
-            )
-            for record in records:
-                job = db_session.get(Job, record.job_id) if record.job_id else None
-                if (
-                    record.status in {"queued", "running", "cancel_requested"}
-                    and job is not None
-                    and job.status in {"failed", "canceled", "interrupted"}
-                ):
-                    record.status = job.status
-                    record.error_message = job.error_message
-                    record.updated_at = utcnow()
-            return jsonify(
-                {
-                    "items": [
-                        _model_dict(
-                            item,
-                            (
-                                "id",
-                                "kind",
-                                "voice_id",
-                                "job_id",
-                                "source_artifact_id",
-                                "source_text_artifact_id",
-                                "output_artifact_id",
-                                "model_name",
-                                "status",
-                                "settings_json",
-                                "error_message",
-                                "created_at",
-                                "updated_at",
-                            ),
-                        )
-                        for item in records
-                    ]
-                }
-            )
-
-    @app.post("/api/v1/training")
-    @require_auth
-    def training_create():
-        payload = TrainingCreateRequest.model_validate(
-            request.get_json(silent=True) or {}
-        )
-        if rejected := inline_credential_error(payload.settings):
-            return rejected
-        try:
-            artifacts.resolve(payload.source_artifact_id)
-            if payload.source_text_artifact_id:
-                artifacts.resolve(payload.source_text_artifact_id)
-        except KeyError:
-            return error_response(
-                "not_found", "A training source artifact was not found.", 404
-            )
-        training_id = new_id()
-        with database.session() as db_session:
-            if payload.voice_id and db_session.get(Voice, payload.voice_id) is None:
-                return error_response("not_found", "Voice not found.", 404)
-            db_session.add(
-                TrainingRun(
-                    id=training_id,
-                    kind="xtts",
-                    voice_id=payload.voice_id,
-                    source_artifact_id=payload.source_artifact_id,
-                    source_text_artifact_id=payload.source_text_artifact_id,
-                    model_name=payload.model_name,
-                    settings_json=payload.settings,
-                )
-            )
-        job = jobs.enqueue(
-            "training.xtts",
-            {
-                "training_id": training_id,
-                "model_name": payload.model_name,
-                "source_artifact_id": payload.source_artifact_id,
-                "source_text_artifact_id": payload.source_text_artifact_id,
-                "settings": payload.settings,
-            },
-            resource_keys=["training:xtts", "gpu:default"],
-        )
-        with database.session() as db_session:
-            training = db_session.get(TrainingRun, training_id)
-            training.job_id = job.id
-            training.updated_at = utcnow()
-        response = _job_payload(job)
-        response["training_id"] = training_id
-        return jsonify(response), 202
-
-    @app.post("/api/v1/training/<training_id>/retry")
-    @require_auth
-    def training_retry(training_id: str):
-        with database.session() as db_session:
-            previous = db_session.get(TrainingRun, training_id)
-            if previous is None:
-                return error_response("not_found", "Training run not found.", 404)
-            if previous.status not in {"failed", "canceled", "interrupted"}:
-                return error_response(
-                    "training_active",
-                    "Only failed, canceled, or interrupted training can be retried.",
-                    409,
-                )
-            retry_id = new_id()
-            db_session.add(
-                TrainingRun(
-                    id=retry_id,
-                    kind=previous.kind,
-                    voice_id=previous.voice_id,
-                    source_artifact_id=previous.source_artifact_id,
-                    source_text_artifact_id=previous.source_text_artifact_id,
-                    model_name=previous.model_name,
-                    settings_json=dict(previous.settings_json or {}),
-                )
-            )
-            source_artifact_id = previous.source_artifact_id
-            source_text_artifact_id = previous.source_text_artifact_id
-            model_name = previous.model_name
-            settings = dict(previous.settings_json or {})
-        job = jobs.enqueue(
-            "training.xtts",
-            {
-                "training_id": retry_id,
-                "model_name": model_name,
-                "source_artifact_id": source_artifact_id,
-                "source_text_artifact_id": source_text_artifact_id,
-                "settings": settings,
-            },
-            resource_keys=["training:xtts", "gpu:default"],
-        )
-        with database.session() as db_session:
-            retry = db_session.get(TrainingRun, retry_id)
-            retry.job_id = job.id
-            retry.updated_at = utcnow()
-        response = _job_payload(job)
-        response["training_id"] = retry_id
-        response["retried_from"] = training_id
-        return jsonify(response), 202
-
-    @app.post("/api/v1/training/<training_id>/cancel")
-    @require_auth
-    def training_cancel(training_id: str):
-        with database.session() as db_session:
-            training = db_session.get(TrainingRun, training_id)
-            if training is None:
-                return error_response("not_found", "Training run not found.", 404)
-            job_id = training.job_id
-            training.status = "cancel_requested"
-            training.updated_at = utcnow()
-        if job_id:
-            try:
-                jobs.request_cancel(job_id)
-            except KeyError:
-                pass
-        return jsonify(
-            {"id": training_id, "job_id": job_id, "status": "cancel_requested"}
-        ), 202
+    register_training_routes(app, context)
 
     @app.get("/_app/<path:asset_path>")
     def frontend_asset(asset_path: str):

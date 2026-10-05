@@ -20,6 +20,7 @@ from .credentials import SecretRedactor
 from .database import Database
 from .model_maintenance import ensure_app_job_allowed
 from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, SessionRecord, utcnow
+from .training_state import reconcile_training_runs_in_session
 from .update_maintenance import update_maintenance_active
 
 JobHandler = Callable[
@@ -287,6 +288,7 @@ class JobQueue:
                 terminal_job_ids,
             )
             self._reconcile_agent_runs_for_jobs_locked(session, terminal_job_ids)
+            reconcile_training_runs_in_session(session, terminal_job_ids)
 
     @staticmethod
     def _is_generation_owner(run: GenerationRun, job: Job) -> bool:
@@ -471,6 +473,7 @@ class JobQueue:
             self._reconcile_stale_locked(session)
             self._repair_generation_runs_locked(session)
             self._repair_agent_runs_locked(session)
+            reconcile_training_runs_in_session(session)
 
     def _reconcile_stale(self) -> None:
         """Serialize the uncommon stale-job transition without locking normal reads."""
@@ -894,6 +897,7 @@ class JobQueue:
         self._event(session, job.id, event_type)
         self._reconcile_generation_run_for_job_locked(session, job)
         self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+        reconcile_training_runs_in_session(session, [job_id])
         session.flush()
         return job
 
@@ -925,6 +929,7 @@ class JobQueue:
             self._event(session, job.id, "job.succeeded", job.result_json)
             self._reconcile_generation_run_for_job_locked(session, job)
             self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+            reconcile_training_runs_in_session(session, [job_id])
 
     def fail(
         self,
@@ -963,6 +968,7 @@ class JobQueue:
             if not retry:
                 self._reconcile_generation_run_for_job_locked(session, job)
                 self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+                reconcile_training_runs_in_session(session, [job_id])
             else:
                 # Handlers persist their own failure before the queue schedules
                 # another attempt. Keep the run non-resumable while that retry
@@ -1004,6 +1010,7 @@ class JobQueue:
             self._event(session, job.id, "job.canceled")
             self._reconcile_generation_run_for_job_locked(session, job)
             self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
+            reconcile_training_runs_in_session(session, [job_id])
             return True
 
     def events_after(self, event_id: int = 0, limit: int = 250) -> list[JobEvent]:

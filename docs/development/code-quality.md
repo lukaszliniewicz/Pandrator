@@ -30,8 +30,9 @@ Linux's ability to unlink open database files can conceal missing cleanup.
 
 Group changes that share a component and contract into one reviewable batch.
 For a behavior fix, reproduce the specific failure before editing and retain
-that regression. During implementation, run focused tests and lint for the
-changed surface. At the batch boundary, run the combined relevant regressions
+that regression. During implementation, run focused tests, lint, and typing for
+the changed surface, including modified integration code alongside new modules.
+At the batch boundary, run the combined relevant regressions
 and production quality checks once. Keep independently reviewable fixes in
 separate commits when useful; a batch need not mean one large commit.
 

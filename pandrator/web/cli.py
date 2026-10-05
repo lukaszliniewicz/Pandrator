@@ -41,16 +41,16 @@ from .models import (
     ProviderModel,
     SessionRecord,
     SourceRecord,
-    TrainingRun,
     Voice,
     VoiceSample,
-    new_id,
     utcnow,
 )
 from .openapi import build_openapi_document
 from .process_guard import WorkerPresence
+from .schemas import TrainingCreateRequest
 from .sessions import SessionService
 from .subtitle_review import SubtitleReviewService
+from .training_lifecycle import TrainingService
 from .tts_providers import TtsProviderRegistry
 from .worker_shutdown import worker_termination
 from .workflow_handlers import WorkflowHandlers
@@ -886,34 +886,32 @@ def command_rvc_convert(args) -> int:
 
 
 def command_training_list(args) -> int:
-    _, database = _database(args)
+    paths, database = _database(args)
     try:
-        with database.session() as session:
-            records = list(session.scalars(select(TrainingRun).order_by(TrainingRun.created_at.desc())).all())
-            _emit([{"id": item.id, "model_name": item.model_name, "status": item.status, "job_id": item.job_id, "source_artifact_id": item.source_artifact_id, "output_artifact_id": item.output_artifact_id, "error": item.error_message} for item in records], args.json)
+        records = TrainingService(database, paths, JobQueue(database)).list(limit=None)
+        _emit([
+            {"id": item["id"], "model_name": item["model_name"], "status": item["status"],
+             "job_id": item["job_id"], "source_artifact_id": item["source_artifact_id"],
+             "output_artifact_id": item["output_artifact_id"], "error": item["error_message"]}
+            for item in records
+        ], args.json)
         return 0
     finally:
         database.dispose()
 
 
 def command_training_start(args) -> int:
-    _, database = _database(args)
+    paths, database = _database(args)
     try:
-        settings = json.loads(args.settings)
-        training_id = new_id()
-        with database.session() as session:
-            if session.get(Artifact, args.artifact_id) is None:
-                raise KeyError(args.artifact_id)
-            if args.text_artifact_id and session.get(Artifact, args.text_artifact_id) is None:
-                raise KeyError(args.text_artifact_id)
-            session.add(TrainingRun(id=training_id, model_name=args.model_name, source_artifact_id=args.artifact_id, settings_json=settings))
-        job = JobQueue(database).enqueue("training.xtts", {"training_id": training_id, "model_name": args.model_name, "source_artifact_id": args.artifact_id, "source_text_artifact_id": args.text_artifact_id, "settings": settings})
-        with database.session() as session:
-            record = session.get(TrainingRun, training_id)
-            record.job_id = job.id
-            record.updated_at = utcnow()
+        request = TrainingCreateRequest(
+            model_name=args.model_name,
+            source_artifact_id=args.artifact_id,
+            source_text_artifact_id=args.text_artifact_id,
+            settings=json.loads(args.settings),
+        )
+        record, job = TrainingService(database, paths, JobQueue(database)).start(request)
         payload = _job_dict(job)
-        payload["training_id"] = training_id
+        payload["training_id"] = record.id
         _emit(payload, args.json)
         return 0
     finally:
@@ -921,18 +919,10 @@ def command_training_start(args) -> int:
 
 
 def command_training_cancel(args) -> int:
-    _, database = _database(args)
+    paths, database = _database(args)
     try:
-        with database.session() as session:
-            record = session.get(TrainingRun, args.training_id)
-            if record is None:
-                raise KeyError(args.training_id)
-            job_id = record.job_id
-            record.status = "cancel_requested"
-            record.updated_at = utcnow()
-        if job_id:
-            JobQueue(database).request_cancel(job_id)
-        _emit({"id": args.training_id, "job_id": job_id, "status": "cancel_requested"}, args.json)
+        result = TrainingService(database, paths, JobQueue(database)).cancel(args.training_id)
+        _emit(result, args.json)
         return 0
     finally:
         database.dispose()

@@ -43,6 +43,13 @@ COMMANDS = {
     "command_job_enqueue": (["job", "enqueue", "noop"], "JobQueue.enqueue"),
     "command_job_show": (["job", "show", "fixture-id"], "JobQueue.get"),
     "command_job_cancel": (["job", "cancel", "fixture-id"], "JobQueue.request_cancel"),
+    "command_training_list": (["training", "list"], "TrainingService.list"),
+    "command_training_start": (
+        ["training", "start", "narrator", "fixture-id"], "TrainingService.start"
+    ),
+    "command_training_cancel": (
+        ["training", "cancel", "fixture-id"], "TrainingService.cancel"
+    ),
     "command_doctor": (["doctor"], "ArtifactService.reconcile"),
 }
 

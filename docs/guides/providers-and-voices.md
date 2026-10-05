@@ -139,6 +139,12 @@ returning raw samples to routine list operations.
 
 ## Fine-tuned XTTS bundles
 
+Canceling queued training stops it immediately; running training stays in
+`cancel_requested` until the background job acknowledges cancellation.
+Canceling a finished run preserves its outcome. Retrying failed, canceled, or
+interrupted training creates a new run with the original audio, transcript, and
+settings; the source artifacts must still be available.
+
 An uploadable XTTS bundle is one flat directory containing exactly:
 
 - `config.json`

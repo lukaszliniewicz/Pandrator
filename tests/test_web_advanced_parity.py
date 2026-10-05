@@ -108,7 +108,8 @@ class AdvancedApiTests(unittest.TestCase):
         database = self.app.extensions["pandrator"]["database"]
         with database.session() as session:
             record = session.get(TrainingRun, payload["training_id"])
-            self.assertEqual(record.status, "cancel_requested")
+            self.assertEqual(record.status, "canceled")
+            self.assertEqual(session.get(Job, record.job_id).status, "canceled")
 
     def test_optimization_review_creates_a_new_immutable_artifact(self):
         database = self.app.extensions["pandrator"]["database"]

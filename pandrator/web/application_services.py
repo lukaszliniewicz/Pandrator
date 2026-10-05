@@ -38,6 +38,7 @@ from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
 from .startup import StartupMaintenance
 from .subtitle_evidence import SubtitleEvidenceService
 from .subtitle_review import SubtitleReviewService
+from .training_lifecycle import TrainingService
 from .tts_catalogue_service import TtsCatalogueService
 from .tts_providers import TtsProviderRegistry
 from .uploads import ChunkUploadService
@@ -70,6 +71,7 @@ class ApplicationServices:
     sessions: SessionService
     session_forks: SessionForkService
     artifacts: ArtifactService
+    training: TrainingService
     workflows: WorkflowService
     workflow_plans: WorkflowExecutionPlanService
     workflow_handlers: WorkflowHandlers
@@ -146,6 +148,7 @@ class ApplicationServices:
             )
             sessions = SessionService(database)
             artifacts = ArtifactService(database, paths)
+            training = TrainingService(database, paths, jobs)
             session_forks = SessionForkService(database, paths, artifacts)
             workflows = WorkflowService(database, jobs)
             workspace_settings = WorkspaceSettingsService(database)
@@ -257,6 +260,7 @@ class ApplicationServices:
                 sessions=sessions,
                 session_forks=session_forks,
                 artifacts=artifacts,
+                training=training,
                 workflows=workflows,
                 workflow_plans=workflow_plans,
                 workflow_handlers=workflow_handlers,
@@ -326,6 +330,7 @@ class ApplicationServices:
             "sessions": self.sessions,
             "session_forks": self.session_forks,
             "artifacts": self.artifacts,
+            "training": self.training,
             "workflows": self.workflows,
             "workflow_plans": self.workflow_plans,
             "workflow_handlers": self.workflow_handlers,
