@@ -106,6 +106,7 @@ from .tts_openai_http_policy import (
 from .tts_openai_http_policy import (
     _should_try_next_openai_candidate as _should_try_next_openai_candidate,
 )
+from .tts_provider_health_http import probe_get_urls as _probe_get_urls
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
     AUDIO_CPP_MODEL_VOICE_MODES,
@@ -3599,21 +3600,14 @@ def check_voxcpm_connection(base_url: str = VOXCPM_API_BASE_URL) -> bool:
         *_openai_files_urls(normalized_base_url),
     ]
 
-    for probe_url in _dedupe_ordered(probe_urls):
-        try:
-            response = requests.get(
-                probe_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=4,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _probe_get_urls(
+        _dedupe_ordered(probe_urls),
+        headers=lambda: _openai_auth_headers(api_key),
+        timeout=4,
+        accepts_status=lambda status: (
+            not _should_try_next_openai_candidate(status) and status < 400
+        ),
+    )
 
 
 def check_fishs2_connection(base_url: str = FISHS2_API_BASE_URL) -> bool:
@@ -3628,21 +3622,14 @@ def check_fishs2_connection(base_url: str = FISHS2_API_BASE_URL) -> bool:
         *_openai_files_urls(normalized_base_url),
     ]
 
-    for probe_url in _dedupe_ordered(probe_urls):
-        try:
-            response = requests.get(
-                probe_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=4,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _probe_get_urls(
+        _dedupe_ordered(probe_urls),
+        headers=lambda: _openai_auth_headers(api_key),
+        timeout=4,
+        accepts_status=lambda status: (
+            not _should_try_next_openai_candidate(status) and status < 400
+        ),
+    )
 
 
 def check_chatterbox_connection(base_url: str = CHATTERBOX_API_BASE_URL) -> bool:
@@ -3655,21 +3642,14 @@ def check_chatterbox_connection(base_url: str = CHATTERBOX_API_BASE_URL) -> bool
         *_openai_files_urls(normalized_base_url),
     ]
 
-    for probe_url in _dedupe_ordered(probe_urls):
-        try:
-            response = requests.get(
-                probe_url,
-                headers=_openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
-                timeout=4,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _probe_get_urls(
+        _dedupe_ordered(probe_urls),
+        headers=lambda: _openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
+        timeout=4,
+        accepts_status=lambda status: (
+            not _should_try_next_openai_candidate(status) and status < 400
+        ),
+    )
 
 
 def check_kobold_qwen_connection(base_url: str = KOBOLD_QWEN_API_BASE_URL) -> bool:
@@ -3729,21 +3709,14 @@ def check_voxtral_connection(base_url: str = VOXTRAL_API_BASE_URL) -> bool:
         *_openai_voice_catalog_urls(normalized_base_url),
     ]
 
-    for probe_url in _dedupe_ordered(probe_urls):
-        try:
-            response = requests.get(
-                probe_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=4,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _probe_get_urls(
+        _dedupe_ordered(probe_urls),
+        headers=lambda: _openai_auth_headers(api_key),
+        timeout=4,
+        accepts_status=lambda status: (
+            not _should_try_next_openai_candidate(status) and status < 400
+        ),
+    )
 
 
 def check_kokoro_connection(base_url: str = KOKORO_API_BASE_URL) -> bool:
@@ -3757,21 +3730,14 @@ def check_kokoro_connection(base_url: str = KOKORO_API_BASE_URL) -> bool:
         *_kokoro_voices_urls(normalized_base_url),
     ]
 
-    for probe_url in _dedupe_ordered(probe_urls):
-        try:
-            response = requests.get(
-                probe_url,
-                headers=_openai_auth_headers(api_key),
-                timeout=4,
-            )
-            if _should_try_next_openai_candidate(response.status_code):
-                continue
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _probe_get_urls(
+        _dedupe_ordered(probe_urls),
+        headers=lambda: _openai_auth_headers(api_key),
+        timeout=4,
+        accepts_status=lambda status: (
+            not _should_try_next_openai_candidate(status) and status < 400
+        ),
+    )
 
 
 def check_xtts_connection(base_url: str = XTTS_API_BASE_URL) -> bool:
@@ -3779,30 +3745,21 @@ def check_xtts_connection(base_url: str = XTTS_API_BASE_URL) -> bool:
     normalized_base_url = _normalize_base_url(base_url, XTTS_API_BASE_URL)
     probe_paths = ["/health", "/v1/models", "/docs", "/"]
 
-    for path in probe_paths:
-        try:
-            response = requests.get(f"{normalized_base_url}{path}", timeout=3)
-            if response.status_code == 404:
-                continue
-            if response.status_code < 500:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-
-    return False
+    return _probe_get_urls(
+        (f"{normalized_base_url}{path}" for path in probe_paths),
+        timeout=3,
+        accepts_status=lambda status: status != 404 and status < 500,
+    )
 
 
 def check_silero_connection(base_url: str = SILERO_API_BASE_URL) -> bool:
     """Checks if the Silero server is reachable."""
     normalized_base_url = _normalize_base_url(base_url, SILERO_API_BASE_URL)
-    for path in ("/ready", "/health", "/v1/models"):
-        try:
-            response = requests.get(f"{normalized_base_url}{path}", timeout=4)
-            if response.status_code < 400:
-                return True
-        except requests.exceptions.RequestException:
-            continue
-    return False
+    return _probe_get_urls(
+        (f"{normalized_base_url}{path}" for path in ("/ready", "/health", "/v1/models")),
+        timeout=4,
+        accepts_status=lambda status: status < 400,
+    )
 
 
 # Magpie Functions
