@@ -395,32 +395,51 @@
   async function saveVoice() {
     if (!selected || selected.bundled || savingVoice || !editName.trim())
       return;
+    const voice = selected;
+    const selection = voiceSelection;
+    const draft = {
+      name: editName,
+      language: editLanguage,
+      description: editDescription,
+      category: editCategory
+    };
     savingVoice = true;
     error = '';
     try {
-      const updated = await voiceApi.update<Voice>(
-        selected.id,
-        selected.revision,
-        {
-          name: editName.trim(),
-          language: editLanguage.trim() || null,
-          description: editDescription.trim() || null,
-          voice_category: editCategory
-        }
-      );
-      notice = 'Voice details saved.';
+      const updated = await voiceApi.update<Voice>(voice.id, voice.revision, {
+        name: draft.name.trim(),
+        language: draft.language.trim() || null,
+        description: draft.description.trim() || null,
+        voice_category: draft.category
+      });
       await loadVoices();
-      await choose(updated);
+      if (selection !== voiceSelection || selected?.id !== voice.id) return;
+      const newerEdits =
+        editingVoice &&
+        (editName !== draft.name ||
+          editLanguage !== draft.language ||
+          editDescription !== draft.description ||
+          editCategory !== draft.category);
+      if (newerEdits) {
+        selected = updated;
+        notice = 'Voice details saved. Your newer edits are still unsaved.';
+      } else {
+        notice = 'Voice details saved.';
+        await choose(updated);
+      }
     } catch (caught) {
-      report(caught);
+      if (selection === voiceSelection && selected?.id === voice.id)
+        report(caught);
     } finally {
       savingVoice = false;
     }
   }
 
-  async function changeVoiceLanguage(value: string) {
+  async function changeVoiceLanguage(input: HTMLSelectElement) {
     if (!selected || selected.bundled || savingVoice) return;
     const voice = selected;
+    const selection = voiceSelection;
+    const value = input.value;
     savingVoice = true;
     error = '';
     try {
@@ -428,14 +447,16 @@
         language: value
       });
       voices = voices.map((item) => (item.id === updated.id ? updated : item));
-      if (selected?.id === updated.id) {
-        selected = updated;
-        editLanguage = updated.language ?? '';
-      }
+      if (selection !== voiceSelection || selected?.id !== voice.id) return;
+      selected = updated;
+      editLanguage = updated.language ?? '';
       enginePreference = 'auto';
       notice = 'Voice language saved.';
     } catch (caught) {
-      report(caught);
+      if (selection === voiceSelection && selected?.id === voice.id) {
+        input.value = selected.language || 'auto';
+        report(caught);
+      }
     } finally {
       savingVoice = false;
     }
@@ -1409,24 +1430,26 @@
             <label
               class="w-full min-w-0 max-w-full text-sm font-semibold sm:w-auto"
               >Voice language
-              <select
-                value={sampleLanguage}
-                onchange={(event) =>
-                  void changeVoiceLanguage(event.currentTarget.value)}
-                disabled={selected.bundled ||
-                  savingVoice ||
-                  transcribingCount > 0 ||
-                  recording ||
-                  savingRecording}
-                class="mt-1 block w-full min-w-0 max-w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal sm:w-52"
-              >
-                {#if !LANGUAGE_OPTIONS.some((item) => item.value === sampleLanguage)}<option
-                    value={sampleLanguage}>{sampleLanguage}</option
-                  >{/if}
-                {#each LANGUAGE_OPTIONS as item}<option value={item.value}
-                    >{item.label}</option
-                  >{/each}
-              </select>
+              {#key selected.id}
+                <select
+                  value={sampleLanguage}
+                  onchange={(event) =>
+                    void changeVoiceLanguage(event.currentTarget)}
+                  disabled={selected.bundled ||
+                    savingVoice ||
+                    transcribingCount > 0 ||
+                    recording ||
+                    savingRecording}
+                  class="mt-1 block w-full min-w-0 max-w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm font-normal sm:w-52"
+                >
+                  {#if !LANGUAGE_OPTIONS.some((item) => item.value === sampleLanguage)}<option
+                      value={sampleLanguage}>{sampleLanguage}</option
+                    >{/if}
+                  {#each LANGUAGE_OPTIONS as item}<option value={item.value}
+                      >{item.label}</option
+                    >{/each}
+                </select>
+              {/key}
             </label>
             <button
               onclick={transcribeMissing}

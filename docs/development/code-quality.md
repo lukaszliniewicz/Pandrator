@@ -60,6 +60,12 @@ rather than after every edit. Documentation-only edits need the documentation
 checker. Preflight the configured runtime and browser channel before starting
 an expensive run.
 
+When adding or changing a shared browser fixture, first exercise its actual
+authentication, supported routes, and selectors in a small case at each affected
+layout. Stop a running matrix once a shared setup defect is demonstrated; fix
+the fixture before running affected and unexecuted cases. Keep passed, failed,
+interrupted, and unexecuted cases distinct in the receipt.
+
 Record test counts and durations separately from implementation time and
 setup failures. Use those measurements to adjust batch sizes; do not treat
 smaller test counts or file sizes as evidence of better maintainability.
