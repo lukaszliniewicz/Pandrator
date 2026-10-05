@@ -1,4 +1,4 @@
-"""Offline Response contracts for root Magpie and XTTS speech candidate requests."""
+"""Offline Response contracts for root local speech candidate requests."""
 
 from __future__ import annotations
 
@@ -13,7 +13,13 @@ from pandrator.logic import tts_handler
 BASE = "http://fixture.invalid"
 TEXT = "  Hello  世界 "
 URLS = ("http://fixture.invalid/v1/audio/speech", "http://fixture.invalid/audio/speech")
-PROVIDERS = ("magpie", "xtts")
+PROVIDERS = ("magpie", "xtts", "voxcpm", "fishs2", "voxtral")
+
+
+@pytest.fixture(autouse=True)
+def synthetic_provider_key_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("VOXCPM_API_KEY", "FISHS2_API_KEY", "VOXTRAL_API_KEY"):
+        monkeypatch.setenv(name, "")
 
 
 def response(status: int) -> requests.Response:
@@ -28,8 +34,14 @@ def response(status: int) -> requests.Response:
 def request(provider: str, settings: dict[str, object], base: str = BASE) -> requests.Response:
     if provider == "magpie":
         return tts_handler._request_magpie_audio(TEXT, settings, base)
-    assert provider == "xtts"
-    return tts_handler._request_xtts_audio(TEXT, settings, base)
+    if provider == "xtts":
+        return tts_handler._request_xtts_audio(TEXT, settings, base)
+    if provider == "voxcpm":
+        return tts_handler._request_voxcpm_audio(TEXT, settings, base)
+    if provider == "fishs2":
+        return tts_handler._request_fishs2_audio(TEXT, settings, base)
+    assert provider == "voxtral"
+    return tts_handler._request_voxtral_audio(TEXT, settings, base)
 
 
 def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
@@ -44,6 +56,64 @@ def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
                 "use_cfg": True,
                 "apply_text_normalization": False,
                 "response_format": "wav",
+            },
+            "timeout": timeout,
+        }
+    if provider == "voxcpm":
+        return {
+            "headers": {"Authorization": "Bearer sk-placeholder"},
+            "json": {
+                "model": "openbmb/VoxCPM2",
+                "input": TEXT,
+                "voice": "default",
+                "response_format": "wav",
+                "speed": 1.0,
+                "voxcpm": {
+                    "cfg_value": 1.5,
+                    "inference_timesteps": 15,
+                    "normalize": False,
+                    "denoise": False,
+                    "retry_badcase": True,
+                    "retry_badcase_max_times": 3,
+                    "retry_badcase_ratio_threshold": 6.0,
+                    "min_len": 2,
+                    "max_len": 4096,
+                },
+            },
+            "timeout": timeout,
+        }
+    if provider == "fishs2":
+        return {
+            "headers": {"Authorization": "Bearer sk-placeholder"},
+            "json": {
+                "model": "fishaudio/s2-pro",
+                "input": TEXT,
+                "voice": "default",
+                "response_format": "wav",
+                "speed": 1.0,
+                "temperature": 0.7,
+                "top_p": 0.7,
+                "chunk_length": 200,
+                "latency": "balanced",
+                "normalize": True,
+                "prosody": {"speed": 1.0, "volume": 0.0, "normalize_loudness": True},
+            },
+            "timeout": timeout,
+        }
+    if provider == "voxtral":
+        return {
+            "headers": {"Authorization": "Bearer sk-placeholder"},
+            "json": {
+                "model": "auto",
+                "input": TEXT,
+                "voice": "casual_female",
+                "response_format": "wav",
+                "speed": 1.0,
+                "instructions": (
+                    'voxtral_options:{"max_frames": 1024, "euler_steps": 8, "chunk": false, '
+                    '"max_chunk_chars": 500, "chunk_silence_ms": 0, "strip_quotes": false, '
+                    '"strip_diacritics": false, "level_audio": false}'
+                ),
             },
             "timeout": timeout,
         }
@@ -92,7 +162,7 @@ def test_literal_default_requests_and_fallback_responses(
     assert settings == original
 
 
-@pytest.mark.parametrize("provider", PROVIDERS)
+@pytest.mark.parametrize("provider", ("magpie", "xtts"))
 def test_custom_payload_and_bounded_xtts_instruction_overrides(
     monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
@@ -199,7 +269,13 @@ def test_empty_root_candidates_raise_without_post(
     monkeypatch.setattr(tts_handler.requests, "post", post)
     with pytest.raises(RuntimeError) as raised:
         request(provider, {})
-    name = "Magpie" if provider == "magpie" else "XTTS"
+    name = {
+        "magpie": "Magpie",
+        "xtts": "XTTS",
+        "voxcpm": "VoxCPM",
+        "fishs2": "FishS2",
+        "voxtral": "Voxtral",
+    }[provider]
     assert str(raised.value) == f"No {name} speech endpoint could be resolved for '{BASE}'."
     assert calls == []
 
@@ -240,13 +316,15 @@ def test_candidate_loop_preserves_root_resolution_and_option_evaluation_order(
         events.append("urls")
         return list(URLS)
 
-    def second_headers() -> dict[str, str]:
+    def second_headers(api_key: str = "sk-placeholder") -> dict[str, str]:
+        assert api_key == "sk-placeholder"
         events.append("headers-2")
         monkeypatch.setattr(tts_handler.requests, "post", unexpected_post)
         monkeypatch.setattr(tts_handler, "TTS_GENERATION_TIMEOUT_SECONDS", 333)
         return {"Authorization": "Bearer fixture-second"}
 
-    def first_headers() -> dict[str, str]:
+    def first_headers(api_key: str = "sk-placeholder") -> dict[str, str]:
+        assert api_key == "sk-placeholder"
         events.append("headers-1")
         monkeypatch.setattr(tts_handler.requests, "post", unexpected_post)
         monkeypatch.setattr(tts_handler, "TTS_GENERATION_TIMEOUT_SECONDS", 111)
@@ -275,21 +353,21 @@ def test_candidate_loop_preserves_root_resolution_and_option_evaluation_order(
         calls.append((url, deepcopy(options)))
         monkeypatch.setattr(tts_handler.requests, "post", second_post)
         monkeypatch.setattr(tts_handler, "TTS_GENERATION_TIMEOUT_SECONDS", 222)
-        if provider == "xtts":
+        if provider != "magpie":
             monkeypatch.setattr(tts_handler, "_openai_auth_headers", second_headers)
         return first
 
     monkeypatch.setattr(tts_handler, "_openai_audio_speech_urls", urls)
     monkeypatch.setattr(tts_handler.requests, "post", first_post)
     monkeypatch.setattr(tts_handler, "_should_try_next_openai_candidate", first_fallback)
-    if provider == "xtts":
+    if provider != "magpie":
         monkeypatch.setattr(tts_handler, "_openai_auth_headers", first_headers)
     assert request(provider, {}) is terminal
     assert not first
     assert payloads[0] is payloads[1]
-    expected_first = default_options(provider, 111 if provider == "xtts" else 300)
-    expected_second = default_options(provider, 333 if provider == "xtts" else 222)
-    if provider == "xtts":
+    expected_first = default_options(provider, 111 if provider != "magpie" else 300)
+    expected_second = default_options(provider, 333 if provider != "magpie" else 222)
+    if provider != "magpie":
         expected_first["headers"] = {"Authorization": "Bearer fixture-first"}
         expected_second["headers"] = {"Authorization": "Bearer fixture-second"}
         assert events == [
@@ -328,4 +406,95 @@ def test_malformed_speed_keeps_provider_specific_preparation_behavior(
     else:
         assert request(provider, settings) is result
         assert calls == [(URLS[0], default_options(provider))]
+    assert settings == original
+
+
+@pytest.mark.parametrize("provider", ("voxcpm", "fishs2", "voxtral"))
+def test_local_custom_payload_and_environment_key_precedence(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    settings: dict[str, object] = {
+        "speaker": " demo ",
+        "speed": 1.25,
+        "provider_configs": [
+            {"id": provider, "api_key_env": "LOCAL_PACKET_KEY", "api_key": "explicit-key"}
+        ],
+    }
+    if provider == "voxcpm":
+        settings.update({"xtts_model": "voxcpm2", "openai_audio_instructions": " custom "})
+        expected_payload = {
+            "model": "openbmb/VoxCPM2",
+            "input": TEXT,
+            "voice": "demo",
+            "response_format": "wav",
+            "speed": 1.25,
+            "voxcpm": {
+                "cfg_value": 1.5,
+                "inference_timesteps": 15,
+                "normalize": False,
+                "denoise": False,
+                "retry_badcase": True,
+                "retry_badcase_max_times": 3,
+                "retry_badcase_ratio_threshold": 6.0,
+                "min_len": 2,
+                "max_len": 4096,
+            },
+            "instructions": "custom",
+        }
+    elif provider == "fishs2":
+        settings["xtts_model"] = "fish-s2"
+        expected_payload = {
+            "model": "fishaudio/s2-pro",
+            "input": TEXT,
+            "voice": "demo",
+            "response_format": "wav",
+            "speed": 1.25,
+            "temperature": 0.7,
+            "top_p": 0.7,
+            "chunk_length": 200,
+            "latency": "balanced",
+            "normalize": True,
+            "prosody": {"speed": 1.25, "volume": 0.0, "normalize_loudness": True},
+        }
+    else:
+        settings.update(
+            {
+                "xtts_model": "namespace/BF16",
+                "openai_audio_instructions": '{"trace": "keep", "language": "de", "max_frames": 1}',
+            }
+        )
+        expected_payload = {
+            "model": "bf16",
+            "input": TEXT,
+            "voice": "demo",
+            "response_format": "wav",
+            "speed": 1.25,
+            "instructions": (
+                'voxtral_options:{"trace": "keep", "max_frames": 1024, "euler_steps": 8, "chunk": false, '
+                '"max_chunk_chars": 500, "chunk_silence_ms": 0, "strip_quotes": false, '
+                '"strip_diacritics": false, "level_audio": false}'
+            ),
+        }
+    original = deepcopy(settings)
+    result = response(200)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def post(url: str, **options: object) -> requests.Response:
+        assert not calls
+        calls.append((url, deepcopy(options)))
+        return result
+
+    monkeypatch.setenv("LOCAL_PACKET_KEY", " env-key ")
+    monkeypatch.setattr(tts_handler.requests, "post", post)
+    assert request(provider, settings) is result
+    assert calls == [
+        (
+            URLS[0],
+            {
+                "headers": {"Authorization": "Bearer env-key"},
+                "json": expected_payload,
+                "timeout": 300,
+            },
+        )
+    ]
     assert settings == original

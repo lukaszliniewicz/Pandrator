@@ -43,8 +43,18 @@ def response(status: int = 200, *, audio: bytes | None = None) -> requests.Respo
 
 
 def settings(provider: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    if provider in {"magpie", "xtts"}:
-        return {"service": "Magpie" if provider == "magpie" else "XTTS"}
+    if provider in {"magpie", "xtts", "voxcpm", "fishs2", "voxtral"}:
+        if provider in {"voxcpm", "fishs2", "voxtral"}:
+            monkeypatch.setenv(f"{provider.upper()}_API_KEY", "fixture-key")
+        return {
+            "service": {
+                "magpie": "Magpie",
+                "xtts": "XTTS",
+                "voxcpm": "VoxCPM",
+                "fishs2": "FishS2",
+                "voxtral": "Voxtral",
+            }[provider]
+        }
     monkeypatch.setenv("FIXTURE_CALLER_KEY", "fixture-key")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fixture-key")
     if provider == "elevenlabs":
@@ -108,7 +118,9 @@ def script(mode: str) -> list[requests.Response | Exception]:
     return results
 
 
-@pytest.mark.parametrize("provider", ("elevenlabs", "azure", "magpie", "xtts"))
+@pytest.mark.parametrize(
+    "provider", ("elevenlabs", "azure", "magpie", "xtts", "voxcpm", "fishs2", "voxtral")
+)
 @pytest.mark.parametrize(
     "mode",
     (
@@ -145,6 +157,9 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
             "azure": "https://azure.invalid/custom/speech",
             "magpie": "http://127.0.0.1:8030/v1/audio/speech",
             "xtts": "http://127.0.0.1:8020/v1/audio/speech",
+            "voxcpm": "http://127.0.0.1:8020/v1/audio/speech",
+            "fishs2": "http://127.0.0.1:8020/v1/audio/speech",
+            "voxtral": "http://127.0.0.1:8000/v1/audio/speech",
         }[provider]
         assert url == expected_url
         assert options["timeout"] == 300
@@ -152,6 +167,8 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
             assert "headers" not in options
         elif provider == "xtts":
             assert options["headers"] == {"Authorization": "Bearer sk-placeholder"}
+        elif provider in {"voxcpm", "fishs2", "voxtral"}:
+            assert options["headers"] == {"Authorization": "Bearer fixture-key"}
         else:
             headers = options["headers"]
             assert isinstance(headers, dict)
@@ -177,7 +194,7 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
                 "response_format": "wav",
             }
             assert "data" not in options
-        else:
+        elif provider == "xtts":
             assert options["json"] == {
                 "model": "tts_models/multilingual/multi-dataset/xtts_v2",
                 "input": "Hello",
@@ -186,6 +203,56 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
                 "speed": 1.0,
                 "response_format": "wav",
                 "instructions": '{"language": "en"}',
+            }
+            assert "data" not in options
+        elif provider == "voxcpm":
+            assert options["json"] == {
+                "model": "openbmb/VoxCPM2",
+                "input": "Hello",
+                "voice": "default",
+                "response_format": "wav",
+                "speed": 1.0,
+                "voxcpm": {
+                    "cfg_value": 1.5,
+                    "inference_timesteps": 15,
+                    "normalize": False,
+                    "denoise": False,
+                    "retry_badcase": True,
+                    "retry_badcase_max_times": 3,
+                    "retry_badcase_ratio_threshold": 6.0,
+                    "min_len": 2,
+                    "max_len": 4096,
+                },
+            }
+            assert "data" not in options
+        elif provider == "fishs2":
+            assert options["json"] == {
+                "model": "fishaudio/s2-pro",
+                "input": "Hello",
+                "voice": "default",
+                "response_format": "wav",
+                "speed": 1.0,
+                "temperature": 0.7,
+                "top_p": 0.7,
+                "chunk_length": 200,
+                "latency": "balanced",
+                "normalize": True,
+                "prosody": {"speed": 1.0, "volume": 0.0, "normalize_loudness": True},
+            }
+            assert "data" not in options
+        else:
+            assert provider == "voxtral"
+            assert options["json"] == {
+                "model": "auto",
+                "input": "Hello",
+                "voice": "casual_female",
+                "response_format": "wav",
+                "speed": 1.0,
+                "instructions": (
+                    'voxtral_options:{"max_frames": 1024, "euler_steps": 8, "chunk": false, '
+                    '"max_chunk_chars": 500, "chunk_silence_ms": 0, "strip_quotes": false, '
+                    '"strip_diacritics": false, "level_audio": false}'
+                ),
             }
             assert "data" not in options
         calls.append(url)
@@ -240,7 +307,7 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
             assert isinstance(cause, requests.exceptions.HTTPError)
             assert cause.response is steps[-1]
         elif mode == "wrapped_nonretryable":
-            if provider in {"magpie", "xtts"}:
+            if provider in {"magpie", "xtts", "voxcpm", "fishs2", "voxtral"}:
                 assert cause is steps[0]
                 assert isinstance(cause, requests.exceptions.HTTPError)
             else:
