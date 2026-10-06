@@ -1,23 +1,46 @@
 """Native Linux StatusNotifierItem and DBusMenu tray implementation."""
 
-# D-Bus signatures are deliberately expressed as string annotations for
-# dbus-next; they are protocol declarations rather than Python type names.
-# ruff: noqa: F722, F821
+# Wire aliases evaluate to dbus-next signatures at runtime; annotations must
+# remain eager so the protocol decorators see those strings.
 
 import asyncio
 import contextlib
 import logging
 import os
 from collections.abc import Callable, Mapping
+from typing import Protocol, cast
 
-from dbus_next import Variant
-from dbus_next.aio import MessageBus
+from dbus_next.aio.message_bus import MessageBus
 from dbus_next.constants import BusType, PropertyAccess, RequestNameReply
-from dbus_next.service import ServiceInterface, dbus_property, method, signal
+from dbus_next.service import ServiceInterface, dbus_property, method
+from dbus_next.signature import Variant
 from PIL import Image
 
 from .icon import load_tray_icon
 from .menu import EngineMenuSnapshot, unavailable_engine_snapshot
+from .wire_types import (
+    DBusBool,
+    DBusGroupProperties,
+    DBusIconPixmaps,
+    DBusInt32,
+    DBusInt32Array,
+    DBusItemsUpdate,
+    DBusLayoutUpdate,
+    DBusMenuEvents,
+    DBusMenuLayout,
+    DBusObjectPath,
+    DBusShowGroups,
+    DBusString,
+    DBusStringArray,
+    DBusToolTip,
+    DBusUInt32,
+    DBusVariant,
+    signal,
+)
+
+
+class _StatusNotifierWatcher(Protocol):
+    async def call_register_status_notifier_item(self, service_name: str) -> None: ...
 
 
 class StatusNotifierUnavailable(RuntimeError):
@@ -101,55 +124,55 @@ class StatusNotifierItem(ServiceInterface):
             self.NewToolTip()
 
     @dbus_property(access=PropertyAccess.READ)
-    def Category(self) -> "s":
+    def Category(self) -> DBusString:
         return "ApplicationStatus"
 
     @dbus_property(access=PropertyAccess.READ)
-    def Id(self) -> "s":
+    def Id(self) -> DBusString:
         return "Pandrator"
 
     @dbus_property(access=PropertyAccess.READ)
-    def Title(self) -> "s":
+    def Title(self) -> DBusString:
         return "Pandrator Manager"
 
     @dbus_property(access=PropertyAccess.READ)
-    def Status(self) -> "s":
+    def Status(self) -> DBusString:
         return "Active"
 
     @dbus_property(access=PropertyAccess.READ)
-    def WindowId(self) -> "u":
+    def WindowId(self) -> DBusUInt32:
         return 0
 
     @dbus_property(access=PropertyAccess.READ)
-    def IconName(self) -> "s":
+    def IconName(self) -> DBusString:
         return ""
 
     @dbus_property(access=PropertyAccess.READ)
-    def IconPixmap(self) -> "a(iiay)":
+    def IconPixmap(self) -> DBusIconPixmaps:
         return self.pixmaps
 
     @dbus_property(access=PropertyAccess.READ)
-    def OverlayIconName(self) -> "s":
+    def OverlayIconName(self) -> DBusString:
         return ""
 
     @dbus_property(access=PropertyAccess.READ)
-    def OverlayIconPixmap(self) -> "a(iiay)":
+    def OverlayIconPixmap(self) -> DBusIconPixmaps:
         return []
 
     @dbus_property(access=PropertyAccess.READ)
-    def AttentionIconName(self) -> "s":
+    def AttentionIconName(self) -> DBusString:
         return ""
 
     @dbus_property(access=PropertyAccess.READ)
-    def AttentionIconPixmap(self) -> "a(iiay)":
+    def AttentionIconPixmap(self) -> DBusIconPixmaps:
         return []
 
     @dbus_property(access=PropertyAccess.READ)
-    def AttentionMovieName(self) -> "s":
+    def AttentionMovieName(self) -> DBusString:
         return ""
 
     @dbus_property(access=PropertyAccess.READ)
-    def ToolTip(self) -> "(sa(iiay)ss)":
+    def ToolTip(self) -> DBusToolTip:
         return [
             "",
             self.pixmaps,
@@ -158,27 +181,27 @@ class StatusNotifierItem(ServiceInterface):
         ]
 
     @dbus_property(access=PropertyAccess.READ)
-    def ItemIsMenu(self) -> "b":
+    def ItemIsMenu(self) -> DBusBool:
         return False
 
     @dbus_property(access=PropertyAccess.READ)
-    def Menu(self) -> "o":
+    def Menu(self) -> DBusObjectPath:
         return "/MenuBar"
 
     @method()
-    def ContextMenu(self, _x: "i", _y: "i"):
+    def ContextMenu(self, _x: DBusInt32, _y: DBusInt32):
         return None
 
     @method()
-    def Activate(self, _x: "i", _y: "i"):
+    def Activate(self, _x: DBusInt32, _y: DBusInt32):
         self.dispatcher.dispatch("open_pandrator")
 
     @method()
-    def SecondaryActivate(self, _x: "i", _y: "i"):
+    def SecondaryActivate(self, _x: DBusInt32, _y: DBusInt32):
         self.dispatcher.dispatch("open_recovery")
 
     @method()
-    def Scroll(self, _delta: "i", _orientation: "s"):
+    def Scroll(self, _delta: DBusInt32, _orientation: DBusString):
         return None
 
     @signal()
@@ -202,7 +225,7 @@ class StatusNotifierItem(ServiceInterface):
         return None
 
     @signal()
-    def NewStatus(self, status) -> "s":
+    def NewStatus(self, status) -> DBusString:
         return status
 
 
@@ -325,19 +348,19 @@ class DBusMenu(ServiceInterface):
         return True
 
     @dbus_property(access=PropertyAccess.READ)
-    def Version(self) -> "u":
+    def Version(self) -> DBusUInt32:
         return 3
 
     @dbus_property(access=PropertyAccess.READ)
-    def Status(self) -> "s":
+    def Status(self) -> DBusString:
         return "normal"
 
     @dbus_property(access=PropertyAccess.READ)
-    def TextDirection(self) -> "s":
+    def TextDirection(self) -> DBusString:
         return "ltr"
 
     @dbus_property(access=PropertyAccess.READ)
-    def IconThemePath(self) -> "as":
+    def IconThemePath(self) -> DBusStringArray:
         return []
 
     def _properties(self, item_id: int, names: list[str]):
@@ -379,10 +402,10 @@ class DBusMenu(ServiceInterface):
     @method()
     def GetLayout(
         self,
-        parent_id: "i",
-        recursion_depth: "i",
-        property_names: "as",
-    ) -> "u(ia{sv}av)":
+        parent_id: DBusInt32,
+        recursion_depth: DBusInt32,
+        property_names: DBusStringArray,
+    ) -> DBusMenuLayout:
         return [
             self.revision,
             self._layout(parent_id, recursion_depth, property_names),
@@ -391,9 +414,9 @@ class DBusMenu(ServiceInterface):
     @method()
     def GetGroupProperties(
         self,
-        item_ids: "ai",
-        property_names: "as",
-    ) -> "a(ia{sv})":
+        item_ids: DBusInt32Array,
+        property_names: DBusStringArray,
+    ) -> DBusGroupProperties:
         selected = item_ids or list(self._items)
         return [
             [item_id, self._properties(item_id, property_names)]
@@ -402,23 +425,23 @@ class DBusMenu(ServiceInterface):
         ]
 
     @method()
-    def GetProperty(self, item_id: "i", name: "s") -> "v":
+    def GetProperty(self, item_id: DBusInt32, name: DBusString) -> DBusVariant:
         return self._properties(item_id, [name]).get(name, Variant("s", ""))
 
     @method()
     def Event(
         self,
-        item_id: "i",
-        event_id: "s",
-        _data: "v",
-        _timestamp: "u",
+        item_id: DBusInt32,
+        event_id: DBusString,
+        _data: DBusVariant,
+        _timestamp: DBusUInt32,
     ):
         enabled = self._items.get(item_id, {}).get("enabled", True)
         if event_id == "clicked" and item_id in self._actions and enabled:
             self.dispatcher.dispatch(self._actions[item_id])
 
     @method()
-    def EventGroup(self, events: "a(isvu)") -> "ai":
+    def EventGroup(self, events: DBusMenuEvents) -> DBusInt32Array:
         invalid = []
         for item_id, event_id, _data, _timestamp in events:
             action = self._actions.get(item_id)
@@ -433,19 +456,19 @@ class DBusMenu(ServiceInterface):
         return invalid
 
     @method()
-    def AboutToShow(self, _item_id: "i") -> "b":
+    def AboutToShow(self, _item_id: DBusInt32) -> DBusBool:
         return False
 
     @method()
-    def AboutToShowGroup(self, _item_ids: "ai") -> "aiai":
+    def AboutToShowGroup(self, _item_ids: DBusInt32Array) -> DBusShowGroups:
         return [[], []]
 
     @signal()
-    def LayoutUpdated(self, revision, parent) -> "ui":
+    def LayoutUpdated(self, revision, parent) -> DBusLayoutUpdate:
         return [revision, parent]
 
     @signal()
-    def ItemsPropertiesUpdated(self, updated, removed) -> "a(ia{sv})a(ias)":
+    def ItemsPropertiesUpdated(self, updated, removed) -> DBusItemsUpdate:
         return [updated, removed]
 
 
@@ -519,7 +542,7 @@ async def _serve(
             "/StatusNotifierWatcher",
             introspection,
         ).get_interface("org.kde.StatusNotifierWatcher")
-        await watcher.call_register_status_notifier_item(service_name)
+        await cast(_StatusNotifierWatcher, watcher).call_register_status_notifier_item(service_name)
         if engine_provider is not None:
             poll_task = asyncio.create_task(
                 _poll_engine_status(
