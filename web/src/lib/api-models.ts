@@ -841,6 +841,7 @@ export type WorkflowSnapshot = {
 
 export type SettingsPayload = {
   revision: number;
+  global_revision?: number;
   effective: Record<string, unknown>;
   override: Record<string, unknown>;
   global?: Record<string, unknown>;

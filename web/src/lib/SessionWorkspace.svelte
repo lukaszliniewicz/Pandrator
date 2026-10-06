@@ -302,9 +302,12 @@
     stage: Stage;
     mismatches: StageSettingsMismatch['mismatches'];
   } | null>(null);
-  let historyLoading = $state<Record<string, boolean>>({});
+  const historyLoading = $derived(workflowStore.historyLoading);
   let settingsStage = $state<Stage | null>(null);
   let settingsLoading = $state(false);
+  let settingsSaving = $state(false);
+  let settingsMutation = 0;
+  let settingsBases: Record<string, SettingsPayload> = {};
   let stageMessage = $state('');
   let fullSettingsSection = $state('');
   let fullSettingsDraft = $state<Record<string, unknown> | null>(null);
@@ -517,7 +520,7 @@
       const speechOptimization = next?.stages.find(
         (stage) => stage.key === 'optimize_tts'
       );
-      if (speechOptimization) {
+      if (speechOptimization && !settingsStage) {
         optimizationTiming =
           speechOptimization.optimization_timing ?? 'generation';
         documentOptimizationEnabled = Boolean(
@@ -976,33 +979,11 @@
   }
 
   async function loadMoreStageArtifacts(stage: Stage) {
-    const beforeVersion = stage.artifact_history_next_before_version;
-    if (!beforeVersion || historyLoading[stage.key]) return;
-    historyLoading[stage.key] = true;
     error = '';
     try {
-      const history = await sessionApi.stageArtifacts(
-        session.id,
-        stage.key,
-        beforeVersion
-      );
-      const merged = new Map(
-        [...(stage.artifacts ?? []), ...history.items].map((artifact) => [
-          artifact.id,
-          artifact
-        ])
-      );
-      stage.artifacts = [...merged.values()].sort(
-        (left, right) => right.version - left.version
-      );
-      stage.artifact_history_total =
-        history.total || stage.artifact_history_total;
-      stage.artifact_history_has_more = history.has_more;
-      stage.artifact_history_next_before_version = history.next_before_version;
+      await workflowStore.loadStageHistory(stage.key);
     } catch (caught) {
-      error = errorMessage(caught);
-    } finally {
-      historyLoading[stage.key] = false;
+      if (!disposed) error = errorMessage(caught);
     }
   }
 
@@ -1021,6 +1002,9 @@
 
   async function openSettings(stage: Stage) {
     const opening = ++settingsOpening;
+    settingsMutation++;
+    settingsSaving = false;
+    settingsBases = {};
     invalidateSpeechRequests();
     const isCurrent = () => !disposed && opening === settingsOpening;
     ttsSwitchSource = null;
@@ -1070,7 +1054,8 @@
       );
       if (!isCurrent()) return;
       storedSettings = stored;
-      saved = { ...stored.effective, ...saved };
+      saved = { ...saved, ...stored.effective };
+      settingsBases[stageSection(stage.key)] = stored;
       stageSettings[stage.key] = saved;
     } catch {
       /* use stage-local values */
@@ -1204,6 +1189,7 @@
       );
       if (!isCurrent()) return;
       subtitleSettingsPayload = subtitlePayload;
+      settingsBases.subtitles = subtitlePayload;
       subtitleSettings = subtitleSettingsPayload.effective;
     } catch {
       /* Stage snapshots still work when the settings request fails. */
@@ -1254,6 +1240,11 @@
     );
     await passageSettingsLoad;
     if (!isCurrent()) return;
+    if (
+      sourcePassages.settingsPayload &&
+      ['transcribe', 'correct'].includes(stage.key)
+    )
+      settingsBases.source_passages = sourcePassages.settingsPayload;
     correctionStyle =
       String(saved.correction_style ?? 'publishable') === 'faithful'
         ? 'faithful'
@@ -1446,9 +1437,10 @@
 
   async function persistSection(
     section: string,
-    value: Record<string, unknown>
+    value: Record<string, unknown>,
+    base?: SettingsPayload
   ) {
-    const stored = await sessionApi.settings(session.id, section);
+    const stored = base ?? (await sessionApi.settings(session.id, section));
     if (section === 'stt') {
       return sessionApi.patchSettings(
         session.id,
@@ -1465,26 +1457,32 @@
 
   async function persistDefaultSection(
     section: string,
-    value: Record<string, unknown>
+    value: Record<string, unknown>,
+    stored: SettingsPayload,
+    sourceProviderId: string | undefined,
+    completed: string[]
   ) {
-    const defaults = await sessionApi.defaults(section);
-    await sessionApi.saveDefaults(section, defaults.revision, {
-      ...defaults.value,
+    if (stored.global_revision == null)
+      throw new Error(
+        'Reload these settings before saving application defaults.'
+      );
+    await sessionApi.saveDefaults(section, stored.global_revision, {
+      ...stored.global,
       ...value
     });
-    const stored = await sessionApi.settings(session.id, section);
+    completed.push(`${sectionDisplay(section)} defaults`);
     const cleaned = { ...(stored.override ?? {}) };
     for (const key of Object.keys(value)) delete cleaned[key];
-    if (section === 'tts' && ttsSwitchSource) {
+    if (section === 'tts' && sourceProviderId) {
       for (const key of Object.keys(cleaned)) {
         if (
-          key.startsWith(`${ttsSwitchSource.id}_`) ||
+          key.startsWith(`${sourceProviderId}_`) ||
           ['reference_audio', 'reference_text'].includes(key)
         )
           delete cleaned[key];
       }
     }
-    await sessionApi.saveSettings(
+    return sessionApi.saveSettings(
       session.id,
       section,
       stored.revision,
@@ -1492,11 +1490,14 @@
     );
   }
 
-  async function clearSectionOverrides(section: string, keys: string[]) {
-    const stored = await sessionApi.settings(session.id, section);
+  async function clearSectionOverrides(
+    section: string,
+    keys: string[],
+    stored: SettingsPayload
+  ) {
     const cleaned = { ...(stored.override ?? {}) };
     for (const key of keys) delete cleaned[key];
-    await sessionApi.saveSettings(
+    return sessionApi.saveSettings(
       session.id,
       section,
       stored.revision,
@@ -1513,6 +1514,8 @@
 
   function closeStageSettings() {
     settingsOpening++;
+    settingsMutation++;
+    settingsSaving = false;
     invalidateSpeechRequests();
     settingsLoading = false;
     settingsStage = null;
@@ -2430,9 +2433,10 @@
   }
 
   async function updateOutcomeTransformations(
-    changes: Record<string, boolean>
+    changes: Record<string, boolean>,
+    expectedOutcome: OutcomePlan = outcome
   ) {
-    const current = outcome ?? (await sessionApi.outcome(session.id));
+    const current = expectedOutcome;
     const value = {
       ...current.value,
       transformations: {
@@ -2629,19 +2633,48 @@
   }
 
   async function revertStageToDefaults() {
-    if (!settingsStage) return;
+    if (!settingsStage || settingsLoading || settingsSaving) return;
     const stage = settingsStage;
     const updates = stageSectionUpdates(stage.key);
+    const bases = settingsBases;
+    const opening = settingsOpening;
+    const mutation = ++settingsMutation;
+    const isCurrent = () =>
+      !disposed && opening === settingsOpening && mutation === settingsMutation;
+    const completed: string[] = [];
+    settingsSaving = true;
     try {
-      for (const update of updates)
-        await clearSectionOverrides(update.section, Object.keys(update.value));
+      for (const update of updates) {
+        if (!bases[update.section])
+          throw new Error(
+            'Reload these settings before reverting to defaults.'
+          );
+      }
+      for (const update of updates) {
+        const saved = await clearSectionOverrides(
+          update.section,
+          Object.keys(update.value),
+          bases[update.section]
+        );
+        completed.push(sectionDisplay(update.section));
+        if (isCurrent()) settingsBases[update.section] = saved;
+      }
+      if (!isCurrent()) return;
       const next = { ...stageSettings };
       delete next[stage.key];
       stageSettings = next;
       await openSettings(stage);
-      stageMessage = 'Reverted to application defaults.';
+      if (
+        !disposed &&
+        settingsStage?.key === stage.key &&
+        settingsOpening === opening + 1
+      )
+        stageMessage = 'Reverted to application defaults.';
     } catch (caught) {
-      error = errorMessage(caught);
+      if (isCurrent())
+        error = `${completed.length ? `Reverted ${completed.join(', ')}. Remaining changes were not saved. ` : ''}${errorMessage(caught)}`;
+    } finally {
+      if (isCurrent()) settingsSaving = false;
     }
   }
 
@@ -2870,7 +2903,7 @@
     mode: 'session' | 'defaults' = 'session',
     runAfterSave = false
   ) {
-    if (!settingsStage) return;
+    if (!settingsStage || settingsLoading || settingsSaving) return;
     const stage = settingsStage;
     const key = settingsStage.key;
     if (
@@ -2948,27 +2981,74 @@
       delete value.source_artifact_id;
       return { ...update, value };
     });
+    const submitted = updates.map((update) => ({
+      ...update,
+      value: structuredClone($state.snapshot(update.value))
+    }));
+    const bases = structuredClone($state.snapshot(settingsBases));
+    const submittedOutcome = structuredClone($state.snapshot(outcome));
+    const transformations: Record<string, boolean> | null =
+      mode !== 'session'
+        ? null
+        : key === 'optimize_tts'
+          ? {
+              llm_tts_optimization: optimizationEnabled,
+              llm_tts_document_optimization: documentOptimizationEnabled
+            }
+          : key === 'optimize_document'
+            ? { llm_tts_document_optimization: documentOptimizationEnabled }
+            : null;
+    const sourceProviderId = ttsSwitchSource?.id;
+    const opening = settingsOpening;
+    const mutation = ++settingsMutation;
+    const isCurrent = () =>
+      !disposed && opening === settingsOpening && mutation === settingsMutation;
+    const completed: string[] = [];
+    settingsSaving = true;
     try {
+      for (const update of submitted) {
+        if (!bases[update.section])
+          throw new Error('Reload these settings before saving changes.');
+        if (
+          mode === 'defaults' &&
+          bases[update.section].global_revision == null
+        )
+          throw new Error(
+            'Reload these settings before saving application defaults.'
+          );
+      }
       if (mode === 'defaults') {
-        for (const update of updates)
-          await persistDefaultSection(update.section, update.value);
-        stageMessage = 'Saved as the application defaults for future sessions.';
+        for (const update of submitted) {
+          const saved = await persistDefaultSection(
+            update.section,
+            update.value,
+            bases[update.section],
+            sourceProviderId,
+            completed
+          );
+          completed.push(`${sectionDisplay(update.section)} session settings`);
+          if (isCurrent()) settingsBases[update.section] = saved;
+        }
+        if (isCurrent())
+          stageMessage =
+            'Saved as the application defaults for future sessions.';
       } else {
-        for (const update of updates)
-          await persistSection(update.section, update.value);
+        for (const update of submitted) {
+          const saved = await persistSection(
+            update.section,
+            update.value,
+            bases[update.section]
+          );
+          completed.push(sectionDisplay(update.section));
+          if (isCurrent()) settingsBases[update.section] = saved;
+        }
       }
-      if (mode === 'session' && key === 'optimize_tts') {
-        await updateOutcomeTransformations({
-          llm_tts_optimization: optimizationEnabled,
-          llm_tts_document_optimization: documentOptimizationEnabled
-        });
-      } else if (mode === 'session' && key === 'optimize_document') {
-        await updateOutcomeTransformations({
-          llm_tts_document_optimization: documentOptimizationEnabled
-        });
-      }
+      if (transformations)
+        await updateOutcomeTransformations(transformations, submittedOutcome);
       if (mode === 'session') {
+        if (!isCurrent()) return;
         await load();
+        if (!isCurrent()) return;
         closeStageSettings();
         if (runAfterSave) {
           const refreshed = workflowStore.snapshot?.stages.find(
@@ -2978,7 +3058,10 @@
         }
       }
     } catch (caught) {
-      error = errorMessage(caught);
+      if (isCurrent())
+        error = `${completed.length ? `Saved ${completed.join(', ')}. Remaining changes were not saved. ` : ''}${errorMessage(caught)}`;
+    } finally {
+      if (isCurrent()) settingsSaving = false;
     }
   }
 
@@ -3403,7 +3486,7 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-title"
-      aria-busy={settingsLoading}
+      aria-busy={settingsLoading || settingsSaving}
     >
       <div class="modal-scroll p-7">
         <div class="flex justify-between gap-5">
@@ -3425,7 +3508,10 @@
             <LoaderCircle class="animate-spin" size={16} /> Loading available models
             and saved settings…
           </div>{/if}
-        <fieldset disabled={settingsLoading} class="mt-6 grid min-w-0 gap-5">
+        <fieldset
+          disabled={settingsLoading || settingsSaving}
+          class="mt-6 grid min-w-0 gap-5"
+        >
           {#if settingsStage.key === 'correct' || (settingsStage.key === 'translate' && backend === 'llm') || ['optimize_tts', 'optimize_document', 'clean_source'].includes(settingsStage.key)}<label
               class="text-sm font-semibold"
               >LLM model<select
@@ -5851,17 +5937,18 @@
         <div class="mt-7 flex flex-wrap justify-end gap-3">
           <button
             onclick={openFullSettingsFromStage}
-            disabled={settingsLoading}
+            disabled={settingsLoading || settingsSaving}
             class="mr-auto rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
             >All {sectionDisplay(stageSection(settingsStage.key))} settings</button
           ><button
             onclick={revertStageToDefaults}
-            disabled={settingsLoading}
+            disabled={settingsLoading || settingsSaving}
             class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold"
             ><RotateCcw size={15} /> Revert to defaults</button
           ><button
             onclick={() => saveSettings('defaults')}
             disabled={settingsLoading ||
+              settingsSaving ||
               Boolean(publishingLibraryVoiceId) ||
               ((settingsStage.key === 'transcribe' ||
                 settingsStage.key === 'correct') &&
@@ -5888,6 +5975,7 @@
                   settingsStage.status !== 'running'
               )}
             disabled={settingsLoading ||
+              settingsSaving ||
               Boolean(publishingLibraryVoiceId) ||
               ((settingsStage.key === 'transcribe' ||
                 settingsStage.key === 'correct') &&

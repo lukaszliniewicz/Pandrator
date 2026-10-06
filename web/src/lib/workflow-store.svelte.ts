@@ -24,10 +24,53 @@ function presentSnapshot(snapshot: WorkflowSnapshot) {
   };
 }
 
+function historyIdentity(stage: WorkflowStage) {
+  return JSON.stringify([
+    stage.selection_revision ?? 0,
+    stage.selected_artifact_id ?? null,
+    stage.artifact_history_total ?? 0,
+    stage.artifacts?.[0]?.id ?? null
+  ]);
+}
+
+function retainHistory(
+  previous: WorkflowSnapshot | null,
+  next: WorkflowSnapshot
+) {
+  if (previous?.session_id !== next.session_id) return next;
+  return {
+    ...next,
+    stages: next.stages.map((stage) => {
+      const prior = previous.stages.find((item) => item.key === stage.key);
+      if (
+        !prior ||
+        historyIdentity(prior) !== historyIdentity(stage) ||
+        (prior.artifacts?.length ?? 0) <= (stage.artifacts?.length ?? 0)
+      )
+        return stage;
+      const merged = new Map(
+        [...(prior.artifacts ?? []), ...(stage.artifacts ?? [])].map((item) => [
+          item.id,
+          item
+        ])
+      );
+      return {
+        ...stage,
+        artifacts: [...merged.values()].sort((a, b) => b.version - a.version),
+        artifact_history_has_more: prior.artifact_history_has_more,
+        artifact_history_next_before_version:
+          prior.artifact_history_next_before_version
+      };
+    })
+  };
+}
+
 export class WorkflowStore {
   private readonly resource = new ResourceState<WorkflowSnapshot | null>(null);
   private unsubscribe?: () => void;
   private reloadQueued = false;
+  private historyEpoch = 0;
+  historyLoading = $state<Record<string, boolean>>({});
 
   constructor(public sessionId: string) {}
 
@@ -50,7 +93,11 @@ export class WorkflowStore {
   async load(force = false) {
     const sessionId = this.sessionId;
     return this.resource.load(
-      async () => presentSnapshot(await sessionApi.workflow(sessionId)),
+      async () =>
+        retainHistory(
+          this.snapshot,
+          presentSnapshot(await sessionApi.workflow(sessionId))
+        ),
       {
         force,
         isCurrent: () => this.sessionId === sessionId
@@ -67,6 +114,8 @@ export class WorkflowStore {
   retarget(sessionId: string) {
     if (sessionId === this.sessionId) return false;
     this.sessionId = sessionId;
+    this.historyEpoch++;
+    this.historyLoading = {};
     this.resource.reset(null);
     // Show the loading state until reload lands.
     this.resource.status = 'loading';
@@ -78,7 +127,71 @@ export class WorkflowStore {
   }
 
   replace(snapshot: WorkflowSnapshot) {
-    this.resource.replace(snapshot);
+    this.resource.replace(retainHistory(this.snapshot, snapshot));
+  }
+
+  async loadStageHistory(stageKey: string) {
+    const stage = this.snapshot?.stages.find((item) => item.key === stageKey);
+    const beforeVersion = stage?.artifact_history_next_before_version;
+    if (!stage || beforeVersion == null || this.historyLoading[stageKey])
+      return;
+    const sessionId = this.sessionId;
+    const epoch = this.historyEpoch;
+    const identity = historyIdentity(stage);
+    const currentStage = () => {
+      if (epoch !== this.historyEpoch || sessionId !== this.sessionId) return;
+      const current = this.snapshot?.stages.find(
+        (item) => item.key === stageKey
+      );
+      return current &&
+        historyIdentity(current) === identity &&
+        current.artifact_history_next_before_version === beforeVersion
+        ? current
+        : undefined;
+    };
+    this.historyLoading[stageKey] = true;
+    try {
+      const page = await sessionApi.stageArtifacts(
+        sessionId,
+        stageKey,
+        beforeVersion
+      );
+      const current = currentStage();
+      if (
+        !current ||
+        page.revision !== (current.selection_revision ?? 0) ||
+        page.selected_artifact_id !== (current.selected_artifact_id ?? null) ||
+        page.total !== (current.artifact_history_total ?? 0)
+      )
+        return;
+      const merged = new Map(
+        [...(current.artifacts ?? []), ...page.items].map((item) => [
+          item.id,
+          item
+        ])
+      );
+      this.resource.replace({
+        ...this.snapshot!,
+        stages: this.snapshot!.stages.map((item) =>
+          item.key !== stageKey
+            ? item
+            : {
+                ...current,
+                artifacts: [...merged.values()].sort(
+                  (a, b) => b.version - a.version
+                ),
+                artifact_history_total: page.total,
+                artifact_history_has_more: page.has_more,
+                artifact_history_next_before_version: page.next_before_version
+              }
+        )
+      });
+    } catch (caught) {
+      if (currentStage()) throw caught;
+    } finally {
+      if (epoch === this.historyEpoch && sessionId === this.sessionId)
+        this.historyLoading[stageKey] = false;
+    }
   }
 
   connect() {

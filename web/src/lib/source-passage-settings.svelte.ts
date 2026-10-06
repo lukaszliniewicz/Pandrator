@@ -1,5 +1,6 @@
 import { sessionApi } from './domain-api';
 import { errorMessage } from './errors';
+import type { SettingsPayload } from './api-models';
 import {
   SOURCE_PASSAGE_DEFAULTS,
   SOURCE_PASSAGE_SECTION,
@@ -21,6 +22,7 @@ export class SourcePassageSettingsState {
   values = $state({ ...SOURCE_PASSAGE_DEFAULTS });
   available = $state(true);
   overrideCount = $state(0);
+  settingsPayload = $state<SettingsPayload | null>(null);
   touched = $state(false);
   artifactId = $state('');
   status = $state<SourcePassageStatus | null>(null);
@@ -54,6 +56,7 @@ export class SourcePassageSettingsState {
     this.values = { ...SOURCE_PASSAGE_DEFAULTS };
     this.touched = false;
     this.overrideCount = 0;
+    this.settingsPayload = null;
     const opening = this.opening;
     const edit = this.edit;
     try {
@@ -62,6 +65,7 @@ export class SourcePassageSettingsState {
         SOURCE_PASSAGE_SECTION
       );
       if (!this.active || opening !== this.opening) return;
+      this.settingsPayload = settings;
       if (edit === this.edit)
         this.values = coerceSourcePassageValues(settings.effective);
       this.overrideCount = Object.keys(settings.override ?? {}).length;
