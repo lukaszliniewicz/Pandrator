@@ -1,3 +1,4 @@
+import inspect
 import json
 import tempfile
 import threading
@@ -83,6 +84,47 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
     @staticmethod
     def progress(_value, _detail=None):
         return None
+
+    def test_caption_facade_recaptures_ports_and_forwards_identity(self):
+        from pandrator.web.workflow_caption_alignment import transcribe_media_edit_with_ctc
+
+        source, caption = self._source_and_caption()
+        source_path = self.artifacts.resolve(source.id)[1]
+        submitted, runtime, cancel_event = {}, {}, threading.Event()
+        arguments = {
+            "session_id": self.session.id,
+            "source_artifact": source,
+            "source_path": source_path,
+            "caption_artifact": caption,
+            "submitted_settings": submitted,
+            "runtime_settings": runtime,
+            "ffmpeg_executable": "fixture-ffmpeg",
+            "crispasr_executable": "fixture-crispasr",
+            "progress": self.progress,
+            "cancel_event": cancel_event,
+        }
+        contexts = []
+        with patch(
+            "pandrator.web.workflow_handlers._transcribe_media_edit_with_ctc_impl",
+            autospec=True,
+            return_value={"fixture": True},
+        ) as owner:
+            for _ in range(2):
+                with patch.object(self.handlers, "_store_timed_words") as store_words:
+                    result = self.handlers._transcribe_media_edit_with_ctc(**arguments)
+                    forwarded = (
+                        inspect.signature(transcribe_media_edit_with_ctc)
+                        .bind(*owner.call_args.args, **owner.call_args.kwargs)
+                        .arguments
+                    )
+                    context = forwarded.pop("context")
+                    contexts.append(context)
+                    self.assertIs(context.artifacts, self.handlers.artifacts)
+                    self.assertIs(context._store_timed_words, store_words)
+                    for name, value in arguments.items():
+                        self.assertIs(forwarded[name], value)
+                    self.assertIs(result, owner.return_value)
+        self.assertIsNot(contexts[0], contexts[1])
 
     def _artifact(self, name, role, content, kind):
         path = self.paths.root / name

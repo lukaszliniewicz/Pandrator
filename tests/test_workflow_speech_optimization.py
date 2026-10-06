@@ -1,5 +1,6 @@
 """Regression witnesses for durable speech optimization workflow state."""
 
+import inspect
 import json
 import tempfile
 import threading
@@ -140,6 +141,84 @@ class WorkflowSpeechOptimizationTests(unittest.TestCase):
         self.assertEqual(previous, self._state(ids[0]))
         self.assertEqual([], self._usage())
 
+    def test_speech_facades_recapture_ports_and_forward_identity(self):
+        from pandrator.web.workflow_speech_optimization import (
+            optimize_generation_texts,
+            optimize_tts,
+        )
+
+        payload = {"session_id": self.session.id}
+        progress = mock.Mock()
+        cancel_event = threading.Event()
+        contexts = []
+        with mock.patch(
+            "pandrator.web.workflow_handlers._optimize_tts_impl",
+            autospec=True,
+            return_value=mock.sentinel.standalone_result,
+        ) as owner:
+            for marker in (mock.sentinel.first_id, mock.sentinel.second_id):
+                with (
+                    mock.patch.object(self.handlers, "_record_usage") as record_usage,
+                    mock.patch("pandrator.web.workflow_handlers.new_id", return_value=marker),
+                ):
+                    result = self.handlers.optimize_tts(payload, progress, cancel_event)
+                    arguments = (
+                        inspect.signature(optimize_tts)
+                        .bind(*owner.call_args.args, **owner.call_args.kwargs)
+                        .arguments
+                    )
+                    context = arguments["context"]
+                    contexts.append(context)
+                    self.assertIs(context.database, self.database)
+                    self.assertIs(context.artifacts, self.handlers.artifacts)
+                    self.assertIs(context._record_usage, record_usage)
+                    self.assertIs(context.new_id(), marker)
+                    self.assertIs(arguments["payload"], payload)
+                    self.assertIs(arguments["progress"], progress)
+                    self.assertIs(arguments["cancel_event"], cancel_event)
+                    self.assertIs(result, mock.sentinel.standalone_result)
+        self.assertIsNot(contexts[0], contexts[1])
+
+        ids, texts, settings, pronunciation = (
+            ["fixture-segment"],
+            ["Dr. Jones"],
+            {},
+            {"language": "pl"},
+        )
+        options = {
+            "job_id": "fixture-job",
+            "generation_run_id": "fixture-run",
+            "source_artifact_id": "fixture-source",
+            "pronunciation_settings": pronunciation,
+            "pronunciation_language": "pl",
+            "pronunciation_voice_language": "pl",
+        }
+        with mock.patch(
+            "pandrator.web.workflow_handlers._optimize_generation_texts_impl",
+            autospec=True,
+            return_value=mock.sentinel.inline_result,
+        ) as owner:
+            result = self.handlers._optimize_generation_texts(
+                self.session.id, ids, texts, settings, cancel_event, progress, **options
+            )
+        arguments = (
+            inspect.signature(optimize_generation_texts)
+            .bind(*owner.call_args.args, **owner.call_args.kwargs)
+            .arguments
+        )
+        for name, value in {
+            "segment_ids": ids,
+            "texts": texts,
+            "settings": settings,
+            "cancel_event": cancel_event,
+            "progress": progress,
+            "pronunciation_settings": pronunciation,
+        }.items():
+            self.assertIs(arguments[name], value)
+        for name, value in options.items():
+            self.assertEqual(arguments[name], value)
+        self.assertIs(result, mock.sentinel.inline_result)
+
     def test_cancelled_inline_batch_preserves_previous_state(self):
         ids = self._segments()
         with self.database.session() as session:
@@ -181,6 +260,9 @@ class WorkflowSpeechOptimizationTests(unittest.TestCase):
         single.assert_not_called()
         batch.assert_not_called()
         self.assertEqual({}, self._state(ids[0])["plan"])
+        usage = self._usage()
+        self.assertEqual(1, len(usage))
+        self._assert_usage(usage[0])
 
     def test_partial_inline_failure_retains_completed_usage(self):
         ids = self._segments(2)
