@@ -523,3 +523,54 @@ def test_changed_source_hash_preserves_previous_pair(case):
         _run(case)
     case.encode.assert_not_called()
     assert _snapshot(case) == before
+
+
+def test_render_facade_recaptures_ports_and_preserves_result_and_error_identity():
+    from pandrator.web import workflow_handlers as root
+    from pandrator.web.workflow_media_edit_render import media_edit_render
+
+    assert root._media_edit_render_impl is media_edit_render
+    handlers = WorkflowHandlers.__new__(WorkflowHandlers)
+    payload, progress, event = {}, Mock(), threading.Event()
+    result, failure, contexts = object(), RuntimeError("owner sentinel"), []
+    instance_ports = (
+        "database",
+        "artifacts",
+        "media_edit",
+        "_resolve_input",
+        "_media_edit_cues",
+        "_operation_dir",
+        "_store_srt_document",
+        "_store_timed_words",
+    )
+
+    def delegate(context, passed_payload, passed_progress, passed_event):
+        assert passed_payload is payload
+        assert passed_progress is progress
+        assert passed_event is event
+        contexts.append(context)
+        if len(contexts) == 3:
+            raise failure
+        return result
+
+    with patch.object(root, "_media_edit_render_impl", side_effect=delegate):
+        for _ in range(2):
+            ports = {name: Mock() for name in instance_ports}
+            for name, value in ports.items():
+                setattr(handlers, name, value)
+            hash_port, endpoint_port, clock_port = Mock(), Mock(), Mock()
+            with (
+                patch.object(root, "sha256_file", hash_port),
+                patch.object(root, "_required_media_edit_time", endpoint_port),
+                patch.object(root.time, "monotonic", clock_port),
+            ):
+                assert handlers.media_edit_render(payload, progress, event) is result
+            captured = contexts[-1]
+            assert all(getattr(captured, name) is value for name, value in ports.items())
+            assert captured._sha256_file is hash_port
+            assert captured._required_media_edit_time is endpoint_port
+            assert captured._monotonic is clock_port
+        with pytest.raises(RuntimeError) as caught:
+            handlers.media_edit_render(payload, progress, event)
+    assert caught.value is failure
+    assert len({id(context) for context in contexts}) == 3
