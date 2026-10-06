@@ -26,6 +26,53 @@ from pandrator.web.workspace import RevisionConflict
 
 
 class GenerationMissingOnlyTests(unittest.TestCase):
+    def test_missing_plan_rejects_automatic_start_without_queued_jobs(self):
+        session_id = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "missing-plan-contract", "workflow_kind": "audiobook"},
+            headers=self.headers,
+        ).get_json()["id"]
+        with self.database.session() as session:
+            before_jobs = session.scalar(select(func.count()).select_from(Job))
+        for options, message in (
+            ({"missing_only": True}, "There are no missing speech blocks to generate."),
+            ({"stale_only": True}, "There are no missing or stale speech blocks to generate."),
+        ):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                self.generation.start(session_id, run_override=self._override(), **options)
+        with self.assertRaises(RevisionConflict):
+            self.generation.start(
+                session_id, run_override=self._override(), expected_selection_hash="outdated-selection",
+            )
+        with self.database.session() as session:
+            self.assertEqual(before_jobs, session.scalar(select(func.count()).select_from(Job)))
+            self.assertEqual(0, session.scalar(select(func.count()).select_from(GenerationRun).where(GenerationRun.session_id == session_id)))
+
+    def test_segment_null_rejection_and_mixed_field_update_preserve_contract(self):
+        _session_id, _revision, ids = self._create_case(texts=["Original"])
+        with self.database.session() as session:
+            original = session.get(GenerationSegment, ids[0])
+            revision = original.revision
+            original_silence = original.silence_after_ms
+        headers = {**self.headers, "If-Match": f'"{revision}"'}
+        response = self.client.patch(
+            f"/api/v1/generation-segments/{ids[0]}",
+            json={"text": "Changed", "silence_after_ms": None}, headers=headers,
+        )
+        self.assertEqual(422, response.status_code)
+        self.assertEqual("silence_after_ms cannot be null.", response.get_json()["error"]["message"])
+        with self.database.session() as session:
+            unchanged = session.get(GenerationSegment, ids[0])
+            self.assertEqual(("Original", revision, original_silence), (unchanged.text, unchanged.revision, unchanged.silence_after_ms))
+        response = self.client.patch(
+            f"/api/v1/generation-segments/{ids[0]}",
+            json={"text": " Changed ", "optimized_text": " Spoken ", "silence_after_ms": 250}, headers=headers,
+        )
+        self.assertEqual(200, response.status_code, response.get_json())
+        with self.database.session() as session:
+            changed = session.get(GenerationSegment, ids[0])
+            self.assertEqual(("Changed", "Spoken", 250, revision + 1), (changed.text, changed.optimized_text, changed.silence_after_ms, changed.revision))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

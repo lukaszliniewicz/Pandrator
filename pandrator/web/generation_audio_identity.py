@@ -302,7 +302,7 @@ class AudioIdentityContext:
             return identity
         from pandrator.logic.speech_performance import compile_performance
 
-        from .speech_plan_workspace import (
+        from .generation_performance_snapshot import (
             freeze_generation_performance_snapshot,
             frozen_semantic_contexts,
             segment_performance_settings,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any, cast
 
-from sqlalchemy import delete
+from sqlalchemy import CursorResult, delete
 
 from pandrator.runtime import DataPaths
 
@@ -16,9 +17,9 @@ def apply_retention(database: Database, paths: DataPaths, days: int) -> dict[str
     days = max(1, min(3650, int(days)))
     cutoff = utcnow() - timedelta(days=days)
     with database.session() as session:
-        events = session.execute(delete(JobEvent).where(JobEvent.created_at < cutoff)).rowcount or 0
-        app_history = session.execute(delete(AppSettingHistory).where(AppSettingHistory.created_at < cutoff)).rowcount or 0
-        session_history = session.execute(delete(SessionSettingHistory).where(SessionSettingHistory.created_at < cutoff)).rowcount or 0
+        events = cast(CursorResult[Any], session.execute(delete(JobEvent).where(JobEvent.created_at < cutoff))).rowcount or 0
+        app_history = cast(CursorResult[Any], session.execute(delete(AppSettingHistory).where(AppSettingHistory.created_at < cutoff))).rowcount or 0
+        session_history = cast(CursorResult[Any], session.execute(delete(SessionSettingHistory).where(SessionSettingHistory.created_at < cutoff))).rowcount or 0
     files = 0
     cutoff_timestamp = cutoff.timestamp()
     for root in (paths.temporary, paths.logs):

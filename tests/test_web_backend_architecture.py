@@ -26,6 +26,38 @@ from pandrator.web.tts_providers import (
 )
 
 
+def test_generation_snapshot_leaf_preserves_workspace_exports_and_import_order():
+    script = """
+import importlib
+import sys
+
+first = importlib.import_module(sys.argv[1])
+if sys.argv[1] == 'pandrator.web.generation_performance_snapshot':
+    assert 'pandrator.web.speech_plan_workspace' not in sys.modules
+    assert 'pandrator.web.generation_audio_identity' not in sys.modules
+    assert 'pandrator.web.performance_plans' not in sys.modules
+from pandrator.web import generation_performance_snapshot as leaf
+from pandrator.web import speech_plan_workspace as workspace
+from pandrator.web import generation_audio_identity
+for name in ('performance_runtime_settings', 'frozen_semantic_contexts',
+             'freeze_generation_performance_snapshot', 'segment_performance_settings'):
+    assert getattr(workspace, name) is getattr(leaf, name), name
+assert workspace.frozen_semantic_contexts({}) == {}
+try:
+    workspace.frozen_semantic_contexts({'semantic_context_snapshot': {'schema_version': 2}})
+except ValueError as error:
+    assert str(error) == 'Unsupported semantic context snapshot. Start a new generation run.'
+else:
+    raise AssertionError('Unsupported snapshot version accepted')
+"""
+    for first in (
+        "pandrator.web.generation_performance_snapshot",
+        "pandrator.web.speech_plan_workspace",
+        "pandrator.web.generation_audio_identity",
+    ):
+        subprocess.run([sys.executable, "-c", script, first], check=True, timeout=30)
+
+
 def test_provider_contracts_import_without_provider_runtime():
     script = """
 import sys

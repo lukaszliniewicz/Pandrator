@@ -481,11 +481,11 @@ class GenerationService(GenerationHistoryReader):
                     raise ValueError(
                         "Generation text cannot be blank; remove the segment instead."
                     )
-            if key == "optimized_text":
+            elif key == "optimized_text":
                 value = str(value or "").strip() or None
-            if key == "silence_after_ms":
+            elif key == "silence_after_ms":
                 value = max(0, int(value))
-            if key == "node_kind" and value not in {
+            elif key == "node_kind" and value not in {
                 "paragraph",
                 "heading",
                 "chapter_marker",

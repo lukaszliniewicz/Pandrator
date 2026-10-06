@@ -2,12 +2,15 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from flask import Flask, session
 from PIL import Image
 from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
-from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.auth import ALL_SCOPES, PRINCIPAL_KINDS, BootstrapTokenStore
+from pandrator.web.http_lifecycle import ApiGuards
 from pandrator.web.models import Artifact, SourceAsset
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -246,6 +249,50 @@ class WebSecurityBoundaryTests(unittest.TestCase):
                 self.assertEqual("", local["security_warning"])
             finally:
                 app.extensions["pandrator"]["database"].dispose()
+
+
+class PrincipalContractTests(unittest.TestCase):
+    def setUp(self):
+        self.app = Flask(__name__)
+        self.app.secret_key = "principal-contract-fixture"
+        self.guards = ApiGuards(
+            self.app,
+            SimpleNamespace(identity=SimpleNamespace(instance_id="fixture-instance")),
+            testing=True,
+            script_policy="'self'",
+        )
+
+    def test_network_zone_handles_ipv4_ipv6_and_invalid_addresses(self):
+        for address, expected in (
+            ("127.0.0.1", "loopback"), ("::1", "loopback"),
+            ("192.168.1.2", "private"), ("fd00::1", "private"),
+            ("8.8.8.8", "public"), ("2001:4860:4860::8888", "public"),
+            ("invalid", "public"), ("", "public"),
+        ):
+            with self.subTest(address=address), self.app.test_request_context(
+                environ_overrides={"REMOTE_ADDR": address}
+            ):
+                self.assertEqual(expected, self.guards._network_zone())
+
+    def test_session_principal_kind_scope_and_request_cache_contract(self):
+        for kind in (*sorted(PRINCIPAL_KINDS), "unknown-kind"):
+            with self.subTest(kind=kind), self.app.test_request_context():
+                session.update(authenticated=True, principal_kind=kind)
+                principal = self.guards.principal()
+                self.assertIsNotNone(principal)
+                self.assertEqual(kind if kind in PRINCIPAL_KINDS else "owner_session", principal.kind)
+                self.assertEqual(ALL_SCOPES, principal.scopes)
+                self.assertEqual("fixture-instance", principal.target_instance_id)
+                session["authenticated"] = False
+                self.assertIs(principal, self.guards.principal())
+        with self.app.test_request_context():
+            session.update(authenticated=True, principal_scopes=["invalid-scope"])
+            self.assertIsNone(self.guards.principal())
+            session.pop("principal_scopes")
+            self.assertIsNone(self.guards.principal())
+        with self.app.test_request_context():
+            session["principal_kind"] = "service"
+            self.assertIsNone(self.guards.principal())
 
 
 if __name__ == "__main__":

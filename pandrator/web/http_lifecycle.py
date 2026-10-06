@@ -12,14 +12,14 @@ import traceback
 import uuid
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 from flask import Flask, g, jsonify, request, session
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
 from .application_services import ApplicationServices
-from .auth import ALL_SCOPES, Principal, normalize_scopes
+from .auth import ALL_SCOPES, NetworkZone, Principal, PrincipalKind, normalize_scopes
 from .credentials import contains_inline_secret
 from .update_maintenance import update_maintenance_active
 
@@ -121,7 +121,7 @@ class ApiGuards:
         return None
 
     @staticmethod
-    def _network_zone() -> str:
+    def _network_zone() -> NetworkZone:
         try:
             address = ipaddress.ip_address(str(request.remote_addr or ""))
         except ValueError:
@@ -156,8 +156,8 @@ class ApiGuards:
             g.principal = None
             return None
         raw_kind = str(session.get("principal_kind") or "owner_session")
-        kind = (
-            raw_kind
+        kind: PrincipalKind = (
+            cast(PrincipalKind, raw_kind)
             if raw_kind
             in {
                 "owner_session",

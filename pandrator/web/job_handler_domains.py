@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import TYPE_CHECKING
 
 from .job_registry import JobHandlerRegistry, JobPayloadContract
 from .jobs import JobHandler
 
-if TYPE_CHECKING:
-    from .workflow_handlers import WorkflowHandlers
-
 
 def _late_bound(
-    handlers: WorkflowHandlers,
+    handlers: object,
     method_name: str,
 ) -> JobHandler:
     """Resolve the method at dispatch time so test/runtime overrides remain valid."""
@@ -28,7 +24,7 @@ def _late_bound(
 
 
 def _bind_many(
-    handlers: WorkflowHandlers,
+    handlers: object,
     registrations: dict[str, str],
 ) -> dict[str, JobHandler]:
     return {
@@ -48,7 +44,7 @@ def _contracts(
 
 def register_text_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register_many(
         "text",
@@ -84,7 +80,7 @@ def register_text_handlers(
 
 def register_generation_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register_many(
         "generation",
@@ -124,7 +120,7 @@ def register_generation_handlers(
 
 def register_voice_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register_many(
         "voice",
@@ -162,7 +158,7 @@ def register_voice_handlers(
 
 def register_source_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register_many(
         "source",
@@ -190,7 +186,7 @@ def register_source_handlers(
 
 def register_delivery_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register_many(
         "delivery",
@@ -226,7 +222,7 @@ def register_delivery_handlers(
 
 def register_media_edit_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register_many(
         "media_edit",
@@ -248,7 +244,7 @@ def register_media_edit_handlers(
 
 def register_workflow_handlers(
     registry: JobHandlerRegistry,
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> None:
     registry.register(
         "workflow.continue",
@@ -259,7 +255,7 @@ def register_workflow_handlers(
 
 
 def build_workflow_handler_registry(
-    handlers: WorkflowHandlers,
+    handlers: object,
 ) -> JobHandlerRegistry:
     registry = JobHandlerRegistry()
     register_text_handlers(registry, handlers)

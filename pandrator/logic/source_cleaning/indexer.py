@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 
-from . import epub_adapter, pdf_adapter, pdf_text_adapter
+import pandrator.logic.source_cleaning.epub_adapter as epub_adapter
+import pandrator.logic.source_cleaning.pdf_adapter as pdf_adapter
+import pandrator.logic.source_cleaning.pdf_text_adapter as pdf_text_adapter
+
 from .models import SourceDocument
 
 

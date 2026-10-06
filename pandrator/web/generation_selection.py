@@ -78,12 +78,14 @@ def _actual_identity_fingerprint(artifact_metadata: Any) -> str:
     return _stable_hash(actual)
 
 
-def collect_row_state(session: Any, bound_revision_id: str) -> dict[str, Any]:
+def collect_row_state(session: Any, bound_revision_id: str | None) -> dict[str, Any]:
     """Capture lightweight plain-data row/take/artifact/run state.
 
     No audio-identity work happens here, so the write transaction can recheck
     this cheaply without recompiling per-row identities under the lock.
-    Voice/cast drift is covered there by the existing snapshot guard plus a
+    A missing active revision yields empty state; selection callers reject it
+    with their existing blocked-selection response. Voice/cast drift is covered
+    there by the existing snapshot guard plus a
     fresh resolved-settings comparison.
     """
     from .models import Artifact, AudioTake, GenerationRun, GenerationSegment
@@ -232,7 +234,7 @@ def _resolve_takes(
 
 def compute_selection(
     session: Any,
-    bound_revision_id: str,
+    bound_revision_id: str | None,
     resolved_snapshot: dict[str, Any],
     mode: str,
 ) -> dict[str, Any]:

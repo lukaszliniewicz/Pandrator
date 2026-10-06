@@ -11,11 +11,19 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from sqlalchemy import CursorResult, delete, select
 
 from pandrator.web import startup
 from pandrator.web.application_services import ApplicationServices
+from pandrator.web.maintenance import apply_retention
 from pandrator.web.maintenance_threads import MaintenanceThread
-from pandrator.web.models import AppSettingHistory, utcnow
+from pandrator.web.models import (
+    AppSettingHistory,
+    JobEvent,
+    SessionRecord,
+    SessionSettingHistory,
+    utcnow,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -38,6 +46,55 @@ def services(tmp_path: Path) -> Iterator[ApplicationServices]:
                 assert not thread.is_alive()
         value.tts_providers.close()
         value.database.dispose()
+
+
+def test_retention_counts_native_deletes_and_preserves_recent_and_external_files(services):
+    old = utcnow() - timedelta(days=40)
+    recent = utcnow()
+    with services.database.session() as session:
+        record = SessionRecord(name="retention-contract")
+        session.add(record)
+        session.flush()
+        session_id = record.id
+        for created in (old, recent):
+            session.add_all([
+                JobEvent(event_type="retention.contract", payload_json={}, created_at=created),
+                AppSettingHistory(key="retention.contract", revision=1, value_json={}, created_at=created),
+                SessionSettingHistory(session_id=session_id, section="tts", revision=1, value_json={}, created_at=created),
+            ])
+        session.flush()
+        for model in (JobEvent, AppSettingHistory, SessionSettingHistory):
+            result = session.execute(delete(model).where(model.created_at < old))
+            assert isinstance(result, CursorResult)
+            assert result.rowcount == 0
+    expired = []
+    current = []
+    for root in (services.paths.temporary, services.paths.logs):
+        root.mkdir(parents=True, exist_ok=True)
+        expired.append(root / "retention-expired")
+        expired[-1].write_text("expired")
+        os.utime(expired[-1], (old.timestamp(), old.timestamp()))
+        current.append(root / "retention-current")
+        current[-1].write_text("current")
+    outside = services.paths.uploads / "retention-protected"
+    outside.write_text("protected source")
+    os.utime(outside, (old.timestamp(), old.timestamp()))
+    link = services.paths.temporary / "retention-external-link"
+    link.symlink_to(outside)
+    assert apply_retention(services.database, services.paths, 30) == {
+        "job_events": 1, "app_setting_history": 1, "session_setting_history": 1, "files": 2,
+    }
+    assert all(not path.exists() for path in expired)
+    assert all(path.read_text() == "current" for path in current)
+    assert outside.read_text() == "protected source" and link.is_symlink()
+    with services.database.session() as session:
+        assert len(list(session.scalars(select(JobEvent).where(JobEvent.event_type == "retention.contract")))) == 1
+        assert len(list(session.scalars(select(AppSettingHistory).where(AppSettingHistory.key == "retention.contract")))) == 1
+        assert len(list(session.scalars(select(SessionSettingHistory).where(SessionSettingHistory.session_id == session_id)))) == 1
+        assert session.get(SessionRecord, session_id) is not None
+    assert apply_retention(services.database, services.paths, 30) == {
+        "job_events": 0, "app_setting_history": 0, "session_setting_history": 0, "files": 0,
+    }
 
 
 @pytest.mark.parametrize("owner", ["startup", "quick"])

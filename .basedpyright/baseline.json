@@ -142,16 +142,6 @@
                 }
             }
         ],
-        "./pandrator/logic/source_cleaning/__init__.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/logic/source_cleaning/agent.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -308,24 +298,6 @@
                 }
             }
         ],
-        "./pandrator/web/audiobook_resegmentation.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/auth.py": [
             {
                 "code": "reportArgumentType",
@@ -352,14 +324,6 @@
                 "range": {
                     "startColumn": 32,
                     "endColumn": 41,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 55,
                     "lineCount": 1
                 }
             }
@@ -418,58 +382,12 @@
                 }
             }
         ],
-        "./pandrator/web/generation_audio_identity.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/generation_cast_runtime.py": [
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 57,
                     "endColumn": 60,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/generation_edit_audio.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/http_lifecycle.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 21,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 29,
                     "lineCount": 1
                 }
             }
@@ -484,48 +402,12 @@
                 }
             }
         ],
-        "./pandrator/web/job_handler_domains.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/jobs.py": [
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 31,
                     "endColumn": 39,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/maintenance.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 87,
-                    "endColumn": 95,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 110,
-                    "endColumn": 118,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 122,
-                    "endColumn": 130,
                     "lineCount": 1
                 }
             }
@@ -738,32 +620,6 @@
                 "range": {
                     "startColumn": 18,
                     "endColumn": 23,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/workspace.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 35,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 35,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 55,
-                    "endColumn": 72,
                     "lineCount": 1
                 }
             }

@@ -21,7 +21,7 @@ def copy_unchanged_annotations(
     session, previous, revision_id: str, units: list[dict], characters: list[dict]
 ) -> dict:
     """Follow immutable lineage, retaining only exact one-to-one annotation targets."""
-    from .performance_plans import _annotations
+    from .performance_annotations import plan_annotations as _annotations
     from .speech_annotation_records import normalized_record, record_markup
 
     chain, visited = [], set()
@@ -113,8 +113,8 @@ def copy_unchanged_annotations(
 
 def _reviewed_annotations(session, revision_id: str) -> dict:
     """Read and validate one adopted plan once per topology operation."""
-    from .performance_plans import _annotations
-    from .speech_plan_workspace import plan_signature
+    from .performance_annotations import plan_annotations as _annotations
+    from .speech_plan_context import plan_signature
 
     adopted = session.scalar(
         select(m.PerformancePlan).where(

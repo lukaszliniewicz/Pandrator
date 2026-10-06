@@ -74,7 +74,7 @@ def running_edit_ancestor(session: Any, revision_id: str) -> GenerationRun | Non
 
 
 def _same_input(source: GenerationSegment, target: GenerationSegment) -> bool:
-    from .speech_plan_workspace import SIGNATURE_FIELDS
+    from .speech_plan_context import SIGNATURE_FIELDS
 
     return all(getattr(source, field) == getattr(target, field)
                for field in SIGNATURE_FIELDS if field != "ordinal")
