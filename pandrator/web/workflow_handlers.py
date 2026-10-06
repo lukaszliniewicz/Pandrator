@@ -1962,9 +1962,11 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         transcription_result: Any,
         submitted_settings: dict[str, Any],
         progress,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """Project ASR timing onto the authoritative attached captions."""
 
+        from pandrator.logic.cancellable_process import ProcessCancelled
         from pandrator.logic.media_edit import (
             MediaWord,
             align_cues_to_words,
@@ -1983,6 +1985,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         raw_payload: dict[str, Any] = {}
         try:
             raw_payload = json.loads(raw_words_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_payload, dict):
+                raw_payload = {}
             supplied_isolation = (raw_payload.get("metadata") or {}).get("vocal_isolation")
             if isinstance(supplied_isolation, dict):
                 isolation_metadata = {
@@ -2109,6 +2113,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 f"Aligned transcription coverage is {coverage:.6f}, below 0.5; "
                 "no aligned transcription was promoted."
             )
+        progress(0.86, "Persisting aligned transcription")
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessCancelled("Caption alignment cancelled before publication.")
         aligned_srt_path.write_text(
             caption_to_srt(aligned_cues), encoding="utf-8"
         )
@@ -2197,6 +2204,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 cue.id: index for index, cue in enumerate(aligned_cues)
             },
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProcessCancelled("Caption alignment cancelled before publication.")
+        stored_artifact, _ = self.artifacts.resolve(aligned_srt_artifact.id)
         # Promote only after native persistence succeeds.  A parse/alignment
         # or persistence failure therefore leaves evidence and a non-stage
         # candidate, never a selectable half-built transcription.
@@ -2212,7 +2222,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 raw_words_artifact.id,
             ],
             settings=submitted_settings,
-            metadata=artifact_metadata,
+            metadata={**artifact_metadata, **(stored_artifact.metadata_json or {})},
         )
         progress(0.97, "Aligned transcription ready")
         return {
@@ -2290,6 +2300,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         )
 
     def transcribe(self, payload, progress, cancel_event):
+        from pandrator.logic.cancellable_process import ProcessCancelled
         from pandrator.logic.dubbing.transcription import (
             transcribe_source_file_with_metadata,
         )
@@ -2363,9 +2374,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 transcription_result=transcription_result,
                 submitted_settings=submitted_settings,
                 progress=progress,
+                cancel_event=cancel_event,
             )
         output_path = Path(transcription_result.srt_path)
         progress(0.9, "Registering transcription")
+        if cancel_event.is_set():
+            raise ProcessCancelled("Transcription cancelled before publication.")
         requested_language = str(
             submitted_settings.get("original_language")
             or submitted_settings.get("stt_language") or "auto"
@@ -2379,7 +2393,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         artifact = self.artifacts.register(
             output_path,
             kind="srt",
-            role="transcription",
+            role="transcription_candidate",
             session_id=session_id,
             parent_ids=[source_artifact.id],
             settings=dict(payload.get("settings") or {}),
@@ -2435,6 +2449,18 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     "has_speaker_metadata": bool(speakers),
                     "speaker_count": len(speakers),
                 }
+        if cancel_event.is_set():
+            raise ProcessCancelled("Transcription cancelled before publication.")
+        stored_artifact, _ = self.artifacts.resolve(artifact.id)
+        artifact = self.artifacts.register(
+            output_path,
+            kind="srt",
+            role="transcription",
+            session_id=session_id,
+            parent_ids=[source_artifact.id],
+            settings=submitted_settings,
+            metadata=stored_artifact.metadata_json,
+        )
         progress(1.0, "Transcription ready")
         return {
             "artifact_id": artifact.id,

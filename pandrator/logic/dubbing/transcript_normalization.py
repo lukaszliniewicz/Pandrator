@@ -195,7 +195,7 @@ def _valid_span(
     try:
         start_ms = round(float(start) * scale)
         end_ms = round(float(end) * scale)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if start_ms < 0 or end_ms < start_ms or (end_ms == start_ms and not allow_zero):
         return None

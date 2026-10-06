@@ -528,6 +528,8 @@ def transcribe_media_edit_with_ctc(
         aligned_json_path,
         segment_by_source_cue_id={cue.id: index for index, cue in enumerate(aligned_cues)},
     )
+    if cancel_event.is_set():
+        raise ProcessCancelled("Caption alignment cancelled before publication.")
     stored_artifact, _ = context.artifacts.resolve(aligned_srt_artifact.id)
     final_artifact = context.artifacts.register(
         aligned_srt_path,
