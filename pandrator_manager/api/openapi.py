@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .. import __version__
+from .._version import __version__
 
 
 def build_openapi() -> dict:

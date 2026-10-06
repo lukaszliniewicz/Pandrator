@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import __version__
+from ._version import __version__
 from .context import WorkspaceLayout
 from .desktop import open_desktop_url
 from .errors import ManagerError

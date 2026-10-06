@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
-from . import __version__
-from .launcher import launcher_metadata_path
+from ._version import __version__
+from .launcher_runtime import launcher_metadata_path
 from .network import load_network_configuration
 from .tls import select_ca_bundle
 

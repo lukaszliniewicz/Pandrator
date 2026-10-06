@@ -1825,11 +1825,11 @@ class OptionalDesktopIntegrationTests(unittest.TestCase):
             ]
             with (
                 mock.patch(
-                    "pandrator_manager.tray.psutil.Process",
+                    "pandrator_manager.tray_lifecycle.psutil.Process",
                     return_value=process,
                 ),
                 mock.patch(
-                    "pandrator_manager.tray.psutil.wait_procs",
+                    "pandrator_manager.tray_lifecycle.psutil.wait_procs",
                     return_value=([process], []),
                 ),
             ):

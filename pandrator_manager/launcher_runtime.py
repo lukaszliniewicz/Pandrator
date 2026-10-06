@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from . import __version__
+from ._version import __version__
 from .auth import protect_path
 from .context import WorkspaceLayout
 from .errors import ManagerError

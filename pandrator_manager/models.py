@@ -261,20 +261,24 @@ class PreflightCheck(StrictModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+DoctorCategory = Literal[
+    "workspace",
+    "database",
+    "release",
+    "component",
+    "service",
+    "ownership",
+    "integration",
+    "transaction",
+    "network",
+]
+DoctorStatus = Literal["pass", "warning", "error"]
+
+
 class DoctorCheck(StrictModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_.:-]*$")
-    category: Literal[
-        "workspace",
-        "database",
-        "release",
-        "component",
-        "service",
-        "ownership",
-        "integration",
-        "transaction",
-        "network",
-    ]
-    status: Literal["pass", "warning", "error"]
+    category: DoctorCategory
+    status: DoctorStatus
     message: str
     repairable: bool = False
     repair_target: str | None = None
@@ -284,7 +288,7 @@ class DoctorCheck(StrictModel):
 class DoctorReport(StrictModel):
     healthy: bool
     checks: tuple[DoctorCheck, ...]
-    summary: dict[Literal["pass", "warning", "error"], int]
+    summary: dict[DoctorStatus, int]
     generated_at: datetime = Field(default_factory=utc_now)
 
 

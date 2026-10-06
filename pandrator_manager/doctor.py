@@ -25,8 +25,10 @@ from .launcher_runtime import (
 )
 from .models import (
     ComponentState,
+    DoctorCategory,
     DoctorCheck,
     DoctorReport,
+    DoctorStatus,
     HealthState,
 )
 from .planning import Planner
@@ -42,8 +44,8 @@ _STALE_OPERATION_SECONDS = 60 * 60
 
 def _check(
     check_id: str,
-    category: str,
-    status: str,
+    category: DoctorCategory,
+    status: DoctorStatus,
     message: str,
     *,
     repairable: bool = False,
@@ -131,7 +133,7 @@ class ManagerDoctor:
         checks.extend(self._ownership_checks())
         checks.extend(self._integration_checks())
         checks.extend(self._transaction_checks())
-        summary = {
+        summary: dict[DoctorStatus, int] = {
             status: sum(check.status == status for check in checks)
             for status in ("pass", "warning", "error")
         }

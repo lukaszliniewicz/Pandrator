@@ -169,6 +169,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_manager_supervisor_persistence.py",
         "tests/test_manager_tls.py",
         "tests/test_manager_tray_menu.py",
+        "tests/test_manager_tray_process.py",
+        "tests/test_manager_contracts.py",
         "tests/test_manager_uninstall.py",
     ),
     "mcp-serial": (

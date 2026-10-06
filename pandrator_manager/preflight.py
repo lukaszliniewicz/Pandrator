@@ -157,7 +157,7 @@ class HostPreflight:
                         code="tls.ca_bundle",
                         status="pass",
                         message=("A verified CA bundle is available for secure source downloads."),
-                        details=ca_bundle.diagnostic_payload(),
+                        details=dict(ca_bundle.diagnostic_payload()),
                     )
                 )
 

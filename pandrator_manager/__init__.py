@@ -2,10 +2,10 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.9.28"
+from ._version import __version__ as __version__
 
 if TYPE_CHECKING:
-    from .application import ManagerApplication
+    from .application import ManagerApplication, create_application
     from .context import ManagerContext, WorkspaceLayout
 
 __all__ = [

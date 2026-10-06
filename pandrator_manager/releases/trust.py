@@ -14,7 +14,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from packaging.version import Version
 
-from .. import __version__
+from .._version import __version__
 from .models import ReleaseEnvelope, ReleasePayload
 
 # Public halves of the retained project release keys. Private halves are kept

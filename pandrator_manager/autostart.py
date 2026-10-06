@@ -195,8 +195,11 @@ class LinuxSystemdAutostart:
         return self.status()
 
     def _systemctl(self, *arguments: str, check: bool = True) -> None:
+        executable = self.systemctl
+        if not executable:
+            raise RuntimeError("systemctl is unavailable.")
         subprocess.run(
-            [self.systemctl, "--user", *arguments],
+            [executable, "--user", *arguments],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -223,9 +226,12 @@ class LinuxSystemdAutostart:
         )
 
     def _systemctl_state(self, action: str) -> str:
+        executable = self.systemctl
+        if not executable:
+            return ""
         try:
             result = subprocess.run(
-                [self.systemctl, "--user", action, self.unit_name],
+                [executable, "--user", action, self.unit_name],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

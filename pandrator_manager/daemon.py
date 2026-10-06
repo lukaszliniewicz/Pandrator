@@ -22,7 +22,7 @@ import psutil
 from waitress import create_server, wasyncore
 from waitress.channel import HTTPChannel
 
-from . import __version__
+from ._version import __version__
 from .api import create_api
 from .application import ManagerApplication, create_application
 from .auth import ensure_client_secret, protect_path

@@ -7,6 +7,7 @@ import ssl
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 import certifi
 from dulwich.config import Config, ConfigDict, StackedConfig
@@ -28,12 +29,18 @@ SYSTEM_CA_BUNDLES = (
 )
 
 
+class CABundleDiagnostic(TypedDict):
+    path: str
+    source: str
+    readable: bool
+
+
 @dataclass(frozen=True, slots=True)
 class CABundleSelection:
     path: Path
     source: str
 
-    def diagnostic_payload(self) -> dict[str, str | bool]:
+    def diagnostic_payload(self) -> CABundleDiagnostic:
         return {
             "path": str(self.path),
             "source": self.source,

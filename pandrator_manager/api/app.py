@@ -33,7 +33,7 @@ from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from .. import __version__
+from .._version import __version__
 from ..application import ManagerApplication
 from ..auth import (
     ManagerAutomationRateLimiter,

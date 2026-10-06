@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from packaging.version import Version
 
-from . import __version__
+from ._version import __version__
 from .components import ComponentRegistry, builtin_registry
 from .components.host import compute_choices, detect_compute
 from .context import ManagerContext, WorkspaceLayout

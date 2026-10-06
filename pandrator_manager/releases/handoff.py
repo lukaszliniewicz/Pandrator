@@ -30,7 +30,7 @@ import psutil
 import requests
 from pydantic import Field
 
-from .. import __version__
+from .._version import __version__
 from ..auth import protect_path, read_client_secret
 from ..context import WorkspaceLayout
 from ..errors import ConflictError, ManagerError, UnsafePathError
