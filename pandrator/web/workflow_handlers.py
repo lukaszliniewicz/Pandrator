@@ -3065,6 +3065,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             run_media_process,
         )
 
+        if cancel_event.is_set():
+            return {}
         session_id = str(payload.get("session_id") or "")
         try:
             revision_number = int(payload.get("revision"))
@@ -3180,13 +3182,13 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             "word_count": word_count,
             **composition_metadata,
         }
-        # Subtitle and timed-word artifacts are intentionally published before
-        # the potentially long video encode so correction can consume the
-        # immutable subtitle revision while FFmpeg is still running.
+        # Persist candidates before selecting the complete subtitle/word pair.
+        if cancel_event.is_set():
+            return {}
         subtitle_artifact = self.artifacts.register(
             subtitle_path,
             kind="srt",
-            role="media_edit_subtitles",
+            role="media_edit_subtitles_candidate",
             session_id=session_id,
             parent_ids=parent_ids,
             settings=settings,
@@ -3195,7 +3197,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         word_timestamps_artifact = self.artifacts.register(
             word_timestamps_path,
             kind="json",
-            role="media_edit_word_timestamps",
+            role="media_edit_word_timestamps_candidate",
             session_id=session_id,
             parent_ids=[subtitle_artifact.id],
             settings=settings,
@@ -3227,6 +3229,48 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             word_timestamps_path,
             segment_by_word_ordinal=word_segment_ordinals,
         )
+        progress(0.18, "Publishing subtitle revision and timed words")
+        if cancel_event.is_set():
+            return {}
+        subtitle_registration = self.artifacts.prepare_registration(
+            subtitle_path, settings=settings
+        )
+        word_registration = self.artifacts.prepare_registration(
+            word_timestamps_path, settings=settings
+        )
+        try:
+            with self.database.session() as session:
+                if cancel_event.is_set():
+                    raise MediaProcessCancelled("Media-edit publication was canceled.")
+                # Keep native document/revision metadata when promoting in place.
+                subtitle_artifact = self.artifacts.register_in_session(
+                    session,
+                    subtitle_path,
+                    kind="srt",
+                    role="media_edit_subtitles",
+                    session_id=session_id,
+                    parent_ids=parent_ids,
+                    settings=settings,
+                    _prepared=subtitle_registration,
+                )
+                word_timestamps_artifact = self.artifacts.register_in_session(
+                    session,
+                    word_timestamps_path,
+                    kind="json",
+                    role="media_edit_word_timestamps",
+                    session_id=session_id,
+                    parent_ids=[subtitle_artifact.id],
+                    settings=settings,
+                    _prepared=word_registration,
+                )
+                if cancel_event.is_set():
+                    raise MediaProcessCancelled("Media-edit publication was canceled.")
+        except MediaProcessCancelled:
+            return {}
+        # Correction can consume this persisted pair during the long encode.
+        # Encode failure or cancellation preserves the published subtitles.
+        if cancel_event.is_set():
+            return {}
         duration_ms = sum(item.end_ms - item.start_ms for item in keep_ranges)
         result = {
             "subtitle_artifact_id": subtitle_artifact.id,
@@ -3258,14 +3302,26 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         resolution = normalize_video_resolution(
             settings.get("burn_video_resolution", "source")
         )
+
+        def run_audio_probe(command, **_options):
+            return run_media_process(
+                command,
+                cancel_event=cancel_event,
+                capture_stdout=True,
+                timeout_seconds=30.0,
+            )
+
         try:
             has_audio = media_has_audio_stream(
                 source_path,
                 ffprobe_executable=resolve_ffprobe_executable(
                     str(settings.get("ffprobe_executable") or "") or None
                 ),
+                run_func=run_audio_probe,
             )
-        except (OSError, subprocess.SubprocessError) as error:
+        except MediaProcessCancelled:
+            return {}
+        except (OSError, subprocess.SubprocessError, MediaProcessError) as error:
             raise ValueError(
                 "The pinned source media could not be inspected for audio."
             ) from error
@@ -3291,6 +3347,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             include_progress=True,
         )
         progress(0.2, "Subtitle revision and timed words ready; rendering edited media")
+        if cancel_event.is_set():
+            return {}
         last_processed_ms = 0
         last_reported_progress = 0.2
         last_reported_percent = 0.0
