@@ -231,8 +231,8 @@ class GenerationRunHistoryProjectionTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                ("session-1", {"limit": 2, "include_repairs": False}),
-                ("session-1", {"limit": 2, "include_repairs": True}),
+                ("session-1", {"limit": 2, "include_repairs": False, "view": "compact"}),
+                ("session-1", {"limit": 2, "include_repairs": True, "view": "compact"}),
             ],
             requests,
         )

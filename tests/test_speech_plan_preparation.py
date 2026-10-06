@@ -60,15 +60,21 @@ class SpeechPlanPreparationTests(unittest.TestCase):
                 session.add(row)
             row.value_json = {**dict(row.value_json or {}), "llm_tts_optimization": enabled}
             row.revision = int(row.revision or 0) + 1
+            outcome = session.get(m.OutcomePlan, self.sid)
+            value = dict(outcome.value_json or {})
+            value["transformations"] = {
+                **dict(value.get("transformations") or {}), "llm_tts_optimization": enabled,
+            }
+            outcome.value_json = value
 
-    def _prepare(self):
+    def _prepare(self, source_artifact_id=None):
         state = self.client.get(f"/api/v1/sessions/{self.sid}/generation-plan/status").get_json()
         return self.client.post(
             f"/api/v1/sessions/{self.sid}/generation-plan/prepare",
             json={
                 "expected_revision": state["session_revision"],
                 "expected_plan_revision_id": state["selected_revision_id"],
-                "source_artifact_id": state["current_input"]["artifact_id"],
+                "source_artifact_id": source_artifact_id or state["current_input"]["artifact_id"],
             },
             headers={**self.headers, "Idempotency-Key": uuid.uuid4().hex},
         )
@@ -192,15 +198,37 @@ class SpeechPlanPreparationTests(unittest.TestCase):
             self.assertEqual(plan.active_revision_id, initial["selected_revision_id"])
 
     def test_document_and_final_optimization_cannot_queue_together(self):
+        source_artifact_id = self.client.get(
+            f"/api/v1/sessions/{self.sid}/generation-plan/status"
+        ).get_json()["current_input"]["artifact_id"]
         self._set_optimization(True)
         with self.services.database.session() as session:
             row = session.get(m.SessionSetting, (self.sid, "text"))
             row.value_json = {**row.value_json, "llm_tts_document_optimization": True}
             row.revision += 1
+            outcome = session.get(m.OutcomePlan, self.sid)
+            outcome.value_json = {
+                **outcome.value_json,
+                "transformations": {**outcome.value_json["transformations"], "llm_tts_document_optimization": True},
+            }
         with patch("pandrator.web.speech_plan_preparation.build_llm_settings", side_effect=AssertionError("model selected")):
-            response = self._prepare()
+            response = self._prepare(source_artifact_id)
         self.assertEqual(response.status_code, 422, response.get_json())
         self.assertIn("Document and final-unit", str(response.get_json()))
+
+    def test_saved_false_overrides_enabled_text_before_preparation(self):
+        self._set_optimization(True)
+        with self.services.database.session() as session:
+            outcome = session.get(m.OutcomePlan, self.sid)
+            outcome.value_json = {
+                **outcome.value_json,
+                "transformations": {"llm_tts_optimization": False, "llm_tts_document_optimization": False},
+            }
+        with patch("pandrator.web.speech_plan_preparation.build_llm_settings", side_effect=AssertionError("No LLM should be selected")):
+            response = self._prepare()
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertIn("selected_revision_id", response.get_json())
+        self.assertNotIn("job_id", response.get_json())
 
     def test_legacy_inline_rejects_xml_before_provider_and_preserves_it(self):
         revision_id = self._prepare().get_json()["selected_revision_id"]

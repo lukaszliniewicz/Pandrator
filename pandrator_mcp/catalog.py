@@ -142,6 +142,7 @@ ACTION_CATALOG = ActionCatalog(
         ActionSpec("pandrator_get_subtitle_evidence_routes", "Inspect available audio evidence engines", "GetSubtitleEvidenceRoutesInput", RiskClass.READ, "app.read", "listSubtitleEvidenceRoutes", "GET", "/api/v1/subtitle-evidence/routes", True),
         ActionSpec("pandrator_get_workflow_inputs", "Inspect exact workflow inputs", "GetWorkflowInputsInput", RiskClass.READ, "app.read", "getWorkflowInputs", "GET", "/api/v1/sessions/{sessionId}/workflow-inputs", True),
         ActionSpec("pandrator_select_workflow_input", "Select an exact workflow input", "SelectWorkflowInputInput", RiskClass.WRITE, "app.write", "selectWorkflowInput", "PUT", "/api/v1/sessions/{sessionId}/workflow-inputs", True, requires_idempotency=True),
+        ActionSpec("pandrator_configure_speech_optimization", "Configure speech optimization", "ConfigureSpeechOptimizationInput", RiskClass.WRITE, "app.write", "configureSpeechOptimization", "POST", "/api/v1/sessions/{sessionId}/workflow-inputs/speech-optimization", True, requires_idempotency=True),
         ActionSpec("pandrator_terminate_dispatch_run", "Cancel or supersede a passive subtitle run", "TerminateDispatchRunInput", RiskClass.WRITE, "app.run", "terminateDispatchRun", "POST", "/api/v1/dispatch-runs/{runId}/terminate", True, requires_idempotency=True),
         ActionSpec("pandrator_get_audiobook_setup", "Inspect audiobook setup", "GetAudiobookSetupInput", RiskClass.READ, "app.read", "getAudiobookSetup", "GET", "/api/v1/sessions/{sessionId}/audiobook-setup", True),
         ActionSpec("pandrator_configure_audiobook", "Configure audiobook voice mode", "ConfigureAudiobookInput", RiskClass.WRITE, "app.write", "configureAudiobook", "PATCH", "/api/v1/sessions/{sessionId}/audiobook-setup", True, requires_idempotency=True),
@@ -150,6 +151,7 @@ ACTION_CATALOG = ActionCatalog(
         ActionSpec("pandrator_apply_speech_selection", "Apply a speech selection", "ApplySpeechSelectionInput", RiskClass.WRITE, "app.write", "applySpeechSelection", "POST", "/api/v1/sessions/{sessionId}/speech-plan/selection", True, requires_idempotency=True),
         ActionSpec("pandrator_get_voice_setup", "Inspect voice setup", "GetVoiceSetupInput", RiskClass.READ, "app.read", "getVoiceSetup", "GET", "/api/v1/sessions/{sessionId}/voice-setup", True),
         ActionSpec("pandrator_configure_voice_setup", "Configure voice setup", "ConfigureVoiceSetupInput", RiskClass.WRITE, "app.write", "configureVoiceSetup", "PATCH", "/api/v1/sessions/{sessionId}/voice-setup", True, requires_idempotency=True),
+        ActionSpec("pandrator_setup_designed_voice", "Set up a reviewed designed voice", "SetupDesignedVoiceInput", RiskClass.RUN, "app.run", None, None, None, True, requires_idempotency=True),
         *(ActionSpec(name, title, model, RiskClass(risk), scope, operation, method,
                      performance_api_path(suffix), True, requires_idempotency=risk != "read")
           for _action, name, title, model, risk, scope, operation, method, suffix in PERFORMANCE_ACTIONS),

@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from threading import Lock
+from time import monotonic
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -85,6 +91,51 @@ class TtsCatalogueService:
         self.providers = providers
         self._owns_manager_bridge = manager_bridge is None
         self.manager_bridge = LocalManagerProxy() if manager_bridge is None else manager_bridge
+        self._native_discovery: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._native_discovery_guard = Lock()
+
+    @staticmethod
+    def _native_discovery_key(
+        service: dict[str, Any], settings: dict[str, Any], api_key: str = "",
+    ) -> str | None:
+        if normalize_service_id(service.get("adapter")) != "audio_cpp":
+            return None
+        identity = {
+            "service_id": normalize_service_id(service.get("id") or service.get("name")),
+            "endpoint": str(service.get("api_base") or "").rstrip("/"),
+            "connection_mode": service.get("connection_mode"),
+            "settings": settings,
+            "credential_hash": hashlib.sha256(api_key.encode()).hexdigest(),
+        }
+        return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+
+    def _cached_native_discovery(self, key: str | None) -> dict[str, Any] | None:
+        if key is None:
+            return None
+        with self._native_discovery_guard:
+            cached = self._native_discovery.get(key)
+            if cached is None:
+                return None
+            if monotonic() - cached[0] >= 300:
+                del self._native_discovery[key]
+                return None
+            self._native_discovery.move_to_end(key)
+            return deepcopy(cached[1])
+
+    def _retain_native_discovery(self, key: str | None, catalogue: dict[str, Any]) -> None:
+        if key is None:
+            return
+        # Availability belongs to the current manager/health projection, never
+        # to retained model discovery. Native loaded flags remain model metadata.
+        discovery = {
+            name: deepcopy(value) for name, value in catalogue.items()
+            if name not in {"available", "online", "availability_reason"}
+        }
+        with self._native_discovery_guard:
+            self._native_discovery[key] = (monotonic(), discovery)
+            self._native_discovery.move_to_end(key)
+            while len(self._native_discovery) > 64:
+                self._native_discovery.popitem(last=False)
 
     def close(self) -> None:
         """Retire only the manager bridge created by this catalogue."""
@@ -181,6 +232,7 @@ class TtsCatalogueService:
         services: list[dict[str, Any]],
         *,
         resolved_api_keys: Sequence[str] | Mapping[str, str] | None = None,
+        discovery_keys: Sequence[str | None] = (),
     ) -> None:
         def probe(service: dict[str, Any]) -> TtsHealth:
             if service.get("connection_mode") == "managed_local":
@@ -266,6 +318,10 @@ class TtsCatalogueService:
                 )
             elif catalogue is not None:
                 service.update(catalogue)
+                self._retain_native_discovery(
+                    discovery_keys[_index] if _index < len(discovery_keys) else None,
+                    catalogue,
+                )
 
     def _project_manager(
         self,
@@ -363,19 +419,23 @@ class TtsCatalogueService:
     def _previews(self) -> list[dict[str, Any]]:
         previews: list[dict[str, Any]] = []
         with self.database.session() as db_session:
-            preview_artifacts = list(
-                db_session.scalars(
-                    select(Artifact)
-                    .where(
-                        Artifact.role == "tts_voice_preview",
-                        Artifact.state == "current",
-                    )
-                    .order_by(Artifact.updated_at.desc())
-                ).all()
-            )
+            preview_artifacts = db_session.execute(
+                select(
+                    Artifact.id, Artifact.relative_path, Artifact.updated_at,
+                    *(Artifact.metadata_json[key].label(key) for key in (
+                        "voice", "service_id", "model", "language", "preview_text"
+                    )),
+                )
+                .where(
+                    Artifact.role == "tts_voice_preview",
+                    Artifact.state == "current",
+                    Artifact.metadata_json["voice"].as_string().is_not(None),
+                    Artifact.metadata_json["voice"].as_string() != "",
+                )
+                .order_by(Artifact.updated_at.desc())
+            ).all()
             for artifact in preview_artifacts:
-                metadata = dict(artifact.metadata_json or {})
-                if not metadata.get("voice"):
+                if not artifact.voice:
                     continue
                 try:
                     if not self.paths.managed_path(artifact.relative_path).is_file():
@@ -385,11 +445,11 @@ class TtsCatalogueService:
                 previews.append(
                     {
                         "artifact_id": artifact.id,
-                        "service_id": str(metadata.get("service_id") or ""),
-                        "model": str(metadata.get("model") or ""),
-                        "voice": str(metadata.get("voice") or ""),
-                        "language": str(metadata.get("language") or ""),
-                        "preview_text": str(metadata.get("preview_text") or ""),
+                        "service_id": str(artifact.service_id or ""),
+                        "model": str(artifact.model or ""),
+                        "voice": str(artifact.voice or ""),
+                        "language": str(artifact.language or ""),
+                        "preview_text": str(artifact.preview_text or ""),
                         "updated_at": artifact.updated_at.isoformat(),
                     }
                 )
@@ -416,6 +476,8 @@ class TtsCatalogueService:
         the payload to selected services (matched by id or name) before any
         refresh probing happens. ``include_profiles=False`` omits only the
         provider profiles from the full view without building their deepcopy.
+        Successful native audio.cpp discoveries remain available to reads for
+        five minutes within this process, fenced by settings and endpoint identity.
         """
         if view not in TTS_CATALOGUE_VIEWS:
             raise ValueError("Unknown TTS catalogue view. Use 'full' or 'compact'.")
@@ -627,14 +689,28 @@ class TtsCatalogueService:
             self.paths,
             credential_inputs,
         )
-        for service, resolved_credential in zip(
+        discovery_keys = [
+            self._native_discovery_key(
+                service, {**default_value, **connection_value}, credential.resolved_value(),
+            )
+            for service, credential in zip(services, resolved_credentials, strict=True)
+        ]
+        for service, resolved_credential, discovery_key in zip(
             services,
             resolved_credentials,
+            discovery_keys,
             strict=True,
         ):
             if normalize_service_id(service.get("adapter")) == "audio_cpp":
                 if not compact:
                     service["model_catalog"] = _audio_cpp_static_model_catalog(service)
+            discovery = self._cached_native_discovery(discovery_key)
+            if discovery is not None:
+                if compact:
+                    # Choosers retain the native IDs/modes without importing
+                    # full discovery records into their compact model metadata.
+                    discovery["model_catalog"] = _slim_model_catalog(discovery)
+                service.update(discovery)
             self._decorate_credentials(
                 service,
                 resolved_credential=resolved_credential,
@@ -653,6 +729,7 @@ class TtsCatalogueService:
                 resolved_api_keys=[
                     resolved.resolved_value() for resolved in resolved_credentials
                 ],
+                discovery_keys=discovery_keys,
             )
         for service in services:
             service.update(

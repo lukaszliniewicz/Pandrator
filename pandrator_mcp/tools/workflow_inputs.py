@@ -6,6 +6,7 @@ from typing import Any
 
 from ..context import McpRuntime
 from ..schemas.workflow_inputs import (
+    ConfigureSpeechOptimizationInput,
     GetWorkflowInputsInput,
     SelectWorkflowInputInput,
 )
@@ -34,8 +35,18 @@ def select_workflow_input(
         expected_outcome_revision=arguments.expected_outcome_revision,
         expected_selection_revision=arguments.expected_selection_revision,
         expected_translation_settings_revision=(arguments.expected_translation_settings_revision),
+        expected_text_settings_revision=arguments.expected_text_settings_revision,
         idempotency_key=arguments.idempotency_key,
     )
 
 
-__all__ = ["get_workflow_inputs", "select_workflow_input"]
+def configure_speech_optimization(
+    runtime: McpRuntime, arguments: ConfigureSpeechOptimizationInput,
+) -> dict[str, Any]:
+    """Atomically synchronize canonical speech optimization and text controls."""
+    return runtime.require_application().configure_speech_optimization(
+        **arguments.model_dump()
+    )
+
+
+__all__ = ["get_workflow_inputs", "select_workflow_input", "configure_speech_optimization"]

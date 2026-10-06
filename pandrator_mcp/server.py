@@ -96,7 +96,11 @@ from .schemas.delegation import (
 )
 from .schemas.e2e import AudioCppCatalogueInput
 from .schemas.subtitle_evidence import GetSubtitleEvidenceRoutesInput
-from .schemas.workflow_inputs import GetWorkflowInputsInput, SelectWorkflowInputInput
+from .schemas.workflow_inputs import (
+    ConfigureSpeechOptimizationInput,
+    GetWorkflowInputsInput,
+    SelectWorkflowInputInput,
+)
 from .tools import (
     adopt_subtitle_source,
     browse_local_sources,
@@ -140,7 +144,11 @@ from .tools import (
 )
 from .tools.e2e import audio_cpp_catalogue
 from .tools.subtitle_evidence import get_subtitle_evidence_routes
-from .tools.workflow_inputs import get_workflow_inputs, select_workflow_input
+from .tools.workflow_inputs import (
+    configure_speech_optimization,
+    get_workflow_inputs,
+    select_workflow_input,
+)
 
 _STDOUT_GUARD = threading.Lock()
 
@@ -548,12 +556,27 @@ def build_server(runtime: McpRuntime):
         return _call_with_validated_input(get_workflow_inputs, runtime, GetWorkflowInputsInput, {"session_id": session_id})
 
     @server.tool(name="pandrator_select_workflow_input", title="Select an exact workflow input", annotations=write_action)
-    def workflow_input_select_tool(session_id: str, consumer: Literal["translation", "generation"], role: Literal["source", "correction", "translation"], artifact_id: str,
+    def workflow_input_select_tool(session_id: str, consumer: Literal["translation", "generation"], role: Literal["source", "correction", "translation", "prepared_text", "tts_optimized"], artifact_id: str,
                                    expected_outcome_revision: Annotated[int, Field(ge=0)], expected_selection_revision: Annotated[int, Field(ge=0)], idempotency_key: str,
-                                   expected_translation_settings_revision: Annotated[int | None, Field(ge=0)] = None) -> dict[str, Any]:
+                                   expected_translation_settings_revision: Annotated[int | None, Field(ge=0)] = None,
+                                   expected_text_settings_revision: Annotated[int | None, Field(ge=0)] = None) -> dict[str, Any]:
         """Atomically select an input role/version with current manifest revision fences."""
         return _call_with_validated_input(select_workflow_input, runtime, SelectWorkflowInputInput,
             {key: value for key, value in locals().items() if key in SelectWorkflowInputInput.model_fields})
+
+    @server.tool(name="pandrator_configure_speech_optimization", title="Configure speech optimization", annotations=write_action)
+    def speech_optimization_configure_tool(
+        session_id: str, mode: Literal["off", "document", "inline"],
+        expected_outcome_revision: Annotated[int, Field(ge=0)],
+        expected_text_settings_revision: Annotated[int, Field(ge=0)], idempotency_key: str,
+        annotation_mode: Literal["off", "dialogue", "speakers"] = "off",
+        annotation_only: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically configure authoritative speech flags and effective text settings."""
+        return _call_with_validated_input(
+            configure_speech_optimization, runtime, ConfigureSpeechOptimizationInput,
+            {key: value for key, value in locals().items() if key in ConfigureSpeechOptimizationInput.model_fields},
+        )
 
     register_dispatch_lifecycle_tools(
         server,

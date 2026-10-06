@@ -100,7 +100,7 @@ _CLAIMED_BATCH_KEYS = (
     "unit_count",
     "valid_unit_ids",
 )
-_UNIT_KEYS = ("unit_id", "text", "language", "speaker", "speech_xml")
+_UNIT_KEYS = ("unit_id", "text", "language", "speaker", "speech_xml", "source_sha256")
 _TIMING_KEYS = ("start_ms", "end_ms", "duration_ms")
 _BOUNDARY_KEYS = ("text", "language", "speaker", "speech_xml")
 _DELEGATION_KEYS = (

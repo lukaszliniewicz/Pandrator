@@ -132,10 +132,12 @@ def voice_sample_payload(
     voice_revision: int,
 ) -> dict[str, Any]:
     status, _path = sample_file_status(session, paths, sample)
+    artifact = session.get(Artifact, sample.artifact_id)
     return {
         "id": sample.id,
         "voice_id": sample.voice_id,
         "artifact_id": sample.artifact_id,
+        "sample_sha256": artifact.content_hash if artifact else None,
         "transcript": sample.transcript,
         "transcript_language": sample.transcript_language,
         "transcript_reviewed": sample.transcript_reviewed,

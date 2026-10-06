@@ -32,6 +32,15 @@ from .models import (
 )
 
 
+def project_generation_run(payload: dict[str, Any], *, view: str = "full") -> dict[str, Any]:
+    """Opt-in transport projection; stored admission receipts remain full."""
+    if view not in {"full", "compact"}:
+        raise ValueError("Generation run view must be full or compact.")
+    if view == "full":
+        return payload
+    return {key: value for key, value in payload.items() if key != "settings_snapshot"}
+
+
 @dataclass(frozen=True)
 class _RunHistoryIndex:
     id: str

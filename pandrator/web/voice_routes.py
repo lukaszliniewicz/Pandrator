@@ -36,7 +36,6 @@ from .models import (
 from .route_context import RouteContext
 from .schemas import (
     VoiceCreate,
-    VoiceDesignedSampleCreate,
     VoiceTranscriptReview,
     VoiceUpdate,
 )
@@ -54,8 +53,13 @@ from .voice_library import (
     voice_payloads,
     voice_sample_payload,
 )
-from .voice_lifecycle_schemas import VoiceReferenceImportRequest
+from .voice_lifecycle_schemas import (
+    VoiceDesignedSamplePreparationRequest,
+    VoicePublishRequest,
+    VoiceReferenceImportRequest,
+)
 from .voice_recording_uploads import queue_voice_recording
+from .voice_reference_reuse import reusable_design_reference, verified_sample_artifact
 
 VOICE_SAMPLE_NOISE_REDUCTION_OPTIONS = ("none", "deepfilternet2")
 
@@ -381,7 +385,7 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
     @app.post("/api/v1/voices/<voice_id>/samples/from-preview")
     @require_auth
     def voice_sample_from_preview(voice_id: str):
-        payload = VoiceDesignedSampleCreate.model_validate(
+        payload = VoiceDesignedSamplePreparationRequest.model_validate(
             request.get_json(silent=True) or {}
         )
         idempotency_key, idempotency_error = mutation_idempotency_key()
@@ -389,7 +393,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             return idempotency_error
         idempotency_payload = {
             "voice_id": voice_id,
-            **payload.model_dump(mode="json"),
+            **payload.model_dump(mode="json", exclude={"recipe_signature"}),
+            **({"recipe_signature": payload.recipe_signature} if payload.recipe_signature is not None else {}),
         }
         replay = inspect_voice_idempotency(
             "createVoiceSampleFromPreview",
@@ -509,6 +514,7 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 {
                     "source_kind": "generated_voice_design",
                     "source_preview_artifact_id": artifact.id,
+                    "source_preview_sha256": preview_content_hash,
                     "service_id": preview_service_id,
                     "service_adapter": preview_adapter,
                     "service": metadata.get("service"),
@@ -568,6 +574,20 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                             "The voice changed in another client.",
                             409,
                         )
+                    reusable = reusable_design_reference(
+                        db_session, paths, current_voice,
+                        source_artifact_id=artifact.id,
+                        source_sha256=preview_content_hash,
+                        transcript=transcript,
+                        language=language or preview_language,
+                    )
+                    if reusable is not None:
+                        services.idempotency.complete(
+                            db_session, reservation, response=reusable,
+                            status_code=200, resource_kind="voice_sample",
+                            resource_id=reusable["sample_id"],
+                        )
+                        return jsonify(reusable)
                     job = jobs.enqueue_in_session(
                         db_session,
                         "voice.normalize_recording",
@@ -600,6 +620,21 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             ) as error:
                 return idempotency_failure(error)
             return jsonify(result), 202
+        with database.immediate_session() as db_session:
+            current_voice = db_session.get(Voice, voice_id)
+            if current_voice is None:
+                return error_response("not_found", "Voice not found.", 404)
+            if current_voice.revision != payload.expected_voice_revision:
+                return error_response(
+                    "revision_conflict", "The voice changed in another client.", 409
+                )
+            reusable = reusable_design_reference(
+                db_session, paths, current_voice,
+                source_artifact_id=artifact.id, source_sha256=preview_content_hash,
+                transcript=transcript, language=language or preview_language,
+            )
+            if reusable is not None:
+                return jsonify(reusable)
         job = jobs.enqueue(
             "voice.normalize_recording",
             {
@@ -946,6 +981,8 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         """Upload a managed reference to a supported cloning provider."""
         from pandrator.logic import tts_handler
 
+        raw_payload = request.get_json(silent=True)
+        payload = VoicePublishRequest.model_validate({} if raw_payload is None else raw_payload)
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
@@ -962,6 +999,7 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             "voice_id": voice_id,
             "service_id": service_id,
             "expected_revision": expected_revision,
+            **payload.model_dump(mode="json", exclude_none=True),
         }
         replay = inspect_voice_idempotency(
             "publishVoiceToProvider",
@@ -988,10 +1026,6 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                     .order_by(VoiceSample.created_at.desc())
                 ).all()
             )
-            sample_count = sum(
-                sample_file_status(db_session, paths, item)[0] == "ready"
-                for item in voice_samples
-            )
             preferred_sample = next(
                 (
                     item
@@ -1000,6 +1034,24 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 ),
                 None,
             )
+            newest_ready_sample_id = preferred_sample.id if preferred_sample is not None else None
+            if payload.sample_id is not None:
+                preferred_sample = db_session.get(VoiceSample, payload.sample_id)
+                if preferred_sample is None or preferred_sample.voice_id != voice_id:
+                    return error_response("not_found", "Voice sample not found.", 404)
+            if preferred_sample is None:
+                return error_response(
+                    "missing_sample",
+                    "Add or replace a readable voice sample before uploading this voice.",
+                    422,
+                )
+            try:
+                preferred_artifact, sample_hash = verified_sample_artifact(
+                    db_session, paths, preferred_sample,
+                    expected_sha256=payload.sample_sha256,
+                )
+            except ValueError as error:
+                return error_response("sample_artifact_changed", str(error), 409)
             connections = db_session.get(AppSetting, "services.tts")
             defaults = db_session.get(AppSetting, "defaults.tts")
             connection_value = (
@@ -1011,12 +1063,6 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 dict(defaults.value_json or {})
                 if defaults and isinstance(defaults.value_json, dict)
                 else {}
-            )
-        if not sample_count:
-            return error_response(
-                "missing_sample",
-                "Add or replace a readable voice sample before uploading this voice.",
-                422,
             )
         service = tts_handler.get_service_config(
             {**default_value, **connection_value}, service_id
@@ -1030,6 +1076,16 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                 422,
             )
         resolved_service_id = str(service.get("id") or service_id)
+        if (
+            normalize_tts_provider_id(service.get("adapter")) == "audio_cpp"
+            and payload.sample_id is not None and payload.sample_id != newest_ready_sample_id
+        ):
+            return error_response(
+                "current_reference_required",
+                "audio.cpp linked voices use the newest ready local sample. "
+                "Refresh the voice samples and publish the current reference.",
+                409,
+            )
         if (
             str(service.get("voice_reference_text") or "ignored") == "required"
             and preferred_sample is not None
@@ -1049,6 +1105,9 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
             "service_id": resolved_service_id,
             "service": str(service.get("name") or resolved_service_id),
             "expected_voice_revision": expected_revision,
+            "sample_id": preferred_sample.id,
+            "sample_artifact_id": preferred_artifact.id,
+            "sample_sha256": sample_hash,
         }
         resource_keys = [
             f"voice:{voice_id}",
@@ -1085,6 +1144,20 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                             "The voice changed in another client.",
                             409,
                         )
+                    current_sample = db_session.get(VoiceSample, preferred_sample.id)
+                    if (
+                        current_sample is None or current_sample.voice_id != voice_id
+                        or current_sample.artifact_id != preferred_artifact.id
+                    ):
+                        abandon_idempotency(db_session, reservation)
+                        return error_response("sample_artifact_changed", "The selected voice sample changed.", 409)
+                    try:
+                        verified_sample_artifact(
+                            db_session, paths, current_sample, expected_sha256=sample_hash
+                        )
+                    except ValueError as error:
+                        abandon_idempotency(db_session, reservation)
+                        return error_response("sample_artifact_changed", str(error), 409)
                     job = jobs.enqueue_in_session(
                         db_session,
                         "voice.publish",
@@ -1458,4 +1531,3 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         response = jsonify(result)
         response.headers["ETag"] = f'"{result["voice_revision"]}"'
         return response
-

@@ -243,12 +243,20 @@ def selected_text(services, session_id: str) -> dict[str, Any] | None:
 
 
 def planning_settings(services, session_id: str, *, final_optimization: bool = False) -> dict[str, Any]:
+    from .workflow_inputs import workflow_transformations
+
     resolved, _ = services.workspace_settings.resolve(session_id)
     settings = {}
     for section in ("text", "subtitles", "tts", "audio", "rvc", "output"):
         settings.update(
             adapt_runtime_settings(section, dict(resolved.get(section) or {}))
         )
+    with services.database.snapshot_session() as session:
+        transformations = workflow_transformations(
+            session, session_id, session.get(m.OutcomePlan, session_id), services.database
+        )
+    for key in ("llm_tts_optimization", "llm_tts_document_optimization"):
+        settings[key] = bool(transformations.get(key))
     # Preparation is deterministic. Optional LLM speech rewriting must have
     # produced the selected text revision BEFORE this review boundary.
     settings["llm_tts_optimization"] = bool(

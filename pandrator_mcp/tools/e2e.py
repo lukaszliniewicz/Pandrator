@@ -947,7 +947,8 @@ def list_generation_runs(
 ) -> dict[str, Any]:
     # Bound the HTTP response at the application, before the client's byte cap.
     payload = runtime.require_application().list_generation_runs(
-        arguments.session_id, limit=arguments.limit, include_repairs=arguments.include_repairs
+        arguments.session_id, limit=arguments.limit, include_repairs=arguments.include_repairs,
+        view=arguments.view,
     )
     items = []
     for item in payload.get("items") or []:
@@ -955,35 +956,13 @@ def list_generation_runs(
             continue
         if not arguments.include_repairs and item.get("early_repair_parent_run_id"):
             continue
-        items.append(
-            {
-                key: item.get(key)
-                for key in (
-                    "id",
-                    "session_id",
-                    "label",
-                    "status",
-                    "operation",
-                    "job_id",
-                    "progress",
-                    "plan_revision_id",
-                    "source_generation_run_id",
-                    "output_generation_run_id",
-                    "sequence_number",
-                    "early_repair_parent_run_id",
-                    "result_generation_run_id",
-                    "timing_repair",
-                    "take_count",
-                    "active_take_count",
-                    "created_at",
-                    "updated_at",
-                    "assembly",
-                )
-                if key in item
-            }
-        )
+        items.append({
+            key: value for key, value in item.items()
+            if arguments.view == "full" or key != "settings_snapshot"
+        })
         if len(items) >= arguments.limit:
             break
+
     return {
         "schema_version": "1",
         "session_id": arguments.session_id,

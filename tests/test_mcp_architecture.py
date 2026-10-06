@@ -384,6 +384,8 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_configure_tts",
                 "pandrator_configure_audiobook",
                 "pandrator_configure_voice_setup",
+                "pandrator_configure_speech_optimization",
+                "pandrator_setup_designed_voice",
                 "pandrator_control_runtime",
                 "pandrator_create_dispatch_run",
                 "pandrator_create_media_edit_dispatch_run",

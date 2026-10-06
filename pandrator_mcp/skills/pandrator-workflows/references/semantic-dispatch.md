@@ -154,6 +154,15 @@ identity, meaning, and source structure; change how the text is spoken rather
 than translating, summarizing, or rewriting the document. The finalized
 `tts_optimized` artifact is separate from the source.
 
+When the claim advertises the annotation span variant, prefer it for untouched
+source units without existing XML. Return `unit_id`, the supplied `source_sha256`,
+and `annotations` containing only dialogue ranges and their known `speaker_ref`
+(or null when identity is unknown). Gaps remain narration; an empty array means
+all narration. Offsets count Unicode codepoints, start at zero, and exclude the
+end position. Compute offsets from the exact source rather than counting a long
+passage by eye. Omit `text` and `speech_xml` in this variant. Use the XML variant
+for units with authored markup or delivery controls, preserving those controls.
+
 ## Before submission
 
 Check run/batch identity, required item coverage, unique IDs, ordering where

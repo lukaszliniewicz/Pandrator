@@ -12,6 +12,14 @@ from pydantic import (
     model_validator,
 )
 
+from .schemas import VoiceDesignedSampleCreate
+
+
+class VoiceDesignedSamplePreparationRequest(VoiceDesignedSampleCreate):
+    """Carry the complete recipe identity through preparation idempotency."""
+
+    recipe_signature: StrictStr | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
 
 class VoiceReferenceImportRequest(BaseModel):
     """Import an existing managed audio artifact as a voice reference."""
@@ -30,4 +38,20 @@ class VoiceReferenceImportRequest(BaseModel):
             raise ValueError(
                 "A nonblank transcript is required when transcript_reviewed is true."
             )
+        return self
+
+
+class VoicePublishRequest(BaseModel):
+    """Optionally bind publication to one exact managed normalized sample."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: StrictStr | None = Field(default=None, min_length=1, max_length=160)
+    sample_sha256: StrictStr | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
+    recipe_signature: StrictStr | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def _pins_are_paired(self) -> VoicePublishRequest:
+        if (self.sample_id is None) != (self.sample_sha256 is None):
+            raise ValueError("sample_id and sample_sha256 must be provided together.")
         return self

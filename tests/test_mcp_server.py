@@ -225,6 +225,8 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_update_voice_collection",
                         "pandrator_update_voice_metadata",
                         "pandrator_configure_voice_setup",
+                        "pandrator_configure_speech_optimization",
+                        "pandrator_setup_designed_voice",
                     ]),
                     names,
                 )

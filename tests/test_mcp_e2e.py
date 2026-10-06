@@ -138,7 +138,7 @@ class _Application:
                     "id": "run-1",
                     "status": "completed",
                     "take_count": 4,
-                    "settings_json": {"secret": True},
+                    "settings_snapshot": {"tts": {"provider_configs": [{"id": "unused"}]}},
                 }
             ]
         }
@@ -524,7 +524,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                 runtime,
                 ListGenerationRunsInput(session_id="session-1"),
             )
-            self.assertNotIn("settings_json", runs["items"][0])
+            self.assertNotIn("settings_snapshot", runs["items"][0])
             plan = plan_export_variant(
                 runtime,
                 PlanExportVariantInput(

@@ -3,11 +3,17 @@
 from .voice_catalog import VoiceCatalogQuery
 from .voice_catalog_routes import CatalogVoiceUpdate
 from .voice_catalog_schemas import VoiceCollectionCreate, VoiceCollectionUpdate
-from .voice_lifecycle_schemas import VoiceReferenceImportRequest
+from .voice_lifecycle_schemas import (
+    VoiceDesignedSamplePreparationRequest,
+    VoicePublishRequest,
+    VoiceReferenceImportRequest,
+)
 
 VOICE_CATALOG_SCHEMAS = {
     "VoiceCatalogQuery": VoiceCatalogQuery,
     "VoiceReferenceImportRequest": VoiceReferenceImportRequest,
+    "VoiceDesignedSamplePreparationRequest": VoiceDesignedSamplePreparationRequest,
+    "VoicePublishRequest": VoicePublishRequest,
     "VoiceCollectionCreate": VoiceCollectionCreate,
     "VoiceCollectionUpdate": VoiceCollectionUpdate,
     "CatalogVoiceUpdate": CatalogVoiceUpdate,
@@ -142,10 +148,25 @@ def voice_catalog_paths():
         {"name": name, "in": "query", "schema": schema}
         for name, schema in VoiceCatalogQuery.model_json_schema()["properties"].items()
     ]
+    paths["/api/v1/voice-catalog/capabilities"]["get"]["parameters"] = [
+        {"name": name, "in": "query", "schema": {"type": "string"}}
+        for name in ("service_id", "model")
+    ]
     return paths
 
 
 def extend_voice_lifecycle_paths(paths):
+    paths["/api/v1/voices/{voiceId}/samples/from-preview"]["post"]["requestBody"]["content"]["application/json"]["schema"] = {
+        "$ref": "#/components/schemas/VoiceDesignedSamplePreparationRequest"
+    }
+    publication = paths["/api/v1/voices/{voiceId}/providers/{serviceId}"]["post"]
+    publication["requestBody"] = {
+        "required": False,
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VoicePublishRequest"}}},
+    }
+    paths["/api/v1/voices/{voiceId}/samples/from-preview"]["post"]["responses"]["200"] = {
+        "description": "An identical ready normalized reference was reused"
+    }
     for path, method, scope, idempotent in [
         ("/api/v1/voices", "post", "app.write", True),
         ("/api/v1/voices/{voiceId}", "patch", "app.write", False),

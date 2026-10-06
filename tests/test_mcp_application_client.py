@@ -202,7 +202,7 @@ def create_test_ca(directory: Path) -> tuple[Path, Path, Path]:
 
 class ApplicationClientTests(unittest.TestCase):
     def test_generation_history_limit_and_grouping_reach_the_http_request(self):
-        session = FakeSession([FakeResponse(200, {"items": []}) for _ in range(2)])
+        session = FakeSession([FakeResponse(200, {"items": []}) for _ in range(3)])
         client = ApplicationClient(
             local_registry("http://127.0.0.1:8097").bind("local"),
             CredentialResolver(()),
@@ -211,12 +211,14 @@ class ApplicationClientTests(unittest.TestCase):
         )
         client.list_generation_runs("session-1", limit=1, include_repairs=False)
         client.list_generation_runs("session-1", limit=2, include_repairs=True)
+        client.list_generation_runs("session-1", limit=1, view="compact")
         self.assertEqual(
             {"limit": 1, "include_repairs": "false"}, session.calls[0]["params"]
         )
         self.assertEqual(
             {"limit": 2, "include_repairs": "true"}, session.calls[1]["params"]
         )
+        self.assertEqual({"limit": 1, "view": "compact"}, session.calls[2]["params"])
 
     def test_upload_catalog_and_generation_helpers_use_bounded_routes(self):
         origin = "http://127.0.0.1:8097"
@@ -674,7 +676,10 @@ class ApplicationClientTests(unittest.TestCase):
             speech_plan_revision_id="plan-revision-3",
             stale_only=True,
             idempotency_key="generation:run:timeout-1",
+            view="compact",
         )
+        self.assertEqual({"view": "compact"}, session.calls[-1]["params"])
+        self.assertNotIn("view", json.loads(session.calls[-1]["data"]))
 
         expected = [
             (

@@ -6,6 +6,7 @@ from flask import jsonify, request
 from sqlalchemy import select
 
 from .domain_blueprints import DomainBlueprints
+from .generation_history_reads import project_generation_run
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -497,6 +498,11 @@ def register_generation_routes(
     @app.get("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
     def generation_run_list(session_id: str):
+        view = request.args.get("view", "full")
+        try:
+            project_generation_run({}, view=view)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         try:
             sessions.get(session_id)
         except KeyError:
@@ -515,15 +521,23 @@ def register_generation_routes(
             return error_response("validation_error", "include_repairs must be true or false", 422)
         return jsonify(
             {
-                "items": generation.list_runs(
-                    session_id, include_repairs=include_repairs == "true", limit=limit
-                )
+                "items": [
+                    project_generation_run(item, view=view)
+                    for item in generation.list_runs(
+                        session_id, include_repairs=include_repairs == "true", limit=limit
+                    )
+                ]
             }
         )
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
     def generation_run_start(session_id: str):
+        view = request.args.get("view", "full")
+        try:
+            project_generation_run({}, view=view)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
         payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
         if rejected := inline_credential_error(payload.run_override):
             return rejected
@@ -549,7 +563,7 @@ def register_generation_routes(
                     )
                     if reservation.response is not None:
                         result, status_code = reservation.response
-                        response = jsonify(result)
+                        response = jsonify(project_generation_run(result, view=view))
                         response.status_code = status_code
                         response.headers["Idempotency-Replayed"] = "true"
                         return response
@@ -622,7 +636,7 @@ def register_generation_routes(
             except Exception:
                 abandon_generation_reservation()
                 raise
-            return jsonify(result), 202
+            return jsonify(project_generation_run(result, view=view)), 202
         try:
             result = generation.start(
                 session_id,
@@ -641,7 +655,7 @@ def register_generation_routes(
             return error_response("not_found", "Session not found.", 404)
         except ValueError as error:
             return error_response("generation_unavailable", str(error), 409)
-        return jsonify(result), 202
+        return jsonify(project_generation_run(result, view=view)), 202
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs/preview")
     @require_auth

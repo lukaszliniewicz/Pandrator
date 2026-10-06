@@ -153,7 +153,9 @@ def register_voice_catalog_routes(app, context):
     )
     @guards.require_scope("app.read")
     def capabilities():
-        catalog, _ = services.tts_catalogue.snapshot(refresh=False)
+        service_id = str(request.args.get("service_id") or "").casefold()
+        model_id = str(request.args.get("model") or "").casefold()
+        catalog, _ = services.tts_catalogue.snapshot(refresh=False, include_profiles=False)
         return jsonify(
             {
                 "schema_version": "1",
@@ -185,7 +187,9 @@ def register_voice_catalog_routes(app, context):
                         "usage_note": m.get("usage_note"),
                     }
                     for s in catalog.get("services", [])
+                    if not service_id or str(s["id"]).casefold() == service_id
                     for m in catalog_models(s)
+                    if not model_id or str(m["id"]).casefold() == model_id
                 ],
             }
         )

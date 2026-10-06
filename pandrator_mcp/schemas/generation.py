@@ -285,6 +285,7 @@ class GenerateSpeechPlanInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     speech_plan_revision_id: str = Field(min_length=1, max_length=80)
     stale_only: bool = False
+    view: Literal["compact", "full"] = "compact"
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 
 

@@ -8,10 +8,14 @@ from .dispatch_preview import get_dispatch_preview
 from .domain_blueprints import DomainBlueprints
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .route_context import RouteContext
-from .schemas import ReviewSplitInspection, WorkflowInputSelection
+from .schemas import ReviewSplitInspection, SpeechOptimizationConfiguration, WorkflowInputSelection
 from .settings_policy import RevisionConflict
 from .subtitle_evidence import evidence_route_catalog
-from .workflow_inputs import get_workflow_inputs, select_workflow_input
+from .workflow_inputs import (
+    configure_speech_optimization,
+    get_workflow_inputs,
+    select_workflow_input,
+)
 
 
 def register_workflow_improvements_routes(app: DomainBlueprints, context: RouteContext) -> None:
@@ -72,6 +76,44 @@ def register_workflow_improvements_routes(app: DomainBlueprints, context: RouteC
         except KeyError:
             return error_response("not_found", "Session or input artifact not found.", 404)
         except (RevisionConflict, RuntimeError) as error:
+            return error_response("revision_conflict", str(error), 409)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        return jsonify(result)
+
+    @app.post("/api/v1/sessions/<session_id>/workflow-inputs/speech-optimization")
+    @require_scope("app.write")
+    def speech_optimization_configure(session_id: str):
+        payload = SpeechOptimizationConfiguration.model_validate(request.get_json(silent=True) or {})
+        key = str(request.headers.get("Idempotency-Key") or "").strip()
+        if not key:
+            return error_response("idempotency_key_required", "Speech configuration requires Idempotency-Key.", 400)
+        principal = context.guards.principal()
+        if principal is None:
+            return error_response("authentication_required", "Sign in to configure speech optimization.", 401)
+        values = {"session_id": session_id, **payload.model_dump(mode="json")}
+        try:
+            with services.database.immediate_session() as db_session:
+                reservation = services.idempotency.begin(
+                    db_session, principal=principal, operation_id="configureSpeechOptimization",
+                    idempotency_key=key, payload=values,
+                )
+                if reservation.response is not None:
+                    result, status = reservation.response
+                    response = jsonify(result)
+                    response.status_code = status
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return response
+                result = configure_speech_optimization(services, **values, db_session=db_session)
+                services.idempotency.complete(
+                    db_session, reservation, response=result, status_code=200,
+                    resource_kind="speech_optimization_configuration", resource_id=session_id,
+                )
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return error_response(error.code, str(error), 409, {"retryable": error.retryable})
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except RevisionConflict as error:
             return error_response("revision_conflict", str(error), 409)
         except ValueError as error:
             return error_response("validation_error", str(error), 422)

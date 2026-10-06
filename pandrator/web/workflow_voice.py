@@ -31,6 +31,7 @@ from .voice_library import (
     retire_sample_artifact,
     sample_file_status,
 )
+from .voice_reference_reuse import REFERENCE_PREPARATION_PROFILE, verified_sample_artifact
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
@@ -319,6 +320,16 @@ def normalize_voice_recording(
             if sample_provenance is not None
             else None
         )
+        if noise_reduction == VOICE_NOISE_REDUCTION_NONE:
+            sample_metadata = {
+                **(sample_metadata or {}),
+                "reference_preparation_profile": REFERENCE_PREPARATION_PROFILE,
+            }
+            if sample_provenance is not None:
+                sample_metadata["sample_provenance"] = {
+                    **sample_provenance,
+                    "reference_preparation_profile": REFERENCE_PREPARATION_PROFILE,
+                }
         if cleanup_report is not None:
             reduction_metadata: dict[str, Any] = {
                 "method": VOICE_NOISE_REDUCTION_DEEPFILTERNET2
@@ -399,6 +410,7 @@ def normalize_voice_recording(
     return {
         "sample_id": sample_id,
         "artifact_id": artifact.id,
+        "sample_sha256": artifact.content_hash,
         "path": artifact.relative_path,
         "voice_revision": voice_revision,
         "replaced": bool(replace_sample_id),
@@ -419,6 +431,12 @@ def publish_voice(
     service_name = str(payload.get("service") or service_id).strip()
     expected_raw = payload.get("expected_voice_revision")
     expected_revision = int(expected_raw) if expected_raw is not None else None
+    pinned_sample_id = str(payload.get("sample_id") or "").strip()
+    pinned_artifact_id = str(payload.get("sample_artifact_id") or "").strip()
+    pinned_hash = str(payload.get("sample_sha256") or "").strip().casefold()
+    has_pins = bool(pinned_sample_id or pinned_artifact_id or pinned_hash)
+    if has_pins and not (pinned_sample_id and pinned_artifact_id and pinned_hash):
+        raise ValueError("Exact voice publication requires all sample pins.")
     with context.database.session() as session:
         voice = session.get(Voice, voice_id)
         if voice is None:
@@ -432,7 +450,7 @@ def publish_voice(
                 .order_by(VoiceSample.created_at.desc())
             ).all()
         )
-        sample = next(
+        newest_ready_sample = next(
             (
                 item
                 for item in samples
@@ -440,10 +458,16 @@ def publish_voice(
             ),
             None,
         )
+        newest_ready_sample_id = newest_ready_sample.id if newest_ready_sample is not None else None
+        sample = session.get(VoiceSample, pinned_sample_id) if has_pins else newest_ready_sample
         if sample is None:
             raise ValueError(
                 "Add or replace a readable voice sample before uploading this voice."
             )
+        if has_pins:
+            if sample.voice_id != voice_id or sample.artifact_id != pinned_artifact_id:
+                raise ValueError("The selected voice sample changed before provider upload.")
+            verified_sample_artifact(session, context.paths, sample, expected_sha256=pinned_hash)
         provider_records = dict((voice.metadata_json or {}).get("providers") or {})
         existing = dict(provider_records.get(service_id) or {})
         requested_provider_voice_id = str(
@@ -500,6 +524,11 @@ def publish_voice(
         str(service_config.get("adapter") or "").strip().lower().replace("-", "_")
     )
     if service_adapter == "audio_cpp":
+        if has_pins and pinned_sample_id != newest_ready_sample_id:
+            raise ValueError(
+                "audio.cpp linked voices require the newest ready local reference. "
+                "Refresh voice samples and publish the current reference."
+            )
         registration_service_id = str(
             service_config.get("id") or service_id
         ).strip()
@@ -535,6 +564,8 @@ def publish_voice(
             voice = session.get(Voice, voice_id)
             if voice is None:
                 raise ValueError("Voice was removed before it could be linked.")
+            if voice.revision != source_voice_revision:
+                raise ValueError("The voice changed before it could be linked.")
             current_sample = session.get(VoiceSample, sample.id)
             if (
                 current_sample is None
@@ -543,8 +574,38 @@ def publish_voice(
                 raise ValueError(
                     "The voice sample changed before it could be linked."
                 )
+            if has_pins:
+                current_samples = session.scalars(
+                    select(VoiceSample).where(VoiceSample.voice_id == voice_id)
+                    .order_by(VoiceSample.created_at.desc())
+                )
+                newest_current = next((item for item in current_samples if sample_file_status(
+                    session, context.paths, item
+                )[0] == "ready"), None)
+                if newest_current is None or newest_current.id != pinned_sample_id:
+                    raise ValueError("audio.cpp linked voices require the current local reference.")
+                verified_sample_artifact(
+                    session, context.paths, current_sample, expected_sha256=pinned_hash
+                )
             metadata = deepcopy(voice.metadata_json or {})
             providers = dict(metadata.get("providers") or {})
+            current_registration = providers.get(registration_service_id)
+            reuse_keys = (
+                "voice_id", "provider_voice_id", "sample_id", "sample_hash",
+                "source_audio_hash", "status", "managed_by", "protocol",
+                "resource_kind", "endpoint_fingerprint", "reference_text_hash",
+                "reference_text_mode",
+            )
+            if has_pins and isinstance(current_registration, dict) and all(
+                current_registration.get(key) == registration.get(key) for key in reuse_keys
+            ):
+                return {
+                    "voice_id": voice_id, "service_id": service_id,
+                    "provider_voice_id": provider_voice_id,
+                    "voice_revision": voice.revision, "linked": True,
+                    "sample_id": sample.id, "artifact_id": sample.artifact_id,
+                    "sample_sha256": sample_hash, "reused_registration": True,
+                }
             providers[registration_service_id] = registration
             metadata["providers"] = providers
             voice.metadata_json = metadata
@@ -558,6 +619,10 @@ def publish_voice(
             "provider_voice_id": provider_voice_id,
             "voice_revision": next_voice_revision,
             "linked": True,
+            "sample_id": sample.id,
+            "artifact_id": sample.artifact_id,
+            "sample_sha256": sample_hash,
+            "reused_registration": False,
         }
     reference_text_mode = str(
         service_config.get("voice_reference_text") or "ignored"
@@ -575,6 +640,17 @@ def publish_voice(
         if reference_text_mode in {"required", "optional"}
         else ""
     )
+    if has_pins:
+        with context.database.session() as session:
+            current_voice = session.get(Voice, voice_id)
+            current_sample = session.get(VoiceSample, pinned_sample_id)
+            if (
+                current_voice is None or current_voice.revision != source_voice_revision
+                or current_sample is None or current_sample.voice_id != voice_id
+                or current_sample.artifact_id != pinned_artifact_id
+            ):
+                raise ValueError("The selected voice sample changed before provider upload.")
+            verified_sample_artifact(session, context.paths, current_sample, expected_sha256=pinned_hash)
     provider_voice_id = context.tts_providers.upload_voice(
         normalized_service_id,
         str(sample_path),
@@ -636,6 +712,10 @@ def publish_voice(
         "service_id": service_id,
         "provider_voice_id": provider_voice_id,
         "voice_revision": next_voice_revision,
+        "sample_id": sample.id,
+        "artifact_id": sample.artifact_id,
+        "sample_sha256": sample_artifact.content_hash,
+        "reused_registration": False,
         "cancellation_requested_after_upload": cancel_event.is_set(),
     }
 

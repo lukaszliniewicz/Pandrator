@@ -28,6 +28,9 @@ For an unfamiliar task, `pandrator_recommend_next_steps` and
 `pandrator_explain_system` provide packaged guidance. Inspect target status and
 capabilities when connection, permissions, or supported operations are unknown.
 Fetch only the session, settings, and catalogues relevant to the requested job.
+Use compact status and admission responses by default; retrieve full frozen
+settings for diagnosis or an explicit review. Keep detailed receipts outside
+routine conversation payloads while retaining recovery IDs and revisions.
 
 ## Use the current harness for passive work
 

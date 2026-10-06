@@ -220,6 +220,7 @@ from .voice_setup import (
     VOICE_SETUP_INPUT_MODELS,
     ConfigureVoiceSetupInput,
     GetVoiceSetupInput,
+    SetupDesignedVoiceInput,
 )
 from .work import (
     CancelWorkInput,
@@ -235,7 +236,11 @@ from .workflow import (
     RunWorkflowInput,
 )
 from .workflow_controls import GetDispatchPreviewInput, TerminateDispatchRunInput
-from .workflow_inputs import GetWorkflowInputsInput, SelectWorkflowInputInput
+from .workflow_inputs import (
+    ConfigureSpeechOptimizationInput,
+    GetWorkflowInputsInput,
+    SelectWorkflowInputInput,
+)
 
 TOOL_INPUT_MODELS = (
     *SESSION_BRANCH_INPUT_MODELS,
@@ -263,6 +268,7 @@ TOOL_INPUT_MODELS = (
     GetDispatchPreviewInput,
     GetWorkflowInputsInput,
     SelectWorkflowInputInput,
+    ConfigureSpeechOptimizationInput,
     GetDispatchRunInput,
     GetSourceCleaningDispatchRunInput,
     GetSpeechOptimizationDispatchRunInput,
@@ -385,9 +391,11 @@ __all__ = [
     "GetDispatchPreviewInput",
     "GetWorkflowInputsInput",
     "SelectWorkflowInputInput",
+    "ConfigureSpeechOptimizationInput",
     "InspectDispatchSplitBoundariesInput",
     "ConfigureVoiceSetupInput",
     "GetVoiceSetupInput",
+    "SetupDesignedVoiceInput",
     "VOICE_SETUP_INPUT_MODELS",
     "DeleteSessionPermanentlyInput",
     "GetSessionTrashPolicyInput",

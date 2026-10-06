@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import uuid
@@ -17,11 +18,14 @@ from pandrator.web.models import (
     MediaEditPlan,
     MediaEditPlanRevision,
     OutcomePlan,
+    SessionRecord,
     SessionSetting,
     SessionStageSelection,
 )
 from pandrator.web.settings_policy import RevisionConflict
+from pandrator.web.speech_plan_workspace import planning_settings
 from pandrator.web.workflow_inputs import (
+    configure_speech_optimization,
     get_workflow_inputs,
     select_workflow_input,
 )
@@ -574,6 +578,204 @@ class WorkflowInputTests(unittest.TestCase):
                 **kwargs,
             )
         self.assertEqual(baseline, self._snapshot(session_id))
+
+
+    def _speech_snapshot(self, session_id):
+        with self.database.snapshot_session() as session:
+            text = session.get(SessionSetting, (session_id, "text"))
+            return self._snapshot(session_id), (dict(text.value_json), text.revision) if text else None
+
+    def _text_artifact(self, session_id, role):
+        path = self.services["paths"].uploads / f"{uuid.uuid4().hex}.json"
+        path.write_text(json.dumps([{"processed_sentence": "Hello, world.", "language": "en"}]), encoding="utf-8")
+        return self.services["artifacts"].register(path, kind="json", role=role, session_id=session_id)
+
+    def test_configure_synchronizes_flags_preserves_fields_and_is_noop(self):
+        sid = self._session("audiobook")
+        self.services["workspace_settings"].patch(sid, "text", 0, {"unrelated": "keep"})
+        prepared = self._text_artifact(sid, "prepared_text")
+        before = get_workflow_inputs(self.services, sid)
+        result = configure_speech_optimization(
+            self.services, sid, mode="document", annotation_mode="speakers", annotation_only=True,
+            expected_outcome_revision=before["outcome_revision"], expected_text_settings_revision=before["text_settings_revision"],
+        )
+        self.assertTrue(result["transformations"]["llm_tts_document_optimization"])
+        self.assertFalse(result["transformations"]["llm_tts_optimization"])
+        self.assertEqual("tts_optimized", result["inputs"]["generation"])
+        stable = self._speech_snapshot(sid)
+        self.assertEqual("keep", stable[1][0]["unrelated"])
+        self.assertEqual("speakers", stable[1][0]["llm_tts_annotation_mode"])
+        self.assertIn(prepared.id, [row[1] for row in stable[0][2]])
+        replay = configure_speech_optimization(
+            self.services, sid, mode="document", annotation_mode="speakers", annotation_only=True,
+            expected_outcome_revision=result["outcome_revision"], expected_text_settings_revision=result["text_settings_revision"],
+        )
+        self.assertEqual(result, replay)
+        self.assertEqual(stable, self._speech_snapshot(sid))
+        for mode in ("inline", "off"):
+            result = configure_speech_optimization(
+                self.services, sid, mode=mode, expected_outcome_revision=result["outcome_revision"],
+                expected_text_settings_revision=result["text_settings_revision"],
+            )
+            self.assertEqual(mode == "inline", result["transformations"]["llm_tts_optimization"])
+            self.assertFalse(result["transformations"]["llm_tts_document_optimization"])
+
+    def test_configure_stale_fences_and_invalid_annotations_write_nothing(self):
+        sid = self._session()
+        before = self._speech_snapshot(sid)
+        for outcome_revision, text_revision in ((99, 0), (0, 99)):
+            with self.assertRaises(RevisionConflict):
+                configure_speech_optimization(self.services, sid, mode="inline",
+                    expected_outcome_revision=outcome_revision, expected_text_settings_revision=text_revision)
+            self.assertEqual(before, self._speech_snapshot(sid))
+        for mode, annotation_mode, annotation_only in (("inline", "speakers", False), ("document", "off", True), ("document", "invalid", False)):
+            with self.assertRaises(ValueError):
+                configure_speech_optimization(self.services, sid, mode=mode, annotation_mode=annotation_mode,
+                    annotation_only=annotation_only, expected_outcome_revision=0, expected_text_settings_revision=0)
+            self.assertEqual(before, self._speech_snapshot(sid))
+
+    def test_first_configuration_preserves_existing_producer_selections(self):
+        sid = self._session()
+        with self.database.session() as session:
+            session.get(SessionRecord, sid).included_stages_json = ["generate_audio"]
+        self._artifact(sid, "translation", "existing-translation")
+        before = self._snapshot(sid)[2]
+        configure_speech_optimization(self.services, sid, mode="off",
+            expected_outcome_revision=0, expected_text_settings_revision=0)
+        self.assertEqual(before, self._snapshot(sid)[2])
+
+    def test_missing_outcome_read_freezes_effective_legacy_flags(self):
+        sid = self._session("audiobook")
+        self.services["workspace_settings"].patch(sid, "text", 0, {"llm_tts_document_optimization": True})
+        manifest = get_workflow_inputs(self.services, sid)
+        self.assertEqual(0, manifest["outcome_revision"])
+        self.assertTrue(manifest["transformations"]["llm_tts_document_optimization"])
+        self.assertEqual("tts_optimized", manifest["inputs"]["generation"])
+        outcome = self.services["outcome_plans"].get(sid)
+        self.assertTrue(outcome["value"]["transformations"]["llm_tts_document_optimization"])
+
+    def test_audiobook_txt_manifest_requires_prepared_text_not_subtitles(self):
+        sid = self._session("audiobook")
+        path = self.services["paths"].uploads / f"{uuid.uuid4().hex}.txt"
+        path.write_text("Accepted audiobook text.", encoding="utf-8")
+        source = self.services["artifacts"].register(path, kind="text", role="upload", session_id=sid)
+        asset = self.services["source_library"].ensure_for_artifact(source.id, display_name=path.name, kind="text")
+        self.services["source_library"].attach(sid, asset.id)
+        manifest = get_workflow_inputs(self.services, sid)
+        self.assertFalse(manifest["consumers"]["translation"]["applicable"])
+        self.assertTrue(manifest["consumers"]["generation"]["applicable"])
+        self.assertEqual("prepared_text", manifest["inputs"]["generation"])
+        self.assertEqual(["generation: No artifact is selected for this workflow input."], manifest["blocking_reasons"])
+        prepared = self._text_artifact(sid, "prepared_text")
+        manifest = get_workflow_inputs(self.services, sid)
+        self.assertEqual(prepared.id, manifest["consumers"]["generation"]["artifact"]["artifact_id"])
+        self.assertEqual([], manifest["blocking_reasons"])
+
+    def test_audiobook_exact_selection_synchronizes_and_rolls_back_stale_fences(self):
+        sid = self._session("audiobook")
+        prepared = self._text_artifact(sid, "prepared_text")
+        optimized = self._text_artifact(sid, "tts_optimized")
+        configured = configure_speech_optimization(self.services, sid, mode="inline",
+            expected_outcome_revision=0, expected_text_settings_revision=0)
+        configured = select_workflow_input(self.services, sid, "generation", "prepared_text", prepared.id,
+            expected_outcome_revision=configured["outcome_revision"], expected_text_settings_revision=configured["text_settings_revision"],
+            expected_selection_revision=self._expected_selection_revision(sid, "prepare_text"))
+        self.assertTrue(configured["transformations"]["llm_tts_optimization"])
+        stable = self._speech_snapshot(sid)
+        values = {
+            "expected_outcome_revision": configured["outcome_revision"],
+            "expected_selection_revision": self._expected_selection_revision(sid, "optimize_tts"),
+            "expected_text_settings_revision": configured["text_settings_revision"],
+        }
+        for field in values:
+            with self.assertRaises(RevisionConflict):
+                select_workflow_input(self.services, sid, "generation", "tts_optimized", optimized.id,
+                    **{**values, field: 99})
+            self.assertEqual(stable, self._speech_snapshot(sid))
+        result = select_workflow_input(self.services, sid, "generation", "tts_optimized", optimized.id, **values)
+        self.assertTrue(result["transformations"]["llm_tts_document_optimization"])
+        self.assertFalse(result["transformations"]["llm_tts_optimization"])
+        self.assertEqual(optimized.id, result["consumers"]["generation"]["artifact"]["artifact_id"])
+        self.assertEqual(stable[0][0][0]["inputs"], self._snapshot(sid)[0][0]["inputs"])
+        self.services["workspace_settings"].patch(sid, "text", result["text_settings_revision"],
+            {"llm_tts_document_optimization": False})
+        result = get_workflow_inputs(self.services, sid)
+        self.assertEqual(optimized.id, result["consumers"]["generation"]["artifact"]["artifact_id"])
+        settings = planning_settings(self.services["services"], sid, final_optimization=True)
+        self.assertTrue(settings["llm_tts_document_optimization"])
+        self.assertFalse(settings["llm_tts_optimization"])
+        result = select_workflow_input(self.services, sid, "generation", "prepared_text", prepared.id,
+            expected_outcome_revision=result["outcome_revision"], expected_text_settings_revision=result["text_settings_revision"],
+            expected_selection_revision=self._expected_selection_revision(sid, "prepare_text"))
+        self.assertFalse(result["transformations"]["llm_tts_document_optimization"])
+        self.assertEqual(prepared.id, result["consumers"]["generation"]["artifact"]["artifact_id"])
+        with self.assertRaisesRegex(ValueError, "Audiobook generation"):
+            select_workflow_input(self.services, sid, "generation", "source", prepared.id,
+                expected_outcome_revision=result["outcome_revision"], expected_selection_revision=0)
+
+    def test_configuration_http_is_idempotent_and_validates_annotations(self):
+        sid = self._session()
+        endpoint = f"/api/v1/sessions/{sid}/workflow-inputs/speech-optimization"
+        values = {"mode": "document", "expected_outcome_revision": 0, "expected_text_settings_revision": 0,
+            "annotation_mode": "speakers", "annotation_only": True}
+        headers = {"X-CSRF-Token": self.csrf, "Idempotency-Key": "speech-config-http-1"}
+        invalid = self.client.post(endpoint, json={**values, "mode": "inline"}, headers=headers)
+        self.assertEqual(422, invalid.status_code, invalid.get_json())
+        response = self.client.post(endpoint, json=values, headers=headers)
+        self.assertEqual(200, response.status_code, response.get_json())
+        stable = self._speech_snapshot(sid)
+        replay = self.client.post(endpoint, json=values, headers=headers)
+        self.assertEqual(200, replay.status_code, replay.get_json())
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        self.assertEqual(response.get_json(), replay.get_json())
+        self.assertEqual(stable, self._speech_snapshot(sid))
+
+    def test_audiobook_selection_rejects_changed_content_without_mutation(self):
+        sid = self._session("audiobook")
+        prepared = self._text_artifact(sid, "prepared_text")
+        manifest = get_workflow_inputs(self.services, sid)
+        before = self._speech_snapshot(sid)
+        self.services["paths"].managed_path(prepared.relative_path).write_text("Changed", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "recorded content hash"):
+            select_workflow_input(self.services, sid, "generation", "prepared_text", prepared.id,
+                expected_outcome_revision=manifest["outcome_revision"], expected_text_settings_revision=manifest["text_settings_revision"],
+                expected_selection_revision=self._expected_selection_revision(sid, "prepare_text"))
+        self.assertEqual(before, self._speech_snapshot(sid))
+
+    def test_disabled_consumers_do_not_add_input_blockers(self):
+        sid = self._session()
+        self.services["outcome_plans"].update(sid, 0, {
+            "workflow_kind": "voiceover", "transformations": {"translate": False, "generate_audio": False},
+            "deliverables": {}, "inputs": {"translation": "source", "generation": "source"},
+        })
+        manifest = get_workflow_inputs(self.services, sid)
+        self.assertTrue(manifest["consumers"]["translation"]["blocking_reasons"])
+        self.assertTrue(manifest["consumers"]["generation"]["blocking_reasons"])
+        self.assertEqual([], manifest["blocking_reasons"])
+
+    def test_audiobook_input_http_guards_text_revision_and_replays(self):
+        sid = self._session("audiobook")
+        prepared = self._text_artifact(sid, "prepared_text")
+        body = {
+            "consumer": "generation", "role": "prepared_text", "artifact_id": prepared.id,
+            "expected_outcome_revision": 0, "expected_text_settings_revision": 0,
+            "expected_selection_revision": self._expected_selection_revision(sid, "prepare_text"),
+        }
+        endpoint = f"/api/v1/sessions/{sid}/workflow-inputs"
+        headers = {"X-CSRF-Token": self.csrf, "Idempotency-Key": "audiobook-input-http-1"}
+        before = self._speech_snapshot(sid)
+        stale = self.client.put(endpoint, json={**body, "expected_text_settings_revision": 99}, headers=headers)
+        self.assertEqual(409, stale.status_code, stale.get_json())
+        self.assertEqual(before, self._speech_snapshot(sid))
+        response = self.client.put(endpoint, json=body, headers=headers)
+        self.assertEqual(200, response.status_code, response.get_json())
+        self.assertEqual(prepared.id, response.get_json()["selected"]["artifact_id"])
+        stable = self._speech_snapshot(sid)
+        replay = self.client.put(endpoint, json=body, headers=headers)
+        self.assertEqual(200, replay.status_code, replay.get_json())
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        self.assertEqual(response.get_json(), replay.get_json())
+        self.assertEqual(stable, self._speech_snapshot(sid))
 
 
 if __name__ == "__main__":

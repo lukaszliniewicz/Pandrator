@@ -275,6 +275,12 @@ def catalog_entries(
 ) -> list[dict[str, Any]]:
     """Normalize saved and provider voices without exposing provider secrets."""
     services = catalog.get("services") or []
+    previews = {}
+    for preview in catalog.get("previews", []):
+        previews.setdefault(
+            (preview.get("service_id"), preview.get("model"), preview.get("voice")),
+            preview.get("artifact_id"),
+        )
     memberships: dict[str, list[dict[str, str]]] = {}
     for collection in collections:
         for member in collection.get("members", []):
@@ -416,16 +422,7 @@ def catalog_entries(
                     if service.get("available") is False
                     else "unknown"
                 )
-                preview = next(
-                    (
-                        p.get("artifact_id")
-                        for p in catalog.get("previews", [])
-                        if p.get("service_id") == service["id"]
-                        and p.get("model") == model["id"]
-                        and p.get("voice") == voice
-                    ),
-                    None,
-                )
+                preview = previews.get((service["id"], model["id"], voice))
                 entries.append(
                     {
                         "key": key,

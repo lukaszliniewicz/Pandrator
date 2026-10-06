@@ -1063,11 +1063,28 @@ class ReviewSplitInspection(StrictModel):
 
 class WorkflowInputSelection(StrictModel):
     consumer: Literal["translation", "generation"]
-    role: Literal["source", "correction", "translation"]
+    role: Literal["source", "correction", "translation", "prepared_text", "tts_optimized"]
     artifact_id: str = Field(min_length=1, max_length=80)
     expected_outcome_revision: int = Field(ge=0)
     expected_selection_revision: int = Field(ge=0)
     expected_translation_settings_revision: int | None = Field(default=None, ge=0)
+    expected_text_settings_revision: int | None = Field(default=None, ge=0)
+
+
+class SpeechOptimizationConfiguration(StrictModel):
+    mode: Literal["off", "document", "inline"]
+    expected_outcome_revision: int = Field(ge=0)
+    expected_text_settings_revision: int = Field(ge=0)
+    annotation_mode: Literal["off", "dialogue", "speakers"] = "off"
+    annotation_only: bool = False
+
+    @model_validator(mode="after")
+    def validate_annotations(self):
+        if self.annotation_mode != "off" and self.mode != "document":
+            raise ValueError("Annotations require document optimization.")
+        if self.annotation_only and self.annotation_mode == "off":
+            raise ValueError("annotation_only requires an annotation mode.")
+        return self
 
 
 class DispatchRunTerminationRequest(StrictModel):
@@ -1404,10 +1421,36 @@ class SpeechOptimizationDispatchRunCreateRequest(DispatchExecutionMixin):
     annotation_only: bool = False
 
 
+class SpeechOptimizationDispatchAnnotationInput(StrictModel):
+    start: StrictInt = Field(ge=0)
+    end: StrictInt = Field(gt=0)
+    speaker_ref: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_span(self):
+        if self.end <= self.start:
+            raise ValueError("Annotation end must be greater than start.")
+        return self
+
+
 class SpeechOptimizationDispatchItem(StrictModel):
     unit_id: int = Field(ge=1)
     text: str | None = Field(default=None, min_length=1, max_length=4 * 1024 * 1024)
     speech_xml: str | None = Field(default=None, max_length=256 * 1024)
+    annotations: list[SpeechOptimizationDispatchAnnotationInput] | None = Field(default=None, max_length=500)
+    source_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    boundary_after: Literal["continuation", "dialogue_turn", "paragraph", "scene", "chapter"] | None = None
+
+    @model_validator(mode="after")
+    def validate_annotation_payload(self):
+        if self.annotations is not None:
+            if self.source_sha256 is None:
+                raise ValueError("Annotations require source_sha256.")
+            if self.text is not None or self.speech_xml is not None:
+                raise ValueError("Annotations cannot include text or speech_xml.")
+        elif self.source_sha256 is not None or self.boundary_after is not None:
+            raise ValueError("source_sha256 and boundary_after require annotations.")
+        return self
 
 
 class SpeechOptimizationDispatchResult(StrictModel):
@@ -1436,6 +1479,7 @@ class SpeechOptimizationDispatchUnitTiming(StrictModel):
 
 class SpeechOptimizationDispatchUnit(StrictModel):
     unit_id: int = Field(ge=1)
+    source_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     text: str
     language: str
     speaker: str | None = None
@@ -1905,6 +1949,7 @@ SCHEMA_MODELS = {
         DispatchRunTerminationRequest,
         ReviewSplitInspection,
         WorkflowInputSelection,
+        SpeechOptimizationConfiguration,
         DispatchBatchClaimRequest,
         DispatchBatchRenewRequest,
         DispatchBatchReleaseRequest,
@@ -1925,6 +1970,7 @@ SCHEMA_MODELS = {
         DispatchBatchSubmitResponse,
         SpeechOptimizationDispatchRunCreateRequest,
         SpeechOptimizationDispatchItem,
+        SpeechOptimizationDispatchAnnotationInput,
         SpeechOptimizationDispatchResult,
         SpeechOptimizationDispatchBatchSubmitRequest,
         SpeechOptimizationDispatchUnitTiming,

@@ -423,6 +423,7 @@ class _FakeApplication:
         idempotency_key="",
         speech_plan_revision_id=None,
         stale_only=False,
+        view="full",
     ):
         self.calls.append(
             (
@@ -434,6 +435,7 @@ class _FakeApplication:
                     "idempotency_key": idempotency_key,
                     "speech_plan_revision_id": speech_plan_revision_id,
                     "stale_only": stale_only,
+                    "view": view,
                 },
             )
         )
@@ -756,6 +758,7 @@ class PreviewAndGenerationTests(unittest.TestCase):
             speech_plan_revision_id="plan-revision-17",
             stale_only=True,
             idempotency_key="generation:timeout:exact-replay-1",
+            view="full",
         )
 
         with self.assertRaises(PandratorMcpError) as caught:

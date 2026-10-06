@@ -128,9 +128,12 @@ class ApplicationGenerationMethods(ApplicationRequests):
         )
 
     def list_generation_runs(
-        self, session_id: str, *, limit: int | None = None, include_repairs: bool | None = None
+        self, session_id: str, *, limit: int | None = None, include_repairs: bool | None = None,
+        view: str = "full",
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {}
+        if view != "full":
+            parameters["view"] = view
         if limit is not None:
             parameters["limit"] = limit
         if include_repairs is not None:
@@ -361,6 +364,7 @@ class ApplicationGenerationMethods(ApplicationRequests):
         idempotency_key: str,
         speech_plan_revision_id: str | None = None,
         stale_only: bool = False,
+        view: str = "full",
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"operation": operation}
         if segment_ids:
@@ -373,6 +377,7 @@ class ApplicationGenerationMethods(ApplicationRequests):
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs",
             method="POST",
             body=body,
+            parameters={"view": view} if view != "full" else None,
             idempotency_key=idempotency_key,
             request_timeout_seconds=max(self.timeout_seconds, 120.0),
         )

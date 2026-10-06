@@ -28,7 +28,7 @@ from .source_resolution import resolve_primary_source
 from .subtitle_media import artifact_accessible_in_session
 
 WORKFLOW_INPUT_CONSUMERS = frozenset({"translation", "generation"})
-WORKFLOW_INPUT_ROLES = frozenset({"source", "correction", "translation"})
+WORKFLOW_INPUT_ROLES = frozenset({"source", "correction", "translation", "prepared_text", "tts_optimized"})
 _SUBTITLE_SUFFIXES = frozenset({".srt", ".vtt"})
 
 
@@ -63,6 +63,8 @@ def _current_outcome(
 
 
 def _input_roles(workflow_kind: str, role: str) -> tuple[str, ...]:
+    if workflow_kind == "audiobook" and role in {"prepared_text", "tts_optimized"}:
+        return (role,)
     if role == "correction":
         return ("correction",)
     if role == "translation":
@@ -95,17 +97,25 @@ def _subtitle_file_path(services: Any, artifact: Artifact) -> Path:
     return path
 
 
-def _verified_content_hash(services: Any, artifact: Artifact) -> str:
+def _verified_content_hash(services: Any, artifact: Artifact, *, subtitle: bool = True) -> str:
     expected = str(artifact.content_hash or "").strip().lower()
     if not expected:
-        raise ValueError("The selected subtitle has no verified content hash.")
-    path = _subtitle_file_path(services, artifact)
+        raise ValueError("The selected artifact has no verified content hash.")
+    if subtitle:
+        path = _subtitle_file_path(services, artifact)
+    else:
+        try:
+            path = _service(services, "artifacts").paths.managed_path(artifact.relative_path)
+        except (AttributeError, OSError, ValueError) as error:
+            raise ValueError("The selected text artifact is outside managed storage.") from error
+        if not path.is_file():
+            raise ValueError("The selected text file is no longer available.")
     try:
         actual = sha256_file(path).lower()
     except OSError as error:
-        raise ValueError("The selected subtitle file could not be verified.") from error
+        raise ValueError("The selected artifact file could not be verified.") from error
     if actual != expected:
-        raise ValueError("The selected subtitle file does not match its recorded content hash.")
+        raise ValueError("The selected artifact file does not match its recorded content hash.")
     return actual
 
 
@@ -225,7 +235,9 @@ def _resolve_consumer_input(
                 )
         if not reasons:
             try:
-                verified_hash = _verified_content_hash(services, artifact)
+                verified_hash = _verified_content_hash(
+                    services, artifact, subtitle=record.workflow_kind != "audiobook"
+                )
             except ValueError as error:
                 reasons.append(str(error))
                 verified_hash = None
@@ -284,7 +296,7 @@ def _workflow_inputs_manifest_in_session(
         role = (
             str(stored_inputs.get(consumer) or defaults.get(consumer) or "source").strip().lower()
         )
-        if role not in WORKFLOW_INPUT_ROLES and not (
+        if role not in {"source", "correction", "translation"} and not (
             record.workflow_kind == "media_edit" and role == "media_edit"
         ):
             role = str(defaults.get(consumer) or "source").strip().lower()
@@ -299,24 +311,44 @@ def _workflow_inputs_manifest_in_session(
         if isinstance(configured_transformations, dict)
         else {}
     )
+    if record.workflow_kind == "audiobook":
+        inputs["generation"] = (
+            "tts_optimized"
+            if configured_transformations.get("llm_tts_document_optimization")
+            else "prepared_text"
+        )
     translation_settings = session.get(SessionSetting, (session_id, "translation"))
+    text_settings = session.get(SessionSetting, (session_id, "text"))
+    deliverables = value.get("deliverables")
+    deliverables = deliverables if isinstance(deliverables, dict) else {}
     consumer_results: dict[str, dict[str, Any]] = {}
     blocking_reasons: list[str] = []
     for consumer in sorted(WORKFLOW_INPUT_CONSUMERS):
         role = inputs[consumer]
         public_role = _external_input_role(record.workflow_kind, role)
-        result, reasons = _resolve_consumer_input(
-            session,
-            services,
-            record,
-            consumer,
-            public_role,
-            translation_settings,
+        applicable = not (record.workflow_kind == "audiobook" and consumer == "translation")
+        enabled = (
+            bool(configured_transformations.get("translate"))
+            if consumer == "translation"
+            else bool(configured_transformations.get("generate_audio") or deliverables.get("audiobook") or deliverables.get("voiceover"))
         )
+        if applicable:
+            result, reasons = _resolve_consumer_input(
+                session, services, record, consumer, public_role, translation_settings
+            )
+        else:
+            reasons = []
+            result = {
+                "consumer": consumer, "producer_stage": None,
+                "producer_selection_revision": 0, "artifact": None,
+                "blocking_reasons": [],
+            }
+        result["applicable"] = applicable
         result["input_role"] = role
         result["requested_role"] = public_role
         consumer_results[consumer] = result
-        blocking_reasons.extend(f"{consumer}: {reason}" for reason in reasons)
+        if applicable and enabled:
+            blocking_reasons.extend(f"{consumer}: {reason}" for reason in reasons)
     try:
         assert_session_idle(session, session_id)
     except RevisionConflict as error:
@@ -333,6 +365,7 @@ def _workflow_inputs_manifest_in_session(
         "translation_settings_revision": (
             int(translation_settings.revision) if translation_settings is not None else 0
         ),
+        "text_settings_revision": int(text_settings.revision) if text_settings is not None else 0,
         "blocking_reasons": list(dict.fromkeys(blocking_reasons)),
     }
 
@@ -341,6 +374,69 @@ def get_workflow_inputs(services: Any, session_id: str) -> dict[str, Any]:
     """Return a compact, text-free manifest for the selected workflow inputs."""
     with _service(services, "database").snapshot_session() as session:
         return _workflow_inputs_manifest_in_session(session, services, session_id)
+
+
+def configure_speech_optimization(
+    services: Any, session_id: str, *, mode: str,
+    expected_outcome_revision: int, expected_text_settings_revision: int,
+    annotation_mode: str = "off", annotation_only: bool = False,
+    db_session: Session | None = None,
+) -> dict[str, Any]:
+    """Synchronize speech controls inside one revision-fenced transaction."""
+    if mode not in {"off", "document", "inline"}:
+        raise ValueError("mode must be off, document, or inline.")
+    if annotation_mode not in {"off", "dialogue", "speakers"}:
+        raise ValueError("annotation_mode must be off, dialogue, or speakers.")
+    if annotation_mode != "off" and mode != "document":
+        raise ValueError("Annotations require document optimization.")
+    if annotation_only and annotation_mode == "off":
+        raise ValueError("annotation_only requires an annotation mode.")
+    for revision in (expected_outcome_revision, expected_text_settings_revision):
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ValueError("Expected revisions must be non-negative integers.")
+    if db_session is None:
+        with _service(services, "database").immediate_session() as session:
+            return configure_speech_optimization(
+                services, session_id, mode=mode,
+                expected_outcome_revision=expected_outcome_revision,
+                expected_text_settings_revision=expected_text_settings_revision,
+                annotation_mode=annotation_mode, annotation_only=annotation_only,
+                db_session=session,
+            )
+    session = db_session
+    record = session.get(SessionRecord, session_id)
+    if record is None or record.trashed_at is not None or record.status == "purging":
+        raise KeyError(session_id)
+    assert_session_idle(session, session_id)
+    outcome_value, outcome_revision = _current_outcome(session, record, services)
+    text = session.get(SessionSetting, (session_id, "text"))
+    text_revision = int(text.revision) if text is not None else 0
+    if outcome_revision != expected_outcome_revision:
+        raise RevisionConflict("The workflow plan changed in another client.")
+    if text_revision != expected_text_settings_revision:
+        raise RevisionConflict("Text settings changed in another client.")
+    flags = {
+        "llm_tts_document_optimization": mode == "document",
+        "llm_tts_optimization": mode == "inline",
+    }
+    transformations = outcome_value.get("transformations")
+    transformations = transformations if isinstance(transformations, dict) else {}
+    if outcome_revision == 0 or any(transformations.get(key) != value for key, value in flags.items()):
+        outcome_value["transformations"] = {**transformations, **flags}
+        _service(services, "outcome_plans").update_in_session(
+            session, session_id, outcome_revision, outcome_value,
+            preserve_input_selections=True,
+        )
+    changes = {
+        **flags, "llm_tts_annotation_mode": annotation_mode,
+        "llm_tts_annotation_only": annotation_only,
+    }
+    stored = dict(text.value_json or {}) if text is not None else {}
+    if any(key not in stored or stored[key] != value for key, value in changes.items()):
+        _service(services, "workspace_settings").patch_in_session(
+            session, session_id, "text", text_revision, changes
+        )
+    return _workflow_inputs_manifest_in_session(session, services, session_id)
 
 
 def select_workflow_input(
@@ -353,6 +449,7 @@ def select_workflow_input(
     expected_outcome_revision: int,
     expected_selection_revision: int,
     expected_translation_settings_revision: int | None = None,
+    expected_text_settings_revision: int | None = None,
     db_session: Session | None = None,
 ) -> dict[str, Any]:
     """Atomically select an exact, hash-verified producer input for one consumer."""
@@ -362,7 +459,7 @@ def select_workflow_input(
     if normalized_consumer not in WORKFLOW_INPUT_CONSUMERS:
         raise ValueError("consumer must be 'translation' or 'generation'.")
     if normalized_role not in WORKFLOW_INPUT_ROLES:
-        raise ValueError("role must be 'source', 'correction', or 'translation'.")
+        raise ValueError("Unknown workflow input role.")
     if normalized_consumer == "translation" and normalized_role == "translation":
         raise ValueError("Translation cannot use a translation artifact as its input.")
     if not normalized_artifact_id:
@@ -398,6 +495,7 @@ def select_workflow_input(
         "expected_outcome_revision": expected_outcome_revision,
         "expected_selection_revision": expected_selection_revision,
         "expected_translation_settings_revision": expected_translation_settings_revision,
+        "expected_text_settings_revision": expected_text_settings_revision,
     }
     if db_session is not None:
         return select_workflow_input_in_session(services, db_session, **values)
@@ -416,6 +514,7 @@ def select_workflow_input_in_session(
     expected_outcome_revision: int,
     expected_selection_revision: int,
     expected_translation_settings_revision: int | None = None,
+    expected_text_settings_revision: int | None = None,
 ) -> dict[str, Any]:
     """Compose the input mutation into a caller-owned write transaction."""
 
@@ -425,7 +524,7 @@ def select_workflow_input_in_session(
     if consumer not in WORKFLOW_INPUT_CONSUMERS:
         raise ValueError("consumer must be 'translation' or 'generation'.")
     if role not in WORKFLOW_INPUT_ROLES:
-        raise ValueError("role must be 'source', 'correction', or 'translation'.")
+        raise ValueError("Unknown workflow input role.")
     if consumer == "translation" and role == "translation":
         raise ValueError("Translation cannot use a translation artifact as its input.")
     if not artifact_id:
@@ -455,10 +554,22 @@ def select_workflow_input_in_session(
     if record is None or record.trashed_at is not None or record.status == "purging":
         raise KeyError(session_id)
     assert_session_idle(session, session_id)
+    audiobook_generation = record.workflow_kind == "audiobook" and consumer == "generation"
+    if audiobook_generation:
+        if role not in {"prepared_text", "tts_optimized"}:
+            raise ValueError("Audiobook generation requires prepared_text or tts_optimized.")
+        if isinstance(expected_text_settings_revision, bool) or not isinstance(expected_text_settings_revision, int) or expected_text_settings_revision < 0:
+            raise ValueError("Audiobook input selection requires its text settings revision.")
+    elif role in {"prepared_text", "tts_optimized"} or expected_text_settings_revision is not None:
+        raise ValueError("Text input roles and revision are only valid for audiobook generation.")
 
     outcome_value, current_outcome_revision = _current_outcome(session, record, services)
     if int(expected_outcome_revision) != current_outcome_revision:
         raise RevisionConflict("The workflow plan changed in another client.")
+    text_settings = session.get(SessionSetting, (session_id, "text"))
+    current_text_revision = int(text_settings.revision) if text_settings is not None else 0
+    if audiobook_generation and expected_text_settings_revision != current_text_revision:
+        raise RevisionConflict("Text settings changed in another client.")
     translation_settings = session.get(SessionSetting, (session_id, "translation"))
     current_translation_revision = (
         int(translation_settings.revision) if translation_settings is not None else 0
@@ -487,7 +598,7 @@ def select_workflow_input_in_session(
             artifact, _active_media_edit_revision(session, session_id)
         ):
             raise ValueError("The selected subtitles do not match the active media-edit revision.")
-    verified_hash = _verified_content_hash(services, artifact)
+    verified_hash = _verified_content_hash(services, artifact, subtitle=not audiobook_generation)
 
     if artifact.role == "upload":
         if int(expected_selection_revision) != 0:
@@ -514,12 +625,27 @@ def select_workflow_input_in_session(
     inputs = outcome_value.get("inputs")
     if not isinstance(inputs, dict):
         inputs = {}
-    outcome_value["inputs"] = {**inputs, consumer: stored_role}
+    if audiobook_generation:
+        transformations = outcome_value.get("transformations")
+        transformations = transformations if isinstance(transformations, dict) else {}
+        flags = {
+            "llm_tts_document_optimization": role == "tts_optimized",
+            "llm_tts_optimization": False if role == "tts_optimized" else bool(transformations.get("llm_tts_optimization")),
+        }
+        outcome_value["transformations"] = {**transformations, **flags}
+        stored = dict(text_settings.value_json or {}) if text_settings is not None else {}
+        if any(key not in stored or stored[key] != value for key, value in flags.items()):
+            _service(services, "workspace_settings").patch_in_session(
+                session, session_id, "text", current_text_revision, flags
+            )
+    else:
+        outcome_value["inputs"] = {**inputs, consumer: stored_role}
     _service(services, "outcome_plans").update_in_session(
         session,
         session_id,
         current_outcome_revision,
         outcome_value,
+        preserve_input_selections=audiobook_generation,
     )
     if consumer == "translation":
         _service(services, "workspace_settings").patch_in_session(

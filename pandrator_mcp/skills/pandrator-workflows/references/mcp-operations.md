@@ -28,6 +28,26 @@ and voice IDs and use `pandrator_configure_tts`; do not copy old provider
 options or assume that an uploaded voice is available in audio.cpp. Cloning
 there needs a ready managed reference link.
 
+For a designed voice, audition first and review the actual sample and transcript.
+When advertised, `pandrator_setup_designed_voice` promotes that reviewed preview,
+then links or publishes its exact normalized sample. Set `transcript_reviewed=true`
+only after review, retain the original arguments and key, and follow its work
+handle/resume action through both stages. Identical current references and native
+links can be reused; changed bytes, transcript, language or preparation profile
+need fresh preparation. Native links use the managed voice's current reference.
+On expired retry state or revision conflict, inspect the existing sample and
+registration before starting another setup.
+
+For speech optimization, inspect `pandrator_get_workflow_inputs` and use the
+advertised `pandrator_configure_speech_optimization` operation to set off,
+document, or inline processing with the returned outcome and text revisions.
+This synchronizes the saved workflow and text controls. Annotation-only speaker
+work uses document mode. Audiobook generation resolves `prepared_text` or
+`tts_optimized`; select an exact revision with `pandrator_select_workflow_input`
+when adoption is needed. A completed passive artifact and an enabled workflow
+step are separate state: verify the resolved generation artifact before preparing
+the speech plan.
+
 Application read, write, run, and cancel scopes are distinct. Passive work
 normally needs read and run; importing a source also needs write. Inspect
 missing-scope errors rather than broadening permissions automatically.
@@ -52,6 +72,13 @@ A returned `work` handle is not a finished artifact. Poll `pandrator_get_work`
 with that handle until terminal; retain it across timeouts and interruptions.
 Prefer waits short enough for the host's request timeout and progress needs.
 Use `pandrator_get_work_log` for diagnosis rather than repeatedly dumping logs.
+
+Use compact generation admissions and run lists for routine orchestration. Request
+`view=full` when inspecting frozen settings. Retain run, job, plan and work IDs
+with errors and progress; save large detailed receipts privately when needed.
+Changing this presentation view does not change a generation mutation or its
+idempotency key. Avoid repeatedly fetching full settings or catalogues while
+polling work that already supplies its identity and status.
 
 Call `pandrator_cancel_work` once when cancellation is requested, then inspect
 until terminal. Quick transcription has its own polling and cancellation tools.

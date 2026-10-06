@@ -233,6 +233,7 @@ def generate_speech_plan(runtime: McpRuntime, arguments: GenerateSpeechPlanInput
         result = runtime.require_application().start_generation_run(
             arguments.session_id, speech_plan_revision_id=arguments.speech_plan_revision_id,
             stale_only=arguments.stale_only, idempotency_key=arguments.idempotency_key,
+            view=arguments.view,
         )
     except PandratorMcpError as error:
         if error.code != "application_response_timeout":

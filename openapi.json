@@ -7401,6 +7401,87 @@
         "title": "SourceUrlRequest",
         "type": "object"
       },
+      "SpeechOptimizationConfiguration": {
+        "additionalProperties": false,
+        "properties": {
+          "annotation_mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "dialogue",
+              "speakers"
+            ],
+            "title": "Annotation Mode",
+            "type": "string"
+          },
+          "annotation_only": {
+            "default": false,
+            "title": "Annotation Only",
+            "type": "boolean"
+          },
+          "expected_outcome_revision": {
+            "minimum": 0,
+            "title": "Expected Outcome Revision",
+            "type": "integer"
+          },
+          "expected_text_settings_revision": {
+            "minimum": 0,
+            "title": "Expected Text Settings Revision",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "off",
+              "document",
+              "inline"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "expected_outcome_revision",
+          "expected_text_settings_revision"
+        ],
+        "title": "SpeechOptimizationConfiguration",
+        "type": "object"
+      },
+      "SpeechOptimizationDispatchAnnotationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "exclusiveMinimum": 0,
+            "title": "End",
+            "type": "integer"
+          },
+          "speaker_ref": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speaker Ref"
+          },
+          "start": {
+            "minimum": 0,
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "SpeechOptimizationDispatchAnnotationInput",
+        "type": "object"
+      },
       "SpeechOptimizationDispatchBatchClaimResponse": {
         "additionalProperties": false,
         "properties": {
@@ -7775,6 +7856,54 @@
       "SpeechOptimizationDispatchItem": {
         "additionalProperties": false,
         "properties": {
+          "annotations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SpeechOptimizationDispatchAnnotationInput"
+                },
+                "maxItems": 500,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Annotations"
+          },
+          "boundary_after": {
+            "anyOf": [
+              {
+                "enum": [
+                  "continuation",
+                  "dialogue_turn",
+                  "paragraph",
+                  "scene",
+                  "chapter"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Boundary After"
+          },
+          "source_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Sha256"
+          },
           "speech_xml": {
             "anyOf": [
               {
@@ -8085,6 +8214,19 @@
           "language": {
             "title": "Language",
             "type": "string"
+          },
+          "source_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Sha256"
           },
           "speaker": {
             "anyOf": [
@@ -10265,6 +10407,62 @@
         "title": "VoiceDesignedSampleCreate",
         "type": "object"
       },
+      "VoiceDesignedSamplePreparationRequest": {
+        "additionalProperties": false,
+        "description": "Carry the complete recipe identity through preparation idempotency.",
+        "properties": {
+          "artifact_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "expected_voice_revision": {
+            "minimum": 1,
+            "title": "Expected Voice Revision",
+            "type": "integer"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Language"
+          },
+          "recipe_signature": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recipe Signature"
+          },
+          "transcript": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Transcript",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "transcript",
+          "expected_voice_revision"
+        ],
+        "title": "VoiceDesignedSamplePreparationRequest",
+        "type": "object"
+      },
       "VoiceLanguage": {
         "additionalProperties": false,
         "properties": {
@@ -10457,6 +10655,54 @@
           }
         },
         "title": "VoiceProfile",
+        "type": "object"
+      },
+      "VoicePublishRequest": {
+        "additionalProperties": false,
+        "description": "Optionally bind publication to one exact managed normalized sample.",
+        "properties": {
+          "recipe_signature": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recipe Signature"
+          },
+          "sample_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sample Id"
+          },
+          "sample_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-fA-F0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sample Sha256"
+          }
+        },
+        "title": "VoicePublishRequest",
         "type": "object"
       },
       "VoiceReference": {
@@ -11047,6 +11293,19 @@
             "title": "Expected Selection Revision",
             "type": "integer"
           },
+          "expected_text_settings_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Text Settings Revision"
+          },
           "expected_translation_settings_revision": {
             "anyOf": [
               {
@@ -11064,7 +11323,9 @@
             "enum": [
               "source",
               "correction",
-              "translation"
+              "translation",
+              "prepared_text",
+              "tts_optimized"
             ],
             "title": "Role",
             "type": "string"
@@ -16135,6 +16396,18 @@
         "operationId": "listGenerationRuns",
         "parameters": [
           {
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -16165,6 +16438,18 @@
       "post": {
         "operationId": "startGenerationRun",
         "parameters": [
+          {
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
           {
             "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
             "in": "header",
@@ -20807,6 +21092,68 @@
         ]
       }
     },
+    "/api/v1/sessions/{sessionId}/workflow-inputs/speech-optimization": {
+      "post": {
+        "operationId": "configureSpeechOptimization",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechOptimizationConfiguration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded workflow result"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision or lifecycle conflict"
+          },
+          "422": {
+            "description": "Invalid request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/workflow-plans": {
       "post": {
         "operationId": "createWorkflowPlan",
@@ -23354,7 +23701,22 @@
     "/api/v1/voice-catalog/capabilities": {
       "get": {
         "operationId": "getVoiceCatalogCapabilities",
-        "parameters": [],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "service_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -23808,6 +24170,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoicePublishRequest"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "202": {
             "description": "Provider upload queued"
@@ -24015,13 +24387,16 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/VoiceDesignedSampleCreate"
+                "$ref": "#/components/schemas/VoiceDesignedSamplePreparationRequest"
               }
             }
           },
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "An identical ready normalized reference was reused"
+          },
           "202": {
             "description": "Managed Breeze preview promotion queued"
           }

@@ -15,6 +15,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from pandrator.logic.dubbing.srt_utils import compose_srt, parse_srt
+from pandrator.logic.speech_annotation_spans import (
+    dialogue_spans_to_xml,
+    source_text_sha256,
+)
 from pandrator.logic.speech_markup import (
     assert_authored_markup_preserved,
     parse_speech_markup,
@@ -748,6 +752,11 @@ class SpeechOptimizationDispatchRunService:
             ),
         )
         units = [dict(item) for item in (batch.input_json or {}).get("units") or []]
+        span_unit_ids = [
+            int(item["unit_id"])
+            for item in units
+            if annotation_only and annotation_mode != "off" and item.get("speech_xml") is None
+        ]
         raw_before = settings.get("context_before")
         raw_after = settings.get("context_after")
         context_before = max(0, min(20, int(4 if raw_before is None else raw_before)))
@@ -841,6 +850,18 @@ class SpeechOptimizationDispatchRunService:
             instructions += " Do not add new annotations."
         if annotation_only:
             instructions += " Annotation-only output text must equal source text exactly."
+        if span_unit_ids:
+            instructions += (
+                " For eligible units without source speech_xml, you may instead return "
+                "annotations (an empty list means all narration), source_sha256 copied "
+                "from the unit, and optional boundary_after. Include only dialogue spans "
+                "with start/end as Unicode codepoint offsets (zero-based, end-exclusive; "
+                "never UTF-16 offsets), sorted and nonoverlapping. Gaps are narration. "
+                "speaker_ref is a known character ID or null for explicitly unknown "
+                "identity; do not invent identity. Do not include text or speech_xml in "
+                "this variant. Units with existing speech_xml must use the XML variant "
+                "to preserve all authored metadata."
+            )
         if run.tts_service:
             instructions += f"\n\nTarget TTS service: {run.tts_service}."
         instructions += (
@@ -881,9 +902,25 @@ class SpeechOptimizationDispatchRunService:
                     },
                     "speech_xml": {
                         "required": annotation_mode != "off",
+                        **(
+                            {"alternative": "annotations for eligible_unit_ids"}
+                            if span_unit_ids else {}
+                        ),
                         "preserve_supplied": True,
                         "annotation_only": annotation_only,
                     },
+                    **(
+                        {"annotations": {
+                            "eligible_unit_ids": span_unit_ids,
+                            "source_sha256": "required exact UTF-8 source hash supplied per unit",
+                            "offsets": "Unicode codepoints, zero-based, end-exclusive; never UTF-16",
+                            "spans": "dialogue only; sorted nonoverlapping; gaps are narrator; maximum 500",
+                            "speaker_ref": "known character ID or null for explicitly unknown identity",
+                            "boundary_after": "optional continuation|dialogue_turn|paragraph|scene|chapter",
+                            "exclusive_with": ["text", "speech_xml"],
+                        }}
+                        if span_unit_ids else {}
+                    ),
                 },
                 "annotation_mode": annotation_mode,
                 "annotation_only": annotation_only,
@@ -898,6 +935,11 @@ class SpeechOptimizationDispatchRunService:
                         "text": str(item.get("text") or ""),
                         "language": str(item.get("language") or run.language),
                         "speaker": item.get("speaker") or None,
+                        **(
+                            {"source_sha256": source_text_sha256(str(item.get("text") or ""))}
+                            if int(item["unit_id"]) in span_unit_ids
+                            else {}
+                        ),
                         **(
                             {"speech_xml": str(item["speech_xml"])}
                             if item.get("speech_xml") is not None
@@ -1179,6 +1221,44 @@ class SpeechOptimizationDispatchRunService:
                 )
             source_text = str(source.get("text") or "")
             source_xml = source.get("speech_xml")
+            has_annotations = row.get("annotations") is not None
+            if has_annotations:
+                if not annotation_only or annotation_mode == "off":
+                    raise DispatchError(
+                        "invalid_annotation_spans",
+                        "annotations require annotation_only=true and annotation_mode=dialogue or speakers.",
+                        422,
+                    )
+                if row.get("text") is not None or row.get("speech_xml") is not None:
+                    raise DispatchError(
+                        "invalid_annotation_spans",
+                        "annotations cannot be combined with text or speech_xml.",
+                        422,
+                    )
+                if source_xml is not None:
+                    raise DispatchError(
+                        "invalid_annotation_spans",
+                        f"Unit {unit_id} has existing speech_xml; return the XML variant to preserve authored metadata.",
+                        422,
+                    )
+                try:
+                    span_xml = dialogue_spans_to_xml(
+                        unit_id=unit_id,
+                        source_text=source_text,
+                        source_sha256=row.get("source_sha256"),
+                        annotations=row["annotations"],
+                        boundary_after=row.get("boundary_after"),
+                        characters=characters,
+                    )
+                except (TypeError, ValueError) as error:
+                    raise DispatchError("invalid_annotation_spans", str(error), 422) from error
+                row = {"unit_id": unit_id, "text": source_text, "speech_xml": span_xml}
+            elif row.get("source_sha256") is not None or row.get("boundary_after") is not None:
+                raise DispatchError(
+                    "invalid_annotation_spans",
+                    "source_sha256 and boundary_after require annotations.",
+                    422,
+                )
             source_parsed = None
             if isinstance(source_xml, str) and source_xml:
                 try:

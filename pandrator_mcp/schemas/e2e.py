@@ -199,6 +199,7 @@ class ConfigureTtsInput(ToolInput):
 
 class ListGenerationRunsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+    view: Literal["compact", "full"] = "compact"
     limit: int = Field(default=20, ge=1, le=100)
     include_repairs: bool = Field(
         default=False,

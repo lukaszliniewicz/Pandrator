@@ -10,10 +10,12 @@ from pydantic import ValidationError
 
 from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.schemas.workflow_inputs import (
+    ConfigureSpeechOptimizationInput,
     GetWorkflowInputsInput,
     SelectWorkflowInputInput,
 )
 from pandrator_mcp.tools.workflow_inputs import (
+    configure_speech_optimization,
     get_workflow_inputs,
     select_workflow_input,
 )
@@ -50,6 +52,7 @@ class WorkflowInputsMcpTests(unittest.TestCase):
             expected_outcome_revision=5,
             expected_selection_revision=2,
             expected_translation_settings_revision=4,
+            expected_text_settings_revision=None,
             idempotency_key="workflow-input-123",
         )
         expected = {"selected": {"artifact_id": "artifact-1"}}
@@ -65,6 +68,7 @@ class WorkflowInputsMcpTests(unittest.TestCase):
             expected_outcome_revision=5,
             expected_selection_revision=2,
             expected_translation_settings_revision=4,
+            expected_text_settings_revision=None,
             idempotency_key="workflow-input-123",
         )
         self.assertIs(expected, result)
@@ -95,9 +99,42 @@ class WorkflowInputsMcpTests(unittest.TestCase):
                 "expected_outcome_revision": 5,
                 "expected_selection_revision": 2,
                 "expected_translation_settings_revision": 4,
+                "expected_text_settings_revision": None,
             },
             idempotency_key="workflow-input-123",
         )
+
+    def test_configure_uses_real_client_and_invalid_annotations_are_rejected(self):
+        application = object.__new__(ApplicationClient)
+        runtime = SimpleNamespace(require_application=lambda: application)
+        values = {
+            "session_id": "session-1", "mode": "document",
+            "expected_outcome_revision": 2, "expected_text_settings_revision": 3,
+            "annotation_mode": "speakers", "annotation_only": True,
+            "idempotency_key": "speech-config-123",
+        }
+        with patch.object(ApplicationClient, "_request_json", return_value={}) as request:
+            configure_speech_optimization(runtime, ConfigureSpeechOptimizationInput(**values))
+        request.assert_called_once_with(
+            "/api/v1/sessions/session-1/workflow-inputs/speech-optimization",
+            method="POST", body={k: v for k, v in values.items() if k not in {"session_id", "idempotency_key"}},
+            idempotency_key="speech-config-123",
+        )
+        for changes in ({"mode": "inline"}, {"annotation_mode": "off"}):
+            with self.assertRaises(ValidationError):
+                ConfigureSpeechOptimizationInput(**{**values, **changes})
+
+    def test_audiobook_role_requires_text_revision_and_forwards_it(self):
+        values = {
+            "session_id": "session-1", "consumer": "generation", "role": "tts_optimized",
+            "artifact_id": "artifact-1", "expected_outcome_revision": 2,
+            "expected_selection_revision": 3, "idempotency_key": "text-select-123",
+        }
+        with self.assertRaises(ValidationError):
+            SelectWorkflowInputInput(**values)
+        arguments = SelectWorkflowInputInput(**values, expected_text_settings_revision=4)
+        select_workflow_input(self.runtime, arguments)
+        self.assertEqual(4, self.application.select_workflow_input.call_args.kwargs["expected_text_settings_revision"])
 
     def test_schema_requires_translation_revision_and_forbids_translation_loop(self) -> None:
         with self.assertRaises(ValidationError):

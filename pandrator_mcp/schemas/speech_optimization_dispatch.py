@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, StrictInt, model_validator
 
 from .common import ToolInput
 from .delegation import DelegationContextDeltaInput, DelegationExecutionMixin
@@ -83,10 +83,40 @@ class ReleaseSpeechOptimizationDispatchBatchInput(ToolInput):
     )
 
 
+class SpeechOptimizationDispatchAnnotationInput(ToolInput):
+    start: StrictInt = Field(ge=0)
+    end: StrictInt = Field(gt=0)
+    speaker_ref: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> SpeechOptimizationDispatchAnnotationInput:
+        if self.end <= self.start:
+            raise ValueError("annotation end must be greater than start")
+        return self
+
+
 class SpeechOptimizationDispatchItemInput(ToolInput):
     unit_id: int = Field(ge=1)
     text: str | None = Field(default=None, min_length=1, max_length=4 * 1024 * 1024)
     speech_xml: str | None = Field(default=None, max_length=256 * 1024)
+    annotations: list[SpeechOptimizationDispatchAnnotationInput] | None = Field(
+        default=None, max_length=500
+    )
+    source_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    boundary_after: (
+        Literal["continuation", "dialogue_turn", "paragraph", "scene", "chapter"] | None
+    ) = None
+
+    @model_validator(mode="after")
+    def validate_variant(self) -> SpeechOptimizationDispatchItemInput:
+        if self.annotations is not None:
+            if self.source_sha256 is None:
+                raise ValueError("annotations require source_sha256")
+            if self.text is not None or self.speech_xml is not None:
+                raise ValueError("annotations cannot be combined with text or speech_xml")
+        elif self.source_sha256 is not None or self.boundary_after is not None:
+            raise ValueError("source_sha256 and boundary_after require annotations")
+        return self
 
 
 class SpeechOptimizationDispatchResultInput(ToolInput):

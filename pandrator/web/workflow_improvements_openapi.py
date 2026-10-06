@@ -1,10 +1,11 @@
 """Contracts for bounded workflow inspections and guarded controls."""
 
-from .schemas import ReviewSplitInspection, WorkflowInputSelection
+from .schemas import ReviewSplitInspection, SpeechOptimizationConfiguration, WorkflowInputSelection
 
 WORKFLOW_IMPROVEMENT_SCHEMAS = {
     "ReviewSplitInspection": ReviewSplitInspection,
     "WorkflowInputSelection": WorkflowInputSelection,
+    "SpeechOptimizationConfiguration": SpeechOptimizationConfiguration,
 }
 
 
@@ -39,6 +40,9 @@ def workflow_improvements_paths():
         "/api/v1/sessions/{sessionId}/workflow-inputs": {
             "get": operation("getWorkflowInputs", "app.read"),
             "put": operation("selectWorkflowInput", "app.write", model="WorkflowInputSelection", write=True),
+        },
+        "/api/v1/sessions/{sessionId}/workflow-inputs/speech-optimization": {
+            "post": operation("configureSpeechOptimization", "app.write", model="SpeechOptimizationConfiguration", write=True),
         },
         "/api/v1/subtitle-evidence/routes": {
             "get": operation("listSubtitleEvidenceRoutes", "app.read", parameters=[

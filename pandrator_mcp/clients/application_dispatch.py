@@ -119,6 +119,7 @@ class ApplicationDispatchMethods(ApplicationRequests):
         expected_selection_revision: int,
         idempotency_key: str,
         expected_translation_settings_revision: int | None = None,
+        expected_text_settings_revision: int | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/workflow-inputs",
@@ -130,6 +131,23 @@ class ApplicationDispatchMethods(ApplicationRequests):
                 "expected_outcome_revision": expected_outcome_revision,
                 "expected_selection_revision": expected_selection_revision,
                 "expected_translation_settings_revision": expected_translation_settings_revision,
+                "expected_text_settings_revision": expected_text_settings_revision,
+            },
+            idempotency_key=idempotency_key,
+        )
+
+    def configure_speech_optimization(
+        self, *, session_id: str, mode: str, expected_outcome_revision: int,
+        expected_text_settings_revision: int, idempotency_key: str,
+        annotation_mode: str = "off", annotation_only: bool = False,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/workflow-inputs/speech-optimization",
+            method="POST",
+            body={
+                "mode": mode, "expected_outcome_revision": expected_outcome_revision,
+                "expected_text_settings_revision": expected_text_settings_revision,
+                "annotation_mode": annotation_mode, "annotation_only": annotation_only,
             },
             idempotency_key=idempotency_key,
         )

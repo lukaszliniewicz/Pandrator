@@ -65,6 +65,7 @@ def register_generation_plan_tools(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
         include_repairs: bool = False,
+        view: Literal["compact", "full"] = "compact",
     ) -> dict[str, Any]:
         """List generation runs for review or export selection.
 
@@ -79,6 +80,7 @@ def register_generation_plan_tools(
                 session_id=session_id,
                 limit=limit,
                 include_repairs=include_repairs,
+                view=view,
             ),
         )
 
@@ -243,6 +245,7 @@ def register_generation_plan_tools(
         speech_plan_revision_id: str,
         idempotency_key: str,
         stale_only: bool = False,
+        view: Literal["compact", "full"] = "compact",
     ) -> dict[str, Any]:
         """Generate exactly the active selected revision without rebuilding topology. A stale revision is rejected; stale_only retains unchanged completed audio."""
         return _call_with_validated_input(

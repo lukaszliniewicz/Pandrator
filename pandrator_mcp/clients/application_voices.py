@@ -170,6 +170,7 @@ class ApplicationVoiceMethods(ApplicationRequests):
         language: str | None,
         expected_voice_revision: int,
         idempotency_key: str,
+        recipe_signature: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "artifact_id": artifact_id,
@@ -178,6 +179,8 @@ class ApplicationVoiceMethods(ApplicationRequests):
         }
         if language is not None:
             body["language"] = language
+        if recipe_signature is not None:
+            body["recipe_signature"] = recipe_signature
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/samples/from-preview",
             method="POST",
@@ -262,11 +265,21 @@ class ApplicationVoiceMethods(ApplicationRequests):
         *,
         expected_revision: int,
         idempotency_key: str,
+        sample_id: str | None = None,
+        sample_sha256: str | None = None,
+        recipe_signature: str | None = None,
     ) -> dict[str, Any]:
+        body = {}
+        if sample_id is not None:
+            body["sample_id"] = sample_id
+        if sample_sha256 is not None:
+            body["sample_sha256"] = sample_sha256
+        if recipe_signature is not None:
+            body["recipe_signature"] = recipe_signature
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/providers/{quote(service_id, safe='')}",
             method="POST",
-            body={},
+            body=body,
             idempotency_key=idempotency_key,
             if_match_revision=expected_revision,
         )

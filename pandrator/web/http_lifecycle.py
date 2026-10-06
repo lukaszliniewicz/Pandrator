@@ -10,6 +10,7 @@ import secrets
 import time
 import traceback
 import uuid
+from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar, cast
@@ -74,6 +75,16 @@ def _endpoint_name() -> str:
     """Return the view name without its Blueprint namespace."""
 
     return str(request.endpoint or "").rsplit(".", 1)[-1]
+
+
+def _request_log_context() -> tuple[str, str, str, str]:
+    """Correlate failures without logging query strings or request bodies."""
+    return (
+        datetime.now(UTC).isoformat(timespec="milliseconds"),
+        str(getattr(g, "request_id", "")),
+        request.method,
+        str(request.url_rule.rule) if request.url_rule else "unmatched",
+    )
 
 
 class ApiGuards:
@@ -478,7 +489,8 @@ class ApiGuards:
                     )
                 except Exception as error:
                     self.app.logger.error(
-                        "Audit projection failed: %s",
+                        "Audit projection failed timestamp=%s request_id=%s method=%s route=%s: %s",
+                        *_request_log_context(),
                         self.services.redactor.redact(error),
                     )
             return response
@@ -508,7 +520,8 @@ class ApiGuards:
             safe_message = redactor.redact(error)
             safe_trace = redactor.redact(traceback.format_exc())
             app.logger.error(
-                "Unhandled API error: %s\n%s",
+                "Unhandled API error timestamp=%s request_id=%s method=%s route=%s: %s\n%s",
+                *_request_log_context(),
                 safe_message,
                 safe_trace,
             )

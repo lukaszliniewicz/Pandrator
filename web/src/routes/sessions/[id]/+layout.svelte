@@ -20,6 +20,7 @@
   import { sessionApi } from '$lib/domain-api';
   import { errorMessage } from '$lib/errors';
   import { invalidates, invalidationBus } from '$lib/invalidation';
+  import { loadLazyModule } from '$lib/lazy-module';
   import { SESSION_CONTEXT, type SessionContext } from '$lib/session-context';
   import { SessionStore } from '$lib/session-store.svelte';
   import { WorkflowStore } from '$lib/workflow-store.svelte';
@@ -31,6 +32,10 @@
     null
   );
   let GenerationDrawerComponent = $state<typeof GenerationDrawer | null>(null);
+  let drawerLoadFailed = $state(false);
+  let customizerLoadFailed = $state(false);
+  let loadingCustomizer = $state(false);
+  let mounted = false;
   let sourceProfile = $state('none');
   let editingName = $state(false);
   let nameDraft = $state('');
@@ -96,10 +101,38 @@
     return contextState.reload();
   }
   async function openWorkflowCustomizer() {
-    WorkflowCustomizerComponent ??= (
-      await import('$lib/WorkflowCustomizer.svelte')
-    ).default;
-    customizeOpen = true;
+    if (loadingCustomizer) return;
+    loadingCustomizer = true;
+    customizerLoadFailed = false;
+    try {
+      const component =
+        WorkflowCustomizerComponent ??
+        (await loadLazyModule(() => import('$lib/WorkflowCustomizer.svelte')))
+          .default;
+      if (!mounted) return;
+      WorkflowCustomizerComponent = component;
+      customizeOpen = true;
+    } catch {
+      if (mounted) customizerLoadFailed = true;
+    } finally {
+      if (mounted) loadingCustomizer = false;
+    }
+  }
+  async function loadGenerationDrawer() {
+    try {
+      const { default: component } = await loadLazyModule(
+        () => import('$lib/GenerationDrawer.svelte')
+      );
+      if (mounted) {
+        GenerationDrawerComponent = component;
+        drawerLoadFailed = false;
+      }
+    } catch {
+      if (mounted) drawerLoadFailed = true;
+    }
+  }
+  function reloadPage() {
+    window.location.reload();
   }
   async function editName() {
     if (!contextState.session) return;
@@ -132,6 +165,7 @@
     }
   }
   onMount(() => {
+    mounted = true;
     const disconnectSession = sessionStore.connect();
     const disconnectWorkflow = workflowStore.connect();
     const disconnectSourceProfile = invalidationBus.subscribe((batch) => {
@@ -141,19 +175,16 @@
       )
         void loadSourceProfile();
     });
-    const loadGenerationDrawer = () => {
-      void import('$lib/GenerationDrawer.svelte').then(
-        ({ default: component }) => (GenerationDrawerComponent = component)
-      );
-    };
-    const idleCallback = window.requestIdleCallback?.(loadGenerationDrawer, {
+    const scheduleDrawer = () => void loadGenerationDrawer();
+    const idleCallback = window.requestIdleCallback?.(scheduleDrawer, {
       timeout: 1000
     });
     const fallbackTimer =
       idleCallback === undefined
-        ? window.setTimeout(loadGenerationDrawer, 200)
+        ? window.setTimeout(scheduleDrawer, 200)
         : undefined;
     return () => {
+      mounted = false;
       disconnectSession();
       disconnectWorkflow();
       disconnectSourceProfile();
@@ -300,10 +331,22 @@
       </div>
       <button
         onclick={openWorkflowCustomizer}
+        disabled={loadingCustomizer}
         class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"
         ><Settings2 size={16} /> Customize workflow</button
       >
     </header>
+    {#if customizerLoadFailed}
+      <div class="mt-4 flex flex-wrap items-center gap-3 text-sm" role="alert">
+        <p>
+          Workflow controls couldn’t load. Save any open edits, then reload this
+          page.
+        </p>
+        <button class="btn btn-secondary" onclick={reloadPage}
+          >Reload page</button
+        >
+      </div>
+    {/if}
     <div class="session-content min-w-0 max-w-full py-7">
       {@render children()}
     </div>
@@ -320,6 +363,17 @@
       sessionId={page.params.id ?? ''}
       workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
     />{/key}{/if}
+{#if contextState.session && drawerLoadFailed && contextState.session.workflow_kind !== 'subtitles'}
+  <div
+    class="surface fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-2xl flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] p-4 text-sm shadow-lg"
+    role="alert"
+  >
+    <p>
+      Audio controls couldn’t load. Save any open edits, then reload this page.
+    </p>
+    <button class="btn btn-secondary" onclick={reloadPage}>Reload page</button>
+  </div>
+{/if}
 
 <style>
   .session-tabs {

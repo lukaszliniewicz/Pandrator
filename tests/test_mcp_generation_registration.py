@@ -51,7 +51,7 @@ CASES = [
         BASE,
         "list_generation_runs",
         (SESSION,),
-        {"limit": 20, "include_repairs": False},
+        {"limit": 20, "include_repairs": False, "view": "compact"},
     ),
     Case(
         "pandrator_list_generation_segments",
@@ -116,7 +116,7 @@ CASES = [
         {**GUARD, "speech_plan_revision_id": "revision-1", "stale_only": True},
         "start_generation_run",
         (SESSION,),
-        {"speech_plan_revision_id": "revision-1", "stale_only": True, "idempotency_key": KEY},
+        {"speech_plan_revision_id": "revision-1", "stale_only": True, "idempotency_key": KEY, "view": "compact"},
     ),
     Case(
         "pandrator_revise_speech_block_plan",
@@ -216,7 +216,7 @@ CASES = [
 PAYLOADS = {
     "list_generation_runs": {
         "items": [
-            {"id": "run-1", "status": "succeeded", "private": "omit"},
+            {"id": "run-1", "status": "succeeded", "settings_snapshot": {"tts": {}}},
             {"id": "repair-1", "early_repair_parent_run_id": "run-1"},
         ]
     },
@@ -338,7 +338,11 @@ async def invoke_case(
         assert value["code"] == "application_response_timeout"
         assert value["details"] == {"operation_outcome": "unknown"}
         assert value["retryable"] is True
-        assert value["next_actions"][1]["arguments"] == arguments
+        expected_replay = dict(arguments)
+        if case.name == "pandrator_generate_speech_plan":
+            # The native SDK fills signature defaults before validated dispatch.
+            expected_replay.setdefault("view", "compact")
+        assert value["next_actions"][1]["arguments"] == expected_replay
     else:
         value = envelope(result)
         assert isinstance(value["result"], dict)

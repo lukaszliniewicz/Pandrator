@@ -3152,13 +3152,22 @@ def build_openapi_document() -> dict:
                 "get": operation("getLatestGenerationRun", "Latest generation run")
             },
             "/api/v1/sessions/{sessionId}/generation-runs": {
-                "get": operation("listGenerationRuns", "Named generation runs"),
-                "post": operation(
+                "get": {
+                    **operation("listGenerationRuns", "Named generation runs"),
+                    "parameters": [{
+                        "name": "view", "in": "query",
+                        "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"},
+                    }],
+                },
+                "post": {**operation(
                     "startGenerationRun",
                     "Generation queued",
                     "GenerationStartRequest",
                     "202",
-                ),
+                ), "parameters": [{
+                    "name": "view", "in": "query",
+                    "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"},
+                }]},
             },
             "/api/v1/sessions/{sessionId}/generation-runs/preview": {
                 "post": operation(

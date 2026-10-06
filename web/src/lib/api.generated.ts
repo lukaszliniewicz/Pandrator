@@ -3120,6 +3120,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workflow-inputs/speech-optimization": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["configureSpeechOptimization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workflow-plans": {
         parameters: {
             query?: never;
@@ -7138,6 +7154,41 @@ export interface components {
             /** Url */
             url: string;
         };
+        /** SpeechOptimizationConfiguration */
+        SpeechOptimizationConfiguration: {
+            /**
+             * Annotation Mode
+             * @default off
+             * @enum {string}
+             */
+            annotation_mode?: "off" | "dialogue" | "speakers";
+            /**
+             * Annotation Only
+             * @default false
+             */
+            annotation_only?: boolean;
+            /** Expected Outcome Revision */
+            expected_outcome_revision: number;
+            /** Expected Text Settings Revision */
+            expected_text_settings_revision: number;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "off" | "document" | "inline";
+        };
+        /** SpeechOptimizationDispatchAnnotationInput */
+        SpeechOptimizationDispatchAnnotationInput: {
+            /** End */
+            end: number;
+            /**
+             * Speaker Ref
+             * @default null
+             */
+            speaker_ref?: string | null;
+            /** Start */
+            start: number;
+        };
         /** SpeechOptimizationDispatchBatchClaimResponse */
         SpeechOptimizationDispatchBatchClaimResponse: {
             batch: components["schemas"]["SpeechOptimizationDispatchClaimedBatch"];
@@ -7281,6 +7332,21 @@ export interface components {
         };
         /** SpeechOptimizationDispatchItem */
         SpeechOptimizationDispatchItem: {
+            /**
+             * Annotations
+             * @default null
+             */
+            annotations?: components["schemas"]["SpeechOptimizationDispatchAnnotationInput"][] | null;
+            /**
+             * Boundary After
+             * @default null
+             */
+            boundary_after?: ("continuation" | "dialogue_turn" | "paragraph" | "scene" | "chapter") | null;
+            /**
+             * Source Sha256
+             * @default null
+             */
+            source_sha256?: string | null;
             /**
              * Speech Xml
              * @default null
@@ -7436,6 +7502,11 @@ export interface components {
         SpeechOptimizationDispatchUnit: {
             /** Language */
             language: string;
+            /**
+             * Source Sha256
+             * @default null
+             */
+            source_sha256?: string | null;
             /**
              * Speaker
              * @default null
@@ -8328,6 +8399,28 @@ export interface components {
             /** Transcript */
             transcript: string;
         };
+        /**
+         * VoiceDesignedSamplePreparationRequest
+         * @description Carry the complete recipe identity through preparation idempotency.
+         */
+        VoiceDesignedSamplePreparationRequest: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Expected Voice Revision */
+            expected_voice_revision: number;
+            /**
+             * Language
+             * @default null
+             */
+            language?: string | null;
+            /**
+             * Recipe Signature
+             * @default null
+             */
+            recipe_signature?: string | null;
+            /** Transcript */
+            transcript: string;
+        };
         /** VoiceLanguage */
         VoiceLanguage: {
             /**
@@ -8385,6 +8478,27 @@ export interface components {
             textures?: ("warm" | "bright" | "dark" | "airy" | "breathy" | "raspy" | "gravelly" | "resonant" | "clear" | "nasal")[];
             /** Use Cases */
             use_cases?: ("audiobook_narration" | "character_dialogue" | "voiceover" | "documentary" | "news" | "advertising" | "instructional")[];
+        };
+        /**
+         * VoicePublishRequest
+         * @description Optionally bind publication to one exact managed normalized sample.
+         */
+        VoicePublishRequest: {
+            /**
+             * Recipe Signature
+             * @default null
+             */
+            recipe_signature?: string | null;
+            /**
+             * Sample Id
+             * @default null
+             */
+            sample_id?: string | null;
+            /**
+             * Sample Sha256
+             * @default null
+             */
+            sample_sha256?: string | null;
         };
         /** VoiceReference */
         VoiceReference: {
@@ -8638,6 +8752,11 @@ export interface components {
             /** Expected Selection Revision */
             expected_selection_revision: number;
             /**
+             * Expected Text Settings Revision
+             * @default null
+             */
+            expected_text_settings_revision?: number | null;
+            /**
              * Expected Translation Settings Revision
              * @default null
              */
@@ -8646,7 +8765,7 @@ export interface components {
              * Role
              * @enum {string}
              */
-            role: "source" | "correction" | "translation";
+            role: "source" | "correction" | "translation" | "prepared_text" | "tts_optimized";
         };
         /** WorkflowPlanCreateRequest */
         WorkflowPlanCreateRequest: {
@@ -12384,7 +12503,9 @@ export interface operations {
     };
     listGenerationRuns: {
         parameters: {
-            query?: never;
+            query?: {
+                view?: "full" | "compact";
+            };
             header?: never;
             path: {
                 sessionId: string;
@@ -12404,7 +12525,9 @@ export interface operations {
     };
     startGenerationRun: {
         parameters: {
-            query?: never;
+            query?: {
+                view?: "full" | "compact";
+            };
             header?: {
                 /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
                 "Idempotency-Key"?: string;
@@ -15678,6 +15801,53 @@ export interface operations {
             };
         };
     };
+    configureSpeechOptimization: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechOptimizationConfiguration"];
+            };
+        };
+        responses: {
+            /** @description Bounded workflow result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or lifecycle conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     createWorkflowPlan: {
         parameters: {
             query?: never;
@@ -17356,7 +17526,10 @@ export interface operations {
     };
     getVoiceCatalogCapabilities: {
         parameters: {
-            query?: never;
+            query?: {
+                service_id?: string;
+                model?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -17601,7 +17774,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["VoicePublishRequest"];
+            };
+        };
         responses: {
             /** @description Provider upload queued */
             202: {
@@ -17764,10 +17941,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["VoiceDesignedSampleCreate"];
+                "application/json": components["schemas"]["VoiceDesignedSamplePreparationRequest"];
             };
         };
         responses: {
+            /** @description An identical ready normalized reference was reused */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Managed Breeze preview promotion queued */
             202: {
                 headers: {

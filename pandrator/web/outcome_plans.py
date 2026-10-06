@@ -106,8 +106,18 @@ class OutcomePlanService:
                 raise KeyError(session_id)
             plan = session.get(OutcomePlan, session_id)
             if plan is None:
+                from .workspace_settings import WorkspaceSettingsService
+
+                effective = WorkspaceSettingsService(self.database).get_in_session(
+                    session, session_id, "text"
+                )["effective"]
+                value = derive_legacy_outcome(record)
+                value["transformations"].update({
+                    key: bool(effective.get(key))
+                    for key in ("llm_tts_optimization", "llm_tts_document_optimization")
+                })
                 plan = OutcomePlan(
-                    session_id=session_id, value_json=derive_legacy_outcome(record)
+                    session_id=session_id, value_json=value
                 )
                 session.add(plan)
                 session.flush()
@@ -141,6 +151,7 @@ class OutcomePlanService:
         value: dict[str, Any],
         *,
         sync_session: bool = True,
+        preserve_input_selections: bool = False,
     ) -> dict[str, Any]:
         """Update an outcome plan inside a caller-owned transaction."""
 
@@ -177,7 +188,7 @@ class OutcomePlanService:
         next_inputs = value.get("inputs")
         if not isinstance(next_inputs, dict):
             next_inputs = {}
-        if str(previous_inputs.get("translation") or "correction") != str(
+        if not preserve_input_selections and str(previous_inputs.get("translation") or "correction") != str(
             next_inputs.get("translation") or "correction"
         ):
             # The chosen translation and speech-optimized descendants may

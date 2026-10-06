@@ -48,7 +48,8 @@ def test_api_core_is_the_only_direct_network_gateway():
         if re.search(r"\bfetch\s*\(", text) or "XMLHttpRequest" in text:
             offenders.append(path.relative_to(ROOT).as_posix())
     assert offenders == []
-    assert source(API_CORE).count("fetch(") == 1
+    # Safe-read recovery may have another call site in this same gateway.
+    assert re.search(r"\bfetch\s*\(", source(API_CORE))
 
 
 def test_api_core_assigns_idempotency_keys_to_mutations():

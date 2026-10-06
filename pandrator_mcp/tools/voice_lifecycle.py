@@ -123,6 +123,7 @@ def safe_sample_projection(value: Any) -> dict[str, Any]:
             "duration_ms",
             "transcript",
             "transcript_language",
+            "sample_sha256",
             "file_status",
             "available",
             "language",
@@ -300,7 +301,9 @@ def voice_catalog_capabilities(
     runtime: McpRuntime,
     arguments: VoiceCatalogCapabilitiesInput,
 ) -> dict[str, Any]:
-    payload = runtime.require_application().voice_catalog_capabilities()
+    payload = runtime.require_application().voice_catalog_capabilities(
+        service_id=arguments.service_id, model=arguments.model,
+    )
     requested_service = arguments.service_id.casefold() if arguments.service_id else None
     requested_model = arguments.model.casefold() if arguments.model else None
     result = {
@@ -383,6 +386,17 @@ def promote_voice_design(
         expected_voice_revision=arguments.expected_voice_revision,
         idempotency_key=arguments.idempotency_key,
     )
+    if result.get("status") == "ready":
+        return ToolOutcome(
+            result={key: result[key] for key in (
+                "status", "sample_id", "artifact_id", "sample_sha256",
+                "voice_revision", "reused_reference",
+            ) if key in result},
+            next_actions=[NextAction(
+                tool="pandrator_get_voice_samples", arguments={"voice_id": arguments.voice_id},
+                reason="Inspect the reused immutable normalized voice reference.",
+            )],
+        )
     return _job_outcome(
         runtime,
         result,
