@@ -44,6 +44,9 @@ from .speech_capabilities import (
 from .speech_capabilities import (
     capabilities_for_model as capabilities_for_model,
 )
+from .speech_capabilities import (
+    decorate_service_capabilities as decorate_service_capabilities,
+)
 
 SCHEMA = "pandrator.performance/v1"
 COMPILER_VERSION = "pssml-1.3"
@@ -184,39 +187,6 @@ def validate_annotation(
     return annotation.model_dump(mode="json", by_alias=True)
 
 
-def decorate_service_capabilities(service: dict[str, Any]) -> None:
-    """Expose one backend-authoritative capability view to UI and MCP clients."""
-    route = str(service.get("adapter") or "")
-    if route not in {"audio_cpp", "elevenlabs_native"}:
-        route = str(service.get("provider") or service.get("id") or "")
-    catalog = service.get("model_catalog") or []
-    metadata = {
-        str(item["id"]): item
-        for item in catalog
-        if isinstance(item, dict) and item.get("id")
-    }
-    model_ids = list(dict.fromkeys([*service.get("models", []), *metadata]))
-    profiles = {
-        model: capabilities_for_model(
-            model,
-            backend=route,
-            family=str(metadata.get(model, {}).get("family") or ""),
-            voice_mode=str(metadata.get(model, {}).get("voice_mode") or ""),
-            backend_version=str(service.get("backend_version") or ""),
-        )
-        for model in model_ids
-        if isinstance(model, str)
-    }
-    service["expressive_capabilities"] = profiles
-    for item in catalog:
-        if isinstance(item, dict) and item.get("id") in profiles:
-            item["expressive_capabilities"] = profiles[item["id"]]
-    # Keep the legacy UI field as a projection, not a competing capability model.
-    service["generation_prompt_models"] = [
-        model
-        for model, profile in profiles.items()
-        if profile["instructions"] != "none"
-    ]
 
 
 def resolve_capabilities(
@@ -224,14 +194,14 @@ def resolve_capabilities(
     endpoint: dict[str, Any] | None = None,
     _service_config_cache: dict | None = None,
 ) -> dict[str, Any]:
-    from . import tts_handler
+    from . import tts_service_catalogue as catalogue
 
     service_name = str(settings.get("service") or settings.get("tts_service") or "")
     cache_key = None
     if endpoint is None and _service_config_cache is not None:
         cache_key = (
             "resolved_capabilities",
-            tts_handler._service_config_cache_key(settings),
+            catalogue._service_config_cache_key(settings),
             str(settings.get("service") or ""),
             str(settings.get("tts_service") or ""),
             str(settings.get("openai_audio_endpoint") or ""),
@@ -246,7 +216,7 @@ def resolve_capabilities(
             return deepcopy(hit)
     if endpoint is None:
         selected = str(settings.get("openai_audio_endpoint") or service_name)
-        endpoint = tts_handler.get_service_config(settings, selected, _cache=_service_config_cache) or {}
+        endpoint = catalogue.get_service_config(settings, selected, _cache=_service_config_cache) or {}
     route = str(endpoint.get("adapter") or "")
     if route not in {"audio_cpp", "elevenlabs_native"}:
         route = str(endpoint.get("provider") or endpoint.get("id") or service_name)
@@ -256,7 +226,7 @@ def resolve_capabilities(
             or settings.get("xtts_model")
             or settings.get("model")
             or endpoint.get("default_model")
-            or tts_handler.SILERO_DEFAULT_MODEL
+            or catalogue.SILERO_DEFAULT_MODEL
         )
     elif route in {"elevenlabs", "elevenlabs_native"}:
         model = str(
@@ -264,7 +234,7 @@ def resolve_capabilities(
             or settings.get("xtts_model")
             or settings.get("model")
             or endpoint.get("default_model")
-            or tts_handler.ELEVENLABS_TTS_DEFAULT_MODEL
+            or catalogue.ELEVENLABS_TTS_DEFAULT_MODEL
         )
     else:
         model = str(
@@ -283,7 +253,7 @@ def resolve_capabilities(
         "openai_compatible",
         "",
     }:
-        route = tts_handler._infer_audio_provider(
+        route = catalogue._infer_audio_provider(
             name=str(endpoint.get("name") or ""),
             base_url=str(endpoint.get("base_url") or ""),
             raw_provider=str(endpoint.get("provider") or ""),
@@ -298,7 +268,7 @@ def resolve_capabilities(
     )
     if route == "audio_cpp":
         metadata = {
-            **tts_handler._audio_cpp_model_metadata(model, endpoint),
+            **catalogue._audio_cpp_model_metadata(model, endpoint),
             **metadata,
         }
     profile = capabilities_for_model(
@@ -765,7 +735,7 @@ def compile_performance(
     if route in {"elevenlabs", "elevenlabs_native"}:
         voice_settings = settings.get("elevenlabs_voice_settings")
         if voice_settings is not None:
-            from .tts_handler import _validated_elevenlabs_voice_settings
+            from .elevenlabs_speech_contracts import _validated_elevenlabs_voice_settings
 
             validated = _validated_elevenlabs_voice_settings(voice_settings)
             if validated:

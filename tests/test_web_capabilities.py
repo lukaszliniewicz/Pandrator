@@ -11,6 +11,17 @@ from tests.web_test_support import prepare_web_test_data_root
 
 
 class GpuCapabilityTests(unittest.TestCase):
+    def test_native_memory_values_and_malformed_values_keep_existing_fallback(self):
+        for raw, expected in (
+            (0, 0), (8192, 8192), ("8192", 8192), (4.5, 4),
+            (None, 0), (-1, 0), ("bad", 0), (object(), 0),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    expected,
+                    capabilities._device("fixture", vram_mb=raw, source="fixture")["vram_mb"],
+                )
+
     def test_linux_drm_probe_reads_amd_vram(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -256,6 +267,24 @@ class SttRoutingCapabilityTests(unittest.TestCase):
         self.assertEqual(25, len(stt["models"]["parakeet"]["language_support"]["languages"]))
         self.assertFalse(qwen["requires_explicit_language_for_timestamps"])
         self.assertTrue(qwen["requires_resolved_language_for_timestamps"])
+
+    def test_recognizer_language_metadata_and_coverage_share_one_lookup(self):
+        native = capabilities.supported_stt_languages
+        with mock.patch.object(capabilities, "supported_stt_languages", wraps=native) as lookup:
+            stt = self._stt()
+        self.assertEqual(
+            sorted(capabilities.MODELS),
+            sorted(call.args[0] for call in lookup.call_args_list),
+        )
+        for engine, record in stt["models"].items():
+            with self.subTest(engine=engine):
+                languages = native(engine)
+                expected = list(languages) if languages is not None else None
+                self.assertEqual(expected, record["supported_languages"])
+                self.assertEqual(
+                    "exact" if languages is not None else "unknown",
+                    record["language_support"]["coverage"],
+                )
 
     def test_detector_requirements_are_honest_and_do_not_raise_whisper_minimum(self):
         detector = self._stt()["language_detector"]

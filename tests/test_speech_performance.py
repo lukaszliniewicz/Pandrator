@@ -2,7 +2,7 @@
 
 import pytest
 
-from pandrator.logic import tts_handler
+from pandrator.logic import tts_handler, tts_service_catalogue
 from pandrator.logic.speech_performance import (
     PerformanceAnnotation,
     capabilities_for_model,
@@ -141,14 +141,14 @@ def test_eleven_v2_context_compiles_into_fingerprinted_fields(mode, expected):
 
 def test_resolved_capability_cache_is_input_complete_and_mutation_isolated(monkeypatch):
     calls = 0
-    original = tts_handler.get_service_config
+    original = tts_service_catalogue.get_service_config
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(tts_handler, "get_service_config", counted)
+    monkeypatch.setattr(tts_service_catalogue, "get_service_config", counted)
     cache = {}
     base = settings("fireredtts3_base_q8_0")
     first = resolve_capabilities(base, _service_config_cache=cache)

@@ -1,6 +1,8 @@
 import base64
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -11,7 +13,65 @@ from unittest.mock import MagicMock, Mock, patch
 
 import requests
 
-from pandrator.logic import audio_cpp_execution, tts_handler, tts_provider_profiles
+from pandrator.logic import (
+    audio_cpp_execution,
+    tts_handler,
+    tts_provider_profiles,
+    tts_service_catalogue,
+)
+
+
+def test_configuration_catalogue_and_compiler_import_without_provider_execution():
+    script = """
+import sys
+from typing import get_type_hints
+from pandrator.logic import tts_service_catalogue as catalogue
+for name in ('pandrator.logic.tts_handler', 'pandrator.logic.speech_performance',
+             'pandrator.logic.kobold_qwen_http', 'pandrator.logic.audio_cpp_speech_payload',
+             'requests', 'pydub'):
+    assert name not in sys.modules, name
+services = catalogue.get_service_configs({})
+assert services and all('expressive_capabilities' in service for service in services)
+assert get_type_hints(catalogue._dedupe_ordered)
+from pandrator.logic import speech_performance as compiler
+compiled = compiler.compile_performance(
+    'Fixture text', {'service': 'openai', 'model': 'gpt-4o-mini-tts'}
+)
+assert compiled.transcript == 'Fixture text'
+from pandrator.logic.tts_language_preflight import resolve_tts_language_support
+for settings, endpoint, expected_model in (
+    ({'service': 'Silero'}, {'id': 'silero', 'provider': 'silero'}, catalogue.SILERO_DEFAULT_MODEL),
+    ({'service': 'ElevenLabs'}, {'id': 'elevenlabs', 'provider': 'elevenlabs'}, catalogue.ELEVENLABS_TTS_DEFAULT_MODEL),
+    ({'service': 'missing-service', 'provider_configs': [
+        {'id': 'z-fixture', 'base_url': 'https://fixture.invalid/z', 'models': ['z-model'], 'default_model': 'z-model'},
+        {'id': 'a-fixture', 'base_url': 'https://fixture.invalid/a', 'models': ['a-model'], 'default_model': 'a-model'},
+    ]}, None, 'a-model'),
+):
+    support = resolve_tts_language_support(settings, endpoint=endpoint)
+    assert support['model_id'] == expected_model, support
+for name in ('pandrator.logic.tts_handler', 'pandrator.logic.kobold_qwen_http',
+             'pandrator.logic.audio_cpp_speech_payload', 'requests', 'pydub'):
+    assert name not in sys.modules, name
+from pandrator.logic import tts_handler as handler, speech_capabilities
+from pandrator.logic import elevenlabs_speech_contracts as eleven, kobold_qwen_http as http
+from pandrator.logic import audio_cpp_model_metadata as metadata, audio_cpp_speech_payload as payload
+assert payload._audio_cpp_model_metadata is metadata._audio_cpp_model_metadata
+assert payload.ModelCatalog is metadata.ModelCatalog
+for name in ('get_service_config', 'get_service_configs', 'get_first_class_service_name',
+             '_service_config_cache_key', '_default_service_configs', '_infer_audio_provider',
+             '_audio_cpp_model_metadata', '_default_tts_pricing', '_dedupe_ordered',
+             'resolve_openai_audio_endpoint', '_parse_openai_audio_endpoints',
+             '_provider_for_tts_service', '_service_audio_endpoint', '_endpoint_string_list'):
+    assert getattr(handler, name) is getattr(catalogue, name), name
+assert handler._validated_elevenlabs_voice_settings is eleven._validated_elevenlabs_voice_settings
+assert compiler.decorate_service_capabilities is speech_capabilities.decorate_service_capabilities
+assert handler.KOBOLD_QWEN_API_BASE_URL is http.KOBOLD_QWEN_API_BASE_URL is catalogue.KOBOLD_QWEN_API_BASE_URL
+assert handler.GEMINI_TTS_MODELS is catalogue.GEMINI_TTS_MODELS
+handler.GEMINI_TTS_MODELS.append('in-place-fixture-model')
+gemini = catalogue.get_service_config({}, 'gemini')
+assert 'in-place-fixture-model' in gemini['models']
+"""
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=30)
 
 
 class TTSHandlerTests(unittest.TestCase):
@@ -828,9 +888,9 @@ class TTSHandlerTests(unittest.TestCase):
         settings = {"service_configs": [{"id": "openai", "api_base": "https://one.example"}]}
         cache = {}
         with patch.object(
-            tts_handler,
+            tts_service_catalogue,
             "_default_service_configs",
-            wraps=tts_handler._default_service_configs,
+            wraps=tts_service_catalogue._default_service_configs,
         ) as build:
             selected = tts_handler.get_service_config(settings, "OpenAI", cache)
             assert selected is not None

@@ -264,3 +264,38 @@ def capabilities_for_model(
         )
         profile["notes"].append("Voice/style descriptions are parenthesized input prefixes; phrase scope is not established.")
     return profile
+
+
+def decorate_service_capabilities(service: dict[str, Any]) -> None:
+    """Expose one backend-authoritative capability view to UI and MCP clients."""
+    route = str(service.get("adapter") or "")
+    if route not in {"audio_cpp", "elevenlabs_native"}:
+        route = str(service.get("provider") or service.get("id") or "")
+    catalog = service.get("model_catalog") or []
+    metadata = {
+        str(item["id"]): item
+        for item in catalog
+        if isinstance(item, dict) and item.get("id")
+    }
+    model_ids = list(dict.fromkeys([*service.get("models", []), *metadata]))
+    profiles = {
+        model: capabilities_for_model(
+            model,
+            backend=route,
+            family=str(metadata.get(model, {}).get("family") or ""),
+            voice_mode=str(metadata.get(model, {}).get("voice_mode") or ""),
+            backend_version=str(service.get("backend_version") or ""),
+        )
+        for model in model_ids
+        if isinstance(model, str)
+    }
+    service["expressive_capabilities"] = profiles
+    for item in catalog:
+        if isinstance(item, dict) and item.get("id") in profiles:
+            item["expressive_capabilities"] = profiles[item["id"]]
+    # Keep the legacy UI field as a projection, not a competing capability model.
+    service["generation_prompt_models"] = [
+        model
+        for model, profile in profiles.items()
+        if profile["instructions"] != "none"
+    ]

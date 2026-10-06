@@ -864,13 +864,13 @@ class SessionViewPerformanceTests(unittest.TestCase):
         self.assertLessEqual(len(artifact_selects), 20)
 
     def test_catalogue_builds_are_request_scoped_and_bounded(self):
-        from pandrator.logic import tts_handler
+        from pandrator.logic import tts_service_catalogue
 
         session_id = self._create_session()
         plan = self._plan(session_id, 60)
         self._seed_reusable_takes(session_id, plan["active_revision_id"], self._override())
         with patch.object(
-            tts_handler, "_default_service_configs", wraps=tts_handler._default_service_configs
+            tts_service_catalogue, "_default_service_configs", wraps=tts_service_catalogue._default_service_configs
         ) as builds:
             revision_history(self.database, session_id, limit=10)
             first_call = builds.call_count

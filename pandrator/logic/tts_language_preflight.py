@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from importlib import import_module
 from typing import Any
 
+from . import tts_service_catalogue as catalogue
 from .language_capabilities import (
     canonical_language_tag,
     language_decision,
@@ -48,16 +48,14 @@ def _selected_endpoint(
         selected = dict(endpoint)
         return selected, str(selected.get("id") or selected.get("name") or "")
 
-    tts_handler = import_module("pandrator.logic.tts_handler")
-
     service = str(settings.get("service") or settings.get("tts_service") or "XTTS")
-    selected = tts_handler.get_service_config(settings, service, _cache=cache)
+    selected = catalogue.get_service_config(settings, service, _cache=cache)
     selected_id = str((selected or {}).get("id") or "")
 
     if selected is None:
         endpoint_name = str(settings.get("openai_audio_endpoint") or "").strip()
         if endpoint_name:
-            selected = tts_handler.get_service_config(
+            selected = catalogue.get_service_config(
                 settings, endpoint_name, _cache=cache
             )
             selected_id = str((selected or {}).get("id") or endpoint_name)
@@ -65,7 +63,7 @@ def _selected_endpoint(
     if selected is None:
         # Custom OpenAI-compatible configurations are routed by the selected
         # endpoint, or by the same first configured endpoint as synthesis.
-        candidate, _error = tts_handler.resolve_openai_audio_endpoint(
+        candidate, _error = catalogue.resolve_openai_audio_endpoint(
             dict(settings), _cache=cache
         )
         if candidate is not None:
@@ -101,15 +99,13 @@ def _provider_identity(endpoint: Mapping[str, Any], selector: str) -> tuple[str,
 def _selected_model(
     settings: Mapping[str, Any], endpoint: Mapping[str, Any], provider_id: str
 ) -> str:
-    tts_handler = import_module("pandrator.logic.tts_handler")
-
     if provider_id == "silero":
         model = (
             settings.get("silero_model")
             or settings.get("xtts_model")
             or settings.get("model")
             or endpoint.get("default_model")
-            or tts_handler.SILERO_DEFAULT_MODEL
+            or catalogue.SILERO_DEFAULT_MODEL
         )
     elif provider_id == "elevenlabs":
         model = (
@@ -117,7 +113,7 @@ def _selected_model(
             or settings.get("xtts_model")
             or settings.get("model")
             or endpoint.get("default_model")
-            or tts_handler.ELEVENLABS_TTS_DEFAULT_MODEL
+            or catalogue.ELEVENLABS_TTS_DEFAULT_MODEL
         )
     else:
         model = (

@@ -254,6 +254,7 @@ class ElevenLabsRequestTests(unittest.TestCase):
 
 @pytest.mark.parametrize("value", [
     {"stability": True}, {"stability": float("nan")},
+    {"stability": 10**400}, {"stability": -(10**400)},
     {"style": float("inf")}, {"speed": 0.24}, {"speed": 4.01},
     {"similarity_boost": 1.01}, {"use_speaker_boost": 1},
     {"unknown": 0.5}, ["stability"],
@@ -262,6 +263,8 @@ def test_invalid_elevenlabs_voice_settings_fail_before_http(value):
     settings = ElevenLabsRequestTests()._settings()
     settings["elevenlabs_voice_settings"] = value
     with patch("pandrator.logic.tts_handler.requests.post") as post:
+        with pytest.raises(ValueError, match="ElevenLabs"):
+            compile_performance("Text.", settings)
         with pytest.raises(ValueError, match="ElevenLabs"):
             tts_handler._request_elevenlabs_audio("Text.", settings)
         post.assert_not_called()

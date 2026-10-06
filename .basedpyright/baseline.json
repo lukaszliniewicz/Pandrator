@@ -242,16 +242,6 @@
                 }
             }
         ],
-        "./pandrator/logic/speech_performance.py": [
-            {
-                "code": "reportImportCycles",
-                "range": {
-                    "startColumn": 0,
-                    "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/api_routes.py": [
             {
                 "code": "reportArgumentType",
@@ -342,32 +332,6 @@
                 "range": {
                     "startColumn": 32,
                     "endColumn": 45,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/capabilities.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 52,
                     "lineCount": 1
                 }
             }

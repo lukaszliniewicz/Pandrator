@@ -21,10 +21,9 @@ from .tts_openai_http_policy import (
     _openai_models_urls,
     _should_try_next_openai_candidate,
 )
-
-# Kobold Qwen default URLs
-KOBOLD_QWEN_API_BASE_URL = "http://127.0.0.1:8042"
-
+from .tts_service_catalogue import (
+    KOBOLD_QWEN_API_BASE_URL as KOBOLD_QWEN_API_BASE_URL,
+)
 
 # A first Qwen CustomVoice request may need to download several gigabytes and
 # then restart KoboldCpp with the newly selected model.  Keep the request alive

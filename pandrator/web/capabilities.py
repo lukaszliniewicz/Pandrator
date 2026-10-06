@@ -87,7 +87,7 @@ def _device(
     *,
     vendor_id: object = "",
     device_id: object = "",
-    vram_mb: object = 0,
+    vram_mb: int | float | str | None = 0,
     source: str,
     apis: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -549,6 +549,7 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
     for engine, model in MODELS.items():
         preferred_quantization = default_quantization if engine == installer_engine else model.default_quantization
         cached = _crispasr_model_cached(paths, engine, preferred_quantization)
+        languages = supported_stt_languages(engine)
         model_capabilities[engine] = {
             "available": crispasr.installed,
             "installed": cached,
@@ -564,8 +565,8 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
             "word_timing": model.word_timing,
             "diarization": "native" if engine == "moss" else "optional-external",
             "supported_languages": (
-                list(supported_stt_languages(engine))
-                if supported_stt_languages(engine) is not None
+                list(languages)
+                if languages is not None
                 else None
             ),
             "language_detection": crispasr.installed if engine == "whisper" else detector_available if engine in {"parakeet", "qwen3"} else False,
@@ -573,8 +574,8 @@ def probe_stable_capabilities(paths: DataPaths) -> dict[str, Any]:
                 provider_id="crispasr", model_id=model.filename_for(preferred_quantization),
                 model_revision=f"legacy-model-enum:{model.filename_for(preferred_quantization)}",
                 operation="asr", native_route=f"crispasr:{engine}",
-                languages=supported_stt_languages(engine),
-                coverage="exact" if supported_stt_languages(engine) is not None else "unknown",
+                languages=languages,
+                coverage="exact" if languages is not None else "unknown",
                 source_urls=sources[engine], runtime_requirement="CrispASR runtime",
                 note="Legacy model selection does not pin a model repository revision.",
             ),
