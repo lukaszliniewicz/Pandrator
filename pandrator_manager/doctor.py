@@ -17,7 +17,7 @@ from .components import ComponentRegistry
 from .components.slots import active_component_path
 from .context import ManagerContext
 from .errors import ManagerError
-from .launcher import (
+from .launcher_runtime import (
     external_cleanup_runtime,
     installed_launcher,
     launcher_metadata_path,

@@ -34,7 +34,7 @@ from .. import __version__
 from ..auth import protect_path, read_client_secret
 from ..context import WorkspaceLayout
 from ..errors import ConflictError, ManagerError, UnsafePathError
-from ..launcher import (
+from ..launcher_runtime import (
     LauncherRuntime,
     current_runtime_executable,
     installed_launcher,

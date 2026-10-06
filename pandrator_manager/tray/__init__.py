@@ -83,7 +83,7 @@ def _tray_autostart_path(layout: WorkspaceLayout) -> Path:
 
 
 def _tray_command(layout: WorkspaceLayout) -> tuple[str, ...]:
-    from ..launcher import installed_launcher
+    from ..launcher_runtime import installed_launcher
 
     installed = installed_launcher(layout)
     if installed is not None:

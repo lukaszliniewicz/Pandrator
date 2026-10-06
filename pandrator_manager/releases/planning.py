@@ -12,7 +12,7 @@ from ..artifacts import ArtifactDownloader, ArtifactSpec
 from ..components import ComponentRegistry
 from ..context import ManagerContext
 from ..errors import ManagerError, RevisionConflict
-from ..launcher import native_manager_installation
+from ..launcher_runtime import native_manager_installation
 from ..legacy_data import LegacyDataInventory, legacy_data_inventory
 from ..models import (
     ConfirmationRequirement,

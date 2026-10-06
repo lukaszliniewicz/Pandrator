@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .context import WorkspaceLayout
-from .launcher import installed_launcher
+from .launcher_runtime import installed_launcher
 
 
 @dataclass(frozen=True, slots=True)

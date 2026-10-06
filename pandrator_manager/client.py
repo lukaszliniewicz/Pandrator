@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import TypedDict
 from urllib.parse import urlsplit
 
 import requests
@@ -18,7 +19,7 @@ import requests
 from .auth import read_client_secret
 from .context import WorkspaceLayout
 from .desktop import host_process_environment
-from .launcher import (
+from .launcher_runtime import (
     LauncherRuntime,
     current_runtime_executable,
     installed_launcher,
@@ -48,6 +49,19 @@ from .uninstall import (
     uninstall_helper_command,
     uninstall_statuses,
 )
+
+
+class _DetachedProcessOptions(TypedDict, total=False):
+    creationflags: int
+    start_new_session: bool
+
+
+def _detached_process_options() -> _DetachedProcessOptions:
+    if os.name == "nt":
+        return {
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        }
+    return {"start_new_session": True}
 
 
 class ManagerUnavailable(RuntimeError):
@@ -317,16 +331,6 @@ class ManagerClient:
                 action="daemon",
                 workspace=layout.workspace,
             )
-        options = (
-            {
-                "creationflags": (
-                    subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_NO_WINDOW
-                )
-            }
-            if os.name == "nt"
-            else {"start_new_session": True}
-        )
         try:
             process = subprocess.Popen(
                 command,
@@ -336,7 +340,7 @@ class ManagerClient:
                 shell=False,
                 cwd=cwd,
                 env=host_process_environment(),
-                **options,
+                **_detached_process_options(),
             )
         except Exception:
             log.close()
@@ -359,7 +363,7 @@ class ManagerClient:
         *,
         json_payload: dict | None = None,
         idempotency_key: str | None = None,
-        timeout: float = 30,
+        timeout: float | tuple[float, float] | None = 30,
         stream: bool = False,
     ) -> requests.Response:
         if (
@@ -382,22 +386,29 @@ class ManagerClient:
             timeout=timeout,
             stream=stream,
         )
-        response_instance = str(
-            response.headers.get("X-Pandrator-Manager-Instance") or ""
-        )
-        if not hmac.compare_digest(
-            response_instance,
-            self.descriptor.instance_id,
-        ):
-            raise ManagerUnavailable(
-                "Manager response identity does not match its descriptor."
+        try:
+            response_instance = str(
+                response.headers.get("X-Pandrator-Manager-Instance") or ""
             )
-        if response.status_code >= 400:
+            if not hmac.compare_digest(
+                response_instance,
+                self.descriptor.instance_id,
+            ):
+                raise ManagerUnavailable(
+                    "Manager response identity does not match its descriptor."
+                )
+            if response.status_code >= 400:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {"error": {"message": response.text[:1000]}}
+                raise ManagerApiError(response.status_code, payload)
+        except BaseException:
             try:
-                payload = response.json()
-            except ValueError:
-                payload = {"error": {"message": response.text[:1000]}}
-            raise ManagerApiError(response.status_code, payload)
+                response.close()
+            except Exception:
+                pass
+            raise
         return response
 
     def status(self) -> dict:

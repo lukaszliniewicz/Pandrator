@@ -34,7 +34,7 @@ from .auth import protect_path
 from .autostart import autostart_adapter
 from .context import WorkspaceLayout
 from .errors import ManagerError
-from .launcher import (
+from .launcher_runtime import (
     current_runtime_executable,
     external_cleanup_runtime,
     runtime_command,
@@ -730,7 +730,7 @@ class UninstallHandoffCoordinator:
 
 
 def _uninstall_command(payload: UninstallHandoffPayload) -> list[str]:
-    from .launcher import LauncherRuntime
+    from .launcher_runtime import LauncherRuntime
 
     return runtime_command(
         LauncherRuntime(
