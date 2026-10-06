@@ -62,6 +62,7 @@ from .process_identity import (
     identity_from_mapping,
     validated_process,
 )
+from .process_logs import attach_process_log, process_log_handle
 from .process_paths import uses_installation_executable
 from .runtime_metadata import remove_stale_runtime_metadata
 
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
         EnvironmentProvider,
         SubprocessEnvironmentProvider,
     )
+    from .host_protocols import OperationsProvider
     from .reporting import Reporter
 
     class _ComponentProviders(
@@ -87,6 +89,7 @@ if TYPE_CHECKING:
         SubprocessEnvironmentProvider,
         ArtifactDownloadProvider,
         BackendHealthProvider,
+        OperationsProvider,
         Protocol,
     ):
         pass
@@ -838,8 +841,9 @@ class ComponentOperationsMixin(_ComponentProviders):
             if process is not None:
                 logging.info("Stopping temporary Kokoro bootstrap process.")
                 self.terminate_process_tree(process)
-                if hasattr(process, 'log_handle') and process.log_handle:
-                    process.log_handle.close()
+                log_handle = process_log_handle(process)
+                if log_handle:
+                    log_handle.close()
                 if self.kokoro_process is process:
                     self.kokoro_process = None
 
@@ -898,8 +902,7 @@ class ComponentOperationsMixin(_ComponentProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
-        process.log_file_path = kokoro_log_file
+        attach_process_log(process, log_handle, kokoro_log_file)
         self.kokoro_process = process
         return process
 

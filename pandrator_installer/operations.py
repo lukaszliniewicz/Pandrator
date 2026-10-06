@@ -55,10 +55,11 @@ from .constants import (
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 2 * 60 * 60
 COMMAND_OUTPUT_TAIL_LINES = 4000
+_MANAGED_HANDLER_ATTRIBUTE = '_pandrator_managed_handler'
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from .command_protocols import CommandProvider as _CommandProvider
     from .command_protocols import PathArgument
@@ -72,6 +73,8 @@ class OperationsMixin(_CommandProvider):
     if TYPE_CHECKING:
         initial_working_dir: str
         reporter: Reporter
+        headless: bool
+        notify_warning: Callable[[str, str], None]
 
     def _terminate_timed_out_process(self, process, *, drain=True):
         """Terminate and reap a timed-out subprocess and its descendants."""
@@ -95,7 +98,7 @@ class OperationsMixin(_CommandProvider):
                 except (OSError, ValueError):
                     pass
 
-    def initialize_logging(self):
+    def initialize_logging(self) -> None:
         """Initialize robust file and console logging for installer operations."""
         pandrator_path = os.path.join(self.initial_working_dir, 'Pandrator')
         os.makedirs(pandrator_path, exist_ok=True)
@@ -109,7 +112,7 @@ class OperationsMixin(_CommandProvider):
         logger.setLevel(logging.DEBUG)
 
         for handler in list(logger.handlers):
-            if getattr(handler, '_pandrator_managed_handler', False):
+            if getattr(handler, _MANAGED_HANDLER_ATTRIBUTE, False):
                 logger.removeHandler(handler)
                 try:
                     handler.close()
@@ -121,25 +124,15 @@ class OperationsMixin(_CommandProvider):
         file_handler = logging.FileHandler(self.log_filename, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
-        file_handler._pandrator_managed_handler = True
+        setattr(file_handler, _MANAGED_HANDLER_ATTRIBUTE, True)
 
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
-        console_handler._pandrator_managed_handler = True
+        setattr(console_handler, _MANAGED_HANDLER_ATTRIBUTE, True)
 
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
-        if hasattr(self, "create_gui_log_handler"):
-            gui_handler = self.create_gui_log_handler()
-            gui_handler.setLevel(logging.INFO)
-            gui_handler.setFormatter(formatter)
-            gui_handler._pandrator_managed_handler = True
-            logger.addHandler(gui_handler)
-
-        if hasattr(self, "open_log_from_tab_button"):
-            self.open_log_from_tab_button.setEnabled(True)
-
         logging.info(f"Logging initialized. Writing to: {self.log_filename}")
 
     def configure_tls_certificates(self, force: bool = False) -> None:
@@ -245,10 +238,10 @@ class OperationsMixin(_CommandProvider):
                 pass
             raise
 
-    def shutdown_logging(self):
+    def shutdown_logging(self) -> None:
         logger = logging.getLogger()
         for handler in list(logger.handlers):
-            if getattr(handler, '_pandrator_managed_handler', False):
+            if getattr(handler, _MANAGED_HANDLER_ATTRIBUTE, False):
                 logger.removeHandler(handler)
                 try:
                     handler.close()
@@ -270,7 +263,7 @@ class OperationsMixin(_CommandProvider):
     def get_external_subprocess_env(self, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
         return external_subprocess_environment(base_env)
 
-    def is_admin(self):
+    def is_admin(self) -> bool:
         """Check if the current process has admin privileges."""
         if os.name != 'nt':
             return False
@@ -280,7 +273,7 @@ class OperationsMixin(_CommandProvider):
         except Exception:
             return False
 
-    def install_pytorch_for_xtts_finetuning(self, pandrator_path, env_name):
+    def install_pytorch_for_xtts_finetuning(self, pandrator_path: str, env_name: str) -> None:
         logging.info(f"Installing PyTorch for XTTS Fine-tuning in {env_name}...")
         try:
             self.run_pixi_in_env(
@@ -512,7 +505,7 @@ class OperationsMixin(_CommandProvider):
 
         return bin_candidate or any_candidate
 
-    def ensure_bundled_ffmpeg_with_subtitles(self, pandrator_path):
+    def ensure_bundled_ffmpeg_with_subtitles(self, pandrator_path: str) -> bool:
         if os.name != 'nt':
             logging.info(
                 "Skipping bundled Windows FFmpeg setup on non-Windows; "
@@ -666,7 +659,8 @@ class OperationsMixin(_CommandProvider):
         SetEnvironmentVariableW. This ensures child processes spawned by subprocess
         inherit updated values without rebooting or broadcasting WM_SETTINGCHANGE.
         """
-        if os.name != 'nt' or winreg is None:
+        registry = winreg
+        if os.name != 'nt' or registry is None:
             logging.debug("Skipping Windows registry environment refresh on non-Windows.")
             return
 
@@ -674,29 +668,29 @@ class OperationsMixin(_CommandProvider):
             logging.info("Refreshing environment variables from registry...")
 
             def _expand_registry_value(value, value_type):
-                if value_type != winreg.REG_EXPAND_SZ:
+                if value_type != registry.REG_EXPAND_SZ:
                     return value
 
                 try:
-                    return winreg.ExpandEnvironmentStrings(value)
+                    return registry.ExpandEnvironmentStrings(value)
                 except OSError:
                     return os.path.expandvars(value)
 
             def _read_registry_env(
                 key_path,
-                root=winreg.HKEY_LOCAL_MACHINE,
+                root=registry.HKEY_LOCAL_MACHINE,
                 merge_path_with_existing=False,
             ):
                 try:
-                    with winreg.OpenKey(
+                    with registry.OpenKey(
                         root, key_path,
-                        0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+                        0, registry.KEY_READ | registry.KEY_WOW64_64KEY,
                     ) as key:
                         i = 0
                         while True:
                             try:
-                                name, value, value_type = winreg.EnumValue(key, i)
-                                if value_type not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ):
+                                name, value, value_type = registry.EnumValue(key, i)
+                                if value_type not in (registry.REG_SZ, registry.REG_EXPAND_SZ):
                                     i += 1
                                     continue
 
@@ -728,7 +722,7 @@ class OperationsMixin(_CommandProvider):
             # User-level environment variables
             _read_registry_env(
                 r"Environment",
-                root=winreg.HKEY_CURRENT_USER,
+                root=registry.HKEY_CURRENT_USER,
                 merge_path_with_existing=True,
             )
 
@@ -754,7 +748,7 @@ class OperationsMixin(_CommandProvider):
             logging.error(traceback.format_exc())
             raise
 
-    def install_dependencies(self, pandrator_path, allow_system_install=True):
+    def install_dependencies(self, pandrator_path: str, allow_system_install: bool = True) -> bool:
         if os.name != 'nt':
             if self.check_calibre_available(pandrator_path):
                 logging.info("Calibre ebook-convert detected for optional MOBI import.")
@@ -770,7 +764,7 @@ class OperationsMixin(_CommandProvider):
             allow_system_install=allow_system_install,
         )
 
-    def show_calibre_installation_message(self):
+    def show_calibre_installation_message(self) -> None:
         message = (
             "MOBI import requires Calibre's ebook-convert.\n"
             "Install Calibre separately if MOBI import is needed.\n"
@@ -1044,7 +1038,7 @@ class OperationsMixin(_CommandProvider):
         self.show_calibre_installation_message()
         return False
 
-    def resolve_espeak_paths(self):
+    def resolve_espeak_paths(self) -> tuple[str, str]:
         if os.name != 'nt':
             return self.resolve_non_windows_espeak_paths()
 
@@ -1134,7 +1128,7 @@ class OperationsMixin(_CommandProvider):
 
         return library_path, data_path
 
-    def install_espeak_ng_direct(self, pandrator_path=None):
+    def install_espeak_ng_direct(self, pandrator_path: str | None = None) -> bool:
         if os.name != 'nt':
             dll_path, data_path = self.resolve_espeak_paths()
             if dll_path or data_path:

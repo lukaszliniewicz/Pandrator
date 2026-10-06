@@ -71,6 +71,19 @@ def native_reader_admitted(root: Path) -> bool:
 
 
 class InstallerInstallAdmissionTests(unittest.TestCase):
+    def test_missing_selection_is_refused_before_installation_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            installer = HeadlessInstaller(str(workspace))
+            with patch.object(installer, "_installation_operation") as admission:
+                for args in ((), (None,)):
+                    with self.subTest(args=args), self.assertRaisesRegex(
+                        ValueError, "explicit install selection"
+                    ):
+                        installer.install_process(*args)
+                admission.assert_not_called()
+            self.assertEqual([], list(workspace.iterdir()))
+
     def invoke(self, workspace: Path, route: str) -> tuple[int, str]:
         output, error = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):

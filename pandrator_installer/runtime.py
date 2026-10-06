@@ -38,6 +38,7 @@ from .constants import (
 from .crispasr import detect_compute_backends
 from .models import DEFAULT_QWEN_MODEL_SIZE
 from .platforms import is_windows
+from .process_logs import attach_process_log, clear_process_log_handle, process_log_handle
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
 
     from .component_protocols import KokoroProvider, LaunchPreparationProvider, ProcessStatus
     from .environment_protocols import EnvironmentProvider, SubprocessEnvironmentProvider
+    from .host_protocols import StorageProvider
     from .reporting import Reporter
 
     class _RuntimeProviders(
@@ -52,6 +54,7 @@ if TYPE_CHECKING:
         SubprocessEnvironmentProvider,
         KokoroProvider,
         LaunchPreparationProvider,
+        StorageProvider,
         Protocol,
     ):
         pass
@@ -83,12 +86,13 @@ class RuntimeMixin(_RuntimeProviders):
 
     @staticmethod
     def _close_process_log_handle(process):
-        if hasattr(process, 'log_handle') and process.log_handle:
+        log_handle = process_log_handle(process)
+        if log_handle:
             try:
-                process.log_handle.close()
+                log_handle.close()
             except Exception:
                 pass
-            process.log_handle = None
+            clear_process_log_handle(process)
 
     def _collect_running_backends(self):
         """Return backend processes owned directly by this installer instance."""
@@ -521,8 +525,8 @@ class RuntimeMixin(_RuntimeProviders):
                 fishs2_gpu_support = bool(install_config.get('fishs2_gpu_support', False))
                 fishs2_launch_gpu = fishs2_gpu_support and not getattr(self, 'fishs2_cpu_launch_var', False)
                 
-                backend = install_config.get('fishs2_backend', 'auto') if fishs2_launch_gpu else 'cpu'
-                model_quant = install_config.get('fishs2_model_quant', 'q6_k')
+                backend = str(install_config.get('fishs2_backend', 'auto')) if fishs2_launch_gpu else 'cpu'
+                model_quant = str(install_config.get('fishs2_model_quant', 'q6_k'))
 
                 try:
                     self.fishs2_process = self.run_fishs2_api_server(
@@ -612,7 +616,7 @@ class RuntimeMixin(_RuntimeProviders):
             else:
                 self.reporter.status("Starting Kokoro server...")
                 kokoro_server_path = os.path.join(pandrator_path, KOKORO_API_REPO_DIRNAME)
-                kokoro_gpu_support = install_config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False)
+                kokoro_gpu_support = bool(install_config.get(KOKORO_GPU_SUPPORT_CONFIG_FLAG, False))
                 kokoro_launch_gpu = kokoro_gpu_support and not self.kokoro_cpu_launch_var
                 logging.info(f"Kokoro server path: {kokoro_server_path}")
 
@@ -723,12 +727,12 @@ class RuntimeMixin(_RuntimeProviders):
                     self.kobold_qwen_process = self.run_kobold_qwen_api_server(
                         kobold_qwen_server_path,
                         backend=configured_backend,
-                        model_size=install_config.get(
+                        model_size=str(install_config.get(
                             'kobold_qwen_model_size',
                             DEFAULT_QWEN_MODEL_SIZE,
-                        ),
-                        quantization=install_config.get('kobold_qwen_quantization', 'f16'),
-                        initial_model=install_config.get('kobold_qwen_initial_model', 'base'),
+                        ) or DEFAULT_QWEN_MODEL_SIZE),
+                        quantization=str(install_config.get('kobold_qwen_quantization', 'f16') or 'f16'),
+                        initial_model=str(install_config.get('kobold_qwen_initial_model', 'base') or 'base'),
                         pixi_path=shared_pixi_path,
                     )
                 except Exception as e:
@@ -862,8 +866,7 @@ class RuntimeMixin(_RuntimeProviders):
         except Exception:
             log_handle.close()
             raise
-        process.log_handle = log_handle
-        process.log_file_path = log_path
+        attach_process_log(process, log_handle, log_path)
         return process
 
     def wait_for_web_runtime_ready(
@@ -937,10 +940,11 @@ class RuntimeMixin(_RuntimeProviders):
         if return_code is None:
             return
 
-        if hasattr(process, 'log_handle') and process.log_handle:
-            process.log_handle.flush()
-            process.log_handle.close()
-            process.log_handle = None
+        log_handle = process_log_handle(process)
+        if log_handle:
+            log_handle.flush()
+            log_handle.close()
+            clear_process_log_handle(process)
 
         details = f"{process_name} exited immediately with code {return_code}."
         if startup_log_file:
@@ -999,7 +1003,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         logging.info(f"XTTS API server process started with PID: {process.pid}")
         return process
 
@@ -1034,8 +1038,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
-        process.log_file_path = rvc_log_file
+        attach_process_log(process, log_handle, rvc_log_file)
         self.rvc_process = process
         return process
 
@@ -1122,7 +1125,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.voxcpm_process = process
         return process
 
@@ -1205,7 +1208,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.fishs2_process = process
         return process
 
@@ -1276,7 +1279,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.chatterbox_process = process
         return process
 
@@ -1328,7 +1331,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.kobold_qwen_process = process
         return process
 
@@ -1378,7 +1381,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.magpie_process = process
         return process
 
@@ -1519,7 +1522,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.voxtral_process = process
         return process
 
@@ -1578,7 +1581,7 @@ class RuntimeMixin(_RuntimeProviders):
             log_handle.close()
             raise
 
-        process.log_handle = log_handle
+        attach_process_log(process, log_handle)
         self.silero_process = process
         return process
 

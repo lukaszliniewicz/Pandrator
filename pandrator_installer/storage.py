@@ -1,5 +1,7 @@
 """Configuration, packaging layout, backup, and concurrent task helpers."""
 
+from __future__ import annotations
+
 import concurrent.futures
 import json
 import logging
@@ -8,6 +10,7 @@ import shutil
 import tempfile
 import traceback
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 try:
     from packaging.specifiers import SpecifierSet as PackagingSpecifierSet
@@ -24,9 +27,18 @@ from .constants import (
 )
 from .platforms import is_windows, pixi_env_python_path
 
+if TYPE_CHECKING:
+    from .host_protocols import ConcurrentTask
+    from .reporting import Reporter
+
 
 class StorageMixin:
-    def execute_concurrently(self, tasks, max_workers=8):
+    if TYPE_CHECKING:
+        reporter: Reporter
+
+    def execute_concurrently(
+        self, tasks: dict[str, ConcurrentTask], max_workers: int = 8
+    ) -> dict[str, object]:
         """Execute multiple callables concurrently and log errors if they fail.
 
         tasks: dict of {task_name: (callable_fn, args, kwargs)} or {task_name: callable_fn}
@@ -84,7 +96,7 @@ class StorageMixin:
             },
         }
 
-    def write_packaging_layout(self, pandrator_path):
+    def write_packaging_layout(self, pandrator_path: str) -> None:
         layout_path = os.path.join(pandrator_path, PACKAGING_LAYOUT_FILENAME)
         layout = self.get_packaging_layout()
 
@@ -97,7 +109,7 @@ class StorageMixin:
     def get_install_config_path(self, pandrator_path):
         return os.path.join(pandrator_path, 'config.json')
 
-    def load_install_config(self, pandrator_path, detect_rvc=False):
+    def load_install_config(self, pandrator_path: str, detect_rvc: bool = False) -> dict[str, object]:
         config_path = self.get_install_config_path(pandrator_path)
 
         if os.path.exists(config_path):
@@ -118,7 +130,7 @@ class StorageMixin:
 
         return config
 
-    def save_install_config(self, pandrator_path, config):
+    def save_install_config(self, pandrator_path: str, config: dict[str, object]) -> None:
         config_path = self.get_install_config_path(pandrator_path)
         os.makedirs(pandrator_path, exist_ok=True)
 

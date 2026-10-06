@@ -101,6 +101,8 @@ class HeadlessInstaller(
             )
 
     def install_process(self, selection: InstallSelection | None = None) -> None:
+        if selection is None:
+            raise ValueError("An explicit install selection is required.")
         with self._installation_operation():
             return super().install_process(selection)
 
@@ -110,5 +112,5 @@ class HeadlessInstaller(
     def notify_error(self, title: str, message: str) -> None:
         logging.error("%s: %s", title, message)
 
-    def notify_warning(self, title, message):
+    def notify_warning(self, title: str, message: str) -> None:
         logging.warning("%s: %s", title, message)

@@ -1,9 +1,12 @@
 """Install and update orchestration workflows."""
 
+from __future__ import annotations
+
 import concurrent.futures
 import logging
 import os
 import traceback
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 try:
@@ -67,12 +70,15 @@ if TYPE_CHECKING:
 
     from .component_protocols import ComponentInstallationProvider
     from .environment_protocols import ArtifactDownloadProvider, EnvironmentProvider
+    from .host_protocols import ConcurrentTask, OperationsProvider, StorageProvider
     from .reporting import Reporter
 
     class _WorkflowProviders(
         EnvironmentProvider,
         ArtifactDownloadProvider,
         ComponentInstallationProvider,
+        OperationsProvider,
+        StorageProvider,
         Protocol,
     ):
         pass
@@ -202,15 +208,12 @@ class WorkflowMixin(_WorkflowProviders):
         finally:
             self.reporter = NullReporter()
             self.shutdown_logging()
-            if hasattr(self, "refresh_ui_state"):
-                self.refresh_ui_state()
 
         logging.info("Headless installation completed successfully.")
 
 
-    def install_process(self, selection=None):
+    def install_process(self, selection: InstallSelection) -> None:
         """Main installation process - runs in a worker thread"""
-        selection = selection or self.snapshot_install_selection()
         selection.validate()
         self.validate_platform_install_selection(selection)
         pandrator_var = selection.pandrator
@@ -267,7 +270,7 @@ class WorkflowMixin(_WorkflowProviders):
                 os.makedirs(pandrator_path, exist_ok=True)
 
             # Phase 1: Concurrently download dependencies and clone top-level repos
-            concurrent_tasks = {}
+            concurrent_tasks: dict[str, ConcurrentTask] = {}
 
             # Calibre installation task
             def install_calibre_task():
@@ -574,7 +577,10 @@ class WorkflowMixin(_WorkflowProviders):
                 )
                 config['kobold_qwen_quantization'] = selection.kobold_qwen_quantization
                 requested_variants = list(qwen_model_variants(selection.kobold_qwen_initial_model))
-                installed_variants = list(config.get('kobold_qwen_installed_models') or [])
+                installed_models = config.get('kobold_qwen_installed_models') or []
+                if not isinstance(installed_models, Iterable):
+                    raise TypeError("Installed Qwen models must be iterable.")
+                installed_variants = list(installed_models)
                 for model_variant in requested_variants:
                     if model_variant not in installed_variants:
                         installed_variants.append(model_variant)
