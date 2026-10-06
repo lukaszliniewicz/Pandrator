@@ -2615,6 +2615,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 "no aligned transcription was promoted."
             )
         progress(0.86, "Persisting aligned transcription")
+        if cancel_event.is_set():
+            raise ProcessCancelled("Caption alignment cancelled before publication.")
         aligned_srt_path = operation_dir / "aligned-transcription.srt"
         aligned_json_path = operation_dir / "aligned-word-timestamps.json"
         aligned_srt_path.write_text(caption_to_srt(aligned_cues), encoding="utf-8")
@@ -2690,6 +2692,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             aligned_json_path,
             segment_by_source_cue_id={cue.id: index for index, cue in enumerate(aligned_cues)},
         )
+        stored_artifact, _ = self.artifacts.resolve(aligned_srt_artifact.id)
         final_artifact = self.artifacts.register(
             aligned_srt_path,
             kind="srt",
@@ -2701,7 +2704,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             # word-timestamps artifact instead.
             parent_ids=list(dict.fromkeys(evidence_ids + [aligned_words_artifact.id])),
             settings=persisted_settings,
-            metadata=metadata,
+            metadata={**metadata, **(stored_artifact.metadata_json or {})},
         )
         progress(1.0, "Aligned transcription ready")
         return {
@@ -4509,6 +4512,20 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         for index, revised in enumerate(optimized)
                     ]
                 if annotation_mode != "off" or source_markup:
+                    def record_annotation_usage(result) -> None:
+                        response_usage = OptimizationUsage()
+                        response_usage.add(result)
+                        usage.merge(response_usage)
+                        self._record_usage(
+                            session_id,
+                            "tts_optimization",
+                            settings,
+                            response_usage,
+                            job_id=str(payload.get("_job_id") or "") or None,
+                            agent_run_id=agent_run.id,
+                            request_key=f"annotation-{new_id()}",
+                        )
+
                     markup = annotate_speech_units(
                         self.database,
                         session_id,
@@ -4518,7 +4535,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         model_name=model_name,
                         cancel_event=cancel_event,
                         source_markup=source_markup,
-                        on_usage=usage.add,
+                        on_usage=record_annotation_usage,
                     )
                     for index, xml in enumerate(markup):
                         if xml:
@@ -4554,6 +4571,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 raise ValueError(
                     "Speech optimization JSON input must contain a list of generation units."
                 )
+            rows = [row if isinstance(row, dict) else {"text": str(row)} for row in rows]
             source_texts = [
                 str(
                     row.get("source_text")
@@ -5280,7 +5298,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             resolved.get("tts_optimization_model") or resolved["llm_default_model"]
         )
         speech_mode = (
-            str(resolved.get("speech_optimization_mode") or "guarded").strip().lower()
+            str(resolved.get("speech_optimization_mode") or "").strip().lower()
         )
         structured_mode = speech_mode in {"guarded", "flexible"}
         from .speech_planning import SPEECH_PROMPT_REVISION
@@ -5324,6 +5342,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         "optimization_source_hash": segment.optimization_source_hash,
                         "optimization_status": segment.optimization_status,
                         "optimization_model": segment.optimization_model,
+                        "optimization_reviewed": segment.optimization_reviewed,
                         "speech_plan": deepcopy(segment.speech_plan_json or {}),
                         "language": str(segment.language or default_language),
                     }
@@ -5412,6 +5431,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             pending_languages.append(language)
             pending_voice_languages.append(voice_language)
 
+        if cancel_event.is_set():
+            return output, model_name
+
         with self.database.session() as session:
             for position in pending_positions:
                 segment = session.get(GenerationSegment, segment_ids[position])
@@ -5426,6 +5448,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             return output, model_name
 
         def persist_batch(items: list[tuple[int, str]]) -> None:
+            if cancel_event.is_set() or structured_mode:
+                return
             with self.database.session() as session:
                 for local_index, revised in items:
                     position = pending_positions[local_index]
@@ -5464,6 +5488,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         def persist_plan_batch(
             items: list[tuple[int, str, dict[str, Any]]],
         ) -> None:
+            if cancel_event.is_set():
+                return
             for local_index, revised, plan in items:
                 position = pending_positions[local_index]
                 plan["language"] = pending_languages[local_index]
@@ -5493,6 +5519,41 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     segment.optimization_model = model_name
                     segment.updated_at = utcnow()
 
+        recorded_unit_usage = False
+
+        def record_unit_usage(_key: str, unit: dict[str, Any]) -> None:
+            nonlocal recorded_unit_usage
+            self._record_usage(
+                session_id,
+                "tts_optimization",
+                resolved,
+                SimpleNamespace(
+                    cost=float(unit.get("cost") or 0.0),
+                    response_count=int(unit.get("response_count") or 0),
+                    usage=dict(unit.get("usage") or {}),
+                    cost_sources=tuple(unit.get("cost_sources") or ()),
+                ),
+                job_id=job_id,
+                generation_run_id=generation_run_id,
+            )
+            recorded_unit_usage = True
+
+        def settle_unfinished() -> None:
+            with self.database.session() as session:
+                for position in pending_positions:
+                    segment = session.get(GenerationSegment, segment_ids[position])
+                    if segment is None or segment.optimization_status != "running":
+                        continue
+                    if cancel_event.is_set():
+                        previous = segment_state[segment.id]
+                        segment.optimization_status = previous["optimization_status"]
+                        segment.optimization_model = previous["optimization_model"]
+                        segment.optimization_reviewed = previous["optimization_reviewed"]
+                        segment.speech_plan_json = deepcopy(previous["speech_plan"])
+                    else:
+                        segment.optimization_status = "failed"
+                    segment.updated_at = utcnow()
+
         try:
             optimized, usage = optimize_texts(
                 pending_texts,
@@ -5508,15 +5569,14 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 ),
                 languages=pending_languages,
                 voice_languages=pending_voice_languages,
+                on_unit_completed=record_unit_usage,
             )
         except Exception:
-            with self.database.session() as session:
-                for position in pending_positions:
-                    segment = session.get(GenerationSegment, segment_ids[position])
-                    if segment is not None and segment.optimization_status == "running":
-                        segment.optimization_status = "failed"
-                        segment.updated_at = utcnow()
+            settle_unfinished()
             raise
+        if cancel_event.is_set():
+            settle_unfinished()
+            return output, model_name
         for local_index, revised in enumerate(optimized):
             position = pending_positions[local_index]
             if apply_reviewed and not structured_mode:
@@ -5525,14 +5585,15 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     known_by_position.get(position, []),
                 )
             output[position] = revised
-        self._record_usage(
-            session_id,
-            "tts_optimization",
-            resolved,
-            usage,
-            job_id=job_id,
-            generation_run_id=generation_run_id,
-        )
+        if not recorded_unit_usage:
+            self._record_usage(
+                session_id,
+                "tts_optimization",
+                resolved,
+                usage,
+                job_id=job_id,
+                generation_run_id=generation_run_id,
+            )
         return output, model_name
 
     def _automatic_generation_context(self) -> AutomaticGenerationContext:

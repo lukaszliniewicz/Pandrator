@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from sqlalchemy import select
 
+from pandrator.logic.cancellable_process import ProcessCancelled
 from pandrator.web.artifact_selection import selected_artifacts
 from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
@@ -477,6 +478,7 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual(2, result["word_count"])
         with self.database.session() as session:
             transcription = session.get(Artifact, result["artifact_id"])
+            revision = session.get(DocumentRevision, result["revision_id"])
             words = list(
                 session.scalars(
                     select(TimedWord).where(
@@ -489,6 +491,68 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual(
             "ctc_cue_alignment", transcription.metadata_json["alignment_method"]
         )
+        self.assertEqual(
+            result["revision_id"], transcription.metadata_json.get("revision_id")
+        )
+        self.assertEqual(
+            revision.document_id, transcription.metadata_json.get("document_id")
+        )
+        self.assertEqual("transcription", transcription.metadata_json.get("stage"))
+        self.assertTrue(transcription.metadata_json.get("has_speaker_metadata"))
+        self.assertEqual(1, transcription.metadata_json.get("speaker_count"))
+
+    def test_cancel_before_ctc_promotion_keeps_evidence_and_previous_transcription(self):
+        source, _caption = self._source_and_caption()
+        previous = self._artifact(
+            "previous.srt", "transcription", "1\n00:00:00,000 --> 00:00:01,000\nPrevious\n", "srt"
+        )
+        self.handlers._store_srt_document(self.session.id, previous, "transcription")
+        with self.database.session() as session:
+            previous_metadata = dict(session.get(Artifact, previous.id).metadata_json)
+        cancel_event = threading.Event()
+
+        def cancel_before_promotion(value, _detail=None):
+            if value == 0.86:
+                cancel_event.set()
+
+        with (
+            patch(
+                "pandrator.logic.dubbing.transcription.extract_audio", side_effect=_fake_extract_audio
+            ),
+            patch("pandrator.logic.dubbing.crispasr.run_vad_export", side_effect=_fake_vad_export),
+            patch(
+                "pandrator.logic.dubbing.crispasr.run_ctc_alignment",
+                return_value=[
+                    {"word": "Hello,", "start": 1.1, "end": 1.3},
+                    {"word": "world!", "start": 1.5, "end": 1.9},
+                ],
+            ),
+            self.assertRaises(ProcessCancelled),
+        ):
+            self.handlers.transcribe(
+                {
+                    "session_id": self.session.id,
+                    "source_artifact_id": source.id,
+                    "settings": {"caption_alignment_method": "ctc"},
+                },
+                cancel_before_promotion,
+                cancel_event,
+            )
+        with self.database.session() as session:
+            current = list(
+                session.scalars(
+                    select(Artifact).where(
+                        Artifact.role == "transcription", Artifact.state == "current"
+                    )
+                )
+            )
+            self.assertEqual([previous.id], [artifact.id for artifact in current])
+            self.assertEqual(previous_metadata, current[0].metadata_json)
+            self.assertIsNotNone(
+                session.scalar(
+                    select(Artifact).where(Artifact.role == "transcription_alignment_diagnostics")
+                )
+            )
 
     def test_pure_ctc_low_coverage_keeps_evidence_but_does_not_promote(self):
         source, _caption = self._source_and_caption()
@@ -672,6 +736,8 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual(1, result["fallback_filled_token_count"])
         self.assertEqual(1, result["outside_media_count"])
         with self.database.session() as session:
+            transcription = session.get(Artifact, result["artifact_id"])
+            revision = session.get(DocumentRevision, result["revision_id"])
             words = list(
                 session.scalars(
                     select(TimedWord).where(
@@ -682,6 +748,13 @@ class MediaEditTranscriptionHandlerTests(unittest.TestCase):
         self.assertEqual(["Hello,", "Missing"], [word.text for word in words])
         self.assertEqual(1100, words[0].start_ms)
         self.assertEqual(1600, words[1].start_ms)
+        self.assertEqual(
+            result["revision_id"], transcription.metadata_json.get("revision_id")
+        )
+        self.assertEqual(
+            revision.document_id, transcription.metadata_json.get("document_id")
+        )
+        self.assertEqual("transcription", transcription.metadata_json.get("stage"))
 
     def test_media_edit_transcription_rejects_exact_half_matches_without_words(self):
         source, caption = self._source_and_caption()

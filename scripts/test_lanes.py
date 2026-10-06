@@ -444,6 +444,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_subtitle_evidence.py",
         "tests/test_web_supervisor.py",
         "tests/test_web_tts_optimization.py",
+        "tests/test_workflow_speech_optimization.py",
         "tests/test_web_tts_preview_replay.py",
         "tests/test_web_preview_resource_identity.py",
         "tests/test_web_translation_source_repair.py",
