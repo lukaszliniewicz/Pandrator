@@ -7,7 +7,7 @@ import ts from 'typescript';
 
 // Execute the actual editor functions with controlled API acknowledgments.
 const source = readFileSync(
-  new URL('../src/lib/SessionWorkspace.svelte', import.meta.url),
+  new URL('../src/lib/StageSettingsDialog.svelte', import.meta.url),
   'utf8'
 );
 const script = source.slice(
@@ -142,6 +142,9 @@ function fixture(key = 'translate') {
       }
     }
   };
+  env.draft = env;
+  env.ttsSelection = env;
+  env.activity = env;
   vm.runInContext(code, vm.createContext(env));
   return {
     env,

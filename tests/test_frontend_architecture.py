@@ -198,18 +198,20 @@ def test_large_coordinators_delegate_presentation_and_avoid_transport():
 
 def test_xtts_model_upload_is_exposed_by_source_and_compiled_shell():
     workspace = source(WEB_SOURCE / "lib" / "SessionWorkspace.svelte")
+    settings = source(WEB_SOURCE / "lib" / "StageSettingsDialog.svelte")
+    generation = source(WEB_SOURCE / "lib" / "GenerationStageSettings.svelte")
     api_client = source(WEB_SOURCE / "lib" / "domain-api.ts")
     static_root = ROOT / "pandrator" / "web" / "static"
-    compiled = "\n".join(
-        path.read_text(encoding="utf-8") for path in static_root.rglob("*.js")
-    )
+    compiled = "\n".join(path.read_text(encoding="utf-8") for path in static_root.rglob("*.js"))
 
-    assert "XTTS model management" in workspace
-    assert "config.json" in workspace
-    assert "uploadXttsModel" in workspace
+    assert "StageSettingsDialog" in workspace
+    assert "GenerationStageSettings" in settings
+    assert "XTTS model management" in generation
+    assert "config.json" in generation
+    assert "uploadXttsModel" in settings
     assert "/api/v1/services/tts/xtts/models" in api_client
     assert "/api/v1/services/tts/xtts/models" in compiled
     assert "XTTS model management" in compiled
     assert re.search(r"Upload and\s+select", compiled)
-    assert "ttsModel = uploaded.id" in workspace
-    assert "xtts_model: ttsModel" in workspace
+    assert "draft.ttsModel = uploaded.id" in settings
+    assert "xtts_model: draft.ttsModel" in settings
