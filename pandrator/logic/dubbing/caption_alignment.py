@@ -434,6 +434,8 @@ def parse_vad_export(
     if schema != 1 or raw_vad.get("kind") != "vad_segments":
         raise CaptionAlignmentError("Unsupported CrispASR VAD schema")
     sample_rate = raw_vad.get("sample_rate")
+    if sample_rate is None:
+        raise CaptionAlignmentError("CrispASR VAD sample rate is invalid")
     try:
         sample_rate = int(sample_rate)
     except (TypeError, ValueError) as error:
@@ -527,8 +529,18 @@ def validate_cue_words(
     """Validate one cue and assign authoritative surfaces and timing quality."""
 
     if qwen_units:
+        qwen_words: tuple[dict[str, Any], ...] = tuple(
+            {
+                "word": raw.text,
+                "start": raw.start_ms / 1000,
+                "end": raw.end_ms / 1000,
+            }
+            if isinstance(raw, MediaWord)
+            else raw
+            for raw in words
+        )
         try:
-            words = qwen_alignment.restore_surfaces(cue.text, words)
+            words = qwen_alignment.restore_surfaces(cue.text, qwen_words)
         except qwen_alignment.QwenAlignmentError:
             return replace(cue, words=(), timing_confidence=0.0, timing_source="caption"), "wrong_surface", 0.0
         surfaces = tuple(word["word"] for word in words)
@@ -774,7 +786,7 @@ def align_caption_cues(
     vad = tuple(vad_spans or ())
     runner = ctc_runner
     if runner is None:
-        def runner(clip_path: Path, text_path: Path, output_path: str, run_settings: dict[str, Any], event: threading.Event | None):
+        def default_runner(clip_path: Path, text_path: Path, output_path: str, run_settings: dict[str, Any], event: threading.Event | None):
             return crispasr.run_ctc_alignment(
                 clip_path,
                 text_path,
@@ -782,6 +794,7 @@ def align_caption_cues(
                 run_settings,
                 cancel_event=event,
             )
+        runner = default_runner
     with tempfile.TemporaryDirectory(prefix="pandrator-ctc-") as temporary:
         root = Path(temporary)
 

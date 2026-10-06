@@ -4,6 +4,13 @@ import logging
 import re
 import threading
 from importlib import import_module
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from numpy import floating
+    from numpy.typing import NDArray
 
 WTPSPLIT_MODEL = "sat-12l-sm"
 WTPSPLIT_THRESHOLD = 0.05
@@ -71,13 +78,17 @@ def split_text(text: str) -> list[str] | None:
             for paragraph in _PARAGRAPH_BOUNDARY_RE.split(text):
                 if not paragraph.strip():
                     continue
-                paragraph_segments = segmenter.split(
-                    paragraph,
-                    threshold=WTPSPLIT_THRESHOLD,
-                    stride=128,
-                    block_size=256,
-                    weighting="hat",
-                    treat_newline_as_space=True,
+                # Scalar text with default paragraph mode returns flat strings.
+                paragraph_segments = cast(
+                    list[str],
+                    segmenter.split(
+                        paragraph,
+                        threshold=WTPSPLIT_THRESHOLD,
+                        stride=128,
+                        block_size=256,
+                        weighting="hat",
+                        treat_newline_as_space=True,
+                    ),
                 )
                 segments.extend(segment.strip() for segment in paragraph_segments if segment.strip())
     except Exception as exc:
@@ -127,9 +138,11 @@ def predict_boundaries(
             )
         if isinstance(raw_probabilities, tuple):
             raw_probabilities = raw_probabilities[0]
-        if hasattr(raw_probabilities, "reshape"):
-            raw_probabilities = raw_probabilities.reshape(-1)
-        probabilities = [float(value) for value in raw_probabilities]
+        # Scalar text with default probability mode yields a floating array.
+        flat_probabilities = cast("NDArray[floating[Any]]", raw_probabilities)
+        if hasattr(flat_probabilities, "reshape"):
+            flat_probabilities = flat_probabilities.reshape(-1)
+        probabilities = [float(value) for value in flat_probabilities]
     except Exception as exc:
         logging.warning("wtpsplit-lite skipped boundary prediction: %s", exc)
         return None

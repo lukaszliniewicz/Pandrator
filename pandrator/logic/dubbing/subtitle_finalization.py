@@ -291,7 +291,7 @@ def _split_words_to_capacity(
 
     word_count = len(words)
     minimum_requested = max(1, min(int(min_chunks), word_count))
-    prefix_lengths = [0]
+    prefix_lengths: list[float] = [0]
     for index, word in enumerate(words):
         prefix_lengths.append(
             prefix_lengths[-1] + (display_length(word, cjk=True) if cjk else len(word) + (1 if index else 0))
@@ -387,13 +387,13 @@ def _split_words_to_capacity(
         return chunks
 
     total_length = prefix_lengths[-1] - (target_count - 1)
-    dynamic: list[dict[int, tuple[int, int, tuple[int, ...]]]] = [
+    dynamic: list[dict[int, tuple[float, int, tuple[int, ...]]]] = [
         {} for _ in range(target_count + 1)
     ]
     dynamic[0][0] = (0, 0, ())
     for count in range(1, target_count + 1):
         for end in range(1, word_count + 1):
-            best: tuple[int, int, tuple[int, ...]] | None = None
+            best: tuple[float, int, tuple[int, ...]] | None = None
             for start in feasible_starts[end]:
                 previous = dynamic[count - 1].get(start)
                 if previous is None:

@@ -6,8 +6,10 @@ from pandrator.logic import sentence_segmenter
 
 class SentenceSegmenterTests(unittest.TestCase):
     def setUp(self):
-        sentence_segmenter._SEGMENTER = None
-        sentence_segmenter._SEGMENTER_FAILED = False
+        for name, value in (("_SEGMENTER", None), ("_SEGMENTER_FAILED", False)):
+            patched = patch.object(sentence_segmenter, name, value)
+            patched.start()
+            self.addCleanup(patched.stop)
 
     def test_default_model_is_high_quality_sentence_model(self):
         self.assertEqual(sentence_segmenter.WTPSPLIT_MODEL, "sat-12l-sm")
@@ -71,6 +73,54 @@ class SentenceSegmenterTests(unittest.TestCase):
         create_segmenter.return_value = segmenter
 
         self.assertIsNone(sentence_segmenter.predict_boundaries("A. B"))
+
+
+class ScalarSentenceBoundaryContractTests(unittest.TestCase):
+    def setUp(self):
+        for name, value in (("_SEGMENTER", None), ("_SEGMENTER_FAILED", False)):
+            patched = patch.object(sentence_segmenter, name, value)
+            patched.start()
+            self.addCleanup(patched.stop)
+
+    @patch("pandrator.logic.sentence_segmenter._create_segmenter")
+    def test_array_and_tuple_probabilities_retain_character_indices(self, create_segmenter):
+        import numpy as np
+
+        segmenter = MagicMock()
+        create_segmenter.return_value = segmenter
+        values = [0.1, 0.25, 0.8, 0.9]
+        array = np.array(values, dtype=np.float64)
+        for result in (array, array.reshape(1, -1), (array, np.zeros(4))):
+            with self.subTest(shape=getattr(result, "shape", "tuple")):
+                segmenter.predict_proba.return_value = result
+                actual = sentence_segmenter.predict_boundaries("A. B", threshold=0.25)
+                self.assertEqual(values, actual["probabilities"])
+                self.assertEqual([
+                    {"index": 2, "probability": 0.8},
+                    {"index": 3, "probability": 0.9},
+                ], actual["boundaries"])
+        create_segmenter.assert_called_once_with()
+
+    @patch("pandrator.logic.sentence_segmenter._create_segmenter")
+    def test_malformed_prediction_does_not_poison_shared_model(self, create_segmenter):
+        segmenter = MagicMock()
+        create_segmenter.return_value = segmenter
+        for malformed in ([[0.1, 0.8]], 0.8):
+            with self.subTest(malformed=malformed):
+                segmenter.predict_proba.return_value = malformed
+                self.assertIsNone(sentence_segmenter.predict_boundaries("A."))
+                segmenter.predict_proba.return_value = [0.1, 0.8]
+                self.assertEqual([0.1, 0.8],
+                                 sentence_segmenter.predict_boundaries("A.")["probabilities"])
+        self.assertTrue(sentence_segmenter.is_available())
+        create_segmenter.assert_called_once_with()
+
+    @patch("pandrator.logic.sentence_segmenter._create_segmenter")
+    def test_empty_input_does_not_load_model(self, create_segmenter):
+        self.assertEqual([], sentence_segmenter.split_text(""))
+        self.assertEqual({"threshold": 0.25, "probabilities": [], "boundaries": []},
+                         sentence_segmenter.predict_boundaries(""))
+        create_segmenter.assert_not_called()
 
 
 if __name__ == "__main__":

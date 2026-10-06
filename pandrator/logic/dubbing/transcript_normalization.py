@@ -264,11 +264,13 @@ def _segment(
     identifier: Any = "",
 ) -> TimedSegment | None:
     speaker = _speaker_from(item)
+    raw_words = item.get("words")
+    word_values = raw_words if isinstance(raw_words, list) else []
     words = tuple(
         sorted(
             (
                 parsed
-                for value in (item.get("words") if isinstance(item.get("words"), list) else [])
+                for value in word_values
                 if isinstance(value, dict)
                 and (parsed := _word(value, span_parser=word_span_parser, fallback_speaker=speaker))
             ),
@@ -336,7 +338,8 @@ def _accepts_crispasr(payload: Any) -> bool:
 
 def _parse_crispasr(payload: dict[str, Any]) -> NormalizedTranscript:
     groups = payload.get("transcription") or []
-    header = payload.get("crispasr") if isinstance(payload.get("crispasr"), dict) else {}
+    raw_header = payload.get("crispasr")
+    header = raw_header if isinstance(raw_header, dict) else {}
     backend = str(header.get("backend") or "")
     qwen_words = backend in {"qwen3", "qwen3-1.7b"}
     segments = (

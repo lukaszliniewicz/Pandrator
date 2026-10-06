@@ -13,10 +13,11 @@ from pandrator.logic.dubbing.caption_alignment import (
     normalize_alignment_settings,
     parse_ctc_words,
     parse_vad_export,
+    validate_ctc_words,
     validate_cue_words,
 )
 from pandrator.logic.dubbing.crispasr import CrispASRError
-from pandrator.logic.media_edit import MediaCue
+from pandrator.logic.media_edit import MediaCue, MediaWord
 
 
 def _cue(cue_id, start_ms, end_ms, text="word", speaker=None):
@@ -439,3 +440,54 @@ def test_alignment_language_resolution_is_explicit_hint_or_unresolved(tmp_path, 
     assert metrics["resolved_language"] == resolved
     metrics["language_resolution"]["source"] = "changed"
     assert result.language_resolution["source"] == source
+
+
+@pytest.mark.parametrize("validator", [validate_cue_words, validate_ctc_words])
+@pytest.mark.parametrize("representation", ["records", "objects", "mixed"])
+@pytest.mark.parametrize("text, surfaces", [
+    ("Hello world.", ("Hello", "world.")),
+    ("日本語です。", ("日本語です。",)),
+])
+def test_qwen_validation_accepts_declared_media_words(validator, representation, text, surfaces):
+    cue = _cue("qwen-admitted", 0, 1000, text)
+    records = [
+        {"word": surface, "start": (100 + index * 400) / 1000,
+         "end": (400 + index * 400) / 1000}
+        for index, surface in enumerate(surfaces)
+    ]
+    words = tuple(
+        MediaWord(record["word"], round(record["start"] * 1000),
+                  round(record["end"] * 1000), confidence=0.1)
+        if representation == "objects" or (representation == "mixed" and index == 0)
+        else dict(record)
+        for index, record in enumerate(records)
+    )
+    original = tuple(words)
+    expected = validate_cue_words(cue, records, padding_ms=0, qwen_units=True)
+    actual = validator(cue, words, padding_ms=0, qwen_units=True)
+    assert expected[1] is None
+    assert actual == expected
+    assert actual[0].timing_source == "qwen3_alignment"
+    assert words == original
+
+
+@pytest.mark.parametrize("sample_rate", [None, "invalid"])
+def test_missing_vad_rate_retains_controlled_error(sample_rate):
+    with pytest.raises(CaptionAlignmentError, match="VAD sample rate is invalid"):
+        parse_vad_export({"crispasr_vad": {
+            "version": 1, "kind": "vad_segments", "sample_rate": sample_rate, "slices": [],
+        }}, duration_ms=1000)
+
+
+@pytest.mark.parametrize("word, reason", [
+    (MediaWord("Other", 100, 900), "wrong_surface"),
+    (MediaWord("Hello", 1200, 1300), "out_of_window"),
+])
+def test_qwen_media_word_conversion_retains_surface_and_window_guards(word, reason):
+    updated, actual_reason, quality = validate_cue_words(
+        _cue("qwen-rejected", 0, 1000, "Hello"), (word,), padding_ms=0, qwen_units=True,
+    )
+    assert actual_reason == reason
+    assert quality == 0.0
+    assert updated.words == ()
+    assert updated.timing_source == "caption"

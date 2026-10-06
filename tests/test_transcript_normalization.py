@@ -223,5 +223,26 @@ class TranscriptNormalizationTests(unittest.TestCase):
             unregister_transcript_adapter("future")
 
 
+class SparseTranscriptContractTests(unittest.TestCase):
+    def test_absent_headers_and_word_arrays_preserve_canonical_round_trip(self):
+        for header in (None, {}, {"backend": "qwen3", "language_detected": "ja"}):
+            for words in (None, [], [{"text": "日本語です。", "start": 0.1, "end": 0.9}]):
+                with self.subTest(header=header, words=words):
+                    transcript = normalize_transcript({
+                        "crispasr": header,
+                        "transcription": [{"text": "日本語です。", "start": 0.1,
+                                           "end": 0.9, "words": words}],
+                    })
+                    self.assertEqual(1, len(transcript.segments))
+                    segment = transcript.segments[0]
+                    self.assertEqual(("日本語です。", 100, 900),
+                                     (segment.text, segment.start_ms, segment.end_ms))
+                    self.assertEqual(1 if words else 0, len(segment.words))
+                    self.assertEqual(header or {}, transcript.metadata["header"])
+                    self.assertEqual("ja" if header else "", transcript.language)
+                    canonical = transcript.to_dict()
+                    self.assertEqual(canonical, normalize_transcript(canonical).to_dict())
+
+
 if __name__ == "__main__":
     unittest.main()
