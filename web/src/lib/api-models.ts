@@ -345,6 +345,11 @@ export type RuntimeCapabilities = {
   };
   stt?: {
     crispasr?: boolean;
+    audio_cpp_tools?: {
+      runtime?: {
+        available?: boolean;
+      };
+    };
     compute_backends?: string[];
     default_engine?: string;
     default_model_quantization?: string;

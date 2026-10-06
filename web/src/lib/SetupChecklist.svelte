@@ -11,8 +11,18 @@
   } from '@lucide/svelte';
   import { appState } from './app-state.svelte';
   import { modalFocus } from './modal-focus';
+  import { detectedSpeechComponentCount } from './speech-readiness';
   let { onclose }: { onclose: () => void } = $props();
+  const speechComponents = $derived(
+    detectedSpeechComponentCount(appState.capabilities)
+  );
   const ready = (key: string) => {
+    if (key === 'crispasr') return Boolean(appState.capabilities.stt?.crispasr);
+    if (key === 'audio_cpp') {
+      return Boolean(
+        appState.capabilities.stt?.audio_cpp_tools?.runtime?.available
+      );
+    }
     const capability = appState.capabilities[key];
     const available =
       capability && typeof capability === 'object'
@@ -71,9 +81,7 @@
         class="item"
         ><Volume2 /><span
           ><strong>Speech services</strong><small
-            >{Object.values(appState.capabilities?.services ?? {}).filter(
-              Boolean
-            ).length} local components currently detected.</small
+            >{speechComponents} local components currently detected.</small
           ></span
         ></a
       >
@@ -135,7 +143,9 @@
         <CheckCircle2 size={18} /> Readiness summary
       </div>
       <p class="muted mt-2 text-sm">
-        CrispASR {ready('crispasr') ? 'is ready' : 'is not detected'}. FFmpeg {appState
+        CrispASR is {ready('crispasr') ? 'detected' : 'not detected'}. audio.cpp
+        is
+        {ready('audio_cpp') ? 'detected' : 'not detected'}. FFmpeg {appState
           .capabilities?.ffmpeg?.available
           ? 'is ready'
           : 'is missing'}. Missing components stay disabled and can be installed

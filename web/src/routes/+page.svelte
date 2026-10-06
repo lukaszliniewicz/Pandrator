@@ -13,6 +13,7 @@
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
   import { settingApi } from '$lib/admin-api';
+  import { detectedSpeechComponentCount } from '$lib/speech-readiness';
   import NewSessionWizard from '$lib/NewSessionWizard.svelte';
   import SetupChecklist from '$lib/SetupChecklist.svelte';
   import { onMount } from 'svelte';
@@ -31,6 +32,9 @@
     wizard = true;
   }
   const setupOpen = $derived(page.url.searchParams.get('setup') === '1');
+  const speechComponents = $derived(
+    detectedSpeechComponentCount(appState.capabilities)
+  );
   onMount(async () => {
     if (sessionStorage.getItem('pandrator-guided-creation-shown')) return;
     try {
@@ -155,9 +159,7 @@
             <ServerCog size={18} />
             <div>
               <strong>Speech services</strong><span
-                >{Object.values(appState.capabilities?.services ?? {}).filter(
-                  Boolean
-                ).length} installed components detected</span
+                >{speechComponents} local components detected</span
               >
             </div>
           </div>
