@@ -12336,6 +12336,22 @@
     "/api/v1/events/snapshot": {
       "get": {
         "operationId": "getEventSnapshot",
+        "parameters": [
+          {
+            "description": "Compact keeps job status and errors; full includes job inputs and results.",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Initial event-stream resource snapshot and cursor"

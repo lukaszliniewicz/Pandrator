@@ -1434,6 +1434,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/events/snapshot")
     @require_auth
     def event_snapshot():
+        view = request.args.get("view", "full")
+        if view not in {"full", "compact"}:
+            return error_response("validation_error", "Unknown event snapshot view.", 422)
         # Capture the cursor before reading resources. Events committed while
         # the snapshot is assembled are replayed after this cursor.
         bounds = work.event_bounds()
@@ -1455,7 +1458,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 },
                 "jobs": {
                     "items": [
-                        _job_payload(item) for item in items if item.id not in hidden
+                        _job_payload(item, include_details=view != "compact")
+                        for item in items if item.id not in hidden
                     ]
                 },
                 "capabilities": capability_payload,

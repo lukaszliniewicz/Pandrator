@@ -9656,7 +9656,10 @@ export interface operations {
     };
     getEventSnapshot: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Compact keeps job status and errors; full includes job inputs and results. */
+                view?: "full" | "compact";
+            };
             header?: never;
             path?: never;
             cookie?: never;

@@ -1328,6 +1328,7 @@ class WebApiTests(unittest.TestCase):
                 "source_artifact_id": "artifact-1",
                 "api_key": "must-not-stream",
                 "settings": {"token": "also-private"},
+                "large_input": "chapter text " * 10000,
             },
             session_id=workspace.id,
         )
@@ -1342,6 +1343,30 @@ class WebApiTests(unittest.TestCase):
         self.assertIn("sessions", snapshot)
         self.assertIn("jobs", snapshot)
         self.assertIn("capabilities", snapshot)
+
+        with mock.patch(
+            "pandrator.web.capabilities.probe_stable_capabilities",
+            return_value={},
+        ):
+            compact_response = self.client.get("/api/v1/events/snapshot?view=compact")
+        self.assertEqual(200, compact_response.status_code)
+        compact = compact_response.get_json()
+        self.assertEqual(snapshot["cursor"], compact["cursor"])
+        self.assertEqual(snapshot["sessions"], compact["sessions"])
+        full_jobs = snapshot["jobs"]["items"]
+        self.assertTrue(full_jobs)
+        self.assertEqual(
+            [{key: value for key, value in job.items()
+              if key not in {"payload_json", "result_json"}} for job in full_jobs],
+            compact["jobs"]["items"],
+        )
+        self.assertLess(len(compact_response.data), len(snapshot_response.data) / 2)
+        detail = self.client.get(f'/api/v1/jobs/{full_jobs[0]["id"]}').get_json()
+        self.assertEqual(full_jobs[0]["payload_json"], detail["payload_json"])
+        self.assertNotIn("must-not-stream", snapshot_response.data.decode())
+        self.assertEqual(
+            422, self.client.get("/api/v1/events/snapshot?view=typo").status_code
+        )
 
         response = self.client.get("/api/v1/events", buffered=False)
         try:

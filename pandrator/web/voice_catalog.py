@@ -494,10 +494,10 @@ def query_catalog(
     tokens = query.query.casefold().split()
     results = []
     for original in entries:
+        if query.kind != "all" and original["kind"] != query.kind:
+            continue
         item = deepcopy(original)
         profile = item["profile"]
-        if query.kind != "all" and item["kind"] != query.kind:
-            continue
         if query.collection_id and not any(
             c["id"] == query.collection_id for c in item["collections"]
         ):

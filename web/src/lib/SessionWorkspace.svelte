@@ -334,8 +334,8 @@
           speechOptimization.enabled && optimizationTiming === 'document'
         );
       }
-    } catch (caught) {
-      error = errorMessage(caught);
+    } catch {
+      // WorkflowStore displays this load error and clears it on recovery.
     }
   }
 
@@ -993,10 +993,12 @@
     {/if}
   </details>
 
-  {#if error}<div
+  {#if error || workflowStore.error}<div
       class="mb-5 flex items-start gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"
     >
-      <CircleAlert class="mt-0.5 shrink-0" size={17} /><span>{error}</span>
+      <CircleAlert class="mt-0.5 shrink-0" size={17} /><span
+        >{error || workflowStore.error}</span
+      >
     </div>{/if}
 
   {#snippet stageInput(consumer: string)}

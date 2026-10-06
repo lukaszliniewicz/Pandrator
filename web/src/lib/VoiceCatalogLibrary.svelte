@@ -15,8 +15,10 @@
     WandSparkles,
     X
   } from '@lucide/svelte';
-  import { speechServiceApi, voiceApi } from './admin-api';
+  import { voiceApi } from './admin-api';
+  import { sessionApi } from './domain-api';
   import { errorMessage } from './errors';
+  import { invalidates, invalidationBus } from './invalidation';
   import type { TtsService, VoiceRecord } from './api-models';
   import {
     emptyVoiceProfile,
@@ -215,8 +217,7 @@
     return () => clearTimeout(timeout);
   });
   async function refreshDetail() {
-    await refreshAuxiliary();
-    await load();
+    await Promise.all([refreshAuxiliary(), load()]);
     if (detail?.kind === 'managed' && !editing) {
       const id = detail.id;
       const result = await voiceLibraryApi.query({
@@ -240,13 +241,30 @@
     const ticket = ++auxiliarySequence;
     const [groupPayload, servicePayload, library] = await Promise.all([
       voiceLibraryApi.collections(),
-      speechServiceApi.catalogue(probe),
+      sessionApi.ttsCatalogueCompact(probe),
       voiceApi.list<VoiceRecord>()
     ]);
     if (!alive) return;
     if (ticket === auxiliarySequence) collections = groupPayload.items;
     services = servicePayload.services;
     voices = library.items;
+  }
+  let backgroundRefreshRunning = false;
+  let backgroundRefreshPending = false;
+  async function refreshBackgroundVoices() {
+    backgroundRefreshPending = true;
+    if (backgroundRefreshRunning) return;
+    backgroundRefreshRunning = true;
+    try {
+      while (alive && backgroundRefreshPending) {
+        backgroundRefreshPending = false;
+        await Promise.all([load(), refreshAuxiliary()]);
+      }
+    } catch (caught) {
+      if (alive) error = errorMessage(caught);
+    } finally {
+      backgroundRefreshRunning = false;
+    }
   }
   onMount(() => {
     service = initialService || route.url.searchParams.get('service') || '';
@@ -262,6 +280,17 @@
           if (alive && match) openDetail(match);
         })
         .catch((caught) => (error = errorMessage(caught)));
+    return invalidationBus.subscribe((change) => {
+      if (
+        invalidates(change, 'voices') &&
+        change.events.some(
+          (event) =>
+            !event.job_id ||
+            ['job.succeeded', 'job.failed', 'job.canceled'].includes(event.type)
+        )
+      )
+        void refreshBackgroundVoices();
+    });
   });
   onDestroy(() => {
     alive = false;

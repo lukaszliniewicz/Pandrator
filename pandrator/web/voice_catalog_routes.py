@@ -76,7 +76,9 @@ def register_voice_catalog_routes(app, context):
 
     def snapshot():
         ensure_bundled_voice(services.database, services.paths, services.artifacts)
-        catalog, _ = services.tts_catalogue.snapshot(refresh=False)
+        catalog, _ = services.tts_catalogue.snapshot(
+            refresh=False, include_profiles=False
+        )
         with services.database.session() as session:
             voices = voice_payloads(
                 session, services.paths, session.scalars(select(Voice)).all()

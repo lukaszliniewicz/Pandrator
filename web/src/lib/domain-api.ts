@@ -163,7 +163,8 @@ export const appApi = {
   eventSnapshot: () =>
     typedApiJson<'/api/v1/events/snapshot', 'get', EventSnapshot>(
       '/api/v1/events/snapshot',
-      'get'
+      'get',
+      { query: new URLSearchParams({ view: 'compact' }) }
     ),
   sessions: (includeTrashed = false) =>
     typedApiJson<'/api/v1/sessions', 'get', ItemPage<SessionRecord>>(

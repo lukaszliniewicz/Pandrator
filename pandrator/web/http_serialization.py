@@ -13,7 +13,7 @@ def model_payload(record, fields: tuple[str, ...]) -> dict[str, Any]:
     return payload
 
 
-def job_payload(record) -> dict[str, Any]:
+def job_payload(record, *, include_details: bool = True) -> dict[str, Any]:
     return redact_inline_secrets(
         model_payload(
             record,
@@ -23,8 +23,7 @@ def job_payload(record) -> dict[str, Any]:
                 "session_id",
                 "workflow_run_id",
                 "status",
-                "payload_json",
-                "result_json",
+                *(("payload_json", "result_json") if include_details else ()),
                 "progress",
                 "progress_detail",
                 "error_code",

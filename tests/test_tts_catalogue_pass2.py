@@ -9,6 +9,7 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.openapi import build_openapi_document
 from pandrator.web.tts_providers import TtsHealth
+from pandrator.web.voice_catalog import VoiceCatalogQuery, catalog_entries, query_catalog
 from tests.web_test_support import prepare_web_test_data_root
 
 HEAVY_MODEL_KEYS = frozenset({
@@ -74,6 +75,86 @@ class TtsCataloguePass2Tests(unittest.TestCase):
         self.assertGreater(len(audio_cpp["model_catalog"]), 100)
         self.assertIn("catalogue_info", audio_cpp["model_catalog"][0])
         self.assertGreater(len(payload["profiles"]), 10)
+
+    def test_full_snapshot_can_skip_profiles_without_changing_catalog_entries(self):
+        catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
+        previews = [{
+            "service_id": "openai",
+            "model": "tts-1",
+            "voice": "alloy",
+            "artifact_id": "provider-preview",
+        }]
+        with mock.patch.object(
+            catalogue_service, "_previews", return_value=previews
+        ) as preview_loader:
+            full, revision = catalogue_service.snapshot()
+            self.assertIn("profiles", full)
+            with mock.patch(
+                "pandrator.web.tts_catalogue_service.list_tts_provider_profiles",
+                side_effect=AssertionError("Profiles must not be loaded"),
+            ) as profile_loader:
+                without_profiles, slim_revision = catalogue_service.snapshot(
+                    include_profiles=False
+                )
+                profile_loader.assert_not_called()
+            self.assertEqual(2, preview_loader.call_count)
+        self.assertNotIn("profiles", without_profiles)
+        self.assertEqual(revision, slim_revision)
+        self.assertEqual(
+            {key: value for key, value in full.items() if key != "profiles"},
+            without_profiles,
+        )
+        self.assertEqual(previews, without_profiles["previews"])
+        full_entries = catalog_entries([], full, [])
+        retained_entries = catalog_entries([], without_profiles, [])
+        self.assertEqual(full_entries, retained_entries)
+        preview_entry = next(
+            item for item in retained_entries
+            if item["preview_artifact_id"] == "provider-preview"
+        )
+        self.assertTrue(preview_entry["compatibility"][0]["modes"]["prebuilt"])
+        query = VoiceCatalogQuery(kind="provider", limit=1)
+        first_page = query_catalog(full_entries, query)
+        self.assertEqual(first_page, query_catalog(retained_entries, query))
+        self.assertIsNotNone(first_page["next_cursor"])
+        next_query = VoiceCatalogQuery(
+            kind="provider", limit=1, cursor=first_page["next_cursor"]
+        )
+        self.assertEqual(
+            query_catalog(full_entries, next_query),
+            query_catalog(retained_entries, next_query),
+        )
+
+    def test_voice_catalog_skips_profiles_and_preserves_provider_previews(self):
+        catalogue_service = self.app.extensions["pandrator"]["tts_catalogue"]
+        previews = [{
+            "service_id": "openai",
+            "model": "tts-1",
+            "voice": "alloy",
+            "artifact_id": "provider-preview",
+        }]
+        with (
+            mock.patch(
+                "pandrator.web.tts_catalogue_service.list_tts_provider_profiles",
+                side_effect=AssertionError("Profiles must not be loaded"),
+            ) as profile_loader,
+            mock.patch.object(
+                catalogue_service, "_previews", return_value=previews
+            ) as preview_loader,
+            mock.patch.object(
+                catalogue_service, "snapshot", wraps=catalogue_service.snapshot
+            ) as snapshot_loader,
+        ):
+            payload = self._payload(self.client.get(
+                "/api/v1/voice-catalog?kind=provider&service_id=openai&model=tts-1"
+            ))
+            profile_loader.assert_not_called()
+            preview_loader.assert_called_once_with()
+            snapshot_loader.assert_called_once_with(
+                refresh=False, include_profiles=False
+            )
+        alloy = next(item for item in payload["items"] if item["id"] == "alloy")
+        self.assertEqual("provider-preview", alloy["preview_artifact_id"])
 
     def test_compact_view_is_slim_but_complete_for_choosers(self):
         full = self._payload(self.client.get("/api/v1/services/tts"))

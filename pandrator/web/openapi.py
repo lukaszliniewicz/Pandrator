@@ -678,6 +678,11 @@ def build_openapi_document() -> dict:
             "/api/v1/events/snapshot": {
                 "get": {
                     "operationId": "getEventSnapshot",
+                    "parameters": [{
+                        "name": "view", "in": "query", "required": False,
+                        "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"},
+                        "description": "Compact keeps job status and errors; full includes job inputs and results.",
+                    }],
                     "responses": {
                         "200": {
                             "description": "Initial event-stream resource snapshot and cursor"

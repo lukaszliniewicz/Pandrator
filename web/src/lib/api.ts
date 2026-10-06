@@ -192,16 +192,30 @@ export async function apiResponse(path: string, init: RequestInit = {}) {
     headers.set('X-CSRF-Token', csrfToken);
   }
   const body = serializeBody(init.body, headers);
-  const response = await fetch(
-    path.startsWith('/api/v1') ? path : `/api/v1${path}`,
-    {
-      ...init,
-      method,
-      body,
-      headers,
-      credentials: init.credentials ?? 'same-origin'
-    }
-  );
+  const url = path.startsWith('/api/v1') ? path : `/api/v1${path}`;
+  const request = {
+    ...init,
+    method,
+    body,
+    headers,
+    credentials: init.credentials ?? 'same-origin'
+  };
+  let response: Response;
+  try {
+    response = await fetch(url, request);
+  } catch (caught) {
+    // Chromium can interrupt localhost reads during a network change. Retry
+    // one safe read; writes and deliberate cancellation must remain explicit.
+    if (
+      !['GET', 'HEAD'].includes(method) ||
+      !(caught instanceof TypeError) ||
+      init.signal?.aborted
+    )
+      throw caught;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    init.signal?.throwIfAborted();
+    response = await fetch(url, request);
+  }
   if (!response.ok) throw await errorFromResponse(response);
   return response;
 }

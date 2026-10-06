@@ -401,6 +401,7 @@ class TtsCatalogueService:
         refresh: bool = False,
         view: str = "full",
         service_ids: Sequence[str] | None = None,
+        include_profiles: bool = True,
     ) -> tuple[dict[str, Any], int]:
         """Return the UI-facing TTS catalogue.
 
@@ -413,7 +414,8 @@ class TtsCatalogueService:
         :data:`COMPACT_TTS_SERVICE_FIELDS`. The default ``"full"`` view is
         unchanged for legacy and MCP consumers. ``service_ids`` restricts
         the payload to selected services (matched by id or name) before any
-        refresh probing happens.
+        refresh probing happens. ``include_profiles=False`` omits only the
+        provider profiles from the full view without building their deepcopy.
         """
         if view not in TTS_CATALOGUE_VIEWS:
             raise ValueError("Unknown TTS catalogue view. Use 'full' or 'compact'.")
@@ -454,10 +456,11 @@ class TtsCatalogueService:
             "default_revision": default_revision,
             "builtin_defaults": redact_inline_secrets(BUILTIN_DEFAULTS["tts"]),
             "services": redact_inline_secrets(services),
-            "profiles": list_tts_provider_profiles(),
             "previews": self._previews(),
             "manager": manager,
         }
+        if include_profiles:
+            payload["profiles"] = list_tts_provider_profiles()
         return payload, revision
 
     def service_detail(
