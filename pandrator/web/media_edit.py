@@ -7,14 +7,18 @@ import itertools
 import json
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import select
 
-from pandrator.logic.dubbing.transcript_normalization import load_transcript
+from pandrator.logic.dubbing.transcript_normalization import (
+    NormalizedTranscript,
+    TimedSegment,
+    load_transcript,
+)
 from pandrator.logic.media_edit import (
     DEFAULT_ALIGNMENT_PADDING_MS,
     MAX_ALIGNMENT_WORD_SPAN_MS,
@@ -365,8 +369,8 @@ class MediaEditService:
     @classmethod
     def _consume_pre_aligned_cues(
         cls,
-        cues: list[MediaCue],
-        transcript,
+        cues: Sequence[MediaCue],
+        transcript: NormalizedTranscript,
     ) -> tuple[MediaCue, ...] | None:
         """Consume cue-owned timing without performing another projection.
 
@@ -377,7 +381,7 @@ class MediaEditService:
         """
 
         segments = tuple(transcript.segments)
-        segment_by_id: dict[str, Any] = {}
+        segment_by_id: dict[str, TimedSegment] = {}
         for segment in segments:
             identifier = str(getattr(segment, "identifier", "") or "")
             if not identifier or identifier in segment_by_id:
@@ -409,7 +413,7 @@ class MediaEditService:
             window_end = cue.end_ms + DEFAULT_ALIGNMENT_PADDING_MS
             if segment_start < window_start or segment_end > window_end:
                 return None
-            raw_words = tuple(getattr(segment, "words", ()) or ())
+            raw_words = segment.words
             if not raw_words:
                 consumed.append(
                     replace(
@@ -425,12 +429,14 @@ class MediaEditService:
             word_keys: list[str] = []
             previous_start = -1
             for raw_word in raw_words:
+                word_start = raw_word.start_ms
+                word_end = raw_word.end_ms
                 try:
                     word = MediaWord(
-                        text=str(getattr(raw_word, "text", "") or ""),
-                        start_ms=int(getattr(raw_word, "start_ms", None)),
-                        end_ms=int(getattr(raw_word, "end_ms", None)),
-                        confidence=getattr(raw_word, "confidence", None),
+                        text=str(raw_word.text or ""),
+                        start_ms=int(word_start),
+                        end_ms=int(word_end),
+                        confidence=raw_word.confidence,
                     )
                 except (TypeError, ValueError):
                     return None
@@ -513,7 +519,7 @@ class MediaEditService:
         return tuple(consumed)
 
     @staticmethod
-    def _token_coverage(cues: list[MediaCue]) -> float:
+    def _token_coverage(cues: Sequence[MediaCue]) -> float:
         total = 0
         matched = 0
         for cue in cues:
@@ -556,7 +562,7 @@ class MediaEditService:
     def _payload(
         cls,
         revision: MediaEditPlanRevision,
-        artifacts_by_id: dict[str, Artifact | None],
+        artifacts_by_id: Mapping[str, Artifact | None],
     ) -> dict[str, Any]:
         return {
             "plan_id": revision.plan_id,
@@ -685,11 +691,11 @@ class MediaEditService:
                     )
                 elif same_authoritative_source:
                     try:
-                        stored_coverage = float(
-                            metadata.get(
-                                "alignment_coverage",
-                                metadata.get("coverage"),
-                            )
+                        coverage_value = metadata.get(
+                            "alignment_coverage", metadata.get("coverage")
+                        )
+                        stored_coverage = (
+                            float(coverage_value) if coverage_value is not None else 0.0
                         )
                     except (TypeError, ValueError):
                         stored_coverage = 0.0
@@ -697,7 +703,7 @@ class MediaEditService:
                         direct = self._consume_pre_aligned_cues(cues, transcript)
                         if (
                             direct is not None
-                            and self._token_coverage(list(direct)) >= 0.5
+                            and self._token_coverage(direct) >= 0.5
                         ):
                             aligned = direct
                             reused_alignment = True
@@ -987,7 +993,7 @@ class MediaEditService:
             if plan and plan.active_revision_id
             else None
         )
-        if active is None or active.revision_number != expected_revision:
+        if plan is None or active is None or active.revision_number != expected_revision:
             raise MediaEditRevisionConflict(
                 expected_revision,
                 active.revision_number if active else None,
@@ -1065,7 +1071,7 @@ class MediaEditService:
                 if plan and plan.active_revision_id
                 else None
             )
-            if active is None or active.revision_number != expected_revision:
+            if plan is None or active is None or active.revision_number != expected_revision:
                 raise MediaEditRevisionConflict(
                     expected_revision, active.revision_number if active else None
                 )
@@ -1258,8 +1264,8 @@ class MediaEditService:
             reasons: list[str] = []
             for record in records:
                 try:
-                    record_start = int(record.get("start_ms"))
-                    record_end = int(record.get("end_ms"))
+                    record_start = cls._required_int(record, "start_ms")
+                    record_end = cls._required_int(record, "end_ms")
                 except (TypeError, ValueError):
                     continue
                 reason = str(record.get("reason") or "").strip()
@@ -1641,7 +1647,7 @@ class MediaEditService:
                 if plan and plan.active_revision_id
                 else None
             )
-            if active is None or active.revision_number != expected_revision:
+            if plan is None or active is None or active.revision_number != expected_revision:
                 raise MediaEditRevisionConflict(
                     expected_revision,
                     active.revision_number if active else None,
@@ -1665,11 +1671,12 @@ class MediaEditService:
                 active.duration_ms,
             )
             old_boundary = int(selected[f"{edge}_ms"])
-            target = (
-                int(position_ms)
-                if position_ms is not None
-                else old_boundary + int(delta_ms)
-            )
+            if position_ms is not None:
+                target = int(position_ms)
+            elif delta_ms is not None:
+                target = old_boundary + int(delta_ms)
+            else:
+                raise ValueError("Exactly one of position_ms or delta_ms is required.")
             duration_ms = int(active.duration_ms)
             if delta_ms is not None and abs(int(delta_ms)) > duration_ms:
                 raise ValueError("delta_ms must be within the media duration.")
