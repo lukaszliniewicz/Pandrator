@@ -190,13 +190,29 @@ class GenerationHistoryReader:
         }
         output_run_ids.update(run.id for run in runs)
 
-        assemblies = list(
-            session.scalars(
-                select(OutputAssembly)
+        assemblies = []
+        if output_run_ids:
+            # Rank thin identity rows before hydrating settings and job inputs.
+            # Only the latest attempt for each output owner is projected.
+            ranked_assemblies = (
+                select(
+                    OutputAssembly.id,
+                    func.row_number().over(
+                        partition_by=OutputAssembly.generation_run_id,
+                        order_by=OutputAssembly.created_at.desc(),
+                    ).label("position"),
+                )
                 .where(OutputAssembly.generation_run_id.in_(output_run_ids))
+                .subquery()
+            )
+            assemblies = list(session.scalars(
+                select(OutputAssembly)
+                .where(OutputAssembly.id.in_(
+                    select(ranked_assemblies.c.id)
+                    .where(ranked_assemblies.c.position == 1)
+                ))
                 .order_by(OutputAssembly.created_at.desc())
-            ).all()
-        ) if output_run_ids else []
+            ).all())
         assembly_by_run_id: dict[str, OutputAssembly] = {}
         for assembly in assemblies:
             if assembly.generation_run_id is not None:

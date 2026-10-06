@@ -11,6 +11,7 @@ cleanup decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Mapping, Sequence
 
 EARLY_REPAIR_MARKER_KEY = "early_repair_parent_run_id"
@@ -32,9 +33,9 @@ class GenerationRunHistory:
     repair_operations: Mapping[str, Mapping[str, Any]]
     applied_children: tuple[Any, ...] = ()
 
-    @property
+    @cached_property
     def repair_child_ids(self) -> frozenset[str]:
-        """IDs of verified children, useful to callers performing cleanup."""
+        """IDs of immutable verified children, retained within this projection."""
 
         return frozenset(str(child.id) for child in self.repair_children)
 

@@ -6,7 +6,10 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from pandrator.web.generation_run_history import build_generation_run_history
+from pandrator.web.generation_run_history import (
+    GenerationRunHistory,
+    build_generation_run_history,
+)
 from pandrator_mcp.schemas.e2e import ListGenerationRunsInput
 from pandrator_mcp.tools.e2e import list_generation_runs
 
@@ -50,6 +53,32 @@ def _revision(run, *, repair_status: str = "applied", source: str | None = None)
 
 
 class GenerationRunHistoryProjectionTests(unittest.TestCase):
+    def test_repair_membership_work_is_linear_in_group_size(self):
+        reads = 0
+
+        class Child:
+            def __init__(self, identifier):
+                self.identifier = identifier
+
+            @property
+            def id(self):
+                nonlocal reads
+                reads += 1
+                return self.identifier
+
+        children = tuple(Child(f"repair-{index}") for index in range(200))
+        root = _run("root")
+        history = GenerationRunHistory(root, children, root, {})
+        for _ in range(3):
+            self.assertFalse(history.is_repair_child(root.id))
+            self.assertFalse(history.is_repair_child("missing"))
+            for index in range(len(children)):
+                self.assertTrue(history.is_repair_child(f"repair-{index}"))
+        self.assertLessEqual(reads, len(children))
+        # A later projection has its own membership, without a global cache.
+        fresh = GenerationRunHistory(root, (), root, {})
+        self.assertFalse(fresh.is_repair_child("repair-0"))
+
     def test_only_verified_children_group_and_result_follows_accepted_chain(self):
         root = _run("root")
         first = _run(

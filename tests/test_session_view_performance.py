@@ -597,8 +597,69 @@ class SessionViewPerformanceTests(unittest.TestCase):
                 print({"history_size": count, "latest": latest, "loaded": dict(loaded), "seconds": elapsed})
                 self.assertEqual(1 if latest else 3, loaded["GenerationRun"])
                 self.assertEqual(1 if latest else 3, loaded["Job"])
-                self.assertEqual(2 if latest else 6, loaded["OutputAssembly"])
+                self.assertEqual(1 if latest else 3, loaded["OutputAssembly"])
                 self.assertEqual(1 if latest else 3, loaded["UsageEvent"])
+
+    def test_history_hydrates_one_assembly_per_selected_run(self):
+        for attempts in (1, 150):
+            session_id, run_ids = self._run_history_fixture(
+                3, run_status="completed", job_status="succeeded"
+            )
+            expected = {}
+            now = utcnow()
+            with self.database.session() as session:
+                for run_id in run_ids:
+                    for index in range(attempts):
+                        session.add(OutputAssembly(
+                            session_id=session_id, generation_run_id=run_id,
+                            status="completed", settings_json={
+                                "attempt": index, "large_setting": "x" * 4096,
+                            },
+                            # Also preserve existing selection for tied dates.
+                            created_at=now + timedelta(seconds=index // 2),
+                        ))
+                session.flush()
+                for run_id in run_ids:
+                    assembly = session.scalars(
+                        select(OutputAssembly)
+                        .where(OutputAssembly.generation_run_id == run_id)
+                        .order_by(OutputAssembly.created_at.desc())
+                    ).first()
+                    session.refresh(assembly)
+                    expected[run_id] = self.generation._assembly_payload(assembly, None)
+                # An uncommitted newest assembly remains visible to its caller.
+                newest = OutputAssembly(
+                    session_id=session_id, generation_run_id=run_ids[-1],
+                    status="queued", settings_json={"uncommitted": True},
+                    created_at=now + timedelta(seconds=attempts + 1),
+                )
+                session.add(newest)
+                actual = GenerationHistoryReader(self.database)._run_payload(
+                    session, session.get(GenerationRun, run_ids[-1])
+                )
+                self.assertEqual(newest.id, actual["assembly"]["id"])
+                session.refresh(newest)
+                expected[run_ids[-1]] = self.generation._assembly_payload(newest, None)
+
+            reader = GenerationHistoryReader(self.database)
+            full = reader.list_runs(session_id)
+            self.assertEqual(expected, {item["id"]: item["assembly"] for item in full})
+            for latest in (False, True):
+                loaded = Counter()
+
+                def record_load(_session, instance, counts=loaded):
+                    counts[type(instance).__name__] += 1
+
+                event.listen(OrmSession, "loaded_as_persistent", record_load)
+                try:
+                    actual = (
+                        reader.latest_run(session_id) if latest
+                        else reader.list_runs(session_id, limit=2)
+                    )
+                finally:
+                    event.remove(OrmSession, "loaded_as_persistent", record_load)
+                self.assertEqual(full[0] if latest else full[:2], actual)
+                self.assertEqual(1 if latest else 2, loaded["OutputAssembly"])
 
     def test_bounded_history_preserves_repairs_grouped_usage_and_malformed_markers(self):
         session_id, run_ids = self._run_history_fixture(
