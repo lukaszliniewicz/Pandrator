@@ -1,11 +1,12 @@
 """Disposable regression witnesses for transcription publication boundaries."""
 
+import inspect as signature_inspect
 import json
 import threading
 import wave
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from sqlalchemy import inspect, select
@@ -313,6 +314,54 @@ def _assert_receipt(case, result, *, speaker_count, surfaces):
 def test_caption_asr_success_retains_native_revision_receipt(case):
     result = _run(case)
     _assert_receipt(case, result, speaker_count=1, surfaces=["Hello,", "world!"])
+
+
+def test_caption_asr_facade_recaptures_ports_and_forwards_identity(case):
+    from pandrator.web.workflow_caption_alignment import transcribe_media_edit_with_caption
+
+    arguments = {
+        "session_id": case.session.id,
+        "source_artifact": case.source,
+        "caption_artifact": case.caption,
+        "transcription_result": case.result,
+        "submitted_settings": {"stt_language": "en"},
+        "progress": lambda *_: None,
+    }
+    contexts = []
+    for cancel_event in (None, threading.Event()):
+        token_counter = Mock(return_value=2)
+        with (
+            patch(
+                "pandrator.web.workflow_handlers._transcribe_media_edit_with_caption_impl",
+                autospec=True,
+                return_value={"fixture": True},
+            ) as owner,
+            patch.object(case.handlers, "_operation_dir") as operation_dir,
+            patch.object(case.handlers, "_store_srt_document") as store_document,
+            patch.object(case.handlers, "_store_timed_words") as store_words,
+            patch("pandrator.web.workflow_handlers._media_edit_token_count", token_counter),
+        ):
+            supplied = dict(arguments)
+            if cancel_event is not None:
+                supplied["cancel_event"] = cancel_event
+            result = case.handlers._transcribe_media_edit_with_caption(**supplied)
+            forwarded = (
+                signature_inspect.signature(transcribe_media_edit_with_caption)
+                .bind(*owner.call_args.args, **owner.call_args.kwargs)
+                .arguments
+            )
+            context = forwarded.pop("context")
+            contexts.append(context)
+            assert context.artifacts is case.handlers.artifacts
+            assert context._operation_dir is operation_dir
+            assert context._store_srt_document is store_document
+            assert context._store_timed_words is store_words
+            assert context._media_edit_token_count is token_counter
+            assert forwarded.keys() == {**arguments, "cancel_event": cancel_event}.keys()
+            for name, value in {**arguments, "cancel_event": cancel_event}.items():
+                assert forwarded[name] is value
+            assert result is owner.return_value
+    assert contexts[0] is not contexts[1]
 
 
 @pytest.mark.parametrize("case", ["caption-asr", "plain-asr"], indirect=True)

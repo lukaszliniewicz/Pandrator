@@ -79,6 +79,9 @@ from .workflow_audio_preview import generate_audio_preview as _generate_audio_pr
 from .workflow_audio_preview import preview_output_mix as _preview_output_mix_impl
 from .workflow_caption_alignment import CaptionAlignmentContext
 from .workflow_caption_alignment import (
+    transcribe_media_edit_with_caption as _transcribe_media_edit_with_caption_impl,
+)
+from .workflow_caption_alignment import (
     transcribe_media_edit_with_ctc as _transcribe_media_edit_with_ctc_impl,
 )
 from .workflow_export import export as _export
@@ -1965,285 +1968,16 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """Project ASR timing onto the authoritative attached captions."""
-
-        from pandrator.logic.cancellable_process import ProcessCancelled
-        from pandrator.logic.media_edit import (
-            MediaWord,
-            align_cues_to_words,
-            caption_to_srt,
-            media_cues_to_transcript,
-            parse_caption_text,
-        )
-
-        raw_srt_path = Path(transcription_result.srt_path)
-        raw_words_path = Path(transcription_result.word_timestamps_path)
-        requested_language = str(submitted_settings.get("original_language") or submitted_settings.get("stt_language") or "auto")
-        resolved_language = str(getattr(transcription_result, "resolved_language", "") or "")
-        output_language = resolved_language if resolved_language.lower() not in {"", "auto", "und", "unknown"} else requested_language
-        routing = deepcopy(dict(getattr(transcription_result, "routing", {}) or {}))
-        isolation_metadata = None
-        raw_payload: dict[str, Any] = {}
-        try:
-            raw_payload = json.loads(raw_words_path.read_text(encoding="utf-8"))
-            if not isinstance(raw_payload, dict):
-                raw_payload = {}
-            supplied_isolation = (raw_payload.get("metadata") or {}).get("vocal_isolation")
-            if isinstance(supplied_isolation, dict):
-                isolation_metadata = {
-                    key: deepcopy(value) for key, value in supplied_isolation.items()
-                    if key in {"transcription_vocal_isolation", "vocal_isolation_model", "vocal_isolation_status", "original_audio_retained", "model_id", "family", "cli_family", "revision", "sha256", "size_bytes", "method", "status", "backend", "compute_backend", "requested_backend", "threads"}
-                }
-                if isolation_metadata.get("original_audio_retained"):
-                    isolation_metadata["original_audio_retained"] = Path(str(isolation_metadata["original_audio_retained"]).replace("\\", "/")).name
-        except (OSError, ValueError, TypeError, AttributeError):
-            # Evidence registration precedes the existing transcript parse gate.
-            pass
-        if raw_payload:
-            payload_metadata = raw_payload.get("metadata")
-            if not isinstance(payload_metadata, dict):
-                payload_metadata = {}
-                raw_payload["metadata"] = payload_metadata
-            payload_metadata["stt_routing"] = deepcopy(routing)
-            payload_metadata["requested_language"] = requested_language
-            if isolation_metadata is not None:
-                payload_metadata["vocal_isolation"] = deepcopy(isolation_metadata)
-            raw_words_path.write_text(json.dumps(raw_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        raw_metadata = {
-            "engine": transcription_result.engine,
-            "model": transcription_result.engine,
-            "model_quantization": str(
-                submitted_settings.get("stt_model_quantization") or "f16"
-            ),
-            "compute_backend": transcription_result.compute_backend,
-            "language": output_language,
-            "resolved_language": output_language,
-            "requested_language": requested_language,
-            "requested_settings": redact_inline_secrets(submitted_settings),
-            "stt_routing": routing,
-            "alignment_role": "evidence",
-            "source_artifact_id": source_artifact.id,
-        }
-        if isolation_metadata is not None:
-            raw_metadata["vocal_isolation"] = isolation_metadata
-        raw_srt_artifact = self.artifacts.register(
-            raw_srt_path,
-            kind="srt",
-            role="transcription_evidence",
+        return _transcribe_media_edit_with_caption_impl(
+            self._caption_alignment_context(),
             session_id=session_id,
-            parent_ids=[source_artifact.id],
-            settings=submitted_settings,
-            metadata=raw_metadata,
+            source_artifact=source_artifact,
+            caption_artifact=caption_artifact,
+            transcription_result=transcription_result,
+            submitted_settings=submitted_settings,
+            progress=progress,
+            cancel_event=cancel_event,
         )
-        raw_words_artifact = self.artifacts.register(
-            raw_words_path,
-            kind="json",
-            role="recognition_word_timestamps",
-            session_id=session_id,
-            parent_ids=[source_artifact.id, raw_srt_artifact.id],
-            settings={
-                **submitted_settings,
-                "stt_engine": transcription_result.engine,
-                "stt_compute_backend": transcription_result.compute_backend,
-            },
-            metadata={
-                **raw_metadata,
-                "transcription_evidence_artifact_id": raw_srt_artifact.id,
-            },
-        )
-
-        _caption_record, caption_path = self.artifacts.resolve(caption_artifact.id)
-        try:
-            cues = parse_caption_text(
-                caption_path.read_text(encoding="utf-8-sig")
-            )
-            transcript = load_transcript(raw_words_path)
-            asr_words = tuple(
-                MediaWord(
-                    text=word.text,
-                    start_ms=word.start_ms,
-                    end_ms=word.end_ms,
-                    confidence=word.confidence,
-                )
-                for word in transcript.words
-            )
-            aligned_cues = align_cues_to_words(cues, asr_words)
-            word_count = sum(len(cue.words) for cue in aligned_cues)
-            if not aligned_cues:
-                raise ValueError(
-                    "The attached transcript could not be aligned to ASR evidence."
-                )
-        except (OSError, TypeError, ValueError, KeyError) as error:
-            raise ValueError(
-                "The attached transcript could not be parsed and aligned to ASR evidence."
-            ) from error
-
-        operation_dir = self._operation_dir(session_id, "transcribe")
-        aligned_srt_path = operation_dir / "aligned-transcription.srt"
-        aligned_json_path = operation_dir / "aligned-word-timestamps.json"
-        caption_token_count = sum(
-            _media_edit_token_count(cue.text) for cue in cues
-        )
-        matched_token_count = sum(
-            min(
-                _media_edit_token_count(cue.text),
-                max(
-                    0,
-                    round(
-                        _media_edit_token_count(cue.text)
-                        * float(cue.timing_confidence or 0.0)
-                    ),
-                ),
-            )
-            for cue in aligned_cues
-            if cue.timing_source == "asr_alignment" and cue.words
-        )
-        coverage = min(
-            1.0,
-            max(0.0, matched_token_count / max(1, caption_token_count)),
-        )
-        confidences = [
-            float(cue.timing_confidence or 0.0)
-            for cue in aligned_cues
-        ]
-        alignment_confidence = (
-            sum(confidences) / len(confidences) if confidences else 0.0
-        )
-        if coverage < 0.5:
-            raise ValueError(
-                f"Aligned transcription coverage is {coverage:.6f}, below 0.5; "
-                "no aligned transcription was promoted."
-            )
-        progress(0.86, "Persisting aligned transcription")
-        if cancel_event is not None and cancel_event.is_set():
-            raise ProcessCancelled("Caption alignment cancelled before publication.")
-        aligned_srt_path.write_text(
-            caption_to_srt(aligned_cues), encoding="utf-8"
-        )
-        alignment_metadata = {
-            "resolved_language": output_language,
-            "stt_routing": deepcopy(routing),
-            "requested_language": requested_language,
-            "requested_settings": redact_inline_secrets(submitted_settings),
-            "alignment_method": "asr_lexical_projection",
-            "authoritative_transcript_artifact_id": caption_artifact.id,
-            "raw_asr_srt_artifact_id": raw_srt_artifact.id,
-            "raw_asr_word_timestamps_artifact_id": raw_words_artifact.id,
-            "alignment_coverage": coverage,
-            "coverage": coverage,
-            "alignment_confidence": alignment_confidence,
-            "confidence": alignment_confidence,
-            "word_count": word_count,
-            "source_artifact_id": source_artifact.id,
-        }
-        if isolation_metadata is not None:
-            alignment_metadata["vocal_isolation"] = deepcopy(isolation_metadata)
-        aligned_payload = media_cues_to_transcript(
-            aligned_cues,
-            language=output_language,
-            source_format="media_edit_alignment",
-            metadata=alignment_metadata,
-        )
-        aligned_json_path.write_text(
-            json.dumps(aligned_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        artifact_metadata = {
-            **raw_metadata,
-            **alignment_metadata,
-        }
-        aligned_srt_artifact = self.artifacts.register(
-            aligned_srt_path,
-            kind="srt",
-            role="transcription_alignment",
-            session_id=session_id,
-            parent_ids=[
-                source_artifact.id,
-                caption_artifact.id,
-                raw_srt_artifact.id,
-                raw_words_artifact.id,
-            ],
-            settings=submitted_settings,
-            metadata=artifact_metadata,
-        )
-        aligned_words_artifact = self.artifacts.register(
-            aligned_json_path,
-            kind="json",
-            role="word_timestamps",
-            session_id=session_id,
-            parent_ids=[
-                source_artifact.id,
-                caption_artifact.id,
-                aligned_srt_artifact.id,
-                raw_srt_artifact.id,
-                raw_words_artifact.id,
-            ],
-            settings={
-                **submitted_settings,
-                "stt_engine": transcription_result.engine,
-                "stt_compute_backend": transcription_result.compute_backend,
-            },
-            metadata=artifact_metadata,
-        )
-        language = output_language or None
-        _document_id, revision_id = self._store_srt_document(
-            session_id,
-            aligned_srt_artifact,
-            "transcription",
-            language=language,
-            parent_artifact=caption_artifact,
-            speaker_overrides={
-                index: cue.speaker
-                for index, cue in enumerate(aligned_cues, start=1)
-                if cue.speaker
-            },
-        )
-        stored_word_count = self._store_timed_words(
-            revision_id,
-            aligned_json_path,
-            segment_by_source_cue_id={
-                cue.id: index for index, cue in enumerate(aligned_cues)
-            },
-        )
-        if cancel_event is not None and cancel_event.is_set():
-            raise ProcessCancelled("Caption alignment cancelled before publication.")
-        stored_artifact, _ = self.artifacts.resolve(aligned_srt_artifact.id)
-        # Promote only after native persistence succeeds.  A parse/alignment
-        # or persistence failure therefore leaves evidence and a non-stage
-        # candidate, never a selectable half-built transcription.
-        aligned_srt_artifact = self.artifacts.register(
-            aligned_srt_path,
-            kind="srt",
-            role="transcription",
-            session_id=session_id,
-            parent_ids=[
-                source_artifact.id,
-                caption_artifact.id,
-                raw_srt_artifact.id,
-                raw_words_artifact.id,
-            ],
-            settings=submitted_settings,
-            metadata={**artifact_metadata, **(stored_artifact.metadata_json or {})},
-        )
-        progress(0.97, "Aligned transcription ready")
-        return {
-            "artifact_id": aligned_srt_artifact.id,
-            "path": aligned_srt_artifact.relative_path,
-            "word_timestamps_artifact_id": aligned_words_artifact.id,
-            "word_timestamps_path": aligned_words_artifact.relative_path,
-            "word_count": stored_word_count,
-            "speaker_count": len(
-                {cue.speaker.casefold() for cue in aligned_cues if cue.speaker}
-            ),
-            "revision_id": revision_id,
-            "alignment_method": "asr_lexical_projection",
-            "authoritative_transcript_artifact_id": caption_artifact.id,
-            "raw_asr_srt_artifact_id": raw_srt_artifact.id,
-            "raw_asr_word_timestamps_artifact_id": raw_words_artifact.id,
-            "alignment_coverage": coverage,
-            "coverage": coverage,
-            "alignment_confidence": alignment_confidence,
-            "confidence": alignment_confidence,
-        }
 
     def _caption_alignment_context(self) -> CaptionAlignmentContext:
         return CaptionAlignmentContext(
@@ -2251,6 +1985,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             _operation_dir=self._operation_dir,
             _store_srt_document=self._store_srt_document,
             _store_timed_words=self._store_timed_words,
+            _media_edit_token_count=_media_edit_token_count,
         )
 
     def _speech_optimization_context(self) -> SpeechOptimizationContext:
