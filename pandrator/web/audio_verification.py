@@ -11,7 +11,7 @@ import math
 import re
 import statistics
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from pydub import AudioSegment
 
@@ -100,7 +100,8 @@ def analyze_audio(audio: AudioSegment, expected_text: str = "") -> dict[str, Any
         abs(audio.get_dc_offset(channel))
         for channel in range(1, min(channels, 2) + 1)
     )
-    tail_rms = float(audio[-min(10, duration_ms) :].rms) / full_scale
+    tail = cast(AudioSegment, audio[-min(10, duration_ms) :])
+    tail_rms = float(tail.rms) / full_scale
     rms_dbfs = _dbfs(rms)
     peak_dbfs = _dbfs(peak)
     tail_rms_dbfs = _dbfs(tail_rms)

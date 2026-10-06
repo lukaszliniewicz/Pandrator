@@ -109,7 +109,7 @@ def _audio_consumption(usage: Any) -> AudioConsumption:
     ]
     if not finite:
         return "unreported"
-    if any(value > 0 for value in finite):
+    if any(cast(float, value) > 0 for value in finite):
         return "confirmed"
     if all(value == 0 for value in finite):
         raise RuntimeError(

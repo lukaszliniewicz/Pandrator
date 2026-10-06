@@ -2,7 +2,9 @@ import logging
 import os
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import cast
 
 from .dubbing.audio_sync import AudioSyncResult, synchronize_audio_video_with_result
 from .dubbing.credentials import settings_use_deepl
@@ -662,7 +664,7 @@ def replace_video_audio_track(video_path: str, audio_path: str, output_video_pat
             encoding="utf-8",
             errors="replace",
         )
-        for line in process.stdout:
+        for line in cast(Iterable[str], process.stdout):
             logging.info(f"FFmpeg: {line.strip()}")
         process.wait()
         if process.returncode != 0:
@@ -755,7 +757,7 @@ def add_subtitles_to_video(
             encoding="utf-8",
             errors="replace",
         )
-        for line in process.stdout:
+        for line in cast(Iterable[str], process.stdout):
             logging.info(f"FFmpeg: {line.strip()}")
         process.wait()
         if process.returncode != 0:

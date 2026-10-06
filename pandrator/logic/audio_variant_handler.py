@@ -161,7 +161,8 @@ def _normalize_variant_record(record: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     model_name = str(record.get("model_name") or "").strip()
-    settings = record.get("settings") if isinstance(record.get("settings"), dict) else {}
+    raw_settings = record.get("settings")
+    settings = raw_settings if isinstance(raw_settings, dict) else {}
     normalized_settings = normalize_rvc_settings({**settings, "rvc_model": model_name or settings.get("rvc_model")})
     if not model_name:
         model_name = normalized_settings["rvc_model"]

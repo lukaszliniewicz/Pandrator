@@ -123,7 +123,7 @@ def invalidate_stage(run_dir: str, stage: str) -> None:
 def applicable_stages(source_path: str, attached_video_path: str = "") -> list[str]:
     # Retain the keyword for callers; an attachment does not change source stages.
     del attached_video_path
-    stages = list(STAGE_ORDER)
+    stages = list[str](STAGE_ORDER)
     if not is_media_source(source_path):
         stages.remove("transcribe")
     return stages

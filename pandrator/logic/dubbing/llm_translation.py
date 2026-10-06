@@ -954,9 +954,12 @@ def _coerce_completion_content_and_cost(result: Any) -> tuple[str, float, str]:
 
 
 def _merge_completion_usage(totals: dict[str, Any], result: Any) -> None:
-    raw = getattr(result, "usage", {})
+    raw: Any = getattr(result, "usage", {})
     if hasattr(raw, "model_dump"):
-        raw = raw.model_dump(mode="json")
+        try:
+            raw = raw.model_dump(mode="json")
+        except TypeError:
+            raw = raw.model_dump()
     normalized = llm_handler.normalize_usage_tokens(
         raw if isinstance(raw, dict) else {}
     )

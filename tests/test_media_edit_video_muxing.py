@@ -133,9 +133,7 @@ def test_removal_command_renders_exact_duration_with_audio_and_scaling():
             "audio",
             "video",
         }
-        video = next(
-            stream for stream in metadata["streams"] if stream["codec_type"] == "video"
-        )
+        video = next(stream for stream in metadata["streams"] if stream["codec_type"] == "video")
         assert video["height"] == 360
 
 
@@ -161,8 +159,20 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
 
     def video_hash(path):
         return run(
-            "ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
-            "-c:v", "rawvideo", "-f", "hash", "-hash", "sha256", "-",
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            "rawvideo",
+            "-f",
+            "hash",
+            "-hash",
+            "sha256",
+            "-",
         )
 
     paths = prepare_web_test_data_root(tmp_path)
@@ -175,25 +185,46 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
         artifacts = ArtifactService(database, paths)
         source_path = directory / "source.mp4"
         run(
-            "ffmpeg", "-y", "-f", "lavfi", "-i",
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
             "testsrc2=size=160x90:rate=25:duration=3",
-            "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
-            "-c:v", "libx264", "-c:a", "aac", "-shortest", str(source_path),
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source_path),
         )
         source = artifacts.register(
-            source_path, kind="video", role="upload", session_id=record.id,
+            source_path,
+            kind="video",
+            role="upload",
+            session_id=record.id,
         )
         with database.session() as session:
             asset = SourceAsset(
-                artifact_id=source.id, display_name=source_path.name,
-                kind="mp4", mime_type="video/mp4",
+                artifact_id=source.id,
+                display_name=source_path.name,
+                kind="mp4",
+                mime_type="video/mp4",
             )
             session.add(asset)
             session.flush()
-            session.add(SessionSource(
-                session_id=record.id, source_asset_id=asset.id,
-                role="primary", is_current=True,
-            ))
+            session.add(
+                SessionSource(
+                    session_id=record.id,
+                    source_asset_id=asset.id,
+                    role="primary",
+                    is_current=True,
+                )
+            )
         transcript_path = directory / "transcription.srt"
         transcript_path.write_text(
             "1\n00:00:00,200 --> 00:00:00,600\nBefore cut\n\n"
@@ -201,13 +232,18 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
             encoding="utf-8",
         )
         artifacts.register(
-            transcript_path, kind="srt", role="transcription",
-            session_id=record.id, parent_ids=[source.id],
+            transcript_path,
+            kind="srt",
+            role="transcription",
+            session_id=record.id,
+            parent_ids=[source.id],
         )
         handlers = WorkflowHandlers(database, paths)
         plan = handlers.media_edit.prepare(record.id)["plan"]
         plan = handlers.media_edit.update(
-            record.id, plan["revision"], reviewed=True,
+            record.id,
+            plan["revision"],
+            reviewed=True,
             keep_ranges=[
                 {"start_ms": 0, "end_ms": 1000},
                 {"start_ms": 2000, "end_ms": 3000},
@@ -223,10 +259,7 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
         assert progress_values == sorted(progress_values)
         assert progress_values[-1] == 1.0
         assert any(0.2 < value <= 0.95 for value in progress_values)
-        assert any(
-            detail and " / 2.0s" in detail
-            for _value, detail in progress_updates
-        )
+        assert any(detail and " / 2.0s" in detail for _value, detail in progress_updates)
         with database.session() as session:
             edited = session.get(Artifact, rendered["media_artifact_id"])
             edited_path = paths.root / edited.relative_path
@@ -235,19 +268,34 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
         record = sessions.update(record.id, record.revision, {"workflow_kind": "voiceover"})
         speech_path = directory / "speech.wav"
         run(
-            "ffmpeg", "-y", "-f", "lavfi", "-i",
-            "sine=frequency=880:duration=2", str(speech_path),
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:duration=2",
+            str(speech_path),
         )
         artifacts.register(
-            speech_path, kind="audio", role="assembled_audio", session_id=record.id,
+            speech_path,
+            kind="audio",
+            role="assembled_audio",
+            session_id=record.id,
         )
         workflow = WorkflowService(database, JobQueue(database))
         for audio_mode in ("preserve", "mixed", "dubbing_only"):
-            resolved = workflow.resolve_stage(record.id, "export", {
-                "export_mode": "media", "audio_mode": audio_mode,
-                "subtitle_mode": "soft", "subtitle_selection": "source",
-                "subtitle_min_duration_ms": 250, "subtitle_max_cps": 40,
-            })
+            resolved = workflow.resolve_stage(
+                record.id,
+                "export",
+                {
+                    "export_mode": "media",
+                    "audio_mode": audio_mode,
+                    "subtitle_mode": "soft",
+                    "subtitle_selection": "source",
+                    "subtitle_min_duration_ms": 250,
+                    "subtitle_max_cps": 40,
+                },
+            )
             assert resolved.payload["export_contract"]["source_artifact_id"] == edited.id
             result = handlers.export(resolved.payload, lambda *_args: None, threading.Event())
             with database.session() as session:
@@ -256,18 +304,130 @@ def test_converted_voiceover_exports_cut_footage_and_retimed_subtitles(tmp_path)
             # Duration alone can miss an export that truncates the original
             # footage to the speech length. Every decoded frame must match.
             assert video_hash(output_path) == expected_frames, audio_mode
-            probe = json.loads(run(
-                "ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output_path),
-            ))
+            probe = json.loads(
+                run(
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_streams",
+                    "-of",
+                    "json",
+                    str(output_path),
+                )
+            )
             for stream_type in ("video", "audio"):
                 stream = next(s for s in probe["streams"] if s["codec_type"] == stream_type)
                 assert float(stream["duration"]) == pytest.approx(2, abs=0.1), audio_mode
-            subtitles = parse_srt(run(
-                "ffmpeg", "-v", "error", "-i", str(output_path),
-                "-map", "0:s:0", "-f", "srt", "-",
-            ))
+            subtitles = parse_srt(
+                run(
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-i",
+                    str(output_path),
+                    "-map",
+                    "0:s:0",
+                    "-f",
+                    "srt",
+                    "-",
+                )
+            )
             assert [(cue.start_ms, cue.end_ms, cue.text) for cue in subtitles] == [
-                (200, 600, "Before cut"), (1200, 1600, "After cut"),
+                (200, 600, "Before cut"),
+                (1200, 1600, "After cut"),
             ], audio_mode
     finally:
         database.dispose()
+
+
+@pytest.mark.parametrize("has_audio", [False, True])
+def test_removal_builder_keeps_frozen_attribute_ranges_equivalent_to_tuples(has_audio):
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Range:
+        start_ms: int
+        end_ms: int
+
+    tuple_command = build_removal_only_video_command(
+        "input.mp4", "output.mp4", [(0, 1000), (1500, 2500)], has_audio=has_audio
+    )
+    object_command = build_removal_only_video_command(
+        "input.mp4", "output.mp4", [Range(0, 1000), Range(1500, 2500)], has_audio=has_audio
+    )
+    assert object_command == tuple_command
+    with pytest.raises(TypeError):
+        build_removal_only_video_command(
+            "input.mp4", "output.mp4", [Range(True, 1000)], has_audio=has_audio
+        )
+
+
+@pytest.mark.skipif(
+    not shutil.which("ffmpeg") or not shutil.which("ffprobe"),
+    reason="Native FFmpeg/FFprobe unavailable",
+)
+def test_legacy_mux_handlers_publish_native_outputs_and_consume_text_pipes(tmp_path):
+    import wave
+
+    from pandrator.logic.dubbing_handler import add_subtitles_to_video, replace_video_audio_track
+    from pandrator.web.media_process import probe_audio_stream
+
+    source = tmp_path / "source.mp4"
+    replacement = tmp_path / "replacement.wav"
+    dubbed = tmp_path / "dubbed.mp4"
+    subtitled = tmp_path / "subtitled.mp4"
+    subtitles = tmp_path / "subtitles.srt"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=160x90:r=10:d=0.6",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
+    original = source.read_bytes()
+    with wave.open(str(replacement), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b"\x00\x00" * 14400)
+    subtitles.write_text("1\n00:00:00,000 --> 00:00:00,500\nHello there.\n", encoding="utf-8")
+    dubbed.write_bytes(b"previous output")
+    subtitled.write_bytes(b"previous output")
+    assert replace_video_audio_track(str(source), str(replacement), str(dubbed))
+    assert add_subtitles_to_video(
+        str(dubbed), str(subtitles), str(subtitled), subtitle_language="pl"
+    )
+    assert source.read_bytes() == original
+    assert dubbed.stat().st_size > 100 and subtitled.stat().st_size > 100
+    info = probe_audio_stream(subtitled)
+    assert info.duration_ms == pytest.approx(600, abs=70)
+    metadata = json.loads(
+        subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_streams",
+                "-of",
+                "json",
+                str(subtitled),
+            ],
+            timeout=20,
+        )
+    )
+    subtitle = next(stream for stream in metadata["streams"] if stream["codec_type"] == "subtitle")
+    assert subtitle["tags"]["language"] == "pol"
+    assert not list(tmp_path.glob(".*_tmp.mp4"))

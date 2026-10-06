@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Protocol, cast
 
 from .languages import ffmpeg_subtitle_language_code, subtitle_language_title
+
+
+class _KeepRangeBounds(Protocol):
+    @property
+    def start_ms(self) -> int: ...
+
+    @property
+    def end_ms(self) -> int: ...
 
 
 def escape_ffmpeg_subtitles_filter_path(path: str) -> str:
@@ -300,7 +310,7 @@ def _format_filter_time(milliseconds: int) -> str:
 def build_removal_only_video_command(
     video_path: str,
     output_path: str,
-    keep_ranges: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    keep_ranges: Sequence[tuple[int, int] | _KeepRangeBounds],
     *,
     has_audio: bool,
     ffmpeg_executable: str = "ffmpeg",
@@ -324,13 +334,15 @@ def build_removal_only_video_command(
     normalized_ranges = []
     for item in keep_ranges:
         if hasattr(item, "start_ms") and hasattr(item, "end_ms"):
-            start_ms, end_ms = item.start_ms, item.end_ms
+            range_item = cast(_KeepRangeBounds, item)
+            start_ms, end_ms = range_item.start_ms, range_item.end_ms
         else:
-            if len(item) != 2:
+            tuple_item = cast(tuple[int, int], item)
+            if len(tuple_item) != 2:
                 raise ValueError(
                     "Each keep range must contain start and end milliseconds"
                 )
-            start_ms, end_ms = item
+            start_ms, end_ms = tuple_item
         if not isinstance(start_ms, int) or isinstance(start_ms, bool):
             raise TypeError("keep range start must be an integer")
         if not isinstance(end_ms, int) or isinstance(end_ms, bool):

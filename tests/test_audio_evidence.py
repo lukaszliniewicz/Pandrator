@@ -146,6 +146,18 @@ class AudioEvidenceTests(unittest.TestCase):
 
         complete.assert_not_called()
 
+    def test_audio_usage_preserves_ordering_without_converting_large_integers(self):
+        from fractions import Fraction
+
+        from pandrator.logic.audio_evidence import _audio_consumption
+
+        for value in (10**400, Fraction(1, 3), 1.5):
+            self.assertEqual("confirmed", _audio_consumption({"audio_tokens": value}))
+        for value in (True, False, float("nan"), float("inf")):
+            self.assertEqual("unreported", _audio_consumption({"audio_tokens": value}))
+        with self.assertRaisesRegex(RuntimeError, "invalid audio token counts"):
+            _audio_consumption({"audio_tokens": -(10**400)})
+
     def test_audio_token_usage_states(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._audio_file(directory)

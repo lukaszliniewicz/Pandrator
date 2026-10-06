@@ -726,3 +726,51 @@ def test_source_split_anchors_refuse_unmatched_or_overlapping_words():
     for ids in ([anchors[1]["id"], anchors[0]["id"]], [anchors[0]["id"], anchors[0]["id"]], ["invented"]):
         with pytest.raises(ValueError):
             anchored_split_windows(pinned, ids, len(ids) + 1)
+
+
+@pytest.mark.parametrize("module_name", ["llm_correction", "llm_translation"])
+@pytest.mark.parametrize("usage_kind", ["dictionary", "current", "legacy", "missing"])
+def test_dubbing_usage_accepts_current_legacy_and_dictionary_contracts(module_name, usage_kind):
+    from types import SimpleNamespace
+
+    from pandrator.logic.dubbing import llm_translation
+
+    module = llm_correction if module_name == "llm_correction" else llm_translation
+    payload = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+
+    class CurrentUsage:
+        def model_dump(self, *, mode):
+            assert mode == "json"
+            return payload
+
+    class LegacyUsage:
+        def model_dump(self):
+            return payload
+
+    usage = {"dictionary": payload, "current": CurrentUsage(), "legacy": LegacyUsage(), "missing": None}[usage_kind]
+    totals = {}
+    module._merge_completion_usage(totals, SimpleNamespace(usage=usage))
+    assert totals["prompt_tokens"] == (0 if usage_kind == "missing" else 7)
+    assert totals["completion_tokens"] == (0 if usage_kind == "missing" else 3)
+    assert totals["total_tokens"] == (0 if usage_kind == "missing" else 10)
+
+
+@pytest.mark.parametrize("module_name", ["llm_correction", "llm_translation"])
+def test_dubbing_usage_does_not_retry_unrelated_serialization_failure(module_name):
+    from types import SimpleNamespace
+
+    from pandrator.logic.dubbing import llm_translation
+
+    module = llm_correction if module_name == "llm_correction" else llm_translation
+    calls = []
+    failure = ValueError("invalid usage payload")
+
+    class BrokenUsage:
+        def model_dump(self, *, mode):
+            calls.append(mode)
+            raise failure
+
+    with pytest.raises(ValueError) as caught:
+        module._merge_completion_usage({}, SimpleNamespace(usage=BrokenUsage()))
+    assert caught.value is failure
+    assert calls == ["json"]

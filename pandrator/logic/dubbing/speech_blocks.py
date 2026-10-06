@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
+from typing import Any, cast
 
 from .models import SpeechBlock, SubtitleSegment
 from .natural_boundaries import (
@@ -1237,7 +1238,7 @@ def create_speech_blocks(
         previous = utterances[-1] if utterances else None
         gap_ms = part.start_ms - previous.end_ms if previous is not None else None
         bridged_pause_ms = sum(
-            int(event.get("measurements", {}).get("gap_ms", 0))
+            int(cast(Mapping[str, Any], event.get("measurements", {})).get("gap_ms", 0))
             for event in (previous.formation_events if previous else [])
             if event.get("reason_code") == "unfinished_pause_bridged"
         )

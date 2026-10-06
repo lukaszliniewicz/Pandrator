@@ -15,7 +15,7 @@ class ProcessCancelled(RuntimeError):
     """Raised when a worker cancellation stops a child process."""
 
 
-def _stop_process(process: subprocess.Popen[bytes]) -> None:
+def _stop_process(process: subprocess.Popen[bytes] | subprocess.Popen[str]) -> None:
     """Terminate only the child process tree created for this invocation."""
 
     if process.poll() is not None:

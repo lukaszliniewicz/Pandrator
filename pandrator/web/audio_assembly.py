@@ -9,7 +9,7 @@ import threading
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, BinaryIO, Callable, Iterable, cast
 
 from pydub import AudioSegment
 
@@ -272,7 +272,7 @@ def export_audio(
         options.update(codec="aac", bitrate=bitrate)
     elif normalized == "opus":
         options.update(codec="libopus", bitrate=bitrate)
-    exported = audio.export(destination, format=ffmpeg_format, **options)
+    exported = cast(BinaryIO, audio.export(destination, format=ffmpeg_format, **options))
     exported.close()
 
 

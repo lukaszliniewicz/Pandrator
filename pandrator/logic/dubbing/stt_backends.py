@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ...constants import LANGUAGE_DISPLAY_NAMES
 from .crispasr import (
@@ -252,7 +252,7 @@ def language_options_for_backend(backend: str) -> tuple[STTLanguageOption, ...]:
         options = [STTLanguageOption("Automatic", "auto")]
         options.extend(
             STTLanguageOption(
-                LANGUAGE_DISPLAY_NAMES.get(locale.split("-", 1)[0], locale),
+                cast(str, LANGUAGE_DISPLAY_NAMES.get(locale.split("-", 1)[0], locale)),
                 locale,
             )
             for locale in cloud_locales

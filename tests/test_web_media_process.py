@@ -1,8 +1,12 @@
+import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -161,11 +165,13 @@ def test_watchdog_stops_process_and_progress_reader(tmp_path):
         run_media_process(command, timeout_seconds=0.2, progress_callback=lambda _record: None)
     assert time.monotonic() - started < 3
     assert not marker.exists()
-    assert not any(thread.name == "pandrator-media-progress-reader" and thread.is_alive()
-                   for thread in threading.enumerate())
+    assert not any(
+        thread.name == "pandrator-media-progress-reader" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
 
 
-@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), 10**400, "bad", []])
 def test_watchdog_requires_positive_finite_timeout(timeout):
     with pytest.raises(ValueError, match="finite and positive"):
         run_media_process(_python_command("pass"), timeout_seconds=timeout)
@@ -174,3 +180,165 @@ def test_watchdog_requires_positive_finite_timeout(timeout):
 def test_watchdog_default_and_explicit_deadline_allow_success():
     assert run_media_process(_python_command("pass")).returncode == 0
     assert run_media_process(_python_command("pass"), timeout_seconds=2).returncode == 0
+
+
+@pytest.mark.parametrize("field", ["duration", "sample_rate", "channels"])
+@pytest.mark.parametrize("value", [None, "N/A", "inf", "-inf", "nan", 10**400, -(10**400)])
+def test_probe_rejects_unusable_metadata_with_controlled_errors(field, value):
+    from pandrator.web.media_process import MediaProcessResult, probe_audio_stream
+
+    stream = {"duration": "1.25", "sample_rate": "24000", "channels": 2}
+    stream[field] = value
+    result = MediaProcessResult(0, json.dumps({"streams": [stream]}))
+    with patch("pandrator.web.media_process.run_media_process", return_value=result):
+        with pytest.raises(MediaProcessError, match="metadata"):
+            probe_audio_stream("fixture.wav")
+
+
+def test_probe_rejects_finite_duration_that_overflows_milliseconds():
+    from pandrator.web.media_process import MediaProcessResult, probe_audio_stream
+
+    result = MediaProcessResult(
+        0,
+        json.dumps(
+            {
+                "streams": [
+                    {
+                        "duration": 1e308,
+                        "sample_rate": "24000",
+                        "channels": 2,
+                    }
+                ]
+            }
+        ),
+    )
+    with patch("pandrator.web.media_process.run_media_process", return_value=result):
+        with pytest.raises(MediaProcessError, match="invalid audio metadata"):
+            probe_audio_stream("fixture.wav")
+
+
+@pytest.mark.parametrize("value", [None, "N/A", "inf", 10**400])
+def test_probe_uses_valid_container_duration_when_stream_duration_is_unusable(value):
+    from pandrator.web.media_process import MediaProcessResult, probe_audio_stream
+
+    result = MediaProcessResult(
+        0,
+        json.dumps(
+            {
+                "streams": [{"duration": value, "sample_rate": "24000", "channels": 2}],
+                "format": {"duration": "1.25"},
+            }
+        ),
+    )
+    with patch("pandrator.web.media_process.run_media_process", return_value=result):
+        info = probe_audio_stream("fixture.wav")
+    assert (info.duration_ms, info.sample_rate_hz, info.channels) == (1250, 24000, 2)
+
+
+def test_progress_capture_keeps_large_output_utf8_and_unterminated_final_record(tmp_path):
+    message = "x" * 300000 + "👋"
+    content = "unstructured output\nmessage=" + message + "\r\nprogress=end"
+    records = []
+    script = tmp_path / "writer.py"
+    script.write_text(f"import sys;sys.stdout.buffer.write({content.encode()!r})", encoding="utf-8")
+    result = run_media_process(
+        [sys.executable, str(script)],
+        capture_stdout=True,
+        progress_callback=records.append,
+    )
+    assert result.stdout == content
+    assert records == [{"message": message, "progress": "end"}]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Disposable process-group fence requires POSIX")
+@pytest.mark.parametrize("exit_early", [True, False])
+def test_inherited_progress_handle_does_not_block_completion_or_watchdog(exit_early):
+    import textwrap
+
+    child_code = (
+        "import subprocess,sys,time;"
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);"
+        "print('out_time_us=1000000',flush=True);print('progress=end',flush=True);"
+        + ("" if exit_early else "time.sleep(10)")
+    )
+    wrapper = textwrap.dedent(f"""
+        import json,sys
+        from pandrator.web.media_process import run_media_process,MediaProcessTimeout
+        records=[]
+        try:
+            result=run_media_process([sys.executable,'-c',{child_code!r}],
+                progress_callback=records.append,capture_stdout=True,timeout_seconds=.3)
+            print(json.dumps({{'status':'completed','stdout':result.stdout,'records':records}}))
+        except MediaProcessTimeout:
+            print(json.dumps({{'status':'timed_out','records':records}}))
+    """)
+    process = subprocess.Popen(
+        _python_command(wrapper),
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    group = process.pid
+    assert os.getpgid(group) == group
+    started = time.monotonic()
+    try:
+        stdout, stderr = process.communicate(timeout=3)
+        assert process.returncode == 0, stderr.decode()
+        payload = json.loads(stdout)
+        assert payload["status"] == ("completed" if exit_early else "timed_out")
+        assert payload["records"][-1] == {"out_time_us": "1000000", "progress": "end"}
+        assert time.monotonic() - started < 3
+    finally:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate(timeout=2)
+
+
+def test_progress_callback_failure_preserves_error_and_reaps_direct_child():
+    from pandrator.web import media_process
+
+    native_popen = subprocess.Popen
+    children = []
+    failure = RuntimeError("callback failed")
+
+    def launch(*args, **kwargs):
+        child = native_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    def callback(_record):
+        raise failure
+
+    with patch.object(media_process.subprocess, "Popen", side_effect=launch):
+        with pytest.raises(RuntimeError) as caught:
+            run_media_process(
+                _python_command("import time;print('progress=continue',flush=True);time.sleep(10)"),
+                progress_callback=callback,
+            )
+    assert caught.value is failure
+    assert len(children) == 1 and children[0].poll() is not None
+
+
+@pytest.mark.parametrize("text", [False, True])
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_cancellable_runner_keeps_native_output_and_checked_error_contracts(text, returncode):
+    from pandrator.logic.cancellable_process import run_cancellable
+
+    command = _python_command(
+        f"import sys;print('hello');print('detail',file=sys.stderr);sys.exit({returncode})"
+    )
+    options = dict(cancel_event=threading.Event(), capture_output=True, text=text, check=True)
+    if returncode:
+        with pytest.raises(subprocess.CalledProcessError) as caught:
+            run_cancellable(command, **options)
+        result = caught.value
+        assert result.returncode == returncode
+        output = result.output
+    else:
+        result = run_cancellable(command, **options)
+        assert result.returncode == 0
+        output = result.stdout
+    assert output == ("hello\n" if text else b"hello\n")
+    assert result.stderr == ("detail\n" if text else b"detail\n")

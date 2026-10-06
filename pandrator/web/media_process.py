@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import mmap
 import os
-import queue
 import re
 import shutil
 import subprocess
@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable, Sequence
+from typing import Any, BinaryIO, Callable, Sequence
 
 
 class MediaProcessCancelled(RuntimeError):
@@ -45,19 +45,13 @@ class AudioStreamInfo:
 
 def resolve_ffmpeg_executable(explicit: str | None = None) -> str:
     return str(
-        explicit
-        or os.environ.get("PANDRATOR_FFMPEG_EXE")
-        or shutil.which("ffmpeg")
-        or "ffmpeg"
+        explicit or os.environ.get("PANDRATOR_FFMPEG_EXE") or shutil.which("ffmpeg") or "ffmpeg"
     )
 
 
 def resolve_ffprobe_executable(explicit: str | None = None) -> str:
     return str(
-        explicit
-        or os.environ.get("PANDRATOR_FFPROBE_EXE")
-        or shutil.which("ffprobe")
-        or "ffprobe"
+        explicit or os.environ.get("PANDRATOR_FFPROBE_EXE") or shutil.which("ffprobe") or "ffprobe"
     )
 
 
@@ -72,29 +66,52 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=2)
 
 
-def _read_progress_records(
-    stdout: BinaryIO,
-    records: queue.SimpleQueue[dict[str, str] | BaseException],
-    capture_file: BinaryIO | None = None,
-) -> None:
-    """Drain an opt-in FFmpeg progress pipe without blocking the worker loop."""
+class _ProgressLog:
+    """Read a bounded window of child-written progress without seeking its handle."""
 
-    record: dict[str, str] = {}
-    try:
-        for raw_line in iter(stdout.readline, b""):
-            if capture_file is not None:
-                capture_file.write(raw_line)
-            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-            key, separator, value = line.partition("=")
-            key = key.strip()
-            if not separator or not key:
-                continue
-            record[key] = value.strip()
-            if key == "progress":
-                records.put(record)
-                record = {}
-    except Exception as error:
-        records.put(error)
+    _CHUNK_BYTES = 64 * 1024
+
+    def __init__(self, output: BinaryIO):
+        self.output = output
+        self.offset = 0
+        self.pending = b""
+        self.record: dict[str, str] = {}
+
+    def read_records(self, *, final: bool = False) -> list[dict[str, str]]:
+        records: list[dict[str, str]] = []
+        end = os.fstat(self.output.fileno()).st_size
+        if not final:
+            end = min(end, self.offset + 4 * self._CHUNK_BYTES)
+        while self.offset < end:
+            aligned = self.offset - self.offset % mmap.ALLOCATIONGRANULARITY
+            count = min(self._CHUNK_BYTES, end - self.offset)
+            with mmap.mmap(
+                self.output.fileno(),
+                self.offset - aligned + count,
+                access=mmap.ACCESS_READ,
+                offset=aligned,
+            ) as window:
+                data = window[self.offset - aligned : self.offset - aligned + count]
+            self.offset += count
+            lines = (self.pending + data).split(b"\n")
+            self.pending = lines.pop()
+            for raw_line in lines:
+                self._consume_line(raw_line, records)
+        if final and self.pending:
+            self._consume_line(self.pending, records)
+            self.pending = b""
+        return records
+
+    def _consume_line(self, raw_line: bytes, records: list[dict[str, str]]) -> None:
+        line = raw_line.decode("utf-8", errors="replace").rstrip("\r")
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            return
+        self.record[key] = value.strip()
+        if key == "progress":
+            records.append(self.record)
+            self.record = {}
 
 
 def run_media_process(
@@ -108,13 +125,16 @@ def run_media_process(
     """Run a hidden media process while polling for cooperative cancellation.
 
     Stdout and stderr use temporary files by default so a verbose process
-    cannot deadlock the worker. With ``progress_callback``, a dedicated reader
-    drains stdout and passes complete FFmpeg progress records to the worker loop;
-    stderr remains file-backed in either mode.
+    cannot deadlock the worker. With ``progress_callback``, bounded reads of the
+    stdout log pass complete FFmpeg progress records to the worker loop. Neither reading nor
+    completion waits for an inherited pipe to close.
     """
 
     if timeout_seconds is not None:
-        timeout_seconds = float(timeout_seconds)
+        try:
+            timeout_seconds = float(timeout_seconds)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("Media process timeout must be finite and positive.") from error
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("Media process timeout must be finite and positive.")
     if cancel_event is not None and cancel_event.is_set():
@@ -122,17 +142,14 @@ def run_media_process(
     normalized = [os.fspath(value) for value in command]
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        progress_records: queue.SimpleQueue[dict[str, str] | BaseException] | None = None
-        progress_reader: threading.Thread | None = None
+        progress_log = _ProgressLog(stdout_file) if progress_callback is not None else None
         try:
             process = subprocess.Popen(
                 normalized,
                 stdin=subprocess.DEVNULL,
-                stdout=(
-                    subprocess.PIPE
-                    if progress_callback is not None
-                    else stdout_file if capture_stdout else subprocess.DEVNULL
-                ),
+                stdout=stdout_file
+                if capture_stdout or progress_callback is not None
+                else subprocess.DEVNULL,
                 stderr=stderr_file,
                 creationflags=creationflags,
             )
@@ -140,40 +157,19 @@ def run_media_process(
             raise MediaProcessError(
                 f"Could not start {Path(normalized[0]).name or normalized[0]}: {error}"
             ) from error
-        def deliver_progress() -> None:
-            if progress_callback is None or progress_records is None:
+
+        def deliver_progress(*, final: bool = False) -> None:
+            if progress_callback is None or progress_log is None:
                 return
-            while True:
-                try:
-                    item = progress_records.get_nowait()
-                except queue.Empty:
-                    return
-                if isinstance(item, BaseException):
-                    raise MediaProcessError(
-                        "Could not read media-process progress output."
-                    ) from item
-                progress_callback(item)
+            try:
+                records = progress_log.read_records(final=final)
+            except Exception as error:
+                raise MediaProcessError("Could not read media-process progress output.") from error
+            for record in records:
+                progress_callback(record)
 
         deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
         try:
-            if progress_callback is not None:
-                if process.stdout is None:
-                    raise MediaProcessError(
-                        "Could not read media-process progress output."
-                    )
-                progress_records = queue.SimpleQueue()
-                reader = threading.Thread(
-                    target=_read_progress_records,
-                    args=(
-                        process.stdout,
-                        progress_records,
-                        stdout_file if capture_stdout else None,
-                    ),
-                    name="pandrator-media-progress-reader",
-                    daemon=True,
-                )
-                reader.start()
-                progress_reader = reader
             while process.poll() is None:
                 deliver_progress()
                 if deadline is not None and time.monotonic() >= deadline:
@@ -187,19 +183,10 @@ def run_media_process(
                     process.wait(timeout=0.1)
                 except subprocess.TimeoutExpired:
                     continue
-            if progress_reader is not None:
-                progress_reader.join()
-                deliver_progress()
+            deliver_progress(final=True)
         except BaseException:
-            try:
-                _stop_process(process)
-            finally:
-                if progress_reader is not None:
-                    progress_reader.join()
+            _stop_process(process)
             raise
-        finally:
-            if process.stdout is not None:
-                process.stdout.close()
 
         stdout = ""
         if capture_stdout:
@@ -218,12 +205,12 @@ def run_media_process(
         return result
 
 
-def _positive_float(value: object) -> float:
+def _positive_float(value: Any) -> float:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-    return parsed if parsed > 0 else 0.0
+    return parsed if math.isfinite(parsed) and parsed > 0 else 0.0
 
 
 def probe_audio_stream(
@@ -261,12 +248,22 @@ def probe_audio_stream(
             duration_seconds = _positive_float(format_payload.get("duration"))
         sample_rate = int(_positive_float(stream.get("sample_rate")))
         channels = int(_positive_float(stream.get("channels")))
-    except (AttributeError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise MediaProcessError(f"FFprobe returned invalid audio metadata for {source.name}.") from error
+        duration_ms = max(1, int(round(duration_seconds * 1000)))
+    except (
+        AttributeError,
+        IndexError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        json.JSONDecodeError,
+    ) as error:
+        raise MediaProcessError(
+            f"FFprobe returned invalid audio metadata for {source.name}."
+        ) from error
     if duration_seconds <= 0 or sample_rate <= 0 or channels <= 0:
         raise MediaProcessError(f"No usable audio stream metadata was found for {source.name}.")
     return AudioStreamInfo(
-        duration_ms=max(1, int(round(duration_seconds * 1000))),
+        duration_ms=duration_ms,
         sample_rate_hz=sample_rate,
         channels=channels,
     )
