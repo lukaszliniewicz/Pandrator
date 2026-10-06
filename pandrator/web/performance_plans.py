@@ -11,7 +11,7 @@ import json
 import secrets
 import xml.etree.ElementTree as ET
 from copy import deepcopy
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -36,7 +36,7 @@ from .speech_annotation_records import (
     record_annotation,
     record_markup,
 )
-from .speech_plan_workspace import (
+from .speech_plan_context import (
     plan_signature,
     semantic_context_units,
     semantic_context_window,
@@ -105,10 +105,15 @@ Return each ID exactly once in order. You may add dialogue, speaker identities, 
 """
 
 
-def _aware(value):
+def _aware(value: datetime | None) -> datetime | None:
     return (
         value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
     )
+
+
+def _has_active_lease(batch: m.PerformanceBatch, now: datetime) -> bool:
+    expires_at = _aware(batch.lease_expires_at)
+    return batch.status == "leased" and expires_at is not None and expires_at > now
 
 
 def get_plan(session, session_id: str, plan_id: str) -> m.PerformancePlan:
@@ -687,7 +692,7 @@ def claim_batch(
             b
             for b in _batches(session, plan.id)
             if b.status == "pending"
-            or (b.status == "leased" and _aware(b.lease_expires_at) <= now)
+            or (b.status == "leased" and not _has_active_lease(b, now))
         ),
         None,
     )
@@ -701,14 +706,15 @@ def claim_batch(
         }
     batch.status = "leased"
     batch.lease_token = secrets.token_hex(24)
-    batch.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    expires_at = now + timedelta(seconds=lease_seconds)
+    batch.lease_expires_at = expires_at
     session.flush()
     return {
         "plan_id": plan.id,
         "batch_id": batch.id,
         "ordinal": batch.ordinal,
         "lease_token": batch.lease_token,
-        "lease_expires_at": batch.lease_expires_at.isoformat(),
+        "lease_expires_at": expires_at.isoformat(),
         "batch": batch_prompt(plan, batch),
     }
 
@@ -733,20 +739,21 @@ def renew_batch(
     batch = _get_batch(session, plan, batch_id)
     if batch.status != "leased" or batch.lease_token != token:
         raise RevisionConflict("This performance batch is not held by that lease.")
-    if _aware(batch.lease_expires_at) <= m.utcnow():
+    expires_at = _aware(batch.lease_expires_at)
+    if expires_at is None or expires_at <= m.utcnow():
         raise RevisionConflict(
             "The performance batch lease expired. Claim it again before submitting."
         )
     if release:
+        expires_at = None
         batch.status, batch.lease_token, batch.lease_expires_at = "pending", None, None
     else:
-        batch.lease_expires_at = m.utcnow() + timedelta(seconds=lease_seconds)
+        expires_at = m.utcnow() + timedelta(seconds=lease_seconds)
+        batch.lease_expires_at = expires_at
     return {
         "batch_id": batch.id,
         "status": batch.status,
-        "lease_expires_at": batch.lease_expires_at.isoformat()
-        if batch.lease_expires_at
-        else None,
+        "lease_expires_at": expires_at.isoformat() if expires_at is not None else None,
     }
 
 
@@ -915,7 +922,7 @@ def adopt_plan(
             )
     batches = _batches(session, plan.id)
     if any(
-        b.status == "leased" and _aware(b.lease_expires_at) > m.utcnow()
+        _has_active_lease(b, m.utcnow())
         for b in batches
     ):
         raise RevisionConflict(
@@ -1196,6 +1203,7 @@ def run_analysis(handlers, payload, progress, cancel_event) -> dict[str, Any]:
             raise ValueError(
                 "Other workers hold the remaining performance batches. Resume this job after their leases are released."
             )
+        usage: OptimizationUsage | None = None
         try:
             usage = OptimizationUsage()
             for attempt in range(2):
@@ -1252,16 +1260,17 @@ def run_analysis(handlers, payload, progress, cancel_event) -> dict[str, Any]:
                         raise
         finally:
             try:
-                handlers._record_usage(
-                    session_id,
-                    "performance_planning",
-                    {
-                        "model_name": model_name,
-                        "llm_provider_configs": llm_settings.provider_configs,
-                    },
-                    usage,
-                    job_id=payload.get("_job_id"),
-                )
+                if usage is not None:
+                    handlers._record_usage(
+                        session_id,
+                        "performance_planning",
+                        {
+                            "model_name": model_name,
+                            "llm_provider_configs": llm_settings.provider_configs,
+                        },
+                        usage,
+                        job_id=payload.get("_job_id"),
+                    )
             finally:
                 # A usage-accounting failure must not strand an analysis lease.
                 with handlers.database.immediate_session() as session:

@@ -558,3 +558,99 @@ def test_directed_generation_does_not_silently_regroup_blocks():
         select_second_pass({"tts": {**baseline, "tts_context_mode": "both"}}, **args)
         is None
     )
+
+
+@pytest.mark.parametrize("action", ["claim", "renew", "adopt"])
+def test_missing_lease_expiry_is_invalid_and_recoverable(case, action):
+    plan = create(case, mode="passive")
+    claim = case["post"]("/" + plan["id"] + "/claim").get_json()
+    if action == "adopt":
+        active = case["post"](
+            "/" + plan["id"] + "/adopt",
+            {"expected_version": plan["version"], "accept_unanalysed": True},
+        )
+        assert active.status_code == 409
+    with case["services"]["database"].session() as session:
+        batch = session.get(m.PerformanceBatch, claim["batch_id"])
+        batch.lease_expires_at = None
+    items = [
+        {"segment_id": key, "annotation": {"decision": "none"}}
+        for key in case["segment_ids"]
+    ]
+    old_path = f"/{plan['id']}/batches/{claim['batch_id']}"
+    assert case["post"](
+        old_path + "/submit", {"lease_token": claim["lease_token"], "items": items}
+    ).status_code == 409
+    if action == "claim":
+        recovered = case["post"]("/" + plan["id"] + "/claim")
+        assert recovered.status_code == 200, recovered.get_json()
+        new = recovered.get_json()
+        assert new["batch_id"] == claim["batch_id"]
+        assert new["lease_token"] != claim["lease_token"]
+        assert new["lease_expires_at"]
+        assert case["post"](
+            old_path + "/renew", {"lease_token": claim["lease_token"]}
+        ).status_code == 409
+        assert case["post"](
+            old_path + "/submit", {"lease_token": claim["lease_token"], "items": items}
+        ).status_code == 409
+    elif action == "renew":
+        refused = case["post"](
+            old_path + "/renew", {"lease_token": claim["lease_token"]}
+        )
+        assert refused.status_code == 409, refused.get_json()
+        with case["services"]["database"].session() as session:
+            batch = session.get(m.PerformanceBatch, claim["batch_id"])
+            assert batch.status == "leased"
+            assert batch.lease_token == claim["lease_token"]
+            assert batch.lease_expires_at is None
+    else:
+        adopted = case["post"](
+            "/" + plan["id"] + "/adopt",
+            {"expected_version": plan["version"], "accept_unanalysed": True},
+        )
+        assert adopted.status_code == 200, adopted.get_json()
+        assert get(case, plan)["status"] == "adopted"
+
+
+@pytest.mark.parametrize("failure_batch", [1, 2])
+def test_usage_initialization_failure_preserves_error_and_releases_lease(case, failure_batch):
+    from types import SimpleNamespace
+
+    from pandrator.web.tts_optimization import OptimizationUsage
+
+    plan = create(case, mode="passive", batch_size=1)
+    handlers = case["services"]["workflow_handlers"]
+    payload = {"session_id": case["session_id"], "performance_plan_id": plan["id"]}
+    allocations = [OptimizationUsage() for _ in range(failure_batch - 1)]
+    allocations.append(RuntimeError("Usage initialization failed"))
+    with (
+        patch(
+            "pandrator.web.provider_settings.build_llm_settings",
+            return_value=(SimpleNamespace(provider_configs=[]), "local/test"),
+        ),
+        patch("pandrator.web.tts_optimization.OptimizationUsage", side_effect=allocations),
+        patch(
+            "pandrator.logic.llm_handler.chat_completion_with_metadata",
+            side_effect=_llm_response,
+        ) as provider,
+        patch.object(handlers, "_record_usage", wraps=handlers._record_usage) as accounting,
+    ):
+        with pytest.raises(RuntimeError, match="^Usage initialization failed$"):
+            plans.run_analysis(handlers, payload, lambda *args: None, threading.Event())
+    assert provider.call_count == accounting.call_count == failure_batch - 1
+    state = get(case, plan)
+    assert state["analysed_count"] == failure_batch - 1
+    assert [batch["status"] for batch in state["batches"]] == (
+        ["completed"] * (failure_batch - 1) + ["pending"] * (4 - failure_batch)
+    )
+    with case["services"]["database"].session() as session:
+        events = list(session.scalars(select(m.UsageEvent).where(
+            m.UsageEvent.session_id == case["session_id"]
+        )))
+        assert len(events) == failure_batch - 1
+        for batch in session.scalars(select(m.PerformanceBatch).where(
+            m.PerformanceBatch.performance_plan_id == plan["id"],
+            m.PerformanceBatch.status == "pending",
+        )):
+            assert batch.lease_token is None and batch.lease_expires_at is None
