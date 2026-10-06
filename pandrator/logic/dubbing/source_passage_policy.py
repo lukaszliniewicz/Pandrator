@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping, NotRequired, Sequence, TypedDict
 
 from .source_sentence_assessment import (
     SOURCE_PASSAGE_POLICY_VERSION,
@@ -47,6 +47,12 @@ _NAME_PARTICLES = frozenset("von van de del der den da di und and".split())
 _DANGLING = frozenset("a an the of to with from and or der die das ein eine einer einem einen eines den dem des mit von zu und oder de het een van met en of le la les du des et ou el los las un una y o w z na do i oraz".split())
 
 
+class SuppressedSentenceSplit(TypedDict):
+    offset: int
+    reason: str
+    length: NotRequired[int]
+
+
 @dataclass(frozen=True)
 class PassageBoundary:
     offset: int
@@ -58,7 +64,7 @@ class PassageBoundary:
     # chosen (e.g. a short "Yes." held before an unfinished "Yes…"). Empty
     # when nothing was suppressed; surfaced per row as
     # boundary_selection.suppressed_sentence_splits.
-    suppressed: tuple = ()
+    suppressed: tuple[SuppressedSentenceSplit, ...] = ()
 
 
 def unsafe_clause_offsets(tokens: Sequence[str]) -> set[int]:
@@ -137,7 +143,7 @@ def select_boundaries(
         # ellipsis hesitations.  Abbreviation/initial/decimal filtering
         # stays at candidate-generation time.  Suppressed offsets are kept
         # as assessment diagnostics.
-        suppressed: list[dict] = []
+        suppressed: list[SuppressedSentenceSplit] = []
         genuine_sentences: list[int] = []
         demoted: set[int] = set()
         for position in nearby:
@@ -155,7 +161,7 @@ def select_boundaries(
         # Genuine followers ("Next phrase.", "Never again."), content
         # leaders ("And that's quite a progressive."), and substantial or
         # different followers never join.  Hard barriers are never jumped.
-        held: list[dict] = []
+        held: list[SuppressedSentenceSplit] = []
         index = 0
         while index < len(sentences):
             first = sentences[index]
@@ -189,10 +195,9 @@ def select_boundaries(
             return (tail_length >= min(20, min_chars) and
                     (len(tail_tokens) >= 3 or (unspaced and tail_length >= 10)))
 
-        sentence_fits = first_sentence is not None and (
+        if first_sentence is not None and (
             length(start, first_sentence) <= preferred_chars + lookahead_chars
-        )
-        if sentence_fits:
+        ):
             end, decision = first_sentence, "sentence_preferred"
         else:
             clauses = [p for p in nearby if available[p] in {"clause", "strong_clause", "conjunction"}

@@ -20,8 +20,9 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+import pandrator.logic.dubbing.qwen_alignment as qwen_alignment
+
 from ..cancellable_process import ProcessCancelled, run_cancellable
-from . import qwen_alignment
 from .languages import normalize_language_code
 from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, validate_stt_language
 from .text_units import infer_cjk_language, join_fragments
@@ -808,7 +809,7 @@ def ctc_language_problem(
     https://huggingface.co/cstr/canary-ctc-aligner-GGUF
     The translation target is deliberately not used as the audio language.
     """
-    from . import qwen_alignment
+    import pandrator.logic.dubbing.qwen_alignment as qwen_alignment
     if qwen_alignment.uses_qwen(settings, text, model_key=model_key):
         return qwen_alignment.language_problem(settings, text)
     configured = str(_setting(settings, model_key, "auto") or "auto").strip()
@@ -991,7 +992,7 @@ def run_ctc_alignment(
     problem = ctc_language_problem(settings, Path(text_path).read_text(encoding="utf-8-sig"))
     if problem:
         raise CrispASRError(problem)
-    from . import qwen_alignment
+    import pandrator.logic.dubbing.qwen_alignment as qwen_alignment
     if qwen_alignment.uses_qwen(settings, Path(text_path).read_text(encoding="utf-8-sig")):
         try:
             return qwen_alignment.run_alignment(

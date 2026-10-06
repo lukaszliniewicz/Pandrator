@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandrator.logic.dubbing.crispasr_qwen_assets as crispasr_qwen_assets
+
 from ..cancellable_process import ProcessCancelled
-from . import crispasr_qwen_assets
 from .stt_backends import CrispASRRuntimeStatus, probe_crispasr_runtime
 from .stt_languages import WHISPER_LARGE_V3_LANGUAGE_CODES
 

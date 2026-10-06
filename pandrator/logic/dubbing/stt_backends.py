@@ -176,7 +176,7 @@ def detect_stt_backend_statuses(**kwargs) -> dict[str, STTBackendStatus]:
         for engine in MODELS
     }
     try:
-        from . import qwen_asr
+        import pandrator.logic.dubbing.qwen_asr as qwen_asr
 
         qwen_caps = qwen_asr.capabilities()
         runtime_problem = qwen_runtime_problem(runtime)

@@ -15,11 +15,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import pandrator.logic.dubbing.crispasr as crispasr
+import pandrator.logic.dubbing.crispasr_qwen_assets as crispasr_qwen_assets
+import pandrator.logic.dubbing.qwen_alignment as qwen_alignment
+
 from ..audio_cpp_assets import AudioAssetsError
 from ..audio_cpp_assets import resolve_executable as resolve_audio_cpp_executable
 from ..audio_cpp_execution import native_audio_cpp_guard
 from ..cancellable_process import ProcessCancelled, run_cancellable
-from . import crispasr, crispasr_qwen_assets, qwen_alignment
 from .stt_languages import PARAKEET_V3_LANGUAGE_CODES, normalize_stt_language
 
 logger = logging.getLogger(__name__)

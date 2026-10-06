@@ -11,9 +11,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pandrator.logic.dubbing.cloud_stt as cloud_stt
+
 from ..cancellable_process import ProcessCancelled, run_cancellable
 from ..source_media import is_audio_source
-from . import cloud_stt
 from .crispasr import CrispASRTranscriptionResult, transcribe
 from .srt_utils import renumber_subtitles
 from .subtitle_finalization import compose_from_transcript_json
@@ -404,7 +405,7 @@ def transcribe_source_file_with_metadata(
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelled("Transcription was canceled.")
     if configured_engine == "qwen3":
-        from . import qwen_asr
+        import pandrator.logic.dubbing.qwen_asr as qwen_asr
 
         requested_language = qwen_asr.normalize_qwen_asr_language(
             settings.get("stt_language") or settings.get("whisper_language")
@@ -492,7 +493,7 @@ def transcribe_source_file_with_metadata(
         # continues receiving the original tag rather than a local base code.
         resolved_settings = dict(settings)
     if configured_engine == "qwen3":
-        from . import qwen_asr
+        import pandrator.logic.dubbing.qwen_asr as qwen_asr
 
         qwen_asr.validate_transcription_settings(
             resolved_settings, require_word_timestamps=require_word_timestamps
@@ -515,6 +516,8 @@ def transcribe_source_file_with_metadata(
             session=cloud_session,
         )
     elif configured_engine == "qwen3":
+        import pandrator.logic.dubbing.qwen_asr as qwen_asr
+
         # qwen_asr.transcribe owns STT/alignment only; isolation already ran
         # above, so pass it off to avoid double-processing.
         qwen_options = {

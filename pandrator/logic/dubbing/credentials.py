@@ -7,8 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+import pandrator.logic.dubbing.llm_config as llm_config
+
 from .. import llm_handler
-from . import llm_config
 from .settings import TRANSLATION_BACKEND_DEEPL, migrate_dubbing_payload
 
 DEEPL_PROVIDER_ID = "deepl"
