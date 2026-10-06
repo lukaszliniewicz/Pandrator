@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from pandrator.logic.cancellable_process import ProcessCancelled
+
 from .models import (
     Artifact,
     ArtifactEdge,
@@ -373,42 +375,69 @@ def optimize_tts(context: SpeechOptimizationContext, payload, progress, cancel_e
             },
         )
         speech_plan_artifact_id = plan_artifact.id
-    progress(0.97, "Registering speech optimization artifacts")
-    artifact = context.artifacts.register(
-        destination,
-        kind=kind,
-        role="tts_optimized",
-        session_id=session_id,
-        parent_ids=[
-            source_artifact.id,
-            *([speech_plan_artifact_id] if speech_plan_artifact_id else []),
-        ],
-        settings=settings,
-        metadata={
-            "source_artifact_id": source_artifact.id,
-            "model": model_name,
-            "mode": "whole_document",
-            "speech_optimization_mode": speech_mode or "legacy",
-            "speech_plan_artifact_id": speech_plan_artifact_id or None,
-            "speech_plan_count": len([plan for plan in speech_plans if plan]),
-            "speech_markup": {
-                str(index + 1): str(plan["speech_xml"])
-                for index, plan in enumerate(speech_plans)
-                if isinstance(plan, dict) and isinstance(plan.get("speech_xml"), str)
+    publication_parent_ids = [
+        source_artifact.id,
+        *([speech_plan_artifact_id] if speech_plan_artifact_id else []),
+    ]
+    try:
+        progress(0.97, "Registering speech optimization artifacts")
+        if suffix == ".srt" and cancel_event.is_set():
+            raise ProcessCancelled("Speech optimization was canceled.")
+        artifact = context.artifacts.register(
+            destination,
+            kind=kind,
+            role="tts_optimization_candidate" if suffix == ".srt" else "tts_optimized",
+            session_id=session_id,
+            parent_ids=publication_parent_ids,
+            settings=settings,
+            metadata={
+                "source_artifact_id": source_artifact.id,
+                "model": model_name,
+                "mode": "whole_document",
+                "speech_optimization_mode": speech_mode or "legacy",
+                "speech_plan_artifact_id": speech_plan_artifact_id or None,
+                "speech_plan_count": len([plan for plan in speech_plans if plan]),
+                "speech_markup": {
+                    str(index + 1): str(plan["speech_xml"])
+                    for index, plan in enumerate(speech_plans)
+                    if isinstance(plan, dict) and isinstance(plan.get("speech_xml"), str)
+                },
+                "batch_size": settings["llm_tts_batch_size"],
+                "requested_settings_hash": requested_settings_hash,
+                "agent_run_id": agent_run.id,
             },
-            "batch_size": settings["llm_tts_batch_size"],
-            "requested_settings_hash": requested_settings_hash,
-            "agent_run_id": agent_run.id,
-        },
-    )
-    if suffix == ".srt":
-        context._store_srt_document(
-            session_id,
-            artifact,
-            "tts_optimization",
-            language=str((source_artifact.metadata_json or {}).get("language") or "") or None,
-            parent_artifact=source_artifact,
         )
+        if suffix == ".srt":
+            if cancel_event.is_set():
+                raise ProcessCancelled("Speech optimization was canceled.")
+            context._store_srt_document(
+                session_id,
+                artifact,
+                "tts_optimization",
+                language=str((source_artifact.metadata_json or {}).get("language") or "") or None,
+                parent_artifact=source_artifact,
+            )
+            if cancel_event.is_set():
+                raise ProcessCancelled("Speech optimization was canceled.")
+            registration = context.artifacts.prepare_registration(destination, settings=settings)
+            with context.database.session() as session:
+                if cancel_event.is_set():
+                    raise ProcessCancelled("Speech optimization was canceled.")
+                artifact = context.artifacts.register_in_session(
+                    session,
+                    destination,
+                    kind=kind,
+                    role="tts_optimized",
+                    session_id=session_id,
+                    parent_ids=publication_parent_ids,
+                    settings=settings,
+                    _prepared=registration,
+                )
+                if cancel_event.is_set():
+                    raise ProcessCancelled("Speech optimization was canceled.")
+    except Exception as error:
+        run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
+        raise
     run_store.finish(agent_run.id, artifact_id=artifact.id)
     progress(1.0, "Speech optimization preview ready")
     input_tokens = int(usage.usage.get("prompt_tokens") or 0)
