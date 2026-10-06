@@ -136,6 +136,7 @@ from .tts_provider_profiles import (
     AZURE_SPEECH_OUTPUT_FORMAT,
     AZURE_SPEECH_VOICE_CATALOGUES,
 )
+from .tts_usage import TtsUsageEstimate
 from .tts_voice_delete_http import (
     _delete_speaker_voice_openai_compatible as _delete_speaker_voice_http,
 )
@@ -1426,7 +1427,7 @@ def get_service_config(
 
 def estimate_tts_usage(
     text: str, duration_ms: int, tts_settings
-) -> dict[str, object] | None:
+) -> TtsUsageEstimate | None:
     """Estimate billable TTS usage for a configured commercial service.
 
     Speech endpoints return audio bytes without token or price metadata.  The

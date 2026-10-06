@@ -16,7 +16,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from sqlalchemy import select
 
@@ -142,6 +142,17 @@ logger = logging.getLogger(__name__)
 
 CLAUSE_PAUSE_RATIO = 1 / 3
 GENERATION_SEGMENT_POLICY_VERSION = 5
+
+
+class _SpeechBlockSpeakerOptions(TypedDict, total=False):
+    speaker_by_subtitle: dict[int, str]
+
+
+def _required_media_edit_time(record: dict[str, Any], field: str) -> int:
+    value = record.get(field)
+    if value is None:
+        raise TypeError(f"Media-edit {field} is required.")
+    return int(value)
 
 
 def _media_edit_token_count(text: str) -> int:
@@ -301,11 +312,12 @@ def _speech_block_settings(settings: dict[str, Any]) -> tuple[int, int, int, int
         min_chars,
         int(settings.get("speech_block_max_chars") or 220),
     )
+    merge_setting = settings.get("speech_block_merge_threshold")
     merge_threshold = max(
         0,
         int(
-            settings.get("speech_block_merge_threshold")
-            if settings.get("speech_block_merge_threshold") is not None
+            merge_setting
+            if merge_setting is not None
             else settings.get("subtitle_merge_threshold", 1500)
         ),
     )
@@ -896,11 +908,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 and isinstance(translation_setting.value_json, dict)
                 else {}
             )
-        input_choices = (
-            outcome_value.get("inputs")
-            if isinstance(outcome_value.get("inputs"), dict)
-            else {}
-        )
+        raw_input_choices = outcome_value.get("inputs")
+        input_choices = raw_input_choices if isinstance(raw_input_choices, dict) else {}
         stage_settings = (
             payload.get("stage_settings")
             if isinstance(payload.get("stage_settings"), dict)
@@ -1030,7 +1039,10 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 )
                 if freshness["settings_match"] and freshness["source_match"]:
                     continue
-            handler = handlers[definition.job_kind]
+            job_kind = definition.job_kind
+            if job_kind is None:
+                raise RuntimeError("An executable continuation stage requires a job kind.")
+            handler = handlers[job_kind]
             width = weights[index] / weight_total
             start = completed_weight / weight_total
 
@@ -1315,8 +1327,11 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             if source_passage_settings is None:
                 # Resolved once here so construction matches the run ledger;
                 # never a second live read mid-job.
+                settings_session_id = managed.session_id if managed is not None else ""
+                if settings_session_id is None:
+                    raise KeyError(None)
                 effective, revision = self._resolve_run_passage_settings(
-                    managed.session_id if managed is not None else "",
+                    settings_session_id,
                     None,
                     database=self.database,
                 )
@@ -1491,6 +1506,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 )
 
         with self.database.session() as session:
+            managed = session.get(Artifact, artifact.id)
+            if managed is None:
+                raise KeyError(artifact.id)
             parents = (
                 list(
                     session.scalars(
@@ -1539,12 +1557,20 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             session.flush()
             child_records: list[Segment] = []
             speech_markup = (artifact.metadata_json or {}).get("speech_markup") or {}
+            speech_metadata: dict[int, dict[str, str]] = {}
             if speech_markup:
                 from .generation_cast_runtime import remap_markup
                 from .generation_controls import get_generation_controls
                 characters = get_generation_controls(session, session_id)["characters"]
+                for ordinal, item in enumerate(resolved_segments):
+                    cue_markup = speech_markup.get(str(ordinal + 1))
+                    if cue_markup:
+                        speech_metadata[ordinal] = {
+                            "speech_xml": remap_markup(
+                                cue_markup, str(ordinal + 1), item.text, characters
+                            )
+                        }
             for ordinal, item in enumerate(resolved_segments):
-                cue_markup = speech_markup.get(str(ordinal + 1))
                 child = Segment(
                     revision_id=revision.id,
                     ordinal=ordinal,
@@ -1554,7 +1580,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     speaker=item.speaker or None,
                     metadata_json={
                         "speaker_source": speaker_sources[ordinal],
-                        **({"speech_xml": remap_markup(cue_markup, str(ordinal + 1), item.text, characters)} if cue_markup else {}),
+                        **speech_metadata.get(ordinal, {}),
                         **(
                             passage_review_metadata(
                                 [
@@ -1595,7 +1621,6 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         )
                     )
 
-            managed = session.get(Artifact, artifact.id)
             speakers = {
                 child.speaker.casefold(): child.speaker
                 for child in child_records
@@ -3187,8 +3212,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 *,
                 checkpoint_key: str = unit_key,
             ) -> None:
+                raw_checkpoint_result = state.get("result")
                 checkpoint_result = (
-                    state.get("result") if isinstance(state.get("result"), dict) else {}
+                    raw_checkpoint_result if isinstance(raw_checkpoint_result, dict) else {}
                 )
                 persist_checkpoint(
                     checkpoint_key,
@@ -3504,8 +3530,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         cues = [
             {
                 "id": str(item.get("id") or ""),
-                "start_ms": int(item.get("start_ms")),
-                "end_ms": int(item.get("end_ms")),
+                "start_ms": _required_media_edit_time(item, "start_ms"),
+                "end_ms": _required_media_edit_time(item, "end_ms"),
                 "speaker": item.get("speaker"),
                 "text": str(item.get("text") or ""),
             }
@@ -3651,8 +3677,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             words = tuple(
                 MediaWord(
                     text=str(word.get("text") or ""),
-                    start_ms=int(word.get("start_ms")),
-                    end_ms=int(word.get("end_ms")),
+                    start_ms=_required_media_edit_time(word, "start_ms"),
+                    end_ms=_required_media_edit_time(word, "end_ms"),
                     confidence=(
                         float(word["confidence"])
                         if word.get("confidence") is not None
@@ -3665,8 +3691,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             cues.append(
                 MediaCue(
                     id=str(item.get("id") or ""),
-                    start_ms=int(item.get("start_ms")),
-                    end_ms=int(item.get("end_ms")),
+                    start_ms=_required_media_edit_time(item, "start_ms"),
+                    end_ms=_required_media_edit_time(item, "end_ms"),
                     text=str(item.get("text") or ""),
                     speaker=item.get("speaker"),
                     words=words,
@@ -3740,8 +3766,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         keep_ranges = tuple(
             KeepRange(
                 str(item.get("id") or f"keep-{index:06d}"),
-                int(item.get("start_ms")),
-                int(item.get("end_ms")),
+                _required_media_edit_time(item, "start_ms"),
+                _required_media_edit_time(item, "end_ms"),
                 item.get("label"),
             )
             for index, item in enumerate(revision.get("keep_ranges") or [], start=1)
@@ -5572,9 +5598,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         language = self._generation_language(session_id, source_artifact, settings)
         settings = {**settings, "language": language, "target_language": language}
         speaker_by_subtitle = self._subtitle_speaker_map(source_artifact, source_path)
-        speaker_options = (
-            {"speaker_by_subtitle": speaker_by_subtitle} if speaker_by_subtitle else {}
-        )
+        speaker_options: _SpeechBlockSpeakerOptions = {}
+        if speaker_by_subtitle:
+            speaker_options["speaker_by_subtitle"] = speaker_by_subtitle
         (
             min_chars,
             max_chars,

@@ -85,6 +85,30 @@ class WebWorkflowHandlerTests(unittest.TestCase):
     def progress(_value, _detail=None):
         return None
 
+    def test_media_edit_cue_times_keep_zero_and_reject_missing_fields(self):
+        cue = {
+            "id": "cue-1",
+            "start_ms": 0,
+            "end_ms": "1000",
+            "text": "Hello.",
+            "words": [{"text": "Hello.", "start_ms": 0, "end_ms": 1000}],
+        }
+        result = self.handlers._media_edit_cues({"cues": [cue]})
+        self.assertEqual((0, 1000), (result[0].start_ms, result[0].end_ms))
+        self.assertEqual((0, 1000), (result[0].words[0].start_ms, result[0].words[0].end_ms))
+        for scope in ("cue", "word"):
+            for field in ("start_ms", "end_ms"):
+                for missing in (False, True):
+                    invalid = deepcopy(cue)
+                    target = invalid if scope == "cue" else invalid["words"][0]
+                    if missing:
+                        target.pop(field)
+                    else:
+                        target[field] = None
+                    with self.subTest(scope=scope, field=field, missing=missing):
+                        with self.assertRaisesRegex(TypeError, field):
+                            self.handlers._media_edit_cues({"cues": [invalid]})
+
     def test_media_edit_proposal_passes_hydrated_provider_configs_to_llm(self):
         model = "custom:provider-id/gemini-3.7-flash"
         provider_configs = [
@@ -2283,6 +2307,65 @@ class WebWorkflowHandlerTests(unittest.TestCase):
         self.assertEqual(source_bytes, path.read_bytes())
         with self.database.session() as db:
             self.assertEqual(0, db.scalar(select(func.count()).select_from(GenerationPlan)))
+
+    def test_subtitle_document_retains_sparse_speech_markup(self):
+        from pandrator.web.models import Segment
+
+        path = self.session_dir / "sparse-markup.srt"
+        path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n2\n00:00:01,000 --> 00:00:02,000\nSecond.\n",
+            encoding="utf-8",
+        )
+        artifact = self.artifacts.register(
+            path,
+            kind="srt",
+            role="tts_optimized",
+            session_id=self.session.id,
+            metadata={"speech_markup": {"2": '<segment id="old">Second.</segment>'}},
+        )
+        _, revision_id = self.handlers._store_srt_document(self.session.id, artifact, "tts_optimized")
+        with self.database.session() as db:
+            rows = list(
+                db.scalars(
+                    select(Segment).where(Segment.revision_id == revision_id).order_by(Segment.ordinal)
+                )
+            )
+            self.assertEqual(["First.", "Second."], [row.text for row in rows])
+            self.assertNotIn("speech_xml", rows[0].metadata_json)
+            self.assertIn('id="2"', rows[1].metadata_json["speech_xml"])
+            self.assertIn("Second.", rows[1].metadata_json["speech_xml"])
+
+    def test_global_passage_input_requires_settings_without_null_session_lookup(self):
+        path = self.session_dir / "global-passage-input.srt"
+        source_bytes = b"1\n00:00:00,000 --> 00:00:01,000\nHello.\n"
+        path.write_bytes(source_bytes)
+        artifact = self.artifacts.register(path, kind="srt", role="transcription")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SAWarning)
+            with self.assertRaises(KeyError) as missing:
+                self.handlers._prepare_passage_input(artifact, path, self.session_dir)
+        self.assertEqual((None,), missing.exception.args)
+        self.assertEqual(source_bytes, path.read_bytes())
+
+    def test_subtitle_document_refuses_a_missing_artifact_without_creating_rows(self):
+        from pandrator.web.models import Document, DocumentRevision, Segment
+
+        path = self.session_dir / "missing-document-artifact.srt"
+        path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello.\n", encoding="utf-8")
+        artifact = self.artifacts.register(
+            path, kind="srt", role="transcription", session_id=self.session.id
+        )
+        with self.database.session() as db:
+            current = db.get(Artifact, artifact.id)
+            db.delete(current)
+        # The file was resolved just before its registry record disappeared.
+        with mock.patch.object(self.handlers.artifacts, "resolve", return_value=(artifact, path)):
+            with self.assertRaises(KeyError) as missing:
+                self.handlers._store_srt_document(self.session.id, artifact, "transcription")
+        self.assertEqual((artifact.id,), missing.exception.args)
+        with self.database.session() as db:
+            for model in (Document, DocumentRevision, Segment):
+                self.assertEqual(0, db.scalar(select(func.count()).select_from(model)))
 
     def _reviewable_start_source(self):
         path = self.session_dir / "reviewable-start-source.json"
