@@ -173,7 +173,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                 block_dict = {
                     "tag": tag.name,
                     "text": text,
-                    "classes": _normalize_classes(tag.get("class", [])),
+                    "classes": _normalize_classes(tag.get("class")),
                     "id": str(tag.get("id") or attributes.get("element_id") or ""),
                     "role": str(tag.get("role") or ""),
                     "epub_type": str(tag.get("epub:type") or ""),
@@ -235,7 +235,7 @@ def build_source_document(epub_path: str) -> SourceDocument:
                     source_index=source_index,
                     href=href,
                     tag=tag.name,
-                    classes=_normalize_classes(tag.get("class", [])),
+                    classes=_normalize_classes(tag.get("class")),
                     element_id=str(tag.get("id") or attributes.get("element_id") or "") or None,
                     dom_path=_build_dom_path(tag),
                     attributes=attributes,

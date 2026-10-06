@@ -61,7 +61,7 @@ class _VisibleTextProbe(HTMLParser):
         self._suppressed_depth = 0
         self.parts: list[str] = []
 
-    def handle_starttag(self, tag: str, _attrs) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag.lower() in self._SUPPRESSED_TAGS:
             self._suppressed_depth += 1
 

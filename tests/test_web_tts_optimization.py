@@ -24,6 +24,45 @@ from tests.web_test_support import prepare_web_test_data_root
 
 
 class TtsOptimizationUnitTests(unittest.TestCase):
+    def test_current_structured_checkpoint_restores_plan_and_usage_without_model_call(self):
+        key = optimization_unit_key([0], stage=0)
+        plan = {"prompt_revision": SPEECH_PROMPT_REVISION, "reviewed_reading": "retained"}
+        checkpoints = {
+            key: {
+                "original_indices": [0],
+                "items": [{"index": 0, "text": "Doctor Jones"}],
+                "plan": plan,
+                "cost": 0.02,
+                "response_count": 1,
+                "usage": {"prompt_tokens": 8},
+                "cost_sources": ["fixture"],
+            }
+        }
+        published = []
+        with (
+            mock.patch("pandrator.web.speech_planning.plan_speech_text") as single_plan,
+            mock.patch("pandrator.web.speech_planning.plan_speech_text_batch") as batch_plan,
+        ):
+            output, usage = optimize_texts(
+                ["Dr. Jones"],
+                {"speech_optimization_mode": "guarded", "llm_concurrent_calls": 1},
+                SimpleNamespace(),
+                "provider/model",
+                threading.Event(),
+                lambda *_args: None,
+                completed_units=checkpoints,
+                on_plan_batch=published.extend,
+            )
+        single_plan.assert_not_called()
+        batch_plan.assert_not_called()
+        self.assertEqual(["Doctor Jones"], output)
+        self.assertEqual((0, "Doctor Jones", plan), published[0])
+        self.assertIsNot(plan, published[0][2])
+        self.assertEqual(0.02, usage.cost)
+        self.assertEqual(1, usage.response_count)
+        self.assertEqual({"prompt_tokens": 8}, usage.usage)
+        self.assertEqual(["fixture"], usage.cost_sources)
+
     def test_structured_mode_batches_multiple_units_when_configured(self):
         planned = SimpleNamespace(
             results=[

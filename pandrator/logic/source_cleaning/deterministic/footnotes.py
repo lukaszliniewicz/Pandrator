@@ -4,10 +4,25 @@ import collections
 import os
 import posixpath
 import re
+from typing import NotRequired, TypedDict
 from urllib.parse import unquote
 
+
+class _LanguageConfig(TypedDict):
+    citation_indicators: str
+    page_volume_terms: set[str]
+    exclude_words: set[str]
+    chapter_patterns: str
+    footnote_anchors: str
+    verbs: set[str]
+    connectors: set[str]
+    max_true_lower_ratio: float
+    is_cased: bool
+    detection_words: NotRequired[set[str]]
+
+
 # Centralized configurations for all 13 supported languages
-LANGUAGE_REGISTRY = {
+LANGUAGE_REGISTRY: dict[str, _LanguageConfig] = {
     "en": {
         "citation_indicators": r"ibid|op\.\s*cit|loc\.\s*cit|see\s+also|see|cf\.?",
         "page_volume_terms": {"p", "pp", "page", "pages", "vol", "vols", "ch", "chap", "trans", "ed", "eds", "press", "univ", "journal", "sec", "section"},
@@ -207,15 +222,15 @@ def detect_book_language(metadata: dict, parsed_documents: dict) -> str:
     words = re.findall(r'\b\w+\b', raw_sample.lower())
     word_counts = collections.Counter(words)
     
-    scores = {}
+    scores: dict[str, int] = {}
     for lang_code, config in LANGUAGE_REGISTRY.items():
-        words_set = config.get("detection_words", set())
+        words_set = config.get("detection_words") or (config["verbs"] | config["connectors"])
         if words_set:
             score = sum(word_counts[w] for w in words_set)
             scores[lang_code] = score
             
     if scores:
-        best_lang = max(scores, key=scores.get)
+        best_lang = max(scores, key=scores.__getitem__)
         if scores[best_lang] > 10:
             return best_lang
             

@@ -479,7 +479,7 @@ class SpeechOptimizationDispatchRunService:
                         if isinstance(row, dict)
                         else ""
                     )
-                    unit: dict[str, Any] = {
+                    json_unit: dict[str, Any] = {
                         "unit_id": ordinal,
                         "text": text,
                         "language": row_language or language,
@@ -491,8 +491,8 @@ class SpeechOptimizationDispatchRunService:
                     }
                     speech_xml = _json_speech_xml(row)
                     if speech_xml is not None:
-                        unit["speech_xml"] = speech_xml
-                    units.append(unit)
+                        json_unit["speech_xml"] = speech_xml
+                    units.append(json_unit)
                 return units
             text = path.read_text(encoding="utf-8-sig")
             return (
@@ -1765,7 +1765,7 @@ class SpeechOptimizationDispatchRunService:
                 if index not in output_by_id:
                     continue
                 if not isinstance(row, dict):
-                    row = {"text": str(row)}
+                    row: dict[str, Any] = {"text": str(row)}
                     rows[index - 1] = row
                 row["source_text"] = _json_source_text(row)
                 row["tts_optimized_sentence"] = str(output_by_id[index]["text"])

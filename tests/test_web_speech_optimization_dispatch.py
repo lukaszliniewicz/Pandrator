@@ -361,6 +361,34 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
         )
         self.assertEqual(409, conflict.status_code, conflict.get_json())
 
+    def test_json_primitive_row_publishes_structured_speech_markup(self):
+        record, source, _path = self._create_source(
+            workflow_kind="audiobook",
+            role="prepared_text",
+            filename="primitive.json",
+            content=json.dumps(["Hello there."]),
+        )
+        run = self._create_run(record.id, max_units_per_batch=1)
+        claimed = self._claim(run["id"], 1)
+        final = self._submit(
+            claimed,
+            [
+                {
+                    "unit_id": 1,
+                    "speech_xml": '<segment id="1"><narrator>Hello there.</narrator></segment>',
+                }
+            ],
+            1,
+        )
+        self.assertTrue(final["finalized"])
+        _artifact, output_path = self.extension["artifacts"].resolve(final["final_artifact_id"])
+        output = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual("Hello there.", output[0]["text"])
+        self.assertEqual("Hello there.", output[0]["source_text"])
+        self.assertEqual("Hello there.", output[0]["tts_optimized_sentence"])
+        self.assertIn("<narrator>Hello there.</narrator>", output[0]["speech_xml"])
+        self.assertEqual(output[0]["speech_xml"], output[0]["speech_plan"]["speech_xml"])
+
     def test_json_batches_are_sequential_and_materialize_normal_artifact(self):
         rows = [
             {"processed_sentence": "Dr. Jones arrived.", "language": "en"},

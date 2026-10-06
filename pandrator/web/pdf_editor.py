@@ -37,7 +37,7 @@ class PdfRect:
     def from_value(cls, value: dict[str, Any]) -> "PdfRect":
         try:
             rect = cls(*(float(value[key]) for key in ("x0", "y0", "x1", "y1")))
-        except (KeyError, TypeError, ValueError) as error:
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
             raise ValueError("PDF rectangles require numeric x0, y0, x1, and y1 values.") from error
         if not all(math.isfinite(item) for item in asdict(rect).values()):
             raise ValueError("PDF rectangle values must be finite.")
@@ -83,7 +83,17 @@ class PdfEditPlan:
             raw_color = item.get("color", [1, 1, 1])
             if not isinstance(raw_color, list) or len(raw_color) != 3:
                 raise ValueError("Whiteout color must be an RGB array.")
-            color = tuple(max(0.0, min(1.0, float(component))) for component in raw_color)
+            try:
+                components = [float(component) for component in raw_color]
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError("Whiteout color must contain numeric RGB values.") from error
+            if not all(math.isfinite(component) for component in components):
+                raise ValueError("Whiteout color values must be finite.")
+            color = (
+                max(0.0, min(1.0, components[0])),
+                max(0.0, min(1.0, components[1])),
+                max(0.0, min(1.0, components[2])),
+            )
             whiteouts.append(
                 WhiteoutOperation(int(item["original_page"]), PdfRect.from_value(item["rect"]), color)
             )
@@ -102,7 +112,7 @@ def inspect_pdf(path: Path, *, first_page_side: str = "right") -> dict[str, Any]
     document = fitz.open(path)
     try:
         pages = []
-        for index, page in enumerate(document):
+        for index, page in enumerate(document.pages()):
             media = page.mediabox
             crop = page.cropbox
             pages.append(
@@ -177,7 +187,8 @@ def apply_pdf_edit_plan(
                     }
                 )
             if whiteouts_by_page.get(original_page):
-                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+                # PyMuPDF's images=0 preserves images while removing redacted text.
+                page.apply_redactions(images=0)
             crop_operation = crops_by_page.get(original_page)
             if crop_operation:
                 crop_rect = _validate_page_rect(page, crop_operation.rect, original_page)
@@ -242,4 +253,3 @@ def apply_pdf_edit_plan(
     temporary_manifest.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     os.replace(temporary_manifest, manifest)
     return destination, manifest, provenance
-

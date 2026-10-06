@@ -77,6 +77,75 @@ class _ContinuationOCREngine:
 
 
 class PDFIngestionTests(unittest.TestCase):
+    def test_unavailable_optional_ocr_retains_native_text_and_failure_provenance(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "native.pdf"
+            with fitz.open() as pdf:
+                page = pdf.new_page()
+                page.insert_text((72, 110), "Native narration survives unavailable OCR.")
+                pdf.save(source)
+            error = ModuleNotFoundError("No module named 'paddleocr'", name="paddleocr")
+            with patch(
+                "pandrator.logic.source_cleaning.pdf_adapter.importlib.import_module", side_effect=error
+            ) as load:
+                document = build_pdf_source_document(str(source), PDFIngestionConfig(ocr_mode="force"))
+            load.assert_called_once_with("paddleocr")
+            self.assertTrue(any("Native narration survives" in block.text for block in document.blocks))
+            self.assertTrue(
+                all(block.attributes["source_method"] == "native_fallback" for block in document.blocks)
+            )
+            self.assertTrue(
+                any(
+                    "retained native extraction" in warning and "paddleocr" in warning
+                    for warning in document.warnings
+                )
+            )
+
+    def test_optional_ocr_resolution_retains_constructor_contracts_and_engine_cache(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+
+        from pandrator.logic.source_cleaning.pdf_adapter import PaddleOCRMediumEngine
+
+        factory = Mock(side_effect=[object(), object()])
+        with patch(
+            "pandrator.logic.source_cleaning.pdf_adapter.importlib.import_module",
+            return_value=SimpleNamespace(PaddleOCR=factory),
+        ) as load:
+            engine = PaddleOCRMediumEngine()
+            english, english_name = engine._get_engine("en")
+            german, german_name = engine._get_engine("de")
+            japanese, japanese_name = engine._get_engine("ja")
+            same_japanese, _ = engine._get_engine("ja")
+        self.assertEqual([("paddleocr",)] * 4, [call.args for call in load.call_args_list])
+        self.assertIs(english, german)
+        self.assertIs(japanese, same_japanese)
+        self.assertEqual(
+            ("ppocrv6_medium", "ppocrv6_medium", "ppocrv5_language"),
+            (english_name, german_name, japanese_name),
+        )
+        self.assertEqual(2, factory.call_count)
+        common = dict(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            engine="onnxruntime",
+            device="cpu",
+        )
+        self.assertEqual(
+            {
+                **common,
+                "text_detection_model_name": "PP-OCRv6_medium_det",
+                "text_recognition_model_name": "PP-OCRv6_medium_rec",
+            },
+            factory.call_args_list[0].kwargs,
+        )
+        self.assertEqual(
+            {**common, "lang": "ja", "ocr_version": "PP-OCRv5"}, factory.call_args_list[1].kwargs
+        )
+
     def test_ocr_mode_normalization_accepts_ui_and_canonical_values(self):
         self.assertEqual(PDFIngestionConfig(ocr_mode="always").normalized().ocr_mode, "force")
         self.assertEqual(PDFIngestionConfig(ocr_mode="never").normalized().ocr_mode, "off")

@@ -3357,5 +3357,114 @@ class SourceCleaningTests(unittest.TestCase):
         assert chapter_block is not None
         self.assertIn("deterministic_chapter", chapter_block.role_candidates)
 
+
+class SourceCleaningContractTests(unittest.TestCase):
+    @staticmethod
+    def documents(text):
+        return {"chapter.xhtml": {"blocks": [{"text": text}]}}
+
+    def test_language_fallback_identifies_metadata_free_latin_prose(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import detect_book_language
+
+        samples = {
+            "en": "This is a book which has a story that was told because we have been there.",
+            "pl": "To jest książka, która ma opowieść, ponieważ była ważna, ale jest długa i ma sens.",
+            "de": "Das ist ein Buch, das eine Geschichte hat, weil die Menschen da sind, aber es wird wichtig.",
+            "nl": "Dit is een boek dat een verhaal heeft, omdat mensen zijn gekomen, maar wie waren zij?",
+            "es": "Este es un libro que tiene historias, porque son importantes, aunque era tarde, pero quien ha venido?",
+            "it": "Questo è un libro che ha una storia, perché sono importanti, tuttavia era tardi e hanno fatto bene.",
+            "fr": "Ceci est un livre qui a une histoire, puisque les gens sont venus, mais dont on avait parlé.",
+            "pt": "Este é um livro que tem histórias, porque são importantes, embora era tarde, mas quem havia chegado?",
+            "hu": "Ez egy könyv, amely van és volt, mert fontos, bár azonban lesz, ezért hogy szól a történet.",
+        }
+        for language, sentence in samples.items():
+            with self.subTest(language=language):
+                self.assertEqual(language, detect_book_language({}, self.documents(sentence * 4)))
+
+    def test_language_metadata_scripts_threshold_and_ties_keep_precedence(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import detect_book_language
+
+        for metadata, text, expected in (
+            ({"language": "fra-FR"}, "ist " * 20, "fr"),
+            ({}, "本の物語です", "ja"),
+            ({}, "这是一本书", "zh"),
+            ({}, "Это книга", "ru"),
+            ({}, "यह पुस्तक है", "hi"),
+            ({}, "ist " * 10, "en"),
+            ({}, "ist " * 11, "de"),
+            ({}, "is " * 11, "en"),
+            ({}, "", "en"),
+        ):
+            with self.subTest(expected=expected, text=text[:15]):
+                self.assertEqual(expected, detect_book_language(metadata, self.documents(text)))
+
+    def test_explicit_detection_words_still_take_precedence_over_grammar_words(self):
+        from pandrator.logic.source_cleaning.deterministic.footnotes import (
+            LANGUAGE_REGISTRY,
+            detect_book_language,
+        )
+
+        with patch.dict(LANGUAGE_REGISTRY["de"], {"detection_words": {"sonderwort"}}):
+            self.assertEqual("de", detect_book_language({}, self.documents("sonderwort " * 11)))
+            self.assertEqual("en", detect_book_language({}, self.documents("ist " * 11)))
+
+    def test_visible_text_probe_accepts_base_keyword_interface_and_keeps_suppression(self):
+        from pandrator.logic.source_cleaning.deterministic.diagnostics import _VisibleTextProbe
+
+        probe = _VisibleTextProbe()
+        probe.handle_starttag(tag="script", attrs=[])
+        probe.handle_data("Hidden")
+        probe.handle_endtag("script")
+        probe.feed("<body>Visible<style>Hidden</style>Tail</body>")
+        self.assertEqual(["Visible", "Tail"], probe.parts)
+
+    def test_completion_usage_accepts_current_and_legacy_models_and_missing_usage(self):
+        from types import SimpleNamespace
+
+        from pandrator.logic.source_cleaning.agent import (
+            _normalize_completion_response,
+            _record_llm_call,
+        )
+
+        calls = []
+
+        class CurrentUsage:
+            def model_dump(self, *, mode):
+                calls.append(mode)
+                return {"prompt_tokens": 7, "prompt_tokens_details": {"cached_tokens": 2}}
+
+        class LegacyUsage:
+            def model_dump(self):
+                calls.append("legacy")
+                return {"completion_tokens": 3}
+
+        result = SourceCleaningAgentResult()
+        for index, usage in enumerate((CurrentUsage(), LegacyUsage(), None)):
+            response = SimpleNamespace(content="kept", usage=usage, model="fixture")
+            content, metadata = _normalize_completion_response(response)
+            self.assertEqual("kept", content)
+            _record_llm_call(result, index, metadata)
+        _record_llm_call(result, 3, {"usage": None})
+        self.assertEqual(["json", "legacy"], calls)
+        self.assertEqual(4, result.llm_usage["call_count"])
+        self.assertEqual(7, result.llm_usage["prompt_tokens"])
+        self.assertEqual(3, result.llm_usage["completion_tokens"])
+        self.assertEqual(5, result.llm_usage["uncached_prompt_tokens"])
+        self.assertEqual(2, result.llm_usage["usage_unavailable_calls"])
+
+    def test_toc_lookup_keeps_real_indices_ids_and_missing_index_defaults(self):
+        from pandrator.logic.source_cleaning.deterministic import _matched_toc_title
+
+        toc = {"chapter.xhtml#heading": "Chapter", "chapter.xhtml": "File chapter"}
+        ids = {0: ["heading"]}
+        self.assertEqual(
+            "Chapter", _matched_toc_title("chapter.xhtml", {"block_index": 0}, ids, toc)
+        )
+        self.assertEqual(
+            "Chapter", _matched_toc_title("chapter.xhtml", {"id": "heading"}, ids, toc)
+        )
+        self.assertIsNone(_matched_toc_title("chapter.xhtml", {}, ids, toc))
+
+
 if __name__ == "__main__":
     unittest.main()

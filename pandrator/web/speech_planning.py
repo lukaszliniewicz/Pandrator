@@ -736,8 +736,8 @@ def compile_plan(
     }
     if mode == "flexible":
         speech = str(parsed.get("speech_template") or protected_template)
-        replacements = {"{{" + item["id"] + "}}": _render_known(item) for item in known}
-        replacements.update(
+        placeholder_replacements = {"{{" + item["id"] + "}}": _render_known(item) for item in known}
+        placeholder_replacements.update(
             {
                 "{{" + item["id"] + "}}": _render_decision(
                     item, decisions.get(item["id"])
@@ -745,7 +745,7 @@ def compile_plan(
                 for item in candidates
             }
         )
-        for placeholder, replacement in replacements.items():
+        for placeholder, replacement in placeholder_replacements.items():
             speech = speech.replace(placeholder, replacement)
         return clean_text(speech)
 

@@ -287,16 +287,47 @@ def test_single_revision_detail_matches_full_and_is_session_scoped(workspace):
 
 def test_status_summary_keeps_selection_fields_with_null_counts(workspace):
     w = workspace
-    full = w["client"].get(w["url"].replace("/generation-plan", "/generation-plan/status")).get_json()
-    summary = w["client"].get(
-        w["url"].replace("/generation-plan", "/generation-plan/status"), query_string={"summary": "true"}
-    ).get_json()
+    full = (
+        w["client"].get(w["url"].replace("/generation-plan", "/generation-plan/status")).get_json()
+    )
+    summary = (
+        w["client"]
+        .get(
+            w["url"].replace("/generation-plan", "/generation-plan/status"),
+            query_string={"summary": "true"},
+        )
+        .get_json()
+    )
     assert [item["id"] for item in full["items"]] == [item["id"] for item in summary["items"]]
     assert summary["selected_revision_id"] == full["selected_revision_id"]
     assert summary["can_prepare"] == full["can_prepare"]
     for item in summary["items"]:
         assert item["reusable_segment_count"] is None
         assert item["stale_segment_count"] is None
+        assert item["reviewed"] is False
+        assert item["reviewed_at"] is None
+
+    from pandrator.web.models import SpeechPlanReview
+    from pandrator.web.speech_plan_workspace import plan_signature
+
+    with w["database"].session() as session:
+        session.add(
+            SpeechPlanReview(
+                revision_id=w["base_id"],
+                content_hash=plan_signature(session, w["base_id"]),
+            )
+        )
+    reviewed = (
+        w["client"]
+        .get(
+            w["url"].replace("/generation-plan", "/generation-plan/status"),
+            query_string={"summary": "true"},
+        )
+        .get_json()
+    )
+    selected = next(item for item in reviewed["items"] if item["id"] == w["base_id"])
+    assert selected["reviewed"] is True
+    assert selected["reviewed_at"] is not None
 
 
 def test_undo_stays_server_authoritative_after_summary(workspace):

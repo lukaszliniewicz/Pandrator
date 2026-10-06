@@ -20,6 +20,7 @@ from pandrator.web.jobs import JobQueue, Worker
 from pandrator.web.models import Artifact, ArtifactEdge, Job
 from pandrator.web.pdf_editor import (
     PdfEditPlan,
+    PdfRect,
     apply_pdf_edit_plan,
     inspect_pdf,
     page_side,
@@ -30,6 +31,55 @@ from tests.web_test_support import prepare_web_test_data_root
 
 
 class PdfEditorTests(unittest.TestCase):
+    def test_rectangles_reject_unrepresentable_numbers_as_validation_errors(self):
+        for key in ("x0", "y0", "x1", "y1"):
+            for value in (10**400, -(10**400)):
+                with self.subTest(key=key, sign=value > 0):
+                    coordinates = {"x0": 0, "y0": 0, "x1": 10, "y1": 10}
+                    coordinates[key] = value
+                    with self.assertRaisesRegex(ValueError, "numeric"):
+                        PdfRect.from_value(coordinates)
+
+    def test_whiteout_colors_require_finite_numeric_values_and_keep_clamping(self):
+        whiteout = {"original_page": 0, "rect": {"x0": 0, "y0": 0, "x1": 10, "y1": 10}}
+        for value in (None, "bad", 10**400, -(10**400), float("nan"), float("inf"), -float("inf")):
+            with self.subTest(value_type=type(value).__name__):
+                with self.assertRaisesRegex(ValueError, "Whiteout color"):
+                    PdfEditPlan.from_value({"whiteouts": [{**whiteout, "color": [value, 0, 0]}]})
+        plan = PdfEditPlan.from_value({"whiteouts": [{**whiteout, "color": ["0.25", 2, -1]}]})
+        self.assertEqual((0.25, 1.0, 0.0), plan.whiteouts[0].color)
+
+    def test_whiteout_removes_text_and_retains_embedded_image_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "image-source.pdf"
+            destination = Path(directory) / "whiteout.pdf"
+            with fitz.open() as document:
+                page = document.new_page(width=200, height=200)
+                image = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 10, 10), False)
+                image.clear_with(128)
+                page.insert_image(fitz.Rect(20, 20, 100, 100), pixmap=image)
+                page.insert_text((30, 60), "Remove me")
+                document.save(source)
+                image_bytes = document.extract_image(page.get_images()[0][0])["image"]
+            original = source.read_bytes()
+            plan = PdfEditPlan.from_value(
+                {
+                    "whiteouts": [
+                        {
+                            "original_page": 0,
+                            "rect": {"x0": 20, "y0": 20, "x1": 100, "y1": 100},
+                        }
+                    ]
+                }
+            )
+            apply_pdf_edit_plan(source, destination, plan)
+            with fitz.open(destination) as document:
+                self.assertNotIn("Remove me", document[0].get_text("text"))
+                images = document[0].get_images()
+                self.assertEqual(1, len(images))
+                self.assertEqual(image_bytes, document.extract_image(images[0][0])["image"])
+            self.assertEqual(original, source.read_bytes())
+
     def create_pdf(self, path: Path):
         document = fitz.open()
         sizes = [(300, 500), (320, 500), (300, 520), (340, 540)]

@@ -565,7 +565,9 @@ def _matched_toc_title(
     block_ids = []
     if block.get("id"):
         block_ids.append(block["id"])
-    block_ids.extend(ids_by_block_index.get(block.get("block_index"), []))
+    block_index = block.get("block_index")
+    if isinstance(block_index, int):
+        block_ids.extend(ids_by_block_index.get(block_index, []))
 
     for block_id in block_ids:
         frag_key = f"{doc_href.lower()}#{str(block_id).lower()}"

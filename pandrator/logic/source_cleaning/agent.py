@@ -648,7 +648,7 @@ def _normalize_completion_response(response: Any) -> tuple[str, dict[str, Any]]:
             "response_id": str(response.get("response_id") or ""),
         }
 
-    usage = getattr(response, "usage", {})
+    usage: Any = getattr(response, "usage", {})
     if hasattr(usage, "model_dump"):
         try:
             usage = usage.model_dump(mode="json")
@@ -671,7 +671,8 @@ def _record_llm_call(
     metadata: dict[str, Any],
     request_context_chars: int = 0,
 ):
-    usage = metadata.get("usage") if isinstance(metadata.get("usage"), dict) else {}
+    raw_usage = metadata.get("usage")
+    usage = raw_usage if isinstance(raw_usage, dict) else {}
     cost = _optional_float(metadata.get("cost"))
     call = {
         "iteration": iteration,

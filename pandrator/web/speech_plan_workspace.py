@@ -169,7 +169,7 @@ def prepare_segment_edit_targets(
     Selection and synthesis do not copy a plan. Editing a frozen version creates
     exactly one descendant for a whole batch, retaining the old text and takes.
     """
-    editorial = set(SIGNATURE_FIELDS) - {"ordinal"}
+    editorial = set[str](SIGNATURE_FIELDS) - {"ordinal"}
     editorial.update({"speech_plan", "source_segment_ids", "speech_block_provenance"})
     edited = [
         segments[str(item["id"])]
@@ -331,7 +331,7 @@ def speech_plan_status(services, session_id: str, *, summary: bool = False) -> d
                 {
                     **item,
                     "reviewed": reviewed,
-                    "reviewed_at": review.reviewed_at.isoformat() if reviewed else None,
+                    "reviewed_at": review.reviewed_at.isoformat() if reviewed and review is not None else None,
                     "compatible": bool(
                         source
                         and (

@@ -464,19 +464,19 @@ def _optimize_with_speech_plans(
 
     checkpoint_lock = Lock()
 
-    def restore(index: int):
+    def restore(index: int) -> tuple[int, str, dict[str, Any], OptimizationUsage] | None:
         unit_key = optimization_unit_key([index], stage=0)
         raw = completed_units.get(unit_key, {}) if completed_units else {}
         raw_plan = raw.get("plan") if isinstance(raw, Mapping) else None
-        restored = (
-            _restore_optimization_unit(
-                [index],
-                stage=0,
-                completed_units=completed_units,
-            )
-            if isinstance(raw_plan, Mapping)
+        if not (
+            isinstance(raw_plan, Mapping)
             and raw_plan.get("prompt_revision") == SPEECH_PROMPT_REVISION
-            else None
+        ):
+            return None
+        restored = _restore_optimization_unit(
+            [index],
+            stage=0,
+            completed_units=completed_units,
         )
         if restored is None:
             return None

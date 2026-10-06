@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import statistics
@@ -181,7 +182,7 @@ class PaddleOCRMediumEngine:
         if cache_root:
             os.environ.setdefault("PADDLE_PDX_CACHE_HOME", os.path.join(cache_root, "paddlex"))
         os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-        from paddleocr import PaddleOCR
+        PaddleOCR = importlib.import_module("paddleocr").PaddleOCR
 
         normalized = str(language or "auto").lower()
         if normalized in _LATIN_V6_LANGUAGES:
