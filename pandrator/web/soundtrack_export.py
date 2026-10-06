@@ -215,10 +215,14 @@ def ensure_soundtrack_master(
         )
     reference = probe_soundtrack_media(source_path) if source_path is not None else None
     generated = probe_soundtrack_media(speech_path) if speech_path is not None else None
-    if audio_mode in {"mixed", "source"} and not reference["has_audio"]:
-        raise ValueError(
-            "The original recording has no audio stream. Choose voiceover-only audio."
-        )
+    generated_duration = generated["duration"] if generated is not None else 0
+    if audio_mode in {"mixed", "source"}:
+        if reference is None:
+            raise ValueError("This soundtrack needs an associated original recording.")
+        if not reference["has_audio"]:
+            raise ValueError(
+                "The original recording has no audio stream. Choose voiceover-only audio."
+            )
     match_reference = (
         bool(settings.get("audio_match_source_duration", True))
         and reference is not None
@@ -237,14 +241,14 @@ def ensure_soundtrack_master(
         and reference is not None
         and generated is not None
     ):
-        overrun = generated["duration"] - reference_duration
+        overrun = generated_duration - reference_duration
         if overrun > OVERRUN_TOLERANCE_SECONDS and not tail_extension_ms:
             raise ValueError(
                 f"Generated speech exceeds the recording by {overrun:.2f} seconds. "
                 "Review synchronization or turn off 'Match recording timeline'; speech will not be silently cut."
             )
         if tail_extension_ms and reference_duration + tail_extension_ms / 1000 < (
-            generated["duration"] - OVERRUN_TOLERANCE_SECONDS
+            generated_duration - OVERRUN_TOLERANCE_SECONDS
         ):
             raise ValueError(
                 f"Generated speech exceeds the recording by {overrun:.2f} seconds, "
@@ -258,11 +262,11 @@ def ensure_soundtrack_master(
         reference_duration + tail_extension_ms / 1000
         if match_reference and tail_extension_ms
         else (
-            max(reference_duration, generated["duration"])
+            max(reference_duration, generated_duration)
             if match_reference
             else max(
                 reference_duration if reference else 0,
-                generated["duration"] if generated else 0,
+                generated_duration,
             )
         )
     )
@@ -270,10 +274,10 @@ def ensure_soundtrack_master(
         match_reference
         and not tail_extension_ms
         and audio_mode in {"mixed", "dubbed"}
-        and generated["duration"] > duration + OVERRUN_TOLERANCE_SECONDS
+        and generated_duration > duration + OVERRUN_TOLERANCE_SECONDS
     ):
         raise ValueError(
-            f"Generated speech exceeds the recording by {generated['duration'] - duration:.2f} seconds. "
+            f"Generated speech exceeds the recording by {generated_duration - duration:.2f} seconds. "
             "Review synchronization or turn off 'Match recording timeline'; speech will not be silently cut."
         )
     samples = round(duration * SAMPLE_RATE)

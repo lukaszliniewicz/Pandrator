@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import Job
+from pandrator.web.models import ApiIdempotency, Job
 from pandrator.web.workspace import stable_hash
 
 
@@ -204,6 +204,66 @@ class MediaEditProposalRouteTests(unittest.TestCase):
             },
         )
         self.assertEqual(422, too_wide.status_code)
+
+    def test_cut_edge_admission_preserves_defaults_and_rejects_unknown_values(self):
+        endpoint = f"/api/v1/sessions/{self.session.id}/media-edit/cuts"
+        with patch.object(self.extension["media_edit"], "list_cuts",
+                          return_value={"cuts": []}) as list_cuts:
+            for edge in (None, "start", "end"):
+                with self.subTest(edge=edge):
+                    query = {} if edge is None else {"edge": edge}
+                    response = self.client.get(endpoint, query_string=query)
+                    self.assertEqual(200, response.status_code, response.get_json())
+                    self.assertEqual(edge, list_cuts.call_args.kwargs["edge"])
+                    self.assertEqual(5000, list_cuts.call_args.kwargs["context_ms"])
+                    self.assertEqual(40, list_cuts.call_args.kwargs["cue_limit"])
+            list_cuts.reset_mock()
+            for edge in ("", "START", "middle"):
+                with self.subTest(edge=edge):
+                    response = self.client.get(endpoint, query_string={"edge": edge})
+                    self.assertEqual(422, response.status_code)
+                    self.assertEqual("edge must be 'start' or 'end'.",
+                                     response.get_json()["error"]["message"])
+            list_cuts.assert_not_called()
+
+    def test_failed_detached_prepare_releases_reservation_for_same_key_retry(self):
+        endpoint = f"/api/v1/sessions/{self.session.id}/media-edit/prepare"
+        headers = {"X-CSRF-Token": self.csrf, "Idempotency-Key": "prepare-contract-retry"}
+        with patch.object(self.extension["media_edit"], "state", return_value={"plan": None}), \
+                patch.object(self.extension["media_edit"], "prepare",
+                             side_effect=ValueError("fixture rejected")):
+            failed = self.client.post(endpoint, json={}, headers=headers)
+        self.assertEqual(422, failed.status_code, failed.get_json())
+        with self.extension["database"].session() as db:
+            self.assertIsNone(db.scalar(select(ApiIdempotency).where(
+                ApiIdempotency.operation_id == "prepareMediaEdit",
+                ApiIdempotency.idempotency_key == "prepare-contract-retry",
+            )))
+        result = {"plan": {"plan_id": "fixture-plan", "revision": 1}}
+        with patch.object(self.extension["media_edit"], "state", return_value={"plan": None}), \
+                patch.object(self.extension["media_edit"], "prepare", return_value=result) as prepare:
+            success = self.client.post(endpoint, json={}, headers=headers)
+            replay = self.client.post(endpoint, json={}, headers=headers)
+        self.assertEqual(201, success.status_code, success.get_json())
+        self.assertEqual(201, replay.status_code, replay.get_json())
+        self.assertEqual("true", replay.headers["Idempotency-Replayed"])
+        self.assertEqual(result, replay.get_json())
+        prepare.assert_called_once_with(self.session.id, force=False)
+
+    def test_anonymous_media_mutations_do_not_reserve_or_invoke_service(self):
+        anonymous = self.app.test_client()
+        with patch.object(self.extension["services"].idempotency, "begin") as begin, \
+                patch.object(self.extension["media_edit"], "prepare") as prepare:
+            for verb, suffix in (("post", "prepare"), ("patch", "boundary")):
+                with self.subTest(suffix=suffix):
+                    response = getattr(anonymous, verb)(
+                        f"/api/v1/sessions/{self.session.id}/media-edit/{suffix}",
+                        json={}, headers={"Idempotency-Key": "anonymous-media-request"},
+                    )
+                    self.assertEqual(401, response.status_code, response.get_json())
+                    self.assertEqual("authentication_required", response.get_json()["error"]["code"])
+            begin.assert_not_called()
+            prepare.assert_not_called()
 
 
 if __name__ == "__main__":

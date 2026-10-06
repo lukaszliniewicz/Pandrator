@@ -272,3 +272,53 @@ class SoundtrackExportTests(unittest.TestCase):
                 ),
                 0,
             )
+
+    def _assert_source_soundtrack(self, path):
+        info = probe_soundtrack_media(path)
+        self.assertFalse(info["has_video"])
+        self.assertTrue(info["has_audio"])
+        self.assertAlmostEqual(3.0, info["duration"], places=3)
+        decoded = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(path),
+            "-f", "f32le", "-ac", "1", "-ar", "48000", "-",
+        ], check=True, capture_output=True).stdout
+        self.assertEqual(3 * 48000 * 4, len(decoded))
+        self.assertLess(max(abs(sample[0]) for sample in struct.iter_unpack("<f", decoded)),
+                        0.000001)
+
+    def test_source_only_master_uses_default_timeline_and_ignores_generated_track(self):
+        masters = []
+        for speech in (None, self.speech):
+            with self.subTest(speech=speech.id if speech else None):
+                master = ensure_soundtrack_master(
+                    self.handlers, session_id=self.sid, source=self.source, speech=speech,
+                    audio_mode="source", settings={}, cancel_event=threading.Event(),
+                )
+                masters.append(master)
+                definition = master.metadata_json["soundtrack"]
+                self.assertTrue(definition["match_reference"])
+                self.assertEqual(self.source.id, definition["source_id"])
+                self.assertIsNone(definition["speech_id"])
+                self.assertEqual(144000, definition["samples"])
+        self.assertEqual(masters[0].id, masters[1].id)
+        self._assert_source_soundtrack(self.services.paths.managed_path(masters[0].relative_path))
+
+    def test_source_only_handler_exports_recording_without_video_or_generated_speech(self):
+        settings = {**self.settings, "audio_mode": "preserve"}
+        settings.pop("audio_match_source_duration")
+        with patch(
+            "pandrator.logic.dubbing.video_muxing.build_replace_video_audio_command",
+            side_effect=AssertionError("source soundtrack must not render video"),
+        ):
+            result = self.handlers.export(
+                {"session_id": self.sid, "settings": settings},
+                lambda *_: None, threading.Event(),
+            )
+        self.assertEqual(1, len(result["artifact_ids"]))
+        with self.services.database.session() as db:
+            exported = db.get(Artifact, result["artifact_ids"][0])
+            self.assertEqual("export_source_audio", exported.role)
+            self.assertTrue(exported.metadata_json["audio_only"])
+            self.assertIsNone(exported.metadata_json["soundtrack"]["speech_id"])
+            path = self.services.paths.managed_path(exported.relative_path)
+        self._assert_source_soundtrack(path)

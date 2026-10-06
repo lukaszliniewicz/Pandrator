@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 from flask import jsonify, request
 from pydantic import ValidationError
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .auth import Principal
 from .domain_blueprints import DomainBlueprints
+from .http_idempotency import MutationIdempotency
 from .idempotency import IdempotencyConflict, IdempotencyInProgress, IdempotencyReservation
 from .media_edit import MediaEditInputsChanged, MediaEditRevisionConflict
 from .models import ApiIdempotency, Job
@@ -53,6 +54,7 @@ def _safe_job_payload(job) -> dict[str, Any]:
 def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> None:
     services = context.services
     media_edit = services.media_edit
+    idempotency = MutationIdempotency(context)
     error_response = context.guards.error_response
     require_scope = context.guards.require_scope
 
@@ -101,7 +103,7 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
         key, key_error = _mutation_key()
         if key_error is not None or key is None:
             return None, None, key_error
-        principal = context.guards.principal()
+        principal = idempotency.principal()
         try:
             with media_edit.database.immediate_session() as db_session:
                 reservation = services.idempotency.begin(
@@ -128,7 +130,7 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
     ) -> None:
         if reservation_id is None:
             return
-        principal = context.guards.principal()
+        principal = idempotency.principal()
         with media_edit.database.immediate_session() as db_session:
             reservation = services.idempotency.load_in_progress(
                 db_session,
@@ -147,7 +149,7 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
     def _abandon_detached_reservation(reservation_id: str | None) -> None:
         if reservation_id is None:
             return
-        principal = context.guards.principal()
+        principal = idempotency.principal()
         with media_edit.database.immediate_session() as db_session:
             try:
                 reservation = services.idempotency.load_in_progress(
@@ -309,8 +311,13 @@ def register_media_edit_routes(app: DomainBlueprints, context: RouteContext) -> 
         try:
             revision = _query_int("revision", minimum=1)
             cut_index = _query_int("cut_index", minimum=1)
-            edge = request.args.get("edge")
-            if edge is not None and edge not in {"start", "end"}:
+            raw_edge = request.args.get("edge")
+            edge: Literal["start", "end"] | None = None
+            if raw_edge == "start":
+                edge = "start"
+            elif raw_edge == "end":
+                edge = "end"
+            elif raw_edge is not None:
                 raise ValueError("edge must be 'start' or 'end'.")
             context_ms = _query_int("context_ms", minimum=250, maximum=30_000)
             cue_limit = _query_int("cue_limit", minimum=1, maximum=100)

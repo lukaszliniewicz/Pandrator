@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
+    ApiIdempotency,
     AudioTake,
     GenerationPlan,
     GenerationPlanRevision,
@@ -251,3 +252,25 @@ def test_auth_validation_scope_and_stale_request_hash(workspace):
     assert w['client'].get(f'/api/v1/sessions/{sid2}/generation-plan/repair-batches/{w["run_id"]}').status_code == 404
     assert w['client'].post(f'/api/v1/sessions/{sid2}/generation-plan/repair-batches/{w["run_id"]}/undo', json=body, headers=w['headers']).status_code == 404
     assert revision_count(w) == 2
+
+
+def test_missing_generation_plan_retains_404_and_rolls_back_undo_reservation(workspace):
+    w = workspace
+    empty = w['services']['sessions'].create('No repair plan', workflow_kind='voiceover')
+    url = f'/api/v1/sessions/{empty.id}/generation-plan/repair-batches/missing'
+    before = revision_count(w)
+    detail = w['client'].get(url)
+    assert detail.status_code == 404, detail.get_json()
+    assert detail.get_json()['error']['code'] == 'not_found'
+    undone = w['client'].post(url + '/undo', json={
+        'expected_revision_id': 'missing-revision', 'expected_state_hash': '0' * 64,
+    }, headers={**w['headers'], 'Idempotency-Key': 'missing-plan-undo'})
+    assert undone.status_code == 404, undone.get_json()
+    assert undone.get_json()['error']['code'] == 'not_found'
+    assert revision_count(w) == before
+    with w['database'].session() as db:
+        assert db.scalar(select(GenerationPlan).where(GenerationPlan.session_id == empty.id)) is None
+        assert db.scalar(select(ApiIdempotency).where(
+            ApiIdempotency.operation_id == 'undoSpeechPlanRepairBatch',
+            ApiIdempotency.idempotency_key == 'missing-plan-undo',
+        )) is None

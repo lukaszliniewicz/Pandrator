@@ -295,7 +295,7 @@ def repair_batch_detail(database, session_id, batch_id, *, limit=50, before_revi
         plan, rows, roots = _history_metadata(session, session_id)
         entries = _groups(plan, rows, roots) if plan else []
         batch = next((entry["batch"] for entry in entries if entry["batch"] and entry["batch"]["id"] == batch_id), None)
-        if batch is None:
+        if batch is None or plan is None:
             raise KeyError(batch_id)
         summary = _batch_summary(session, session_id, plan.active_revision_id, batch)
         summary["undo_checked"] = True
@@ -313,7 +313,7 @@ def undo_repair_batch_in_session(service, session, session_id, batch_id, *, expe
     plan, rows, roots = _history_metadata(session, session_id)
     entries = _groups(plan, rows, roots) if plan else []
     batch = next((entry["batch"] for entry in entries if entry["batch"] and entry["batch"]["id"] == batch_id), None)
-    if batch is None:
+    if batch is None or plan is None:
         raise KeyError(batch_id)
     summary = _batch_summary(session, session_id, plan.active_revision_id, batch)
     if plan.active_revision_id != expected_revision_id or expected_revision_id != summary["result_revision_id"]:

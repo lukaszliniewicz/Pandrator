@@ -8,6 +8,7 @@ from flask import g, jsonify, request
 
 from .dispatch import TERMINAL_DISPATCH_RUN_STATUSES, DispatchError
 from .domain_blueprints import DomainBlueprints
+from .http_idempotency import MutationIdempotency
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .models import DispatchRun
 from .route_context import RouteContext
@@ -28,6 +29,7 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
     services = context.services
     database = services.database
     dispatch = services.dispatch
+    idempotency = MutationIdempotency(context)
     require_scope = context.guards.require_scope
     error_response = context.guards.error_response
 
@@ -115,7 +117,7 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
                     try:
                         reservation = services.idempotency.begin(
                             db_session,
-                            principal=context.guards.principal(),
+                            principal=idempotency.principal(),
                             operation_id="createDispatchRun",
                             idempotency_key=key,
                             payload={"session_id": session_id, **body},
@@ -279,7 +281,7 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
                     try:
                         reservation = services.idempotency.begin(
                             db_session,
-                            principal=context.guards.principal(),
+                            principal=idempotency.principal(),
                             operation_id="renewDispatchBatch",
                             idempotency_key=key,
                             payload={"batch_id": batch_id, **body},
@@ -328,7 +330,7 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
                     try:
                         reservation = services.idempotency.begin(
                             db_session,
-                            principal=context.guards.principal(),
+                            principal=idempotency.principal(),
                             operation_id="releaseDispatchBatch",
                             idempotency_key=key,
                             payload={"batch_id": batch_id, **body},
@@ -376,7 +378,7 @@ def register_dispatch_routes(app: DomainBlueprints, context: RouteContext) -> No
                 try:
                     reservation = services.idempotency.begin(
                         db_session,
-                        principal=context.guards.principal(),
+                        principal=idempotency.principal(),
                         operation_id="submitDispatchBatch",
                         idempotency_key=key,
                         payload={"batch_id": batch_id, **body},

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from datetime import timedelta
+from unittest.mock import patch
 
 from sqlalchemy import select
 
@@ -1476,9 +1477,24 @@ class DispatchWebTests(unittest.TestCase):
             response.get_json()["error"]["details"]["changed_stage_keys"],
         )
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_anonymous_dispatch_mutations_do_not_reserve_or_enter_domain(self):
+        anonymous = self.app.test_client()
+        endpoints = (
+            "/api/v1/sessions/missing/dispatch-runs",
+            "/api/v1/dispatch-batches/missing/renew",
+            "/api/v1/dispatch-batches/missing/release",
+            "/api/v1/dispatch-batches/missing/submit",
+        )
+        with patch.object(self.extension["services"].idempotency, "begin") as begin, \
+                patch.object(self.extension["dispatch"], "create_in_session") as create:
+            for endpoint in endpoints:
+                with self.subTest(endpoint=endpoint):
+                    response = anonymous.post(endpoint, json={},
+                                              headers={"Idempotency-Key": "anonymous-dispatch"})
+                    self.assertEqual(401, response.status_code, response.get_json())
+                    self.assertEqual("authentication_required", response.get_json()["error"]["code"])
+            begin.assert_not_called()
+            create.assert_not_called()
 
 
 class UncertaintyCueContractTests(unittest.TestCase):
@@ -1502,3 +1518,7 @@ class UncertaintyCueContractTests(unittest.TestCase):
                     "reason": "Ambiguous wording", "evidence_ids": [],
                     "start_ms": 100, "end_ms": 300,
                 }}, result)
+
+
+if __name__ == "__main__":
+    unittest.main()
