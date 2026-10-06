@@ -397,6 +397,14 @@ def _build_audio_cpp_audio_payload(
     # Compiler-owned transport safeguards take precedence over raw tuning.
     # In particular, Fish's generated bracket controls require tag-aware splits.
     options.update(compiled.request_options)
+    if family == "breeze_tts":
+        # Breeze rejects even a neutral speed field inherited from global defaults.
+        for request_fields in (payload, options):
+            speed = request_fields.pop("speed", None)
+            if speed is not None and (
+                isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed != 1
+            ):
+                raise ValueError("Breeze speed is unsupported; only the neutral value 1 is allowed.")
     if options:
         payload["options"] = options
     return payload

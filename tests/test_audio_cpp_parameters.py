@@ -44,6 +44,67 @@ class AudioCppParameterTests(unittest.TestCase):
         self.assertNotIn("seed", payload["options"])
         self.assertNotIn("speed", payload)
 
+    def test_breeze_omits_neutral_legacy_speed_and_preserves_design_request(self):
+        for speed_settings in (
+            {},
+            {"speed": None},
+            {"speed": 1},
+            {"audio_cpp_speed": 1.0},
+            {"audio_cpp_options": {"speed": 1}},
+            {"audio_cpp_options": {"speed": None}},
+            {"options": {"speed": 1.0}},
+            {"speed": 1, "audio_cpp_options": {"speed": 1, "top_p": 0.8}},
+        ):
+            with self.subTest(speed_settings=speed_settings):
+                payload = tts_handler._build_audio_cpp_audio_payload(
+                    "Hello",
+                    {
+                        "model": "breeze_tts_2_q8_0",
+                        "voice": "",
+                        "language": "en",
+                        "generation_prompt": "Warm baritone with a Scottish accent.",
+                        "audio_cpp_seed": 123,
+                        **speed_settings,
+                    },
+                    {},
+                )
+                self.assertNotIn("speed", payload)
+                self.assertNotIn("speed", payload.get("options", {}))
+                self.assertNotIn("voice", payload)
+                self.assertNotIn("voice_ref", payload)
+                self.assertEqual("Hello", payload["input"])
+                self.assertEqual(
+                    "Warm baritone with a Scottish accent.", payload["instructions"]
+                )
+                self.assertEqual(123, payload["seed"])
+                if "top_p" in speed_settings.get("audio_cpp_options", {}):
+                    self.assertEqual(0.8, payload["options"]["top_p"])
+
+    def test_breeze_rejects_non_neutral_legacy_speed_locally(self):
+        for speed_settings in (
+            {"speed": 1.2},
+            {"audio_cpp_speed": 0.8},
+            {"audio_cpp_options": {"speed": 1.2}},
+            {"options": {"speed": 0.8}},
+            {"speed": 1, "audio_cpp_options": {"speed": 1.2}},
+            {"speed": True},
+            {"audio_cpp_options": {"speed": "1"}},
+        ):
+            with self.subTest(speed_settings=speed_settings):
+                with self.assertRaisesRegex(ValueError, "Breeze speed is unsupported"):
+                    tts_handler._build_audio_cpp_audio_payload(
+                        "Hello", {"model": "breeze_tts_2_q8_0", **speed_settings}, {}
+                    )
+
+    def test_breeze_selected_model_options_still_reject_speed(self):
+        model = "breeze_tts_2_q8_0"
+        with self.assertRaisesRegex(ValueError, "Unknown.*speed"):
+            tts_handler._build_audio_cpp_audio_payload(
+                "Hello",
+                {"model": model, "audio_cpp_model_settings": {model: {"speed": 1}}},
+                {},
+            )
+
     def test_selected_request_representatives_build_for_each_catalog_model(self):
         representative = {
             "qwen3_tts": {"max_tokens": 1},
