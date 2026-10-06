@@ -72,23 +72,33 @@ def get_work(
     poll_count = 0
     timed_out = False
     no_clock_progress = False
+    poll_delay = _poll_delay_seconds(work)
     while requested_seconds and not _work_is_terminal(work):
         now = time.monotonic()
         remaining = deadline - now
         if remaining <= 0:
             timed_out = True
             break
-        sleep_seconds = min(_poll_delay_seconds(work), remaining)
+        sleep_seconds = min(poll_delay, remaining)
         before_sleep = now
         time.sleep(sleep_seconds)
         after_sleep = time.monotonic()
         no_clock_progress = after_sleep <= before_sleep
+        previous_work = work
         result = inspect()
         poll_count += 1
         if arguments.work_type == "manager_operation":
             work = manager_work_reference(result)
         else:
             work = application_work_reference(result)
+        # Long stages often keep the same progress for several seconds.
+        # Back off within the wait budget, resetting when any work hint changes.
+        base_delay = _poll_delay_seconds(work)
+        poll_delay = (
+            min(10.0, max(base_delay, poll_delay * 2.0))
+            if work == previous_work
+            else base_delay
+        )
         if _work_is_terminal(work):
             break
         if no_clock_progress:

@@ -795,8 +795,8 @@ def _default_service_configs() -> list[dict[str, object]]:
                     "supports_voice_cloning": True,
                     "supports_voice_deletion": False,
                     "voice_reference_text": "optional",
-                    "model_catalog": copy.deepcopy(AUDIO_CPP_MODEL_CATALOG),
-                    "model_voice_modes": copy.deepcopy(AUDIO_CPP_MODEL_VOICE_MODES),
+                    "model_catalog": AUDIO_CPP_MODEL_CATALOG,
+                    "model_voice_modes": AUDIO_CPP_MODEL_VOICE_MODES,
                     GENERATION_PROMPT_MODELS_FIELD: list(AUDIO_CPP_VOICE_DESIGN_MODELS),
                     "voice_catalogues": {
                         "qwen3_tts_1_7b_customvoice_q8_0": list(KOBOLD_QWEN_TTS_VOICES),
@@ -909,7 +909,9 @@ def _default_service_configs() -> list[dict[str, object]]:
             },
         ]
     )
-    return configs
+    # Borrowed static metadata becomes owned together with the other fresh
+    # records. Callers may decorate or mutate any nested catalogue field.
+    return copy.deepcopy(configs)
 
 
 def _normalize_service_id(raw_value: str | None) -> str:
@@ -926,7 +928,14 @@ def _merge_service_config(
     base_record: dict[str, object],
     raw_record: dict,
 ) -> dict[str, object]:
-    record = copy.deepcopy(base_record)
+    if isinstance(raw_record.get("model_catalog"), (dict, list)):
+        # This field is independently cloned from raw_record below; do not
+        # copy the potentially large base catalogue only to discard it.
+        record = copy.deepcopy({
+            key: value for key, value in base_record.items() if key != "model_catalog"
+        })
+    else:
+        record = copy.deepcopy(base_record)
     service_id = str(record["id"])
     api_base = _normalize_base_url(
         raw_record.get("api_base") or raw_record.get("base_url") or "",
@@ -1071,7 +1080,7 @@ def _shared_service_configs(tts_settings, _cache=None) -> list[dict[str, object]
         if hit is not None:
             return hit
     services = {
-        str(item["id"]): copy.deepcopy(item) for item in _default_service_configs()
+        str(item["id"]): item for item in _default_service_configs()
     }
 
     legacy_raw_json = str(
