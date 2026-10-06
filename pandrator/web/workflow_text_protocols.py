@@ -6,8 +6,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from threading import Event
+
+    from pandrator.runtime import DataPaths
+
     from .agentic_runs import AgenticRunStore, ResumableAgentRun
+    from .credentials import ResolvedCredential
+    from .database import Database
     from .models import Artifact
+    from .web_research import WebResearchResult
+    from .workflow_generation_protocols import Progress
 
 
 class StoreSrtDocumentProtocol(Protocol):
@@ -87,3 +96,64 @@ class RecordUsageProtocol(Protocol):
         agent_run_id: str | None = None,
         request_key: str | None = None,
     ) -> None: ...
+
+
+class ResolveSecretReferenceProtocol(Protocol):
+    def __call__(
+        self,
+        database: Database,
+        paths: DataPaths,
+        reference: object,
+        *,
+        fallback_environment_variable: str = "",
+        preloaded_database_credentials: Mapping[str, str] | None = None,
+    ) -> ResolvedCredential: ...
+
+
+class ResolveRunPassageSettingsProtocol(Protocol):
+    def __call__(
+        self,
+        session_id: str,
+        payload_settings: dict[str, Any] | None,
+        *,
+        database: Database | None = None,
+    ) -> tuple[dict[str, int], int]: ...
+
+
+class PreparePassageInputProtocol(Protocol):
+    def __call__(
+        self,
+        artifact: Artifact,
+        source_path: Path,
+        directory: Path,
+        *,
+        source_passage_settings: dict[str, Any] | None = None,
+        source_passage_settings_revision: int | None = None,
+    ) -> tuple[Path, list[dict[str, Any]], dict[int, str]]: ...
+
+
+class SourcePassageRunLedgerProtocol(Protocol):
+    def __call__(
+        self,
+        session_id: str,
+        requested_settings: dict[str, Any],
+        *,
+        effective: dict[str, int] | None = None,
+        settings_revision: int | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class RunStageWebResearchProtocol(Protocol):
+    def __call__(
+        self,
+        *,
+        stage: str,
+        session_id: str,
+        source_artifact: Artifact,
+        source_path: Path,
+        settings: dict[str, Any],
+        progress: Progress,
+        cancel_event: Event,
+        completed_units: dict[str, dict[str, Any]],
+        persist_checkpoint: TransformCheckpointProtocol,
+    ) -> WebResearchResult | None: ...

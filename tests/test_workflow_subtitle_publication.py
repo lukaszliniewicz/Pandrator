@@ -659,3 +659,165 @@ def test_successful_research_merges_final_knowledge_and_completes_stage(case):
         == "Previously accepted summary New accepted research summary"
     )
     assert artifact.metadata_json["research"]["agent_run_id"] == result["agent_run_id"]
+
+
+@pytest.mark.parametrize("case", LLM_MODES, indirect=True)
+def test_finish_bookkeeping_failure_retains_complete_published_output(case):
+    failure = RuntimeError("fixture final bookkeeping failure")
+    with (
+        patch.object(AgenticRunStore, "finish", side_effect=failure),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        _run(case)
+    assert caught.value is failure
+    run = _run_state(case, "failed")
+    with case.database.session() as session:
+        artifact = selected_artifacts(session, case.session.id)[case.stage_key]
+        assert artifact.id != case.previous.id and artifact.role == case.stage
+        receipt = _receipt(session, artifact)
+        assert receipt["document"] is not None and receipt["revision"] is not None
+        assert receipt["metadata"]["agent_run_id"] == run.id
+        assert receipt["metadata"]["has_speaker_metadata"] is True
+        assert session.get(Artifact, case.previous.id).state == "stale"
+        assert session.get(Artifact, case.child.id).state == "stale"
+    assert (case.paths.root / artifact.relative_path).is_file()
+    assert {str(path): path.read_bytes() for path in case.protected_files} == case.before["files"]
+
+
+def test_subtitle_facades_recapture_ports_and_preserve_result_and_error_identity():
+    from pandrator.web import workflow_handlers as root
+    from pandrator.web import workflow_subtitle_transforms as owner
+
+    assert root._correct_impl is owner.correct
+    assert root._translate_impl is owner.translate
+    handlers = WorkflowHandlers.__new__(WorkflowHandlers)
+    instance_ports = (
+        "database",
+        "paths",
+        "artifacts",
+        "_resolve_input",
+        "_operation_dir",
+        "_resolve_run_passage_settings",
+        "_prepare_passage_input",
+        "_passage_display_settings",
+        "_source_passage_run_ledger",
+        "_with_database_llm_settings",
+        "_begin_agentic_operation",
+        "_run_stage_web_research",
+        "_research_metadata",
+        "_render_passage_output",
+        "_store_srt_document",
+        "_record_usage",
+    )
+    global_ports = {
+        "_stage_settings_fingerprint": "_stage_settings_fingerprint",
+        "_scaled_progress_callback": "_scaled_progress_callback",
+        "_normalize_correction_style": "normalize_correction_style",
+        "_resolve_secret_reference": "resolve_secret_reference",
+        "_database_reference": "database_reference",
+        "_auxiliary_credential_key": "auxiliary_credential_key",
+    }
+    payload, progress, event = {}, Mock(), threading.Event()
+    result, failure, contexts = object(), RuntimeError("owner sentinel"), []
+
+    def delegate(context, passed_payload, passed_progress, passed_event):
+        assert passed_payload is payload
+        assert passed_progress is progress
+        assert passed_event is event
+        contexts.append(context)
+        if len(contexts) == 3:
+            raise failure
+        return result
+
+    with (
+        patch.object(root, "_correct_impl", side_effect=delegate),
+        patch.object(root, "_translate_impl", side_effect=delegate),
+    ):
+        for method in (handlers.correct, handlers.translate):
+            ports = {name: Mock() for name in instance_ports}
+            helper_ports = {name: Mock() for name in global_ports}
+            for name, value in ports.items():
+                setattr(handlers, name, value)
+            with ExitStack() as stack:
+                for name, value in helper_ports.items():
+                    stack.enter_context(patch.object(root, global_ports[name], value))
+                assert method(payload, progress, event) is result
+            context = contexts[-1]
+            assert all(getattr(context, name) is value for name, value in ports.items())
+            assert all(getattr(context, name) is value for name, value in helper_ports.items())
+        with pytest.raises(RuntimeError) as caught:
+            handlers.translate(payload, progress, event)
+    assert caught.value is failure
+    assert len({id(context) for context in contexts}) == 3
+
+
+def test_research_facade_recaptures_ports_and_preserves_keyword_identity():
+    from pandrator.web import workflow_handlers as root
+    from pandrator.web import workflow_web_research as owner
+
+    assert root._run_stage_web_research_impl is owner.run_stage_web_research
+    handlers = WorkflowHandlers.__new__(WorkflowHandlers)
+    instance_ports = ("database", "paths", "_subtitle_speaker_map")
+    global_ports = {
+        "_resolve_secret_reference": "resolve_secret_reference",
+        "_database_reference": "database_reference",
+        "_auxiliary_credential_key": "auxiliary_credential_key",
+        "_fraction_message_callback": "_fraction_message_callback",
+    }
+    arguments = {
+        "stage": "correction",
+        "session_id": "fixture-session",
+        "source_artifact": object(),
+        "source_path": Path("fixture.srt"),
+        "settings": {},
+        "progress": Mock(),
+        "cancel_event": threading.Event(),
+        "completed_units": {},
+        "persist_checkpoint": Mock(),
+    }
+    result, failure, contexts = object(), RuntimeError("research sentinel"), []
+
+    def delegate(context, **passed):
+        assert passed.keys() == arguments.keys()
+        assert all(passed[key] is value for key, value in arguments.items())
+        contexts.append(context)
+        if len(contexts) == 3:
+            raise failure
+        return result
+
+    with patch.object(root, "_run_stage_web_research_impl", side_effect=delegate):
+        for _ in range(2):
+            ports = {name: Mock() for name in instance_ports}
+            helper_ports = {name: Mock() for name in global_ports}
+            for name, value in ports.items():
+                setattr(handlers, name, value)
+            with ExitStack() as stack:
+                for name, value in helper_ports.items():
+                    stack.enter_context(patch.object(root, global_ports[name], value))
+                assert handlers._run_stage_web_research(**arguments) is result
+            context = contexts[-1]
+            assert all(getattr(context, name) is value for name, value in ports.items())
+            assert all(getattr(context, name) is value for name, value in helper_ports.items())
+        with pytest.raises(RuntimeError) as caught:
+            handlers._run_stage_web_research(**arguments)
+    assert caught.value is failure
+    assert len({id(context) for context in contexts}) == 3
+
+
+def test_research_metadata_facade_keeps_static_interface_and_object_identity():
+    from pandrator.web import workflow_handlers as root
+    from pandrator.web import workflow_web_research as owner
+
+    assert root._research_metadata_impl is owner.research_metadata
+    assert isinstance(WorkflowHandlers.__dict__["_research_metadata"], staticmethod)
+    research, run_id, result = object(), "fixture-run", object()
+    with patch.object(root, "_research_metadata_impl", return_value=result) as delegate:
+        assert WorkflowHandlers._research_metadata(research, run_id) is result
+        delegate.assert_called_once_with(research, run_id)
+    failure = RuntimeError("metadata sentinel")
+    with (
+        patch.object(root, "_research_metadata_impl", side_effect=failure),
+        pytest.raises(RuntimeError) as caught,
+    ):
+        WorkflowHandlers._research_metadata(research, run_id)
+    assert caught.value is failure

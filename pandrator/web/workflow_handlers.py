@@ -132,6 +132,9 @@ from .workflow_speech_optimization import optimize_tts as _optimize_tts_impl
 from .workflow_speech_optimization import (
     save_speech_plan_proposals as _save_speech_plan_proposals_impl,
 )
+from .workflow_subtitle_transforms import SubtitleTransformContext
+from .workflow_subtitle_transforms import correct as _correct_impl
+from .workflow_subtitle_transforms import translate as _translate_impl
 from .workflow_voice import VOICE_CLEANUP_INPUT_SAMPLE_RATE as VOICE_CLEANUP_INPUT_SAMPLE_RATE
 from .workflow_voice import (
     VOICE_NOISE_REDUCTION_DEEPFILTERNET2 as VOICE_NOISE_REDUCTION_DEEPFILTERNET2,
@@ -148,6 +151,9 @@ from .workflow_voice import train_xtts as _voice_train_xtts
 from .workflow_voice import transcribe_voice as _voice_transcribe_voice
 from .workflow_voice import unpublish_voice as _voice_unpublish_voice
 from .workflow_voice import upload_rvc_model as _voice_upload_rvc_model
+from .workflow_web_research import WebResearchContext
+from .workflow_web_research import research_metadata as _research_metadata_impl
+from .workflow_web_research import run_stage_web_research as _run_stage_web_research_impl
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
@@ -2324,6 +2330,17 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
 
         return store, started, persist_checkpoint
 
+    def _web_research_context(self) -> WebResearchContext:
+        return WebResearchContext(
+            database=self.database,
+            paths=self.paths,
+            _subtitle_speaker_map=self._subtitle_speaker_map,
+            _resolve_secret_reference=resolve_secret_reference,
+            _database_reference=database_reference,
+            _auxiliary_credential_key=auxiliary_credential_key,
+            _fraction_message_callback=_fraction_message_callback,
+        )
+
     def _run_stage_web_research(
         self,
         *,
@@ -2337,546 +2354,53 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         completed_units: dict[str, dict[str, Any]],
         persist_checkpoint,
     ):
-        if not bool(settings.get("web_research_enabled", False)):
-            return None
-        if cancel_event.is_set():
-            raise RuntimeError("Web research was canceled.")
-        provider_id = (
-            str(settings.get("web_research_provider") or "jina").strip().lower()
+        return _run_stage_web_research_impl(
+            self._web_research_context(),
+            stage=stage,
+            session_id=session_id,
+            source_artifact=source_artifact,
+            source_path=source_path,
+            settings=settings,
+            progress=progress,
+            cancel_event=cancel_event,
+            completed_units=completed_units,
+            persist_checkpoint=persist_checkpoint,
         )
-        if provider_id != "jina":
-            raise ValueError(f"Unsupported web research provider: {provider_id}")
-        if (
-            stage == "translation"
-            and str(
-                settings.get("translation_backend") or settings.get("backend") or "llm"
-            ).lower()
-            != "llm"
-        ):
-            raise ValueError(
-                "Web research currently grounds the LLM translation backend. "
-                "Choose the LLM backend or disable web research."
-            )
-
-        from pandrator.logic.dubbing.srt_utils import parse_srt
-
-        from .context_budget import ContextBudgetService
-        from .knowledge import KnowledgeLedgerStore
-        from .provider_settings import build_llm_settings
-        from .web_research import (
-            JinaResearchProvider,
-            PersistentResearchCache,
-            ResearchAgentConfig,
-            WebResearchResult,
-            merge_web_research_results,
-            parse_domain_list,
-            run_web_research_agent,
-        )
-
-        credential = resolve_secret_reference(
-            self.database,
-            self.paths,
-            database_reference(auxiliary_credential_key("jina")),
-            fallback_environment_variable="JINA_API_KEY",
-        )
-        research_provider = JinaResearchProvider(
-            api_key=credential.resolved_value(),
-            cache=PersistentResearchCache(self.database),
-            timeout_seconds=int(settings.get("web_research_timeout_seconds") or 90),
-        )
-        model_key = "correction_model" if stage == "correction" else "translation_model"
-        task_model = str(
-            settings.get(model_key) or settings.get("llm_default_model") or ""
-        )
-        requested_researcher = str(
-            settings.get("web_research_model_name") or ""
-        ).strip()
-        llm_settings, model_name = build_llm_settings(
-            self.database,
-            self.paths,
-            requested_model=requested_researcher or task_model,
-            request_timeout_seconds=int(
-                settings.get("web_research_timeout_seconds")
-                or settings.get("request_timeout_seconds")
-                or 600
-            ),
-        )
-        source_language = str(
-            settings.get("original_language")
-            or settings.get("source_language")
-            or "auto"
-        )
-        target_language = (
-            str(settings.get("target_language") or "") if stage == "translation" else ""
-        )
-        knowledge = KnowledgeLedgerStore(self.database)
-        saved_research = knowledge.get(
-            session_id,
-            "research",
-            source_language=source_language,
-            target_language=target_language,
-        )["payload"]
-        saved_glossary = knowledge.get(
-            session_id,
-            "glossary",
-            source_language=source_language,
-            target_language=target_language,
-        )["payload"]
-        accumulated = WebResearchResult(
-            evidence=[
-                dict(item)
-                for item in saved_research.get("evidence", [])
-                if isinstance(item, dict)
-            ],
-            glossary=[
-                {
-                    "source": str(item.get("source") or ""),
-                    "target": str(item.get("target") or ""),
-                }
-                for item in saved_glossary.get("entries", [])
-                if isinstance(item, dict)
-                and str(item.get("status") or "active") != "disabled"
-            ],
-            summary=str(saved_research.get("summary") or ""),
-            warnings=[str(item) for item in saved_research.get("warnings", [])],
-        )
-        try:
-            cues = parse_srt(source_path.read_text(encoding="utf-8-sig"))
-            speaker_map = self._subtitle_speaker_map(source_artifact, source_path)
-            records = [
-                {
-                    "id": cue.index,
-                    "start_ms": cue.start_ms,
-                    "end_ms": cue.end_ms,
-                    "speaker": str(speaker_map.get(cue.index) or cue.speaker or ""),
-                    "text": cue.text,
-                }
-                for cue in cues
-            ]
-        except (OSError, ValueError):
-            records = [
-                {"id": index, "text": text}
-                for index, text in enumerate(
-                    source_path.read_text(encoding="utf-8-sig").splitlines(),
-                    start=1,
-                )
-                if text.strip()
-            ]
-
-        mode = str(settings.get("web_research_mode") or "global").strip().lower()
-        if mode not in {"global", "per_chunk"}:
-            raise ValueError("Web research mode must be 'global' or 'per_chunk'.")
-        context_fraction = min(
-            0.8,
-            max(0.1, float(settings.get("web_research_context_fraction") or 0.8)),
-        )
-        budget = ContextBudgetService(self.database).resolve(
-            model_name,
-            fraction=context_fraction,
-            fixed_prompt={
-                "stage": stage,
-                "source_language": source_language,
-                "target_language": target_language,
-                "instruction": "Research terminology and uncertain proper names using bounded web tools.",
-            },
-            ledger={
-                "evidence": accumulated.evidence,
-                "glossary": accumulated.glossary,
-            },
-            tools=["search_web", "read_url", "finish"],
-        )
-        partitioner = ContextBudgetService.partition
-        if mode == "global":
-            record_groups = partitioner(
-                records,
-                model=model_name,
-                budget_tokens=budget.input_budget_tokens,
-            )
-        else:
-            chunk_size = max(
-                1,
-                int(
-                    settings.get("max_segments_per_batch")
-                    or settings.get("max_subtitles_per_call")
-                    or 40
-                ),
-            )
-            record_groups = []
-            for offset in range(0, len(records), chunk_size):
-                record_groups.extend(
-                    partitioner(
-                        records[offset : offset + chunk_size],
-                        model=model_name,
-                        budget_tokens=budget.input_budget_tokens,
-                    )
-                )
-
-        run_settings = {
-            "stage": stage,
-            "provider": provider_id,
-            "model": model_name,
-            "mode": mode,
-            "context_window_tokens": budget.context_window_tokens,
-            "context_fraction": budget.fraction,
-            "input_budget_tokens": budget.input_budget_tokens,
-            "source_language": source_language,
-            "target_language": target_language,
-            "research_language": str(settings.get("web_research_language") or ""),
-            "max_searches": max(0, int(settings.get("web_research_max_searches") or 3)),
-            "max_extractions": max(
-                0, int(settings.get("web_research_max_extractions") or 2)
-            ),
-            "preferred_domains": list(
-                parse_domain_list(settings.get("web_research_preferred_domains"))
-            ),
-            "blocked_domains": list(
-                parse_domain_list(settings.get("web_research_blocked_domains"))
-            ),
-        }
-        configured_iterations = max(
-            2,
-            int(settings.get("web_research_max_iterations") or 8),
-        )
-        progress(0.02, f"Preparing {stage} web research")
-        results = [accumulated]
-        total_batches = max(1, len(record_groups))
-        for batch_index, group in enumerate(record_groups):
-            if cancel_event.is_set():
-                raise RuntimeError("Web research was canceled.")
-            research_source = json.dumps(group, ensure_ascii=False)
-            unit_key = f"research:{mode}:{batch_index}"
-            resume_state = completed_units.get(unit_key)
-
-            def save_research_state(
-                state: dict[str, Any],
-                *,
-                checkpoint_key: str = unit_key,
-            ) -> None:
-                raw_checkpoint_result = state.get("result")
-                checkpoint_result = (
-                    raw_checkpoint_result if isinstance(raw_checkpoint_result, dict) else {}
-                )
-                persist_checkpoint(
-                    checkpoint_key,
-                    {
-                        **state,
-                        "cost": checkpoint_result.get("cost", 0.0),
-                        "response_count": checkpoint_result.get("response_count", 0),
-                        "cost_sources": checkpoint_result.get("cost_sources", []),
-                        "usage": checkpoint_result.get("usage", {}),
-                    },
-                    phase="web_research",
-                    usage_stage="web_research",
-                    usage_settings={
-                        **settings,
-                        "web_research_model": model_name,
-                    },
-                )
-
-            batch_start = 0.02 + (0.16 * batch_index / total_batches)
-            batch_end = 0.02 + (0.16 * (batch_index + 1) / total_batches)
-            result = run_web_research_agent(
-                research_source,
-                provider=research_provider,
-                model_name=model_name,
-                llm_settings=llm_settings,
-                config=ResearchAgentConfig(
-                    stage=stage,
-                    source_language=run_settings["source_language"],
-                    target_language=run_settings["target_language"],
-                    research_language=run_settings["research_language"],
-                    max_searches=run_settings["max_searches"],
-                    max_extractions=run_settings["max_extractions"],
-                    max_iterations=configured_iterations,
-                    max_source_chars=max(2_000, len(research_source) + 1),
-                    max_tool_result_chars=max(
-                        2_000,
-                        int(settings.get("web_research_result_chars") or 10_000),
-                    ),
-                    preferred_domains=tuple(run_settings["preferred_domains"]),
-                    blocked_domains=tuple(run_settings["blocked_domains"]),
-                    context_window_tokens=budget.context_window_tokens,
-                    context_input_fraction=budget.fraction,
-                ),
-                cancel_event=cancel_event,
-                progress_callback=_fraction_message_callback(
-                    progress,
-                    batch_start,
-                    batch_end,
-                ),
-                resume_state=resume_state,
-                on_checkpoint=save_research_state,
-                initial_ledger=merge_web_research_results(results),
-            )
-            if cancel_event.is_set():
-                raise RuntimeError("Web research was canceled.")
-            results.append(result)
-        result = merge_web_research_results(results)
-        progress(
-            0.2,
-            (
-                f"Web research complete across {len(record_groups)} context batch(es) "
-                f"after {result.response_count} model turn(s)"
-            ),
-        )
-        if cancel_event.is_set():
-            raise RuntimeError("Web research was canceled.")
-        knowledge.merge_research(
-            session_id,
-            source_language=source_language,
-            target_language=target_language,
-            evidence=result.evidence,
-            warnings=result.warnings,
-            summary=result.summary,
-        )
-        if result.glossary:
-            knowledge.merge_glossary(
-                session_id,
-                source_language=source_language,
-                target_language=target_language,
-                entries=result.glossary,
-                origin="research",
-            )
-        return result
 
     @staticmethod
     def _research_metadata(result, run_id: str) -> dict[str, Any] | None:
-        if result is None or not run_id:
-            return None
-        sources = []
-        seen: set[str] = set()
-        for item in result.evidence:
-            url = str(item.get("source_url") or "")
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            sources.append(
-                {
-                    "url": url,
-                    "title": str(item.get("source_title") or ""),
-                }
-            )
-        return {
-            "agent_run_id": run_id,
-            "summary": result.summary,
-            "evidence_count": len(result.evidence),
-            "glossary": list(result.glossary),
-            "sources": sources,
-            "warnings": list(result.warnings),
-        }
+        return _research_metadata_impl(result, run_id)
+
+    def _subtitle_transform_context(self) -> SubtitleTransformContext:
+        return SubtitleTransformContext(
+            database=self.database,
+            paths=self.paths,
+            artifacts=self.artifacts,
+            _resolve_input=self._resolve_input,
+            _operation_dir=self._operation_dir,
+            _resolve_run_passage_settings=self._resolve_run_passage_settings,
+            _prepare_passage_input=self._prepare_passage_input,
+            _passage_display_settings=self._passage_display_settings,
+            _source_passage_run_ledger=self._source_passage_run_ledger,
+            _with_database_llm_settings=self._with_database_llm_settings,
+            _begin_agentic_operation=self._begin_agentic_operation,
+            _run_stage_web_research=self._run_stage_web_research,
+            _research_metadata=self._research_metadata,
+            _render_passage_output=self._render_passage_output,
+            _store_srt_document=self._store_srt_document,
+            _record_usage=self._record_usage,
+            _stage_settings_fingerprint=_stage_settings_fingerprint,
+            _scaled_progress_callback=_scaled_progress_callback,
+            _normalize_correction_style=normalize_correction_style,
+            _resolve_secret_reference=resolve_secret_reference,
+            _database_reference=database_reference,
+            _auxiliary_credential_key=auxiliary_credential_key,
+        )
 
     def correct(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.llm_correction import correct_srt_file_with_result
-
-        from .web_research import evidence_prompt
-
-        if cancel_event.is_set():
-            raise RuntimeError("Subtitle correction was canceled.")
-        session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
+        return _correct_impl(
+            self._subtitle_transform_context(), payload, progress, cancel_event
         )
-        session_dir = self._operation_dir(session_id, "correct")
-        # Resolve once: construction and the run ledger share these exact values.
-        run_passage_effective, run_passage_revision = (
-            self._resolve_run_passage_settings(
-                session_id, payload.get("settings"), database=self.database
-            )
-        )
-        processing_path, input_passages, speaker_by_subtitle = (
-            self._prepare_passage_input(
-                source_artifact,
-                source_path,
-                session_dir,
-                source_passage_settings=run_passage_effective,
-                source_passage_settings_revision=run_passage_revision,
-            )
-        )
-        requested_settings = dict(payload.get("settings") or {})
-        if input_passages:
-            requested_settings.update(
-                {
-                    "_logical_passages_version": 1,
-                    "_logical_passage_display": self._passage_display_settings(
-                        session_id
-                    ),
-                }
-            )
-            requested_settings = self._source_passage_run_ledger(
-                session_id,
-                requested_settings,
-                effective=run_passage_effective,
-                settings_revision=run_passage_revision,
-            )
-        settings = self._with_database_llm_settings(requested_settings, "correction")
-        settings["correction_style"] = normalize_correction_style(
-            settings.get("correction_style")
-        )
-        requested_settings = {
-            **requested_settings,
-            "correction_style": settings["correction_style"],
-        }
-        requested_settings_hash = hashlib.sha256(
-            json.dumps(
-                requested_settings,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        base_instructions = str(
-            payload.get("instructions") or settings.get("instructions") or ""
-        )
-        run_store, agent_run, persist_checkpoint = self._begin_agentic_operation(
-            payload=payload,
-            kind="correction",
-            source_artifact=source_artifact,
-            requested_settings=requested_settings,
-            instructions=base_instructions,
-            usage_settings=settings,
-        )
-        research_result = None
-        try:
-            research_result = self._run_stage_web_research(
-                stage="correction",
-                session_id=session_id,
-                source_artifact=source_artifact,
-                source_path=source_path,
-                settings=settings,
-                progress=progress,
-                cancel_event=cancel_event,
-                completed_units=agent_run.completed_units,
-                persist_checkpoint=persist_checkpoint,
-            )
-            instructions = base_instructions
-            if research_result is not None:
-                instructions += evidence_prompt(
-                    research_result.evidence,
-                    stage="correction",
-                )
-            processing_start = 0.2 if research_result is not None else 0.05
-            progress(processing_start, "Preparing subtitle correction requests")
-            result = correct_srt_file_with_result(
-                session_dir,
-                processing_path,
-                settings,
-                correction_instructions=instructions,
-                cancel_event=cancel_event,
-                speaker_by_subtitle=speaker_by_subtitle,
-                completed_units=agent_run.completed_units,
-                on_unit_completed=lambda key, output: persist_checkpoint(
-                    key,
-                    output,
-                    phase="correction",
-                    usage_stage="correction",
-                    usage_settings=settings,
-                ),
-                progress_callback=_scaled_progress_callback(
-                    progress,
-                    processing_start,
-                    0.9,
-                ),
-            )
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle correction was canceled.")
-            progress(0.92, "Correction requests complete; preparing artifact")
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle correction was canceled.")
-            logical_output, display_speakers = self._render_passage_output(
-                source_artifact,
-                result,
-                input_passages,
-                settings,
-                str(
-                    settings.get("original_language")
-                    or settings.get("source_language")
-                    or ""
-                ),
-            )
-            settings_fingerprint = _stage_settings_fingerprint("correct", settings)
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle correction was canceled.")
-            artifact = self.artifacts.register(
-                Path(result.output_path),
-                kind="srt",
-                role="correction_candidate",
-                session_id=session_id,
-                parent_ids=[source_artifact.id],
-                settings=settings,
-                metadata={
-                    "source_artifact_id": source_artifact.id,
-                    "source_content_hash": source_artifact.content_hash,
-                    "requested_settings_hash": requested_settings_hash,
-                    "settings_fingerprint": settings_fingerprint,
-                    "model": settings_fingerprint["model"],
-                    "language": str(
-                        settings.get("original_language")
-                        or settings.get("source_language")
-                        or "auto"
-                    ),
-                    "agent_run_id": agent_run.id,
-                    **(
-                        {
-                            "research": self._research_metadata(
-                                research_result, agent_run.id
-                            )
-                        }
-                        if research_result is not None
-                        else {}
-                    ),
-                },
-            )
-            progress(0.97, "Registering corrected subtitle document")
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle correction was canceled.")
-            self._store_srt_document(
-                session_id,
-                artifact,
-                "correction",
-                language=str(
-                    settings.get("original_language")
-                    or settings.get("source_language")
-                    or ""
-                )
-                or None,
-                parent_artifact=source_artifact,
-                speaker_overrides=display_speakers,
-                logical_passages=logical_output,
-            )
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle correction was canceled.")
-            registration = self.artifacts.prepare_registration(
-                Path(result.output_path), settings=settings
-            )
-            with self.database.session() as session:
-                if cancel_event.is_set():
-                    raise RuntimeError("Subtitle correction was canceled.")
-                # Promote the native receipt without replacing its metadata.
-                artifact = self.artifacts.register_in_session(
-                    session,
-                    Path(result.output_path),
-                    kind="srt",
-                    role="correction",
-                    session_id=session_id,
-                    parent_ids=[source_artifact.id],
-                    settings=settings,
-                    _prepared=registration,
-                )
-                if cancel_event.is_set():
-                    raise RuntimeError("Subtitle correction was canceled.")
-            run_store.finish(agent_run.id, artifact_id=artifact.id)
-        except Exception as error:
-            run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
-            raise
-        progress(1.0, "Correction ready")
-        return {
-            "artifact_id": artifact.id,
-            "path": artifact.relative_path,
-            "cost": result.cost,
-            "agent_run_id": agent_run.id,
-            "resumed": agent_run.resumed,
-        }
 
     def media_edit_propose(self, payload, progress, cancel_event):
         """Ask the configured correction model for removal-only cue spans."""
@@ -3102,318 +2626,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         )
 
     def translate(self, payload, progress, cancel_event):
-        from pandrator.logic.dubbing.llm_translation import (
-            normalize_glossary,
-            translate_srt_file_deepl_with_result,
-            translate_srt_file_with_result,
+        return _translate_impl(
+            self._subtitle_transform_context(), payload, progress, cancel_event
         )
-
-        from .web_research import evidence_prompt
-
-        if cancel_event.is_set():
-            raise RuntimeError("Subtitle translation was canceled.")
-        session_id = str(payload.get("session_id") or "")
-        source_artifact, source_path = self._resolve_input(
-            str(payload.get("source_artifact_id") or "")
-        )
-        session_dir = self._operation_dir(session_id, "translate")
-        # Resolve once: construction and the run ledger share these exact values.
-        run_passage_effective, run_passage_revision = (
-            self._resolve_run_passage_settings(
-                session_id, payload.get("settings"), database=self.database
-            )
-        )
-        processing_path, input_passages, speaker_by_subtitle = (
-            self._prepare_passage_input(
-                source_artifact,
-                source_path,
-                session_dir,
-                source_passage_settings=run_passage_effective,
-                source_passage_settings_revision=run_passage_revision,
-            )
-        )
-        requested_settings = dict(payload.get("settings") or {})
-        if input_passages:
-            requested_settings.update(
-                {
-                    "_logical_passages_version": 1,
-                    "_logical_passage_display": self._passage_display_settings(
-                        session_id
-                    ),
-                }
-            )
-            requested_settings = self._source_passage_run_ledger(
-                session_id,
-                requested_settings,
-                effective=run_passage_effective,
-                settings_revision=run_passage_revision,
-            )
-        requested_settings_hash = hashlib.sha256(
-            json.dumps(
-                requested_settings,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        settings = requested_settings
-        research_result = None
-        run_store = None
-        agent_run = None
-        base_instructions = str(
-            payload.get("instructions") or settings.get("instructions") or ""
-        )
-        translation_backend = str(
-            settings.get("translation_backend") or settings.get("backend") or "llm"
-        ).lower()
-        if translation_backend == "deepl" and bool(
-            settings.get("web_research_enabled")
-        ):
-            raise ValueError(
-                "Web research currently augments LLM translation only. "
-                "Choose the LLM backend or turn web research off."
-            )
-        if translation_backend == "deepl":
-            processing_start = 0.05
-            progress(processing_start, "Preparing DeepL translation requests")
-            credential = resolve_secret_reference(
-                self.database,
-                self.paths,
-                database_reference(auxiliary_credential_key("deepl")),
-                fallback_environment_variable="DEEPL_API_KEY",
-            )
-            result = translate_srt_file_deepl_with_result(
-                session_dir,
-                processing_path,
-                settings,
-                auth_key=credential.resolved_value(),
-                speaker_by_subtitle=speaker_by_subtitle,
-                cancel_event=cancel_event,
-                progress_callback=_scaled_progress_callback(
-                    progress,
-                    processing_start,
-                    0.9,
-                ),
-            )
-        else:
-            settings = self._with_database_llm_settings(settings, "translation")
-            run_store, agent_run, persist_checkpoint = self._begin_agentic_operation(
-                payload=payload,
-                kind="translation",
-                source_artifact=source_artifact,
-                requested_settings=requested_settings,
-                instructions=base_instructions,
-                usage_settings=settings,
-            )
-            try:
-                research_result = self._run_stage_web_research(
-                    stage="translation",
-                    session_id=session_id,
-                    source_artifact=source_artifact,
-                    source_path=source_path,
-                    settings=settings,
-                    progress=progress,
-                    cancel_event=cancel_event,
-                    completed_units=agent_run.completed_units,
-                    persist_checkpoint=persist_checkpoint,
-                )
-                instructions = base_instructions
-                if research_result is not None:
-                    instructions += evidence_prompt(
-                        research_result.evidence,
-                        stage="translation",
-                    )
-                from .knowledge import KnowledgeLedgerStore
-
-                glossary_store = KnowledgeLedgerStore(self.database)
-                manual_glossary = normalize_glossary(settings.get("glossary"))
-                if manual_glossary:
-                    glossary_store.merge_glossary(
-                        session_id,
-                        source_language=str(
-                            settings.get("original_language")
-                            or settings.get("source_language")
-                            or "auto"
-                        ),
-                        target_language=str(settings.get("target_language") or ""),
-                        entries=[
-                            {"source": source, "target": target}
-                            for source, target in manual_glossary.items()
-                        ],
-                        origin="manual",
-                        locked=True,
-                    )
-                glossary_payload = glossary_store.get(
-                    session_id,
-                    "glossary",
-                    source_language=str(
-                        settings.get("original_language")
-                        or settings.get("source_language")
-                        or "auto"
-                    ),
-                    target_language=str(settings.get("target_language") or ""),
-                )["payload"]
-                glossary_seed = [
-                    dict(item)
-                    for item in glossary_payload.get("entries", [])
-                    if isinstance(item, dict)
-                    and str(item.get("status") or "active") != "disabled"
-                ]
-                if research_result is not None:
-                    glossary_seed.extend(research_result.glossary)
-                processing_start = 0.2 if research_result is not None else 0.05
-                progress(processing_start, "Preparing subtitle translation requests")
-                result = translate_srt_file_with_result(
-                    session_dir,
-                    processing_path,
-                    settings,
-                    translation_instructions=instructions,
-                    glossary=glossary_seed,
-                    cancel_event=cancel_event,
-                    speaker_by_subtitle=speaker_by_subtitle,
-                    completed_units=agent_run.completed_units,
-                    on_unit_completed=lambda key, output: persist_checkpoint(
-                        key,
-                        output,
-                        phase="translation",
-                        usage_stage="translation",
-                        usage_settings=settings,
-                    ),
-                    progress_callback=_scaled_progress_callback(
-                        progress,
-                        processing_start,
-                        0.9,
-                    ),
-                )
-                if cancel_event.is_set():
-                    raise RuntimeError("Subtitle translation was canceled.")
-                if result.glossary:
-                    glossary_store.merge_glossary(
-                        session_id,
-                        source_language=str(
-                            settings.get("original_language")
-                            or settings.get("source_language")
-                            or "auto"
-                        ),
-                        target_language=str(settings.get("target_language") or ""),
-                        entries=[
-                            {"source": source, "target": target}
-                            for source, target in result.glossary.items()
-                        ],
-                        origin="translation",
-                    )
-            except Exception as error:
-                run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
-                raise
-        if cancel_event.is_set():
-            cancel_error = RuntimeError("Subtitle translation was canceled.")
-            if run_store is not None and agent_run is not None:
-                run_store.fail(agent_run.id, cancel_error, interrupted=True)
-            raise cancel_error
-        try:
-            progress(0.92, "Translation requests complete; preparing artifact")
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle translation was canceled.")
-            logical_output, display_speakers = self._render_passage_output(
-                source_artifact,
-                result,
-                input_passages,
-                settings,
-                str(settings.get("target_language") or ""),
-            )
-            settings_fingerprint = _stage_settings_fingerprint("translate", settings)
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle translation was canceled.")
-            artifact = self.artifacts.register(
-                Path(result.output_path),
-                kind="srt",
-                role="translation_candidate",
-                session_id=session_id,
-                parent_ids=[source_artifact.id],
-                settings=settings,
-                metadata={
-                    "source_artifact_id": source_artifact.id,
-                    "source_content_hash": source_artifact.content_hash,
-                    "requested_settings_hash": requested_settings_hash,
-                    "settings_fingerprint": settings_fingerprint,
-                    "backend": settings_fingerprint["backend"],
-                    "model": settings_fingerprint["model"],
-                    "language": settings_fingerprint["target_language"],
-                    **({"agent_run_id": agent_run.id} if agent_run is not None else {}),
-                    **(
-                        {
-                            "research": self._research_metadata(
-                                research_result, agent_run.id
-                            )
-                        }
-                        if research_result is not None and agent_run is not None
-                        else {}
-                    ),
-                },
-            )
-            progress(0.97, "Registering translated subtitle document")
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle translation was canceled.")
-            self._store_srt_document(
-                session_id,
-                artifact,
-                "translation",
-                language=str(settings.get("target_language") or "") or None,
-                parent_artifact=source_artifact,
-                speaker_overrides=display_speakers,
-                logical_passages=logical_output,
-            )
-            if cancel_event.is_set():
-                raise RuntimeError("Subtitle translation was canceled.")
-            registration = self.artifacts.prepare_registration(
-                Path(result.output_path), settings=settings
-            )
-            with self.database.session() as session:
-                if cancel_event.is_set():
-                    raise RuntimeError("Subtitle translation was canceled.")
-                # Promote the native receipt without replacing its metadata.
-                artifact = self.artifacts.register_in_session(
-                    session,
-                    Path(result.output_path),
-                    kind="srt",
-                    role="translation",
-                    session_id=session_id,
-                    parent_ids=[source_artifact.id],
-                    settings=settings,
-                    _prepared=registration,
-                )
-                if cancel_event.is_set():
-                    raise RuntimeError("Subtitle translation was canceled.")
-            if run_store is not None and agent_run is not None:
-                run_store.finish(agent_run.id, artifact_id=artifact.id)
-            else:
-                self._record_usage(
-                    session_id,
-                    "translation",
-                    settings,
-                    result,
-                    job_id=str(payload.get("_job_id") or "") or None,
-                    artifact_id=artifact.id,
-                )
-        except Exception as error:
-            if run_store is not None and agent_run is not None:
-                run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
-            raise
-        progress(1.0, "Translation ready")
-        return {
-            "artifact_id": artifact.id,
-            "path": artifact.relative_path,
-            "cost": result.cost,
-            **(
-                {
-                    "agent_run_id": agent_run.id,
-                    "resumed": agent_run.resumed,
-                }
-                if agent_run is not None
-                else {}
-            ),
-        }
 
     def optimize_tts(self, payload, progress, cancel_event):
         """Create a separate, previewable text revision optimized only for speech."""
