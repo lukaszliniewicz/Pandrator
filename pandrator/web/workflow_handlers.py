@@ -2339,6 +2339,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     ):
         if not bool(settings.get("web_research_enabled", False)):
             return None
+        if cancel_event.is_set():
+            raise RuntimeError("Web research was canceled.")
         provider_id = (
             str(settings.get("web_research_provider") or "jina").strip().lower()
         )
@@ -2539,6 +2541,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         results = [accumulated]
         total_batches = max(1, len(record_groups))
         for batch_index, group in enumerate(record_groups):
+            if cancel_event.is_set():
+                raise RuntimeError("Web research was canceled.")
             research_source = json.dumps(group, ensure_ascii=False)
             unit_key = f"research:{mode}:{batch_index}"
             resume_state = completed_units.get(unit_key)
@@ -2604,6 +2608,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 on_checkpoint=save_research_state,
                 initial_ledger=merge_web_research_results(results),
             )
+            if cancel_event.is_set():
+                raise RuntimeError("Web research was canceled.")
             results.append(result)
         result = merge_web_research_results(results)
         progress(
@@ -2613,6 +2619,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 f"after {result.response_count} model turn(s)"
             ),
         )
+        if cancel_event.is_set():
+            raise RuntimeError("Web research was canceled.")
         knowledge.merge_research(
             session_id,
             source_language=source_language,
@@ -2662,6 +2670,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
 
         from .web_research import evidence_prompt
 
+        if cancel_event.is_set():
+            raise RuntimeError("Subtitle correction was canceled.")
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
@@ -2771,6 +2781,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             if cancel_event.is_set():
                 raise RuntimeError("Subtitle correction was canceled.")
             progress(0.92, "Correction requests complete; preparing artifact")
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle correction was canceled.")
             logical_output, display_speakers = self._render_passage_output(
                 source_artifact,
                 result,
@@ -2783,10 +2795,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 ),
             )
             settings_fingerprint = _stage_settings_fingerprint("correct", settings)
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle correction was canceled.")
             artifact = self.artifacts.register(
                 Path(result.output_path),
                 kind="srt",
-                role="correction",
+                role="correction_candidate",
                 session_id=session_id,
                 parent_ids=[source_artifact.id],
                 settings=settings,
@@ -2814,6 +2828,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 },
             )
             progress(0.97, "Registering corrected subtitle document")
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle correction was canceled.")
             self._store_srt_document(
                 session_id,
                 artifact,
@@ -2828,9 +2844,30 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 speaker_overrides=display_speakers,
                 logical_passages=logical_output,
             )
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle correction was canceled.")
+            registration = self.artifacts.prepare_registration(
+                Path(result.output_path), settings=settings
+            )
+            with self.database.session() as session:
+                if cancel_event.is_set():
+                    raise RuntimeError("Subtitle correction was canceled.")
+                # Promote the native receipt without replacing its metadata.
+                artifact = self.artifacts.register_in_session(
+                    session,
+                    Path(result.output_path),
+                    kind="srt",
+                    role="correction",
+                    session_id=session_id,
+                    parent_ids=[source_artifact.id],
+                    settings=settings,
+                    _prepared=registration,
+                )
+                if cancel_event.is_set():
+                    raise RuntimeError("Subtitle correction was canceled.")
             run_store.finish(agent_run.id, artifact_id=artifact.id)
         except Exception as error:
-            run_store.fail(agent_run.id, error)
+            run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
             raise
         progress(1.0, "Correction ready")
         return {
@@ -3073,6 +3110,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
 
         from .web_research import evidence_prompt
 
+        if cancel_event.is_set():
+            raise RuntimeError("Subtitle translation was canceled.")
         session_id = str(payload.get("session_id") or "")
         source_artifact, source_path = self._resolve_input(
             str(payload.get("source_artifact_id") or "")
@@ -3247,6 +3286,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         0.9,
                     ),
                 )
+                if cancel_event.is_set():
+                    raise RuntimeError("Subtitle translation was canceled.")
                 if result.glossary:
                     glossary_store.merge_glossary(
                         session_id,
@@ -3263,15 +3304,17 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                         origin="translation",
                     )
             except Exception as error:
-                run_store.fail(agent_run.id, error)
+                run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
                 raise
         if cancel_event.is_set():
             cancel_error = RuntimeError("Subtitle translation was canceled.")
             if run_store is not None and agent_run is not None:
-                run_store.fail(agent_run.id, cancel_error)
+                run_store.fail(agent_run.id, cancel_error, interrupted=True)
             raise cancel_error
         try:
             progress(0.92, "Translation requests complete; preparing artifact")
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle translation was canceled.")
             logical_output, display_speakers = self._render_passage_output(
                 source_artifact,
                 result,
@@ -3280,10 +3323,12 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 str(settings.get("target_language") or ""),
             )
             settings_fingerprint = _stage_settings_fingerprint("translate", settings)
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle translation was canceled.")
             artifact = self.artifacts.register(
                 Path(result.output_path),
                 kind="srt",
-                role="translation",
+                role="translation_candidate",
                 session_id=session_id,
                 parent_ids=[source_artifact.id],
                 settings=settings,
@@ -3308,6 +3353,8 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 },
             )
             progress(0.97, "Registering translated subtitle document")
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle translation was canceled.")
             self._store_srt_document(
                 session_id,
                 artifact,
@@ -3317,6 +3364,27 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 speaker_overrides=display_speakers,
                 logical_passages=logical_output,
             )
+            if cancel_event.is_set():
+                raise RuntimeError("Subtitle translation was canceled.")
+            registration = self.artifacts.prepare_registration(
+                Path(result.output_path), settings=settings
+            )
+            with self.database.session() as session:
+                if cancel_event.is_set():
+                    raise RuntimeError("Subtitle translation was canceled.")
+                # Promote the native receipt without replacing its metadata.
+                artifact = self.artifacts.register_in_session(
+                    session,
+                    Path(result.output_path),
+                    kind="srt",
+                    role="translation",
+                    session_id=session_id,
+                    parent_ids=[source_artifact.id],
+                    settings=settings,
+                    _prepared=registration,
+                )
+                if cancel_event.is_set():
+                    raise RuntimeError("Subtitle translation was canceled.")
             if run_store is not None and agent_run is not None:
                 run_store.finish(agent_run.id, artifact_id=artifact.id)
             else:
@@ -3330,7 +3398,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 )
         except Exception as error:
             if run_store is not None and agent_run is not None:
-                run_store.fail(agent_run.id, error)
+                run_store.fail(agent_run.id, error, interrupted=cancel_event.is_set())
             raise
         progress(1.0, "Translation ready")
         return {

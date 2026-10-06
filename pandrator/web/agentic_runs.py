@@ -202,12 +202,15 @@ class AgenticRunStore:
                     .values(artifact_id=artifact_id)
                 )
 
-    def fail(self, run_id: str, error: BaseException | str) -> None:
+    def fail(
+        self, run_id: str, error: BaseException | str, *, interrupted: bool = False
+    ) -> None:
+        """Mark an error without discarding accepted units needed for resume."""
         with self.database.session() as session:
             run = session.get(AgentRun, run_id)
             if run is None:
                 return
-            run.status = "failed"
+            run.status = "interrupted" if interrupted else "failed"
             run.error_message = str(error)[:8000]
             run.updated_at = utcnow()
 
