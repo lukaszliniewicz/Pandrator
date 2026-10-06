@@ -1,5 +1,7 @@
 """Tray launch options and owned-child retirement without a desktop session."""
 
+import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -8,10 +10,56 @@ import time
 from pathlib import Path
 from unittest import mock
 
+import psutil
 import pytest
 
-from pandrator_manager import tray
+from pandrator_manager import tray, tray_lifecycle
 from pandrator_manager.context import WorkspaceLayout
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_tray_claim_checks_native_process_birth_time(tmp_path, stale):
+    layout = WorkspaceLayout.from_value(tmp_path / "workspace")
+    layout.state.mkdir(parents=True)
+    path = layout.state / "tray.pid"
+    born = psutil.Process().create_time()
+    identity = json.dumps({"pid": os.getpid(), "create_time": born - 3600 if stale else born})
+    path.write_text(identity, encoding="ascii")
+    claimed = tray_lifecycle._claim_tray_instance(layout)
+    if stale:
+        assert claimed == path
+        assert json.loads(path.read_text(encoding="ascii")) == {
+            "pid": os.getpid(), "create_time": born,
+        }
+    else:
+        assert claimed is None
+        assert path.read_text(encoding="ascii") == identity
+    assert psutil.Process().is_running()
+
+
+def test_tray_claim_keeps_legacy_live_pid_and_uninspectable_identity(tmp_path):
+    layout = WorkspaceLayout.from_value(tmp_path / "workspace")
+    layout.state.mkdir(parents=True)
+    path = layout.state / "tray.pid"
+    for identity in (
+        json.dumps(os.getpid()),
+        json.dumps({"pid": os.getpid(), "create_time": psutil.Process().create_time()}),
+    ):
+        path.write_text(identity, encoding="ascii")
+        with mock.patch.object(tray_lifecycle.psutil, "Process", side_effect=psutil.AccessDenied):
+            assert tray_lifecycle._claim_tray_instance(layout) is None
+        assert path.read_text(encoding="ascii") == identity
+
+
+@pytest.mark.parametrize("birth_time", ["nan", "inf", 10**400, None, "invalid"])
+def test_tray_claim_keeps_live_pid_when_birth_time_is_invalid(tmp_path, birth_time):
+    layout = WorkspaceLayout.from_value(tmp_path / "workspace")
+    layout.state.mkdir(parents=True)
+    path = layout.state / "tray.pid"
+    identity = json.dumps({"pid": os.getpid(), "create_time": birth_time})
+    path.write_text(identity, encoding="ascii")
+    assert tray_lifecycle._claim_tray_instance(layout) is None
+    assert path.read_text(encoding="ascii") == identity
 
 
 @pytest.mark.parametrize("platform", ["linux", "win32"])

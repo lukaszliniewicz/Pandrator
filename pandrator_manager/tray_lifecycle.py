@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -96,6 +97,7 @@ def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
                 0o600,
             )
         except FileExistsError:
+            decoded = None
             try:
                 raw_identity = path.read_text(encoding="ascii").strip()
                 decoded = json.loads(raw_identity)
@@ -107,7 +109,24 @@ def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
             except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
                 pid = 0
             if pid > 0 and psutil.pid_exists(pid):
-                return None
+                # Modern identity records distinguish a live tray from a PID
+                # reused after the original process exited. Legacy PID-only
+                # records and inaccessible processes remain conservative.
+                if not isinstance(decoded, dict):
+                    return None
+                try:
+                    expected_create_time = float(decoded["create_time"])
+                    actual_create_time = psutil.Process(pid).create_time()
+                except psutil.NoSuchProcess:
+                    pass
+                except (KeyError, TypeError, ValueError, OverflowError, OSError, psutil.Error):
+                    return None
+                else:
+                    if (
+                        not math.isfinite(expected_create_time)
+                        or abs(actual_create_time - expected_create_time) <= 1e-3
+                    ):
+                        return None
             try:
                 path.unlink()
             except FileNotFoundError:
@@ -125,4 +144,3 @@ def _claim_tray_instance(layout: WorkspaceLayout) -> Path | None:
             )
         return path
     return None
-
