@@ -333,6 +333,8 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
             record.id, max_units_per_batch=1, context_before=0, context_after=0,
             context_capsule={"overview": "Keep this shared guidance."},
         )
+        self.assertEqual(0, run["context_before"])
+        self.assertEqual(0, run["context_after"])
         first = self._claim(run["id"], 1)
         self._submit(first, [{"unit_id": 1, "text": "Output one."}], 1,
                      {"terminology": {"one": "uno"}})
