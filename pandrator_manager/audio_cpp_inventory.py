@@ -336,7 +336,7 @@ def validated_inventory_packages(path: str | Path | None = None) -> tuple[Invent
 def load_audio_cpp_packages(path: str | Path | None = None) -> tuple[Any, ...]:
     """Project eligible inventory rows into manager model packages."""
 
-    from .components.audiocpp import AudioCppModelPackage
+    from .audio_cpp_packages import AudioCppModelPackage
 
     packages: list[AudioCppModelPackage] = []
     for package in validated_inventory_packages(path):

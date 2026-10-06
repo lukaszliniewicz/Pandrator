@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
+import pytest
+
+import pandrator_manager
 from pandrator_manager.audio_cpp_inventory import (
     load_audio_cpp_packages,
     validated_inventory_packages,
@@ -17,6 +24,65 @@ from pandrator_manager.components.audiocpp import (
     AudioCppModelPackage,
 )
 from pandrator_manager.operations.handlers import FilesystemTaskHandler
+
+
+@pytest.mark.parametrize("import_order", ["inventory", "component"])
+def test_package_record_leaf_preserves_import_order_and_legacy_pickle(tmp_path, import_order):
+    path = _write_inventory(tmp_path, _inventory(_package("fixture", "normal")))
+    # Trusted protocol-4 fixture generated from the retained pre-move manager wheel.
+    legacy_pickle = (
+        "gASVPwEAAAAAAACMJXBhbmRyYXRvcl9tYW5hZ2VyLmNvbXBvbmVudHMuYXVkaW9jcHCUjBRBdWRpb0NwcE1vZGVs"
+        "UGFja2FnZZSTlCmBlF2UKIwKb2xkLXBpY2tsZZSMCnBvY2tldF90dHOUjA5Qb2NrZXQvZW5nbGlzaJSMCm1vZGVs"
+        "LmdndWaUhZSMQGFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh"
+        "YWFhYWFhYWGUhZSMA3R0c5SMB29mZmxpbmWUTk6MAJROjBRodWdnaW5nZmFjZV9zbmFwc2hvdJSMGGF1ZGlvLWNw"
+        "cC9hdWRpby5jcHAtZ2d1ZpSMKGRjNmZlY2NjYzJiMGM2YmRkYTBhOGIyZjM4ZmE2MTM5NGZlZTBiOWOUKWgOZWIu"
+    )
+    script = textwrap.dedent(
+        """
+        import base64
+        import json
+        import pickle
+        import sys
+        from pathlib import Path
+        from pandrator_manager.audio_cpp_packages import AudioCppModelPackage
+        assert 'pandrator_manager.components' not in sys.modules
+        if sys.argv[1] == 'component':
+            import pandrator_manager.components.audiocpp
+        from pandrator_manager.audio_cpp_inventory import load_audio_cpp_packages
+        packages = load_audio_cpp_packages(sys.argv[2])
+        if sys.argv[1] == 'inventory':
+            assert 'pandrator_manager.components' not in sys.modules
+        from pandrator_manager.components.audiocpp import AudioCppModelPackage as legacy
+        assert legacy is AudioCppModelPackage
+        assert AudioCppModelPackage.__module__ == 'pandrator_manager.components.audiocpp'
+        assert len(packages) == 1 and type(packages[0]) is legacy
+        package = packages[0]
+        encoded = pickle.dumps(package, protocol=4)
+        assert b'pandrator_manager.components.audiocpp' in encoded
+        assert pickle.loads(encoded) == package
+        old = pickle.loads(base64.b64decode(sys.argv[3]))
+        assert type(old) is legacy
+        assert old.id == 'old-pickle' and old.mode == 'offline'
+        assert old.repository == 'audio-cpp/audio.cpp-gguf'
+        assert old.config_path == 'models/Pocket/english'
+        assert old.required_paths(Path('models')) == (Path('models/Pocket/english/model.gguf'),)
+        assert old.marker_path(Path('models')) == Path('models/Pocket/english/.audiocpp-package-old-pickle.json')
+        print(json.dumps({'legacy_and_leaf_verified': True}))
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, import_order, str(path), legacy_pickle],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(pandrator_manager.__file__).resolve().parent.parent),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert json.loads(result.stdout) == {"legacy_and_leaf_verified": True}
 
 
 def _manifest(source_path: str, path: str, content: bytes = b"gguf") -> dict[str, object]:

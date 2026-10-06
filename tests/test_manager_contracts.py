@@ -18,6 +18,40 @@ from pandrator_manager.context import WorkspaceLayout
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
+def test_lifecycle_uses_runtime_leaf_and_preserves_api_bindings(tmp_path):
+    script = textwrap.dedent(
+        """
+        import json
+        import sys
+        import pandrator_manager.lifecycle as lifecycle
+        assert 'pandrator_manager.launcher' not in sys.modules
+        from pandrator_manager.launcher_runtime import external_cleanup_runtime
+        assert lifecycle.external_cleanup_runtime is external_cleanup_runtime
+        from pandrator_manager.launcher import external_cleanup_runtime as legacy_cleanup
+        assert legacy_cleanup is external_cleanup_runtime
+        from pandrator_manager.api import create_api, build_openapi
+        from pandrator_manager.api.app import create_api as actual_api
+        from pandrator_manager.api.openapi import build_openapi as actual_openapi
+        assert create_api is actual_api
+        assert build_openapi is actual_openapi
+        print(json.dumps({'bindings_verified': True}))
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(pandrator_manager.__file__).resolve().parent.parent),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    assert json.loads(result.stdout) == {"bindings_verified": True}
+
+
 def test_package_import_is_lazy_and_convenience_exports_are_actual_bindings(tmp_path):
     script = textwrap.dedent(
         """

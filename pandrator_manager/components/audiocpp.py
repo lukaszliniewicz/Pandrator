@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
+from ..audio_cpp_packages import (
+    AUDIO_CPP_MODEL_REPOSITORY as AUDIO_CPP_MODEL_REPOSITORY,
+)
+from ..audio_cpp_packages import (
+    AUDIO_CPP_MODEL_REVISION as AUDIO_CPP_MODEL_REVISION,
+)
+from ..audio_cpp_packages import (
+    AudioCppModelPackage as AudioCppModelPackage,
+)
 from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
@@ -13,8 +21,6 @@ AUDIO_CPP_VERSION = "0.9.0"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
-AUDIO_CPP_MODEL_REPOSITORY = "audio-cpp/audio.cpp-gguf"
-AUDIO_CPP_MODEL_REVISION = "dc6fecccc2b0c6bdda0a8b2f38fa61394fee0b9c"
 AUDIO_CPP_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 AUDIO_CPP_DEFAULT_MODEL = "qwen3_tts_1_7b_base_q8_0"
 AUDIO_CPP_PORT = 8060
@@ -36,45 +42,6 @@ class AudioCppAsset:
     @property
     def url(self) -> str:
         return f"{self.release_base}/{self.name}"
-
-
-@dataclass(frozen=True, slots=True)
-class AudioCppModelPackage:
-    """A package id and its stable v0.7.2 model-spec output layout."""
-
-    id: str
-    family: str
-    target_directory: str
-    files: tuple[str, ...]
-    sha256: tuple[str, ...]
-    task: str
-    mode: str = "offline"
-    load_options: dict[str, str] | None = None
-    session_options: dict[str, str] | None = None
-    # Inventory-backed packages carry their own immutable source pin and
-    # exact-file staging contract. Manual packages retain the historical
-    # audio.cpp repository/revision defaults.
-    label: str = ""
-    precision: str | None = None
-    download_kind: str = "huggingface_snapshot"
-    repository: str = AUDIO_CPP_MODEL_REPOSITORY
-    revision: str = AUDIO_CPP_MODEL_REVISION
-    download_files: tuple[str, ...] = ()
-    strip_prefix: str = ""
-
-    @property
-    def config_path(self) -> str:
-        if self.family == "pocket_tts":
-            return f"models/{self.target_directory}"
-        gguf = next(path for path in self.files if path.casefold().endswith(".gguf"))
-        return f"models/{self.target_directory}/{gguf}"
-
-    def marker_path(self, models_root: Path) -> Path:
-        return models_root / self.target_directory / f".audiocpp-package-{self.id}.json"
-
-    def required_paths(self, models_root: Path) -> tuple[Path, ...]:
-        root = models_root / self.target_directory
-        return tuple(root / relative for relative in self.files)
 
 
 MANUAL_MODEL_IDS = (

@@ -13,7 +13,7 @@ from typing import Any
 
 from .context import ManagerContext, WorkspaceLayout
 from .errors import ManagerError, RevisionConflict
-from .launcher import external_cleanup_runtime
+from .launcher_runtime import external_cleanup_runtime
 from .legacy_data import legacy_data_inventory
 from .models import (
     ConfirmationRequirement,
