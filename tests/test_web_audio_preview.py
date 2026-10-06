@@ -49,6 +49,52 @@ class AudioPreviewTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
+    def test_audio_preview_facades_delegate_with_late_bound_callbacks(self):
+        payload = {"source_artifact_id": "selected-source"}
+        progress = mock.Mock()
+        cancel_event = threading.Event()
+        with (
+            mock.patch(
+                "pandrator.web.workflow_handlers._generate_audio_preview_impl",
+                return_value={"source": "delegated"},
+            ) as generate,
+            mock.patch(
+                "pandrator.web.workflow_handlers._preview_output_mix_impl",
+                return_value={"mix": "delegated"},
+            ) as mix,
+        ):
+            self.assertEqual(
+                {"source": "delegated"},
+                self.handlers.generate_audio_preview(payload, progress, cancel_event),
+            )
+            self.assertEqual(
+                {"mix": "delegated"},
+                self.handlers.preview_output_mix(payload, progress, cancel_event),
+            )
+        generate_context = generate.call_args.args[0]
+        mix_context = mix.call_args.args[0]
+        self.assertIsNot(generate_context, mix_context)
+        for delegate, context in [(generate, generate_context), (mix, mix_context)]:
+            delegate.assert_called_once_with(context, payload, progress, cancel_event)
+            self.assertIs(self.handlers.paths, context.paths)
+            self.assertIs(self.handlers.artifacts, context.artifacts)
+        resolved = (object(), self.session_dir / "resolved.wav")
+        with (
+            mock.patch.object(self.handlers, "_resolve_input", return_value=resolved) as resolve,
+            mock.patch.object(
+                self.handlers, "_session_dir", return_value=self.session_dir
+            ) as directory,
+            mock.patch(
+                "pandrator.web.workflow_handlers.new_id", return_value="late-id"
+            ) as identifier,
+        ):
+            self.assertIs(resolved, generate_context.resolve_input("late-source"))
+            self.assertEqual(self.session_dir, mix_context.session_dir("late-session"))
+            self.assertEqual("late-id", generate_context.new_id())
+        resolve.assert_called_once_with("late-source")
+        directory.assert_called_once_with("late-session")
+        identifier.assert_called_once_with()
+
     def _source(self, name: str = "source.wav"):
         path = self.session_dir / name
         path.write_bytes(b"source")
