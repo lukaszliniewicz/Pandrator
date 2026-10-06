@@ -748,8 +748,10 @@ class SpeechOptimizationDispatchRunService:
             ),
         )
         units = [dict(item) for item in (batch.input_json or {}).get("units") or []]
-        context_before = max(0, min(20, int(settings.get("context_before") or 4)))
-        context_after = max(0, min(20, int(settings.get("context_after") or 2)))
+        raw_before = settings.get("context_before")
+        raw_after = settings.get("context_after")
+        context_before = max(0, min(20, int(4 if raw_before is None else raw_before)))
+        context_after = max(0, min(20, int(2 if raw_after is None else raw_after)))
         previous_output: list[dict[str, Any]] = []
         previous_source: list[dict[str, Any]] = []
         if context_before and batch.ordinal > 0:

@@ -320,6 +320,57 @@ class SpeechOptimizationDispatchWebTests(unittest.TestCase):
             second["batch"]["context"]["previous_output"][0]["text"],
         )
 
+    def test_zero_context_omits_neighbours_but_keeps_units_and_capsule(self):
+        rows = [
+            {"processed_sentence": f"Source {index}.", "language": "en"}
+            for index in range(1, 4)
+        ]
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook", role="prepared_text", filename="prepared.json",
+            content=json.dumps(rows),
+        )
+        run = self._create_run(
+            record.id, max_units_per_batch=1, context_before=0, context_after=0,
+            context_capsule={"overview": "Keep this shared guidance."},
+        )
+        first = self._claim(run["id"], 1)
+        self._submit(first, [{"unit_id": 1, "text": "Output one."}], 1,
+                     {"terminology": {"one": "uno"}})
+        second = self._claim(run["id"], 2)
+        self.assertEqual(
+            {"previous_output": [], "previous_source": [], "following_source": []},
+            second["batch"]["context"],
+        )
+        self.assertEqual([2], second["batch"]["valid_unit_ids"])
+        self.assertEqual("Source 2.", second["batch"]["units"][0]["text"])
+        self.assertEqual(
+            {"one": "uno"}, second["delegation"]["context_capsule"]["terminology"]
+        )
+        self.assertEqual(
+            "Keep this shared guidance.", second["delegation"]["context_capsule"]["overview"]
+        )
+
+    def test_zero_context_omits_parallel_source_neighbours(self):
+        record, _source, _path = self._create_source(
+            workflow_kind="audiobook", role="prepared_text", filename="prepared.json",
+            content=json.dumps([
+                {"processed_sentence": f"Source {index}.", "language": "en"}
+                for index in range(1, 4)
+            ]),
+        )
+        run = self._create_run(
+            record.id, max_units_per_batch=1, execution_mode="parallel",
+            max_parallel_batches=3, context_before=0, context_after=0,
+        )
+        self._claim(run["id"], 1)
+        second = self._claim(run["id"], 2)
+        self.assertEqual(
+            {"previous_output": [], "previous_source": [], "following_source": []},
+            second["batch"]["context"],
+        )
+        self.assertEqual([2], second["batch"]["valid_unit_ids"])
+        self.assertEqual("parallel", second["delegation"]["execution_mode"])
+
     def test_same_key_retry_requires_the_same_context_delta(self):
         rows = [
             {"processed_sentence": "Source one.", "language": "en"},
