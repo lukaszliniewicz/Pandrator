@@ -132,32 +132,6 @@
                 }
             }
         ],
-        "./pandrator/logic/file_handler.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 68,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 67,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/logic/llm_handler.py": [
             {
                 "code": "reportArgumentType",
@@ -284,58 +258,6 @@
                 "range": {
                     "startColumn": 0,
                     "endColumn": 0,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/logic/text_preprocessor.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportGeneralTypeIssues",
-                "range": {
-                    "startColumn": 95,
-                    "endColumn": 100,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/logic/tts_endpoint_discovery.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 4
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 31,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 43,
                     "lineCount": 1
                 }
             }

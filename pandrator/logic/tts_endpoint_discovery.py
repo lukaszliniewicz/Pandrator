@@ -426,7 +426,7 @@ def discover_tts_endpoint(base_url: str, api_key: str = "") -> dict[str, Any]:
                 break
 
     analysis = _analyze_openapi(openapi) if openapi else None
-    all_probe_paths = list(COMMON_MODEL_PATHS + COMMON_VOICE_PATHS)
+    all_probe_paths: list[str] = list(COMMON_MODEL_PATHS + COMMON_VOICE_PATHS)
     if analysis:
         all_probe_paths.extend(
             [

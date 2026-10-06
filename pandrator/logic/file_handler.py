@@ -2,6 +2,7 @@ import datetime
 import os
 import re
 import subprocess
+from typing import cast
 
 
 def _extract_chapter_text(html_content, all_html_content=""):
@@ -129,7 +130,7 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
     document = fitz.open(pdf_path)
     try:
-        return "\f".join(page.get_text("text") for page in document)
+        return "\f".join(cast(str, page.get_text("text")) for page in document)
     finally:
         document.close()
 
@@ -161,15 +162,14 @@ def download_video_from_url(url: str, output_dir: str) -> str:
     """Downloads a video from a URL (e.g., YouTube) and returns the file path."""
     import yt_dlp
 
-    ydl_opts = {
+    with yt_dlp.YoutubeDL({
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
         'noplaylist': True,
         'restrictfilenames': True,
         'quiet': True,
         'no_warnings': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    }) as ydl:
         info = ydl.extract_info(url, download=False)
         if not info:
             raise ValueError("Could not extract video info from URL.")

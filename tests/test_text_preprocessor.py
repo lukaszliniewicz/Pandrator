@@ -1,9 +1,11 @@
 import unittest
-from unittest.mock import call, patch
+from concurrent.futures import Future
+from unittest.mock import MagicMock, call, patch
 
 from pandrator.logic.text_preprocessor import (
     CHUNK_SIZE,
     _ensure_line_terminal_punctuation,
+    _parallel_preprocess_text,
     append_short_sentences,
     find_best_split_index,
     normalize_punctuation,
@@ -373,6 +375,69 @@ class TextPreprocessorTests(unittest.TestCase):
         result = append_short_sentences(rows, 200)
 
         self.assertEqual(result[0]["original_sentence"], "これはテストです。")
+
+class ParallelPreprocessorContractTests(unittest.TestCase):
+    def test_out_of_order_completion_retains_source_order_and_skips_empty_chunks(self):
+        chunks = ["first", "empty", "last"]
+        rows = [{"original_sentence": "First."}, {"original_sentence": "Last."}]
+        futures = [Future() for _ in chunks]
+        for future, result in zip(futures, ([rows[0]], [], [rows[1]]), strict=True):
+            future.set_result(result)
+        executor = MagicMock()
+        executor.__enter__.return_value = executor
+        executor.submit.side_effect = futures
+        progress = MagicMock()
+        with (
+            patch("pandrator.logic.text_preprocessor._split_text_into_chunks", return_value=chunks),
+            patch(
+                "pandrator.logic.text_preprocessor.concurrent.futures.ProcessPoolExecutor",
+                return_value=executor,
+            ),
+            patch(
+                "pandrator.logic.text_preprocessor.concurrent.futures.as_completed",
+                return_value=reversed(futures),
+            ),
+        ):
+            result = _parallel_preprocess_text("fixture", {}, progress_callback=progress)
+        self.assertEqual(
+            [
+                {"original_sentence": "First.", "sentence_number": "1"},
+                {"original_sentence": "Last.", "sentence_number": "2"},
+            ],
+            result,
+        )
+        self.assertEqual(3, executor.submit.call_count)
+        values = [call.args[0] for call in progress.call_args_list]
+        self.assertEqual(sorted(values), values)
+        self.assertEqual(3, len(values))
+        self.assertAlmostEqual(0.9, values[-1])
+
+    def test_worker_failure_propagates_before_returning_partial_narration(self):
+        first, failed = Future(), Future()
+        first.set_result([{"original_sentence": "First."}])
+        error = ValueError("worker failed")
+        failed.set_exception(error)
+        executor = MagicMock()
+        executor.__enter__.return_value = executor
+        executor.submit.side_effect = [first, failed]
+        with (
+            patch(
+                "pandrator.logic.text_preprocessor._split_text_into_chunks",
+                return_value=["first", "failed"],
+            ),
+            patch(
+                "pandrator.logic.text_preprocessor.concurrent.futures.ProcessPoolExecutor",
+                return_value=executor,
+            ),
+            patch(
+                "pandrator.logic.text_preprocessor.concurrent.futures.as_completed",
+                return_value=[first, failed],
+            ),
+        ):
+            with self.assertRaises(ValueError) as raised:
+                _parallel_preprocess_text("fixture", {})
+        self.assertIs(error, raised.exception)
+        executor.__exit__.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()

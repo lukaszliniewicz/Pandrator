@@ -410,7 +410,7 @@ def preprocess_text(text: str, settings: dict, progress_callback=None) -> list[d
 def _parallel_preprocess_text(text: str, settings: dict, progress_callback=None) -> list[dict]:
     chunks = _split_text_into_chunks(text)
     
-    processed_chunks = [None] * len(chunks)
+    processed_chunks: list[list[dict] | None] = [None] * len(chunks)
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
         future_to_index = {executor.submit(_process_chunk, chunk, settings): i
