@@ -9,10 +9,12 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from sqlalchemy import delete, select, update
+from sqlalchemy.engine import CursorResult
 
 from .auth import (
     ALL_SCOPES,
@@ -443,11 +445,9 @@ class AutomationEnrollmentService:
 
     def cleanup(self) -> int:
         with self.database.session() as session:
-            return int(
-                session.execute(
-                    delete(AutomationEnrollmentGrant).where(
-                        AutomationEnrollmentGrant.expires_at < utcnow()
-                    )
-                ).rowcount
-                or 0
+            result = session.execute(
+                delete(AutomationEnrollmentGrant).where(
+                    AutomationEnrollmentGrant.expires_at < utcnow()
+                )
             )
+            return int(cast(CursorResult[Any], result).rowcount or 0)

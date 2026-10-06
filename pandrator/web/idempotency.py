@@ -8,9 +8,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from .auth import Principal
@@ -210,9 +211,7 @@ class IdempotencyService:
 
     def cleanup(self) -> int:
         with self.database.session() as session:
-            return int(
-                session.execute(
-                    delete(ApiIdempotency).where(ApiIdempotency.expires_at < utcnow())
-                ).rowcount
-                or 0
+            result = session.execute(
+                delete(ApiIdempotency).where(ApiIdempotency.expires_at < utcnow())
             )
+            return int(cast(CursorResult[Any], result).rowcount or 0)

@@ -494,15 +494,16 @@ def register_manager_routes(
             request.get_json(silent=True) or {}
         )
         body = payload.model_dump(mode="json", exclude_none=True)
+        transform = plan_response_transform
         return forward(
             "POST",
             "/v1/plans",
             body=body,
             response_transform=(
                 (
-                    lambda response: plan_response_transform(response, body)
+                    lambda response: transform(response, body)
                 )
-                if plan_response_transform is not None
+                if transform is not None
                 else None
             ),
         )

@@ -210,7 +210,7 @@ def register_automation_routes(
             principal = context.guards.principal()
             owner_approved = principal is not None
 
-        if request.method == "POST" and owner_approved:
+        if request.method == "POST" and owner_approved and principal is not None:
             session.pop("automation_authorization", None)
             identity = services.identity.snapshot(observed_origin=request.url_root)
             try:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 
@@ -114,7 +114,8 @@ def resolve_binding(session, binding: dict, settings: dict, _service_config_cach
     if service == "audio_cpp" and capability.get("voice_mode") == "prebuilt" and voice_name:
         from pandrator.logic.tts_handler import get_service_config
         config = get_service_config(settings, service, _service_config_cache) or {}
-        allowed = (config.get("voice_catalogues") or {}).get(model) or []
+        catalogues = cast(Mapping[str, list[str]], config.get("voice_catalogues") or {})
+        allowed = catalogues.get(model) or []
         if allowed and voice_name not in allowed:
             raise ValueError(f"Cast voice '{voice_name}' is not a built-in speaker for {model}.")
     if managed_id:

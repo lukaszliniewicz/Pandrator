@@ -1083,7 +1083,7 @@ def describe_parameters(
     ):
         raise ValueError("At least one parameter filter is required")
 
-    section_filter: set[str] | None = set(requested_sections) or None
+    section_filter: set[str] | frozenset[str] | None = set(requested_sections) or None
     if requested_workflow is not None:
         workflow_allowed = WORKFLOW_SECTIONS[requested_workflow]
         section_filter = (

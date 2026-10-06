@@ -1310,7 +1310,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 with database.immediate_session() as db_session:
                     reservation = services.idempotency.begin(
                         db_session,
-                        principal=context.guards.principal(),
+                        principal=idempotency.principal(),
                         operation_id="requestSubtitleEvidence",
                         idempotency_key=idempotency_key,
                         payload={"session_id": session_id, **values},

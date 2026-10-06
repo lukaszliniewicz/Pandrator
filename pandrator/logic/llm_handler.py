@@ -1632,7 +1632,8 @@ def _extract_chat_completion_result(
     payload = _response_payload(response_data)
     choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
     choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    raw_message = choice.get("message")
+    message = raw_message if isinstance(raw_message, dict) else {}
     raw_tool_calls = message.get("tool_calls") if isinstance(message, dict) else []
     tool_calls = [
         copy.deepcopy(item)

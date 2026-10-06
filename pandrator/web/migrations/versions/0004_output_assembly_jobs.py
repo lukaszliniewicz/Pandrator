@@ -1,5 +1,7 @@
 """Track durable generation output assembly jobs and failures."""
 
+from typing import cast
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -47,7 +49,7 @@ def downgrade() -> None:
         ]
         with op.batch_alter_table("training_runs") as batch:
             for name in foreign_keys:
-                batch.drop_constraint(name, type_="foreignkey")
+                batch.drop_constraint(cast(str, name), type_="foreignkey")
             batch.drop_column("source_text_artifact_id")
     output_foreign_keys = [
         item.get("name")
@@ -60,5 +62,5 @@ def downgrade() -> None:
         batch.drop_column("settings_hash")
         batch.drop_index("ix_output_assemblies_job_id")
         for name in output_foreign_keys:
-            batch.drop_constraint(name, type_="foreignkey")
+            batch.drop_constraint(cast(str, name), type_="foreignkey")
         batch.drop_column("job_id")

@@ -341,7 +341,7 @@ def server_config(
     models: list[dict] = []
     for package_id in selected:
         package = model_package(package_id)
-        entry = {
+        entry: dict[str, object] = {
             "id": package.id,
             "family": package.family,
             "path": package.config_path,

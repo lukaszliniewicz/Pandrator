@@ -11,9 +11,10 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from ..state import ManagerStore
@@ -105,7 +106,12 @@ def _scopes(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         supplied = value.split()
     else:
-        supplied = list(value or ())
+        try:
+            supplied = list(cast(Iterable[object], value or ()))
+        except TypeError as error:
+            raise ValueError(
+                "Manager automation scopes must be a string or an iterable."
+            ) from error
     selected = tuple(dict.fromkeys(str(item).strip() for item in supplied))
     if not selected:
         raise ValueError("At least one Manager automation scope is required.")

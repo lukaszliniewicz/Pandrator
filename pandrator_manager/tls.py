@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import ssl
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import certifi
 from dulwich.config import Config, ConfigDict, StackedConfig
@@ -113,7 +113,8 @@ def dulwich_config_with_ca(
     selection = select_ca_bundle(environment)
     override = ConfigDict()
     override.set(b"http", b"sslCAInfo", str(selection.path).encode("utf-8"))
+    stacked_config = cast(Callable[[list[Config]], StackedConfig], StackedConfig)
     return (
-        StackedConfig([override, *StackedConfig.default_backends()]),
+        stacked_config([override, *StackedConfig.default_backends()]),
         selection,
     )

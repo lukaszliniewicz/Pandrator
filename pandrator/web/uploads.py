@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, timedelta
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -250,7 +250,7 @@ class ChunkUploadService:
         self,
         upload_id: str,
         index: int,
-        stream: BinaryIO,
+        stream: IO[bytes],
         *,
         supplied_hash: str | None = None,
     ) -> dict:

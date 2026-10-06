@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -44,6 +44,7 @@ WORK_EVENT_FIELDS = frozenset(
         "workflow_run_id",
     }
 )
+WorkState = Literal["queued", "running", "waiting", "succeeded", "failed", "cancelled"]
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled"})
 
 
@@ -74,14 +75,14 @@ def _bounded_json(value: Any, *, depth: int = 0) -> Any:
     return str(value)[:8_000]
 
 
-def _work_state(status: str) -> str:
+def _work_state(status: str) -> WorkState:
     normalized = str(status or "queued").strip().lower()
     if normalized in {"canceled", "cancelled"}:
         return "cancelled"
     if normalized == "cancel_requested":
         return "running"
     if normalized in {"queued", "running", "succeeded", "failed"}:
-        return normalized
+        return cast(WorkState, normalized)
     return "waiting"
 
 
@@ -103,14 +104,7 @@ class WorkView(BaseModel):
     kind: str
     session_id: str | None = None
     workflow_run_id: str | None = None
-    state: Literal[
-        "queued",
-        "running",
-        "waiting",
-        "succeeded",
-        "failed",
-        "cancelled",
-    ]
+    state: WorkState
     progress: float | None = Field(default=None, ge=0.0, le=1.0)
     detail: str | None = None
     cancellable: bool

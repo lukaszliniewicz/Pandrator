@@ -132,8 +132,8 @@ def describe_passages(segment: Any, *, language: str | None = None) -> dict[str,
             warning = None
             if not natural:
                 warning = "This timed boundary is inside an unfinished phrase. Splitting here may produce unnatural speech."
-            if gap > 0 and not natural:
-                warning += " The source pause is a hesitation, not proof of a natural speech break."
+                if gap > 0:
+                    warning += " The source pause is a hesitation, not proof of a natural speech break."
             if gap < 0:
                 warning = "The source passages overlap; the dot is informational, not a safe timed split."
             boundary_id = "pb-" + hashlib.sha256(f"{fingerprint}:{layer}:{index}:{offset}".encode()).hexdigest()[:24]

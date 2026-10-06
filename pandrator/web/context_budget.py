@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 
@@ -55,7 +55,8 @@ def estimate_tokens(value: Any, model: str = "") -> int:
     try:
         from litellm import token_counter
 
-        count = token_counter(model=model or None, text=text)
+        counter = cast(Callable[..., int], token_counter)
+        count = counter(model=model or None, text=text)
         if count is not None:
             return max(1, int(count))
     except Exception:  # noqa: BLE001 - tokenizer support varies per custom model

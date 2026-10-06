@@ -566,9 +566,12 @@ def _completion_parts(result: Any) -> tuple[str, float, str, dict[str, Any]]:
         cost = float(getattr(result, "cost", 0.0) or 0.0)
     except (TypeError, ValueError):
         cost = 0.0
-    usage = getattr(result, "usage", {})
+    usage: Any = getattr(result, "usage", {})
     if hasattr(usage, "model_dump"):
-        usage = usage.model_dump(mode="json")
+        try:
+            usage = usage.model_dump(mode="json")
+        except TypeError:
+            usage = usage.model_dump()
     return (
         content,
         cost,

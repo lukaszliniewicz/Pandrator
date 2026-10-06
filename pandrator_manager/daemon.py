@@ -16,11 +16,12 @@ import uuid
 from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 import psutil
-from waitress import create_server, wasyncore
+from waitress import wasyncore
 from waitress.channel import HTTPChannel
+from waitress.server import create_server as _create_server
 
 from ._version import __version__
 from .api import create_api
@@ -62,6 +63,41 @@ from .uninstall import (
     uninstall_control_root,
     uninstall_helper_command,
 )
+
+
+class _ApiTrigger(Protocol):
+    def pull_trigger(self, thunk: Callable[[], None] | None = None) -> None:
+        del thunk
+        raise NotImplementedError
+
+
+class _ApiTaskDispatcher(Protocol):
+    def shutdown(self, cancel_pending: bool = True, timeout: float = 5) -> bool:
+        del cancel_pending, timeout
+        raise NotImplementedError
+
+
+class _ApiServer(Protocol):
+    @property
+    def _map(self) -> dict[int, wasyncore.dispatcher]: ...
+
+    @property
+    def trigger(self) -> _ApiTrigger: ...
+
+    @property
+    def effective_port(self) -> str | int: ...
+
+    @property
+    def task_dispatcher(self) -> _ApiTaskDispatcher: ...
+
+    def run(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+# bind_host is a validated numeric IP with one listener; installed stubs omit
+# consumed server fields and the dispatcher's supported float timeout.
+create_server = cast(Callable[..., _ApiServer], _create_server)
 
 
 class ManagerAlreadyRunning(RuntimeError):

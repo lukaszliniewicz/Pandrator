@@ -10,7 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, cast
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -438,7 +438,7 @@ class AuthService:
                         if candidate.subject
                         else f"api-token:{candidate.id}"
                     ),
-                    kind=raw_kind,
+                    kind=cast(PrincipalKind, raw_kind),
                     scopes=scopes,
                     token_id=candidate.id,
                     network_zone=network_zone,

@@ -9,9 +9,10 @@ import time
 import traceback
 from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import Any, ClassVar, TypeGuard
+from typing import Any, ClassVar, TypeGuard, cast
 
 from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from pandrator.logic.tts_service_identity import normalize_service_id
@@ -656,7 +657,7 @@ class JobQueue:
                 )
                 .values(expires_at=utcnow() + timedelta(seconds=max(5, lease_seconds)))
             )
-            return bool(result.rowcount)
+            return bool(cast(CursorResult[Any], result).rowcount)
 
     def release_resources(
         self,

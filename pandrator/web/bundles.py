@@ -227,6 +227,8 @@ class SessionBundleService:
                     )
                     with self.database.session() as session:
                         managed = session.get(Artifact, artifact.id)
+                        if managed is None:
+                            raise RuntimeError("Imported artifact is no longer available.")
                         managed.state = str(item.get("state") or "current")
                         managed.settings_hash = item.get("settings_hash")
                     id_map[source_id] = artifact.id

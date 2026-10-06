@@ -1771,7 +1771,6 @@ def create_api(
                 409,
             )
 
-        @stream_with_context
         def stream():
             current = cursor
             heartbeat = time.monotonic()
@@ -1792,7 +1791,7 @@ def create_api(
                 api_shutdown.wait(0.5)
 
         return Response(
-            stream(),
+            stream_with_context(stream()),
             content_type="text/event-stream",
             headers={
                 "Cache-Control": "no-store",

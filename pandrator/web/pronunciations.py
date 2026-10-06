@@ -304,7 +304,13 @@ class PronunciationLibrary:
                 else {}
             )
             return [
-                self.payload(item, session_name=session_names.get(item.session_id))
+                self.payload(
+                    item,
+                    session_name=(
+                        session_names.get(item.session_id)
+                        if item.session_id is not None else None
+                    ),
+                )
                 for item in entries
             ]
 

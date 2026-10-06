@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import jsonify, request
 
 from .domain_blueprints import DomainBlueprints
+from .http_idempotency import MutationIdempotency
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .logical_passages import (
     PassageIneligibleSource,
@@ -26,6 +27,7 @@ def register_source_passage_routes(app: DomainBlueprints, context: RouteContext)
     database = services.database
     require_scope = context.guards.require_scope
     error_response = context.guards.error_response
+    idempotency = MutationIdempotency(context)
 
     def idempotency_error(error: Exception):
         if isinstance(error, (IdempotencyConflict, IdempotencyInProgress)):
@@ -104,7 +106,7 @@ def register_source_passage_routes(app: DomainBlueprints, context: RouteContext)
                     try:
                         reservation = services.idempotency.begin(
                             session,
-                            principal=context.guards.principal(),
+                            principal=idempotency.principal(),
                             operation_id="rebuildSourcePassages",
                             idempotency_key=raw_key,
                             payload={

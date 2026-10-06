@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -674,7 +675,7 @@ def _component(
     port: int | None = None,
     service_key: str | None = None,
     dependencies: tuple[str, ...] = (),
-    required_runtime_tools: tuple[str, ...] = (),
+    required_runtime_tools: tuple[Literal["pixi"], ...] = (),
     driver: str = "marker",
     supported_systems: tuple[str, ...] = ("Windows", "Linux"),
     supported_architectures: tuple[str, ...] = (

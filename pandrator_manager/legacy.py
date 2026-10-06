@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from .components import ComponentRegistry
 from .context import ManagerContext
@@ -348,7 +348,7 @@ class LegacyImporter:
         self,
         relative: str,
         *,
-        owner_kind: str,
+        owner_kind: Literal["legacy_component", "legacy_shared"],
         owner_id: str,
         evidence: tuple[str, ...],
         warnings: list[str],
@@ -787,7 +787,7 @@ class LegacyImporter:
             existing
             and existing.get("source_digest") == report.source_digest
         )
-        if already_recorded and isinstance(
+        if existing is not None and already_recorded and isinstance(
             existing.get("data_reconciliation"),
             dict,
         ):
