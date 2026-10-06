@@ -414,16 +414,6 @@
                 }
             }
         ],
-        "./pandrator/logic/speech_markup_edits.py": [
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 57,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/logic/speech_performance.py": [
             {
                 "code": "reportImportCycles",
@@ -642,40 +632,6 @@
                 }
             }
         ],
-        "./pandrator/web/dispatch.py": [
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 44,
-                    "endColumn": 64,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 48,
-                    "endColumn": 68,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/dispatch_routes.py": [
             {
                 "code": "reportArgumentType",
@@ -716,14 +672,6 @@
                 "range": {
                     "startColumn": 0,
                     "endColumn": 0,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 53,
-                    "endColumn": 59,
                     "lineCount": 1
                 }
             }
@@ -1098,16 +1046,6 @@
                 }
             }
         ],
-        "./pandrator/web/speech_structure_analysis.py": [
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./pandrator/web/tts_optimization.py": [
             {
                 "code": "reportCallIssue",
@@ -1150,16 +1088,6 @@
                 "range": {
                     "startColumn": 18,
                     "endColumn": 23,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator/web/workflow_plans.py": [
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 27,
                     "lineCount": 1
                 }
             }
@@ -1316,16 +1244,6 @@
                 "range": {
                     "startColumn": 21,
                     "endColumn": 29,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./pandrator_manager/releases/discovery.py": [
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 20,
                     "lineCount": 1
                 }
             }

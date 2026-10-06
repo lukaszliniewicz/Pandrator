@@ -1104,6 +1104,7 @@ class DispatchRunService:
             wave_start=wave_start,
         )
         block = list(batch.input_json or [])
+        audio_witness_models: list[dict[str, Any]] = []
         if run.kind == "correction":
             audio_witness_models = self._audio_witness_models(session)
             instructions = build_correction_task_instructions(
@@ -1806,6 +1807,10 @@ class DispatchRunService:
                     f"Correction uncertainty {position} must be an object."
                 )
             cue_id = item.get("cue_id")
+            if cue_id is None:
+                raise ValueError(
+                    f"Correction uncertainty {position} has an invalid cue ID."
+                )
             if isinstance(cue_id, bool):
                 raise TypeError(
                     f"Correction uncertainty {position} has an invalid cue ID."

@@ -1479,3 +1479,26 @@ class DispatchWebTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UncertaintyCueContractTests(unittest.TestCase):
+    def test_missing_and_boolean_cue_ids_retain_validation_errors(self):
+        for item, error_type in (({}, ValueError), ({"cue_id": None}, ValueError),
+                                 ({"cue_id": True}, TypeError)):
+            with self.subTest(item=item), self.assertRaisesRegex(error_type, "invalid cue ID"):
+                DispatchRunService._normalize_uncertainties(
+                    None, None, [{"index": 1}], [], [item]
+                )
+
+    def test_numeric_cue_id_coercion_is_retained(self):
+        for cue_id in (1, "1", 1.0):
+            with self.subTest(cue_id=cue_id):
+                result = DispatchRunService._normalize_uncertainties(
+                    None, None,
+                    [{"index": 1, "start_ms": 100, "end_ms": 300}], [],
+                    [{"cue_id": cue_id, "reason": "Ambiguous wording"}],
+                )
+                self.assertEqual({1: {
+                    "reason": "Ambiguous wording", "evidence_ids": [],
+                    "start_ms": 100, "end_ms": 300,
+                }}, result)

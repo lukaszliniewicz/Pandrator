@@ -83,3 +83,22 @@ def test_range_edit_rejects_empty_ranges_and_unknown_characters():
             speaker="character",
             character_id="missing",
         )
+
+
+@pytest.mark.parametrize("character_id, category", [("alice", "female"), ("bob", "male")])
+def test_character_range_edit_retains_selected_category(character_id, category):
+    edited = edit_speech_markup_range(
+        '<segment id="s">Hello 👋!</segment>',
+        segment_id="s", text="Hello 👋!", characters=CHARACTERS,
+        start=6, end=7, speaker="character", character_id=character_id,
+    )
+    parsed = parse_speech_markup(
+        edited, expected_segment_id="s", expected_text="Hello 👋!", characters=CHARACTERS,
+    )
+    assert parsed.transcript == "Hello 👋!"
+    selected = next(span for span in parsed.spans if span.start == 6)
+    assert selected.speaker_id == character_id
+    assert selected.voice_category == category
+    assert selected.dialogue and not selected.narrator
+    assert parsed.spans[0].speaker_id is None
+    assert parsed.spans[-1].speaker_id is None

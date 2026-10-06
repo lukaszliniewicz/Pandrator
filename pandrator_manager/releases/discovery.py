@@ -44,6 +44,16 @@ def manager_manifest_url(context: ManagerContext) -> str:
     return _https_url(configured)
 
 
+def _close_preserving_failure(
+    resource: requests.Response | requests.Session, *, preserve_failure: bool
+) -> None:
+    try:
+        resource.close()
+    except Exception:
+        if not preserve_failure:
+            raise
+
+
 def fetch_manager_manifest(
     context: ManagerContext,
     *,
@@ -54,6 +64,8 @@ def fetch_manager_manifest(
     url = manager_manifest_url(context)
     verify = str(select_ca_bundle(context.environment).path)
     client = session or requests.Session()
+    response: requests.Response | None = None
+    completed = False
     try:
         response = client.get(
             url,
@@ -88,6 +100,7 @@ def fetch_manager_manifest(
                     http_status=502,
                 )
             chunks.append(chunk)
+        completed = True
     except ManagerError:
         raise
     except (OSError, ValueError, requests.RequestException) as error:
@@ -98,10 +111,16 @@ def fetch_manager_manifest(
             502,
         ) from error
     finally:
-        if "response" in locals():
-            response.close()
-        if session is None:
-            client.close()
+        response_closed = False
+        try:
+            if response is not None:
+                _close_preserving_failure(response, preserve_failure=not completed)
+            response_closed = True
+        finally:
+            if session is None:
+                _close_preserving_failure(
+                    client, preserve_failure=not completed or not response_closed
+                )
 
     try:
         decoded = json.loads(b"".join(chunks).decode("utf-8"))

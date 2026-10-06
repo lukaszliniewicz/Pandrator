@@ -340,6 +340,7 @@ def edit_speech_markup_range(
         raise ValueError("The selected speech range must not be empty.")
     if speaker not in {"unchanged", "narrator", "character"}:
         raise ValueError("speaker must be unchanged, narrator, or character")
+    character_category = "unspecified"
     if speaker == "character":
         if not isinstance(character_id, str) or not character_id:
             raise ValueError("character_id is required for a character selection")

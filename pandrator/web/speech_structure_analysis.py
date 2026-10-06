@@ -175,6 +175,7 @@ def _parse_markup(
         expected_text=text,
         characters=characters,
     )
+    source = None
     if source_xml is not None:
         source = parse_speech_markup(
             source_xml,
@@ -184,7 +185,7 @@ def _parse_markup(
         )
         assert_authored_markup_preserved(source, parsed)
     _assert_structural_only(
-        source if source_xml is not None else None,
+        source,
         parsed,
         mode=mode,
     )

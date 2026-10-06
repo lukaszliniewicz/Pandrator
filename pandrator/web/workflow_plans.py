@@ -530,11 +530,10 @@ class WorkflowExecutionPlanService:
         provider = str(disclosure.get("provider") or "").strip().lower()
         base_url = str(disclosure.get("base_url") or "").strip()
         if base_url:
+            host = str(urlsplit(base_url).hostname or "")
             try:
-                host = str(urlsplit(base_url).hostname or "")
                 address = ipaddress.ip_address(host)
-                if address.is_loopback or address.is_private:
-                    return False
+                return not (address.is_loopback or address.is_private)
             except ValueError:
                 return host not in {"localhost", "host.docker.internal"}
         return bool(provider and provider not in LOCAL_PROVIDER_IDS)

@@ -171,3 +171,17 @@ class AudioCppParameterTests(unittest.TestCase):
             {model: {"temperature": 0.8}},
             first["audio_cpp_model_settings"],
         )
+
+
+    def test_empty_selected_model_options_suppress_legacy_identity_settings(self):
+        model = "qwen3_tts_1_7b_base_q8_0"
+        identities = []
+        for temperature in (0.2, 0.9):
+            identities.append(_material_settings({"tts": {
+                "service": "audio_cpp", "model": model,
+                "audio_cpp_model_settings": {model: {}},
+                "audio_cpp_temperature": temperature,
+                "audio_cpp_options": {"top_p": temperature},
+            }}))
+        self.assertEqual(identities[0], identities[1])
+        self.assertEqual({model: {}}, identities[0]["audio_cpp_model_settings"])

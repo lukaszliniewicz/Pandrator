@@ -687,6 +687,27 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
             any(WorkflowExecutionPlanService._is_external(item) for item in disclosures)
         )
 
+    def test_public_ip_endpoint_requires_confirmation_for_local_provider(self):
+        session_id, artifact_id, _asset_id = self._ready_session()
+        resolved = ResolvedWorkflowStage(
+            job_kind="workflow.continue",
+            payload={"resolved_settings_snapshot": {
+                "tts": {"tts_service": "xtts", "base_url": "https://8.8.8.8"},
+            }},
+            resource_keys=("service:tts:xtts",),
+            session_revision=1,
+            workflow_kind="audiobook",
+            source_artifact_id=artifact_id,
+            source_content_hash="hash",
+            outcome_revision=1,
+        )
+        with patch(
+            "pandrator.web.workflows.WorkflowService.resolve_stage", return_value=resolved
+        ):
+            plan = self._plan(session_id, continuation=False)
+        self.assertIn("external_provider", plan["required_confirmations"])
+        self.assertIn("estimated_cost_unknown", plan["required_confirmations"])
+
     def test_every_workflow_kind_and_primary_source_type_can_be_planned(self):
         cases = (
             ("audiobook", "txt", "generate_audio"),
@@ -934,3 +955,31 @@ class WorkflowExecutionPlanTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderEndpointClassificationTests(unittest.TestCase):
+    def test_explicit_endpoint_determines_external_classification(self):
+        cases = (
+            ("https://8.8.8.8", True),
+            ("https://[2001:4860:4860::8888]", True),
+            ("http://127.0.0.1:8020", False),
+            ("http://[::1]:8020", False),
+            ("http://192.168.1.10:8020", False),
+            ("http://localhost:8020", False),
+            ("http://host.docker.internal:8020", False),
+            ("https://remote.example", True),
+        )
+        for provider in ("xtts", "external-provider"):
+            for endpoint, expected in cases:
+                with self.subTest(provider=provider, endpoint=endpoint):
+                    self.assertEqual(expected, WorkflowExecutionPlanService._is_external({
+                        "provider": provider, "base_url": endpoint,
+                    }))
+        self.assertFalse(WorkflowExecutionPlanService._is_external({"provider": "xtts"}))
+        self.assertTrue(WorkflowExecutionPlanService._is_external({"provider": "external"}))
+
+    def test_malformed_url_preserves_parser_failure(self):
+        with self.assertRaisesRegex(ValueError, "Invalid IPv6 URL"):
+            WorkflowExecutionPlanService._is_external({
+                "provider": "xtts", "base_url": "https://[",
+            })

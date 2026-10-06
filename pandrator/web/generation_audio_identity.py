@@ -102,7 +102,7 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
         selected = str(values.get("openai_audio_endpoint") or selected)
     provider = tts_handler.get_service_config(values, selected, _cache=_service_config_cache)
     raw_model_settings = values.pop("audio_cpp_model_settings", None)
-    selected_model_options: dict[str, Any] | None = None
+    selected_model_options: tuple[str, dict[str, Any]] | None = None
     selected_model = str(
         values.get("xtts_model") or values.get("model") or ""
     ).strip()
@@ -123,10 +123,12 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
                 provider if isinstance(provider, dict) else {},
             )
             family = str(metadata.get("family") or "").strip()
-            selected_model_options = validate_audio_cpp_model_options(
+            normalized_options = validate_audio_cpp_model_options(
                 family,
                 raw_selected_options,
             )
+            if normalized_options is not None:
+                selected_model_options = (family, normalized_options)
     values = {
         key: value
         for key, value in _secret_free(values).items()
@@ -136,6 +138,7 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
         )
     }
     if selected_model_options is not None:
+        family, model_options = selected_model_options
         # A selected model map suppresses legacy tuning sources at request
         # time, so ignored values must not invalidate reusable audio either.
         ignored_tuning_keys = {
@@ -155,7 +158,7 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
             if key not in ignored_tuning_keys
         }
         values["audio_cpp_model_settings"] = {
-            selected_model: selected_model_options,
+            selected_model: model_options,
         }
     # Other installed providers, credentials, labels and catalog ordering do
     # not change the selected service's audio.
