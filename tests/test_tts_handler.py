@@ -2179,6 +2179,32 @@ class TTSHandlerTests(unittest.TestCase):
         wait_for_recovery.assert_called_once()
         self.assertEqual([(1, 3, 90.0)], recovery_updates)
 
+    def test_qwen_zero_recovery_cycles_preserves_synthesis_budget(self):
+        for recovery_cycles in (0, "0"):
+            with (
+                self.subTest(recovery_cycles=recovery_cycles),
+                patch(
+                    "pandrator.logic.tts_handler._request_kobold_qwen_audio",
+                    side_effect=requests.exceptions.ConnectionError("service unavailable"),
+                ) as request_audio,
+                patch("pandrator.logic.tts_handler._wait_for_kobold_qwen_recovery") as recover,
+                patch("pandrator.logic.tts_handler.wait_for_retry", return_value=True) as wait,
+                self.assertRaises(tts_handler.TtsGenerationError),
+            ):
+                tts_handler.text_to_audio(
+                    "Recovery disabled",
+                    {
+                        "service": "Qwen3 TTS",
+                        "model": "Voice Cloning",
+                        "voice": "narrator",
+                        "service_recovery_cycles": recovery_cycles,
+                    },
+                    max_attempts=2,
+                )
+                self.assertEqual(2, request_audio.call_count)
+                recover.assert_not_called()
+                wait.assert_called_once()
+
     def test_qwen_invalid_voice_response_is_not_treated_as_recovery(self):
         rejected = Mock(
             status_code=422, headers={}, text="voice reference not installed"

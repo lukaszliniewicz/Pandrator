@@ -1,7 +1,9 @@
+import hashlib
 import shutil
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from pydub.generators import Sine
@@ -159,6 +161,69 @@ class AudioPreviewTests(unittest.TestCase):
                 for path in self.session_dir.iterdir()
             )
         )
+
+    def test_postcommit_cleanup_failure_preserves_preview_receipt_and_redacts_paths(self):
+        source = self._source("cleanup.wav")
+        destination = self.session_dir / f"audio-preview-v1-{source.id}.mp3"
+        destination.write_bytes(b"previous-valid-preview")
+        previous = self.artifacts.register(
+            destination,
+            kind="audio",
+            role="source_audio_preview",
+            session_id=self.session.id,
+            parent_ids=[source.id],
+            metadata={"preview_version": "previous"},
+        )
+        original_unlink = Path.unlink
+
+        def write_temporary(command, *, cancel_event):
+            del cancel_event
+            Path(command[-1]).write_bytes(b"replacement-preview")
+
+        def fail_previous_cleanup(path, *args, **kwargs):
+            if path.suffix == ".previous":
+                raise OSError(f"Could not remove private backup {path}")
+            return original_unlink(path, *args, **kwargs)
+
+        with (
+            mock.patch(
+                "pandrator.web.media_process.resolve_ffmpeg_executable", return_value="ffmpeg"
+            ),
+            mock.patch(
+                "pandrator.web.media_process.run_media_process", side_effect=write_temporary
+            ),
+            mock.patch.object(Path, "unlink", autospec=True, side_effect=fail_previous_cleanup),
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            self.handlers.generate_audio_preview(
+                {"source_artifact_id": source.id}, lambda *_args: None, threading.Event()
+            )
+
+        self.assertEqual("The source audio preview could not be prepared.", str(raised.exception))
+        self.assertNotIn(str(self.session_dir), str(raised.exception))
+        self.assertEqual(b"replacement-preview", destination.read_bytes())
+        with self.database.session() as session:
+            current = session.get(Artifact, previous.id)
+            self.assertEqual(
+                hashlib.sha256(destination.read_bytes()).hexdigest(), current.content_hash
+            )
+            self.assertNotEqual(previous.content_hash, current.content_hash)
+            self.assertEqual("v1", current.metadata_json["preview_version"])
+            self.assertEqual(source.id, current.metadata_json["source_artifact_id"])
+            self.assertEqual(
+                {source.id},
+                set(
+                    session.scalars(
+                        select(ArtifactEdge.parent_artifact_id).where(
+                            ArtifactEdge.child_artifact_id == current.id
+                        )
+                    ).all()
+                ),
+            )
+        backups = list(self.session_dir.glob(".audio-preview-v1-*.previous"))
+        self.assertEqual(1, len(backups))
+        self.assertEqual(b"previous-valid-preview", backups[0].read_bytes())
+        self.assertFalse(any(self.session_dir.glob(".audio-preview-v1-*.mp3")))
 
     def test_cancel_during_registration_restores_existing_preview(self):
         source = self._source("cancel.wav")

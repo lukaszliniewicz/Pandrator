@@ -4214,9 +4214,13 @@ def text_to_audio(
 
     max_attempts = max(1, min(20, int(max_attempts or 1)))
     try:
+        configured_recovery_cycles = tts_settings.get("service_recovery_cycles")
         maximum_recovery_cycles = max(
             0,
-            min(10, int(tts_settings.get("service_recovery_cycles") or 3)),
+            min(
+                10,
+                int(3 if configured_recovery_cycles is None else configured_recovery_cycles),
+            ),
         )
     except (TypeError, ValueError):
         maximum_recovery_cycles = 3

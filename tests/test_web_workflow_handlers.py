@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -1010,6 +1011,210 @@ class WebWorkflowHandlerTests(unittest.TestCase):
                 ).all()
             )
         self.assertEqual({next_source.id, next_dubbing.id}, parent_ids)
+
+    def _mix_preview_publication_fixture(self, *, prior_present):
+        record = self.sessions.create("Mix publication fixture")
+        directory = self.paths.sessions / record.storage_key
+        directory.mkdir()
+        source_path = directory / "source.wav"
+        source_path.write_bytes(b"source")
+        source = self.artifacts.register(
+            source_path, kind="audio", role="upload", session_id=record.id
+        )
+        dubbing_path = directory / "dubbing.wav"
+        dubbing_path.write_bytes(b"dubbing")
+        dubbing = self.artifacts.register(
+            dubbing_path, kind="audio", role="output_assembly", session_id=record.id
+        )
+        destination = directory / "previews" / "soundtrack-mix-preview.wav"
+        previous = None
+        if prior_present:
+            destination.parent.mkdir()
+            destination.write_bytes(b"previous-preview")
+            previous = self.artifacts.register(
+                destination,
+                kind="audio",
+                role="mix_preview",
+                session_id=record.id,
+                parent_ids=[source.id],
+                settings={"mix_ducking": "off"},
+                metadata={"generation_run_id": "previous-run"},
+            )
+        return (
+            {
+                "session_id": record.id,
+                "source_artifact_id": source.id,
+                "dubbing_artifact_id": dubbing.id,
+                "generation_run_id": "replacement-run",
+                "start_seconds": 0,
+                "settings": {"mix_ducking": "strong"},
+            },
+            destination,
+            previous,
+        )
+
+    def _assert_mix_preview_rollback(self, payload, destination, previous):
+        with self.database.session() as session:
+            preview = session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == payload["session_id"],
+                    Artifact.role == "mix_preview",
+                )
+            )
+            if previous is None:
+                self.assertIsNone(preview)
+                self.assertFalse(destination.exists())
+            else:
+                self.assertEqual(b"previous-preview", destination.read_bytes())
+                self.assertEqual(previous.id, preview.id)
+                self.assertEqual(previous.content_hash, preview.content_hash)
+                self.assertEqual(previous.settings_hash, preview.settings_hash)
+                self.assertEqual(previous.metadata_json, preview.metadata_json)
+                parents = set(
+                    session.scalars(
+                        select(ArtifactEdge.parent_artifact_id).where(
+                            ArtifactEdge.child_artifact_id == preview.id
+                        )
+                    ).all()
+                )
+                self.assertEqual({payload["source_artifact_id"]}, parents)
+        self.assertFalse(any(destination.parent.glob(".soundtrack-mix-preview-*")))
+
+    def test_output_mix_preview_publication_failure_restores_file_and_receipt(self):
+        for prior_present, failure in [
+            (True, "registration"),
+            (False, "registration"),
+            (True, "progress"),
+            (False, "progress"),
+        ]:
+            with self.subTest(prior_present=prior_present, failure=failure):
+                payload, destination, previous = self._mix_preview_publication_fixture(
+                    prior_present=prior_present
+                )
+                original_register = self.handlers.artifacts.register_in_session
+
+                def fail_registration(*args, original_register=original_register, **kwargs):
+                    original_register(*args, **kwargs)
+                    raise RuntimeError("registration failed before commit")
+
+                def report(value, _detail=None, failure=failure):
+                    if failure == "progress" and value == 0.9:
+                        raise RuntimeError("publication progress failed")
+
+                def render(command, **_kwargs):
+                    Path(command[-1]).write_bytes(b"replacement-preview")
+
+                with (
+                    mock.patch(
+                        "pandrator.web.media_process.probe_audio_stream",
+                        return_value=SimpleNamespace(duration_ms=50_000),
+                    ),
+                    mock.patch("pandrator.web.media_process.run_media_process", side_effect=render),
+                    mock.patch.object(
+                        self.handlers.artifacts,
+                        "register_in_session",
+                        side_effect=fail_registration,
+                    ),
+                    self.assertRaises(RuntimeError),
+                ):
+                    self.handlers.preview_output_mix(payload, report, threading.Event())
+                self._assert_mix_preview_rollback(payload, destination, previous)
+
+    def test_output_mix_preview_cancellation_restores_file_and_receipt(self):
+        for prior_present, stage in [
+            (True, "render"),
+            (True, "replace"),
+            (False, "replace"),
+            (True, "progress"),
+        ]:
+            with self.subTest(prior_present=prior_present, stage=stage):
+                payload, destination, previous = self._mix_preview_publication_fixture(
+                    prior_present=prior_present
+                )
+                cancel_event = threading.Event()
+                original_replace = os.replace
+
+                def render(command, stage=stage, cancel_event=cancel_event, **_kwargs):
+                    Path(command[-1]).write_bytes(b"replacement-preview")
+                    if stage == "render":
+                        cancel_event.set()
+
+                def replace(
+                    source,
+                    target,
+                    original_replace=original_replace,
+                    stage=stage,
+                    destination=destination,
+                    cancel_event=cancel_event,
+                ):
+                    original_replace(source, target)
+                    if stage == "replace" and Path(target) == destination:
+                        cancel_event.set()
+
+                def report(value, _detail=None, stage=stage, cancel_event=cancel_event):
+                    if stage == "progress" and value == 0.9:
+                        cancel_event.set()
+
+                with (
+                    mock.patch(
+                        "pandrator.web.media_process.probe_audio_stream",
+                        return_value=SimpleNamespace(duration_ms=50_000),
+                    ),
+                    mock.patch("pandrator.web.media_process.run_media_process", side_effect=render),
+                    mock.patch("pandrator.web.workflow_handlers.os.replace", side_effect=replace),
+                    mock.patch.object(
+                        self.handlers.artifacts, "register", wraps=self.handlers.artifacts.register
+                    ) as register,
+                ):
+                    result = self.handlers.preview_output_mix(payload, report, cancel_event)
+                self.assertEqual({}, result)
+                register.assert_not_called()
+                self._assert_mix_preview_rollback(payload, destination, previous)
+
+    def test_output_mix_preview_postcommit_failure_preserves_receipt(self):
+        for failure in ("reporting", "cleanup"):
+            with self.subTest(failure=failure):
+                payload, destination, previous = self._mix_preview_publication_fixture(
+                    prior_present=True
+                )
+                original_unlink = Path.unlink
+
+                def render(command, **_kwargs):
+                    Path(command[-1]).write_bytes(b"replacement-preview")
+
+                def report(value, _detail=None, failure=failure):
+                    if failure == "reporting" and value == 1.0:
+                        raise RuntimeError("completed progress failed")
+
+                def unlink(path, *args, failure=failure, original_unlink=original_unlink, **kwargs):
+                    if failure == "cleanup" and path.suffix == ".previous":
+                        raise OSError("previous-file cleanup failed")
+                    return original_unlink(path, *args, **kwargs)
+
+                with (
+                    mock.patch(
+                        "pandrator.web.media_process.probe_audio_stream",
+                        return_value=SimpleNamespace(duration_ms=50_000),
+                    ),
+                    mock.patch("pandrator.web.media_process.run_media_process", side_effect=render),
+                    mock.patch.object(Path, "unlink", autospec=True, side_effect=unlink),
+                    self.assertRaises((RuntimeError, OSError)),
+                ):
+                    self.handlers.preview_output_mix(payload, report, threading.Event())
+                self.assertEqual(b"replacement-preview", destination.read_bytes())
+                with self.database.session() as session:
+                    preview = session.get(Artifact, previous.id)
+                    self.assertEqual(
+                        hashlib.sha256(destination.read_bytes()).hexdigest(), preview.content_hash
+                    )
+                    self.assertEqual("replacement-run", preview.metadata_json["generation_run_id"])
+                leftovers = list(destination.parent.glob(".soundtrack-mix-preview-*"))
+                if failure == "cleanup":
+                    self.assertEqual(1, len(leftovers))
+                    self.assertEqual(".previous", leftovers[0].suffix)
+                    self.assertEqual(b"previous-preview", leftovers[0].read_bytes())
+                else:
+                    self.assertEqual([], leftovers)
 
     def test_audiobook_audio_uses_the_shared_tts_engine_and_registers_output(self):
         prepared_path = self.session_dir / "prepared.json"

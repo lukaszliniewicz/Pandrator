@@ -5924,6 +5924,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         }
         replaced_destination = False
         previous_destination_staged = False
+        registered = False
         progress(0.05, "Preparing source audio preview")
         command = [
             resolve_ffmpeg_executable(),
@@ -5998,25 +5999,28 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     "preview_version": "v1",
                 },
             )
+            registered = True
             previous_destination.unlink(missing_ok=True)
             previous_destination_staged = False
             replaced_destination = False
             return {"artifact_id": artifact.id, "source_artifact_id": source.id}
         except MediaProcessCancelled:
             temporary_destination.unlink(missing_ok=True)
-            if replaced_destination:
-                destination.unlink(missing_ok=True)
-            if previous_destination_staged:
-                os.replace(previous_destination, destination)
+            if not registered:
+                if replaced_destination:
+                    destination.unlink(missing_ok=True)
+                if previous_destination_staged:
+                    os.replace(previous_destination, destination)
             return {}
         # This is the final cleanup and redaction boundary for filesystem,
         # artifact-registration, and database failures.
         except Exception:  # noqa: BLE001
             temporary_destination.unlink(missing_ok=True)
-            if replaced_destination:
-                destination.unlink(missing_ok=True)
-            if previous_destination_staged:
-                os.replace(previous_destination, destination)
+            if not registered:
+                if replaced_destination:
+                    destination.unlink(missing_ok=True)
+                if previous_destination_staged:
+                    os.replace(previous_destination, destination)
             raise RuntimeError(
                 "The source audio preview could not be prepared."
             ) from None
@@ -6116,47 +6120,68 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             release_ms=settings.get("mix_release_ms", 350),
             ffmpeg_executable=resolve_ffmpeg_executable(),
         )
+        previous_destination = (
+            destination_dir / f".soundtrack-mix-preview-{new_id()}.previous"
+        )
+        previous_destination_staged = False
+        replaced_destination = False
+        committed = False
         progress(0.2, "Rendering soundtrack mix preview")
         try:
             run_media_process(command, cancel_event=cancel_event)
             if cancel_event.is_set():
-                temporary_destination.unlink(missing_ok=True)
                 return {}
+            if destination.is_file():
+                os.replace(destination, previous_destination)
+                previous_destination_staged = True
             os.replace(temporary_destination, destination)
-        except MediaProcessCancelled:
-            temporary_destination.unlink(missing_ok=True)
-            return {}
-        except Exception:
-            temporary_destination.unlink(missing_ok=True)
-            raise
-
-        progress(0.9, "Registering soundtrack mix preview")
-        artifact = self.artifacts.register(
-            destination,
-            kind="audio",
-            role="mix_preview",
-            session_id=session_id,
-            parent_ids=[source.id, dubbing.id],
-            replace_parent_ids=True,
-            settings=settings,
-            metadata={
-                "generation_run_id": str(payload.get("generation_run_id") or ""),
-                "source_artifact_id": source.id,
-                "dubbing_artifact_id": dubbing.id,
-                "start_seconds": requested_start,
-                "duration_seconds": duration_seconds,
-                "automatic_start": automatic_start,
-                "automatic_start_method": automatic_start_method,
-                "mix": {
-                    "source_gain_db": settings.get("mix_source_gain_db", 0.0),
-                    "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
-                    "voice_lufs": settings.get("mix_voice_lufs", -16.0),
-                    "ducking": settings.get("mix_ducking", "strong"),
-                    "attack_ms": settings.get("mix_attack_ms", 25),
-                    "release_ms": settings.get("mix_release_ms", 350),
+            replaced_destination = True
+            if cancel_event.is_set():
+                return {}
+            progress(0.9, "Registering soundtrack mix preview")
+            if cancel_event.is_set():
+                return {}
+            artifact = self.artifacts.register(
+                destination,
+                kind="audio",
+                role="mix_preview",
+                session_id=session_id,
+                parent_ids=[source.id, dubbing.id],
+                replace_parent_ids=True,
+                settings=settings,
+                metadata={
+                    "generation_run_id": str(payload.get("generation_run_id") or ""),
+                    "source_artifact_id": source.id,
+                    "dubbing_artifact_id": dubbing.id,
+                    "start_seconds": requested_start,
+                    "duration_seconds": duration_seconds,
+                    "automatic_start": automatic_start,
+                    "automatic_start_method": automatic_start_method,
+                    "mix": {
+                        "source_gain_db": settings.get("mix_source_gain_db", 0.0),
+                        "voice_gain_db": settings.get("mix_voice_gain_db", 0.0),
+                        "voice_lufs": settings.get("mix_voice_lufs", -16.0),
+                        "ducking": settings.get("mix_ducking", "strong"),
+                        "attack_ms": settings.get("mix_attack_ms", 25),
+                        "release_ms": settings.get("mix_release_ms", 350),
+                    },
                 },
-            },
-        )
+            )
+            # Registration commits the receipt. Later cleanup/reporting failures
+            # must not restore bytes that no longer match that receipt.
+            committed = True
+        except MediaProcessCancelled:
+            return {}
+        finally:
+            if not committed:
+                if previous_destination_staged:
+                    os.replace(previous_destination, destination)
+                elif replaced_destination:
+                    destination.unlink(missing_ok=True)
+            temporary_destination.unlink(missing_ok=True)
+            if committed:
+                previous_destination.unlink(missing_ok=True)
+
         progress(1.0, "Soundtrack mix preview ready")
         return {
             "artifact_id": artifact.id,
