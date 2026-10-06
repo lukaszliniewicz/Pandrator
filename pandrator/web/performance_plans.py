@@ -1189,11 +1189,12 @@ def run_analysis(handlers, payload, progress, cancel_event) -> dict[str, Any]:
             claimed = claim_batch(session, plan, lease_seconds=3600)
             total = len(_batches(session, plan.id))
             complete = sum(b.status == "completed" for b in _batches(session, plan.id))
-        progress(
+        progress_args = (
             complete / max(1, total),
             f"Analysed delivery for {complete} of {total} batches",
         )
         if claimed.get("batch") is None:
+            progress(*progress_args)
             if claimed.get("complete"):
                 progress(
                     1.0,
@@ -1205,6 +1206,7 @@ def run_analysis(handlers, payload, progress, cancel_event) -> dict[str, Any]:
             )
         usage: OptimizationUsage | None = None
         try:
+            progress(*progress_args)
             usage = OptimizationUsage()
             for attempt in range(2):
                 if cancel_event.is_set():

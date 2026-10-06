@@ -654,3 +654,49 @@ def test_usage_initialization_failure_preserves_error_and_releases_lease(case, f
             m.PerformanceBatch.status == "pending",
         )):
             assert batch.lease_token is None and batch.lease_expires_at is None
+
+
+@pytest.mark.parametrize("replacement_lease", [False, True])
+def test_progress_failure_releases_only_its_owned_analysis_lease(case, replacement_lease):
+    from types import SimpleNamespace
+
+    plan = create(case, mode="passive", batch_size=1)
+    handlers = case["services"]["workflow_handlers"]
+    payload = {"session_id": case["session_id"], "performance_plan_id": plan["id"]}
+
+    def fail_progress(*args):
+        if replacement_lease:
+            with case["services"]["database"].immediate_session() as session:
+                batch = session.scalar(select(m.PerformanceBatch).where(
+                    m.PerformanceBatch.performance_plan_id == plan["id"],
+                    m.PerformanceBatch.status == "leased",
+                ))
+                batch.lease_token = "replacement-token"
+        raise RuntimeError("Progress update failed")
+
+    with (
+        patch(
+            "pandrator.web.provider_settings.build_llm_settings",
+            return_value=(SimpleNamespace(provider_configs=[]), "local/test"),
+        ),
+        patch("pandrator.logic.llm_handler.chat_completion_with_metadata") as provider,
+        patch.object(handlers, "_record_usage") as accounting,
+    ):
+        with pytest.raises(RuntimeError, match="^Progress update failed$"):
+            plans.run_analysis(handlers, payload, fail_progress, threading.Event())
+    provider.assert_not_called()
+    accounting.assert_not_called()
+    state = get(case, plan)
+    assert state["analysed_count"] == 0
+    assert [batch["status"] for batch in state["batches"]] == (
+        ["leased", "pending", "pending"] if replacement_lease else ["pending"] * 3
+    )
+    with case["services"]["database"].session() as session:
+        first = session.scalar(select(m.PerformanceBatch).where(
+            m.PerformanceBatch.performance_plan_id == plan["id"]
+        ).order_by(m.PerformanceBatch.ordinal))
+        if replacement_lease:
+            assert first.lease_token == "replacement-token"
+            assert first.lease_expires_at is not None
+        else:
+            assert first.lease_token is None and first.lease_expires_at is None
