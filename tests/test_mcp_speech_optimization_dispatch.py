@@ -1,5 +1,7 @@
+import copy
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from pydantic import ValidationError
 
@@ -208,6 +210,7 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
             ClaimSpeechOptimizationDispatchBatchInput(
                 run_id="run-1",
                 idempotency_key="speech:claim-1",
+                packet_format="standard",
             ),
         )
         self.assertEqual("lease-capability", claimed["lease_token"])
@@ -218,6 +221,77 @@ class SpeechOptimizationDispatchHandlerTests(unittest.TestCase):
             claimed["batch"]["context"]["previous_source"],
         )
         self.assertNotIn("unrelated", claimed)
+
+    def test_compact_claim_is_lossless_cached_and_dictionary_revision_bound(self):
+        payload = self.application.claim_speech_optimization_dispatch_batch("run-1")
+        payload["task"].update({
+            "language": "en", "voice_language": "en", "tts_service": "xtts",
+            "result_contract": {"kind": "speech_optimization", "items": "all"},
+            "annotation_mode": "speakers", "annotation_only": True,
+        })
+        payload["character_dictionary"] = {
+            "revision": 7, "entries": [{"id": "alice", "display_name": "Alice", "voice_category": "female"}],
+        }
+        payload["batch"]["units"][0].update({
+            "speaker": "Alice", "speech_xml": "<speech>Dr. Jones</speech>",
+            "timing": {"start_ms": 0, "end_ms": 1000, "duration_ms": 1000},
+        })
+        payload["batch"]["context"]["previous_output"] = [{"text": "Optimized before"}]
+        payload["batch"]["context"]["following_source"] = [{"text": "After"}]
+        before = copy.deepcopy(payload)
+        application = Mock()
+        application.claim_speech_optimization_dispatch_batch.return_value = payload
+        runtime = SimpleNamespace(require_application=lambda: application)
+
+        def claim(**values):
+            return claim_speech_optimization_dispatch_batch(
+                runtime, ClaimSpeechOptimizationDispatchBatchInput(
+                    run_id="run-1", idempotency_key="speech:compact", **values
+                )
+            )
+
+        standard = claim(packet_format="standard")
+        compact = claim()
+        self.assertEqual("compact-v1", compact["packet_format"])
+        restored = {k: v for k, v in compact.items()
+                    if k not in {"packet_format", "manifest_hash", "manifest"}}
+        manifest = dict(compact["manifest"])
+        restored["character_dictionary"] = manifest.pop("character_dictionary")
+        restored["task"] = {**restored["task"], **manifest}
+        self.assertEqual(standard, restored)
+        self.assertEqual(before, payload)
+        cached = claim(known_manifest_hash=compact["manifest_hash"])
+        self.assertEqual({k: v for k, v in compact.items() if k != "manifest"}, cached)
+        self.assertEqual(compact, claim(known_manifest_hash="0" * 64))
+        payload["character_dictionary"]["revision"] = 8
+        changed = claim(known_manifest_hash=compact["manifest_hash"])
+        self.assertNotEqual(compact["manifest_hash"], changed["manifest_hash"])
+        self.assertEqual(8, changed["manifest"]["character_dictionary"]["revision"])
+        payload["character_dictionary"]["entries"][0]["display_name"] = "Alicia"
+        self.assertNotEqual(changed["manifest_hash"], claim()["manifest_hash"])
+        for call in application.claim_speech_optimization_dispatch_batch.call_args_list:
+            self.assertEqual({"lease_seconds", "idempotency_key"}, set(call.kwargs))
+
+    def test_terminal_claims_and_invalid_presentation_fields(self):
+        application = Mock()
+        runtime = SimpleNamespace(require_application=lambda: application)
+        for payload in (
+            {"run_id": "run-1", "status": "completed", "batch": None},
+            {"run_id": "run-1", "status": "completed", "task": {}, "batch": {}},
+        ):
+            application.claim_speech_optimization_dispatch_batch.return_value = payload
+            outputs = [claim_speech_optimization_dispatch_batch(
+                runtime, ClaimSpeechOptimizationDispatchBatchInput(
+                    run_id="run-1", idempotency_key="speech:terminal", packet_format=mode
+                )
+            ) for mode in ("standard", "compact")]
+            self.assertEqual(outputs[0], outputs[1])
+            self.assertNotIn("manifest_hash", outputs[1])
+        for invalid in ({"packet_format": "compact-v1"}, {"known_manifest_hash": "bad"}):
+            with self.assertRaises(ValidationError):
+                ClaimSpeechOptimizationDispatchBatchInput(
+                    run_id="run-1", idempotency_key="speech:invalid", **invalid
+                )
 
     def test_submit_preserves_typed_units_and_points_to_next_claim(self):
         submitted = submit_speech_optimization_dispatch_batch(

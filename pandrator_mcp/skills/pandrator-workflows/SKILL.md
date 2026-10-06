@@ -37,6 +37,13 @@ validates submissions, and saves artifacts; it does not call an LLM for that
 run. The host's normal model costs, permissions, and data handling still apply.
 ASR, OCR, TTS, and rendering use their configured processing engines.
 
+Use compact claim packets and submission receipts. Cache a returned manifest
+only while its exact contents remain available to the model processing the
+batch. Choose boundary context at setup according to continuity and recovery
+needs; serial execution alone does not make neighbouring text unnecessary.
+Read [semantic dispatch](references/semantic-dispatch.md) for payload controls
+and minimal result forms. Use only controls advertised by the connected tools.
+
 Maintain a compact context capsule for substantial correction or translation:
 topic, languages, names, terminology, style, allowed removals, speaker state,
 and unresolved uncertainties. Use it consistently across batches. Preserve

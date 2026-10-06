@@ -53,6 +53,8 @@ class GetSpeechOptimizationDispatchRunInput(ToolInput):
 class ClaimSpeechOptimizationDispatchBatchInput(ToolInput):
     run_id: str = Field(min_length=1, max_length=120)
     lease_seconds: int = Field(default=900, ge=30, le=3_600)
+    packet_format: Literal["standard", "compact"] = "compact"
+    known_manifest_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     idempotency_key: str = Field(
         min_length=8,
         max_length=200,

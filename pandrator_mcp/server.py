@@ -351,7 +351,7 @@ def build_server(runtime: McpRuntime):
     from .tools.voice_metadata import register_voice_metadata_tools
     from .tools.voice_setup import register_voice_setup_tools
 
-    register_performance_tools(server, runtime, _call_with_validated_input,
+    register_performance_tools(server, runtime, _call_with_validated_input, _response,
                                read_only=read_only, write_action=write_action)
     register_generation_controls_tools(
         server,
@@ -979,6 +979,7 @@ def build_server(runtime: McpRuntime):
         server,
         runtime,
         _call_with_validated_input,
+        _response,
         read_only=read_only,
         write_action=write_action,
     )
@@ -987,6 +988,7 @@ def build_server(runtime: McpRuntime):
         server,
         runtime,
         _call_with_validated_input,
+        _response,
         read_only=read_only,
         write_action=write_action,
     )
@@ -995,6 +997,7 @@ def build_server(runtime: McpRuntime):
         server,
         runtime,
         _call_with_validated_input,
+        _response,
         read_only=read_only,
         write_action=write_action,
     )
@@ -1095,6 +1098,8 @@ def build_server(runtime: McpRuntime):
         filename: Annotated[NativeNullableString, Field(max_length=255)] = None,
         wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+        packet_format: Literal["standard", "compact"] = "compact",
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Describe live-inherited passive loops and the deferred native plan.
 
@@ -1105,11 +1110,12 @@ def build_server(runtime: McpRuntime):
         """
 
         values = {**locals(), "passive_stages": passive_stages, "final_stage": final_stage}
-        return _call_with_validated_input(
+        envelope = _call_with_validated_input(
             plan_orchestrated_workflow, runtime, PlanOrchestratedWorkflowInput,
             {key: value for key, value in values.items()
              if key in PlanOrchestratedWorkflowInput.model_fields and value is not None},
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_plan_export_variant",

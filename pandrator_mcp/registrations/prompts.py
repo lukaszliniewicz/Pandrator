@@ -84,8 +84,10 @@ def register_prompts(server: Any) -> None:
             "Read the matching guide and inspect the session and selected source. "
             "Create the matching dispatch run with the user's quality instructions. "
             "Do not configure an external model provider: you are the processor. "
-            "Claim one sequential batch, obey the packet's operation contract, return "
-            "every required item ID exactly once, submit the typed result, and follow "
+            "Choose boundary context for continuity at setup. Claim one sequential "
+            "batch; use compact packets and cache only manifests still available to "
+            "you. Obey the kind's operation and ID-coverage contract, submit only "
+            "the required typed result and new context information, and follow "
             "next_actions. Renew the lease before it expires when needed. Continue "
             "until the run is terminal, then inspect the resulting artifact."
         )

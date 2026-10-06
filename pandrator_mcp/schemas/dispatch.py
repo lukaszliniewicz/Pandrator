@@ -79,7 +79,7 @@ class ClaimDispatchBatchInput(ToolInput):
 
     run_id: str = _RUN_ID
     lease_seconds: int = Field(default=900, ge=30, le=3_600)
-    packet_format: Literal["standard", "compact"] = "standard"
+    packet_format: Literal["standard", "compact"] = "compact"
     known_manifest_hash: str | None = Field(
         default=None,
         pattern=r"^[0-9a-fA-F]{64}$",

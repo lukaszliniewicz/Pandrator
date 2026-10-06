@@ -35,7 +35,9 @@ correction or translation run from its artifact.
 When subtitles need external correction or translation before speech
 generation, use a subtitle dispatch run and process batches in order. Listing
 or inspecting the run never includes raw batch content; claim is the only
-content-disclosure step. Work only on canonical `batch.cues`, use their stable
+content-disclosure step. Work only on the compact packet's `batch.cue_rows`
+(decode with `cue_columns` and `turns`), or request `packet_format=standard`
+for `batch.cues`. Use their stable
 source-revision `cue_id` values, and treat `batch.context` as non-actionable
 continuity evidence. The short-lived `lease_token` belongs to that batch only.
 For target-language cleanup, create a correction run pinned to the translation
@@ -55,7 +57,9 @@ bypass the queue.
 Once transcription, correction, or translation is selected, a separate
 speech-optimization dispatch run can prepare the target text without calling a
 Pandrator LLM provider. Claim `batch.units`, treat boundary context as
-read-only, and return every stable `unit_id` exactly once. SRT timing appears
+read-only, and return every stable `unit_id` exactly once. Compact packets keep
+task policy and the character dictionary in a cacheable `manifest`; retain it
+before supplying `known_manifest_hash`. SRT timing appears
 only on actionable units and is retained in the finalized artifact; it is not a
 request to alter cue duration.
 

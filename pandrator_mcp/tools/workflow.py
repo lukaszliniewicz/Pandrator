@@ -320,11 +320,11 @@ def _resolved_passive_packet(
             "voice_language": tts_settings.get("language") or None,
             "tts_service": tts_settings.get("service") or None,
             "instructions": text_settings.get("combined_prompt") or "",
-            "char_limit": 20_000,
+            "char_limit": text_settings.get("char_limit", 20_000),
             "max_units_per_batch": text_settings.get("llm_tts_document_batch_size", 8),
-            "context_before": 4,
-            "context_after": 2,
-            "include_timing": True,
+            "context_before": text_settings.get("context_before", 4),
+            "context_after": text_settings.get("context_after", 2),
+            "include_timing": text_settings.get("include_timing", True),
             "annotation_mode": text_settings.get("llm_tts_annotation_mode", "off"),
             "annotation_only": bool(text_settings.get("llm_tts_annotation_only", False)),
         }
@@ -631,6 +631,22 @@ def plan_orchestrated_workflow(
             "artifacts change the state fingerprint."
         ),
     }
+    if arguments.packet_format == "compact":
+        result["packet_format"] = "compact-v1"
+        result.pop("current_stages")
+        for phase in phases:
+            if phase["mode"] == "passive":
+                for alias in (
+                    "tool", "arguments", "create", "claim_tool", "submit_tool",
+                    "completion_condition",
+                ):
+                    phase.pop(alias)
+                loop = phase["loop"]
+                assert isinstance(loop, dict)
+                loop["claim_arguments"] = {"packet_format": "compact"}
+            elif phase["mode"] == "native":
+                phase.pop("plan_tool")
+                phase.pop("plan_arguments")
     return ToolOutcome(result=result, next_actions=[first_action])
 
 

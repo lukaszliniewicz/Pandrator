@@ -24,6 +24,7 @@ class PerformancePlanInput(PerformanceSessionInput):
 
 
 class GetPerformancePlanInput(PerformancePlanInput):
+    include_units: bool = False
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=25, ge=1, le=100)
     filter: Literal[
@@ -38,6 +39,7 @@ class PerformanceWriteInput(PerformancePlanInput):
 
 
 class CreatePerformancePlanInput(PerformanceSessionInput):
+    include_units: bool = False
     expected_plan_revision_id: str = Field(min_length=1, max_length=80)
     mode: Literal["manual", "passive", "llm"] = "passive"
     purpose: Literal["delivery", "speakers", "combined"] = "delivery"
@@ -118,6 +120,8 @@ class AnalysePerformancePlanInput(PerformanceWriteInput):
 
 class ClaimPerformanceBatchInput(PerformanceWriteInput):
     lease_seconds: int = Field(default=900, ge=30, le=3600)
+    packet_format: Literal["standard", "compact"] = "compact"
+    known_manifest_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class PerformanceBatchInput(PerformanceWriteInput):

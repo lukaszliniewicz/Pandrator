@@ -36,8 +36,9 @@ dispatch run, then claim and process one batch at a time; the server does not
 push source text to the MCP sidecar. Run list/get responses contain metadata
 only. A claim is the disclosure boundary for that batch's canonical task,
 source cues, timing policy, bounded boundary context, and short-lived lease
-capability. The
-authoritative source is `batch.cues`; cue text and optional timing each occur in
+capability. The authoritative source is `batch.cue_rows` in the default compact
+packet, decoded with `cue_columns` and `turns`, or `batch.cues` when requesting
+`packet_format=standard`. Cue text and optional timing each occur in
 one place. Boundary context is evidence only.
 
 Keep the returned `lease_token` scoped to the matching batch ID. Renew it when

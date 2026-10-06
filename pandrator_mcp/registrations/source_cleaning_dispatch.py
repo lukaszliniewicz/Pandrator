@@ -37,6 +37,7 @@ def register_source_cleaning_dispatch_tools(
     server: Any,
     runtime: McpRuntime,
     _call_with_validated_input: Callable[..., dict[str, Any]],
+    _response: Callable[..., Any],
     *,
     read_only: Any,
     write_action: Any,
@@ -151,10 +152,11 @@ def register_source_cleaning_dispatch_tools(
             ),
         ],
         lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Claim one rich editorial packet with bounded book evidence."""
 
-        return _call_with_validated_input(
+        envelope = _call_with_validated_input(
             claim_source_cleaning_dispatch_batch,
             runtime,
             ClaimSourceCleaningDispatchBatchInput,
@@ -164,6 +166,7 @@ def register_source_cleaning_dispatch_tools(
                 "idempotency_key": idempotency_key,
             },
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_renew_source_cleaning_dispatch_batch",

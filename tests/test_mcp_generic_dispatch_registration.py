@@ -18,7 +18,10 @@ from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
 from pandrator_mcp.server import build_server
+from tests.test_mcp_compact_dispatch import _claim_payload
 from tests.test_mcp_media_edit_registration import fixture_runtime as base_fixture_runtime
+from tests.test_mcp_performance import _performance_claim_payload
+from tests.test_mcp_speech_optimization_dispatch import _Application as SpeechApplication
 
 SENTINEL = "generic dispatch registration fixture stdout"
 MARKER = "private-generic-fixture-" * 8
@@ -129,7 +132,10 @@ CASES = [
     Case(
         "pandrator_claim_dispatch_batch",
         "claim_dispatch_batch",
-        {"run_id": "run-1", "idempotency_key": "registration:generic:1"},
+        {
+            "run_id": "run-1", "idempotency_key": "registration:generic:1",
+            "packet_format": "standard",
+        },
         ("run-1",),
         {"lease_seconds": 900, "idempotency_key": "registration:generic:1"},
     ),
@@ -736,3 +742,72 @@ async def capture_contract(root: Path) -> dict[str, Any]:
             for index, case in enumerate(cases)
         ]
     return {"metadata": metadata, **capture_value(groups)}
+
+
+@pytest.mark.parametrize("lane", ["subtitle", "speech", "source", "media", "performance"])
+def test_all_passive_claims_offer_native_standard_and_structured_transport(tmp_path, lane):
+    async def exercise():
+        runtime, _, application = base_fixture_runtime(tmp_path)
+        common = {"run_id": "run-1", "idempotency_key": "registration:transport"}
+        choices = {
+            "subtitle": ("pandrator_claim_dispatch_batch", "claim_dispatch_batch", common,
+                         _claim_payload()),
+            "speech": ("pandrator_claim_speech_optimization_dispatch_batch",
+                       "claim_speech_optimization_dispatch_batch", common,
+                       SpeechApplication().claim_speech_optimization_dispatch_batch("run-1")),
+            "source": ("pandrator_claim_source_cleaning_dispatch_batch",
+                       "claim_source_cleaning_dispatch_batch", common,
+                       {"run_id": "run-1", "batch_id": "batch-1", "status": "leased",
+                        "lease_token": "lease", "task": {"kind": "source_cleaning"},
+                        "batch": {"phase": "metadata", "evidence": []}}),
+            "media": ("pandrator_claim_media_edit_dispatch_batch",
+                      "claim_media_edit_dispatch_batch", common,
+                      {"run_id": "run-1", "batch_id": "batch-1", "status": "leased",
+                       "lease_token": "lease", "task": {"kind": "media_edit"},
+                       "batch": {"cues": []}}),
+            "performance": ("pandrator_claim_performance_batch", "performance_plan_request",
+                            {"session_id": "session", "plan_id": "plan",
+                             "idempotency_key": "registration:transport"},
+                            _performance_claim_payload()),
+        }
+        name, method, arguments, payload = choices[lane]
+        target = getattr(application, method)
+        target.side_effect = None
+        target.return_value = payload
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
+            tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+            properties = tools[name].input_schema["properties"]
+            assert properties["response_mode"]["enum"] == ["standard", "structured"]
+            assert properties["response_mode"]["default"] == "standard"
+            if lane in {"subtitle", "speech", "performance"}:
+                assert properties["packet_format"]["default"] == "compact"
+                assert properties["known_manifest_hash"]["anyOf"] == [
+                    {"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"},
+                ]
+                assert properties["known_manifest_hash"]["default"] is None
+            envelopes = []
+            for mode in ("standard", "structured"):
+                result = await client.call_tool(name, {**arguments, "response_mode": mode})
+                assert not result.is_error
+                value = result.structured_content
+                text = json.loads(text_block(result).text)
+                if mode == "standard":
+                    assert text == value
+                else:
+                    assert text == {
+                        "schema_version": value["schema_version"], "request_id": value["request_id"],
+                        "data": "structuredContent", **{
+                            key: value["result"][key]
+                            for key in ("run_id", "batch_id", "status", "manifest_hash")
+                            if key in value["result"]
+                        },
+                    }
+                if lane in {"subtitle", "speech", "performance"}:
+                    assert value["result"]["packet_format"] == "compact-v1"
+                envelopes.append({key: item for key, item in value.items() if key != "request_id"})
+            assert envelopes[0] == envelopes[1]
+            for call in target.call_args_list:
+                forwarded = call.args[1] if lane == "performance" else call.kwargs
+                assert not {"response_mode", "packet_format", "known_manifest_hash"} & forwarded.keys()
+
+    asyncio.run(exercise())

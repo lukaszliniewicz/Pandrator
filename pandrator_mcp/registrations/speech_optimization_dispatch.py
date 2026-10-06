@@ -35,6 +35,7 @@ def register_speech_optimization_dispatch_tools(
     server: Any,
     runtime: McpRuntime,
     _call_with_validated_input: Callable[..., dict[str, Any]],
+    _response: Callable[..., Any],
     *,
     read_only: Any,
     write_action: Any,
@@ -152,19 +153,27 @@ def register_speech_optimization_dispatch_tools(
             ),
         ],
         lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+        packet_format: Literal["standard", "compact"] = "compact",
+        known_manifest_hash: Annotated[
+            NativeNullableString, Field(pattern=r"^[a-f0-9]{64}$")
+        ] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Claim the next sequential units plus read-only boundary context."""
 
-        return _call_with_validated_input(
+        envelope = _call_with_validated_input(
             claim_speech_optimization_dispatch_batch,
             runtime,
             ClaimSpeechOptimizationDispatchBatchInput,
             {
                 "run_id": run_id,
                 "lease_seconds": lease_seconds,
+                "packet_format": packet_format,
+                "known_manifest_hash": known_manifest_hash,
                 "idempotency_key": idempotency_key,
             },
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_renew_speech_optimization_dispatch_batch",

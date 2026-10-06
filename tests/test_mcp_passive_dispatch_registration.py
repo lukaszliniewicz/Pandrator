@@ -190,7 +190,8 @@ CASES = [
     Case(
         "pandrator_claim_speech_optimization_dispatch_batch",
         "claim_speech_optimization_dispatch_batch",
-        {"run_id": "run-1", "idempotency_key": "registration:dispatch:1"},
+        {"run_id": "run-1", "idempotency_key": "registration:dispatch:1",
+         "packet_format": "standard"},
         ("run-1",),
         {"lease_seconds": 900, "idempotency_key": "registration:dispatch:1"},
     ),

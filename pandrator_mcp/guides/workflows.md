@@ -59,6 +59,13 @@ Planning and execution are separate on purpose. A plan becomes stale when a
 relevant session, source, setting, provider, or selected artifact changes.
 Re-plan instead of attempting to work around a stale-plan failure.
 
+Orchestrated plans default to compact packets with one copy of each phase's
+create arguments. Subtitle, speech-optimization and performance claims also
+default to compact; request `packet_format=standard` for full object layouts.
+Retain manifests before requesting cache omission, choose boundary context at
+setup, and submit only the required typed results. Performance create/get
+return metadata by default; use `include_units=true` for a bounded review page.
+
 The model never chooses a filesystem root, connection origin, upload chunk
 size, credential, or download transport. Those are sidecar/operator policy.
 Expected tool failures are typed `isError` results; inspect their code and

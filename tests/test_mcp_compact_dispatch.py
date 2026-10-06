@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
+from pandrator_mcp.compact_packets import compact_manifest_packet
 from pandrator_mcp.schemas import ClaimDispatchBatchInput, SubmitDispatchBatchInput
 from pandrator_mcp.tools.dispatch import claim_dispatch_batch, submit_dispatch_batch
 
@@ -117,6 +118,30 @@ class CompactDispatchTests(unittest.TestCase):
     def setUp(self):
         self.application = _Application()
         self.runtime = SimpleNamespace(require_application=lambda: self.application)
+
+    def test_default_claim_is_compact_and_explicit_standard_is_unchanged(self):
+        default = claim_dispatch_batch(
+            self.runtime,
+            ClaimDispatchBatchInput(run_id="run-compact-1", idempotency_key="claim:default"),
+        ).result
+        self.assertEqual(_claim(self.runtime, "compact"), default)
+        self.assertNotIn("packet_format", _claim(self.runtime, "standard"))
+
+    def test_shared_manifest_hash_is_canonical_and_does_not_mutate_inputs(self):
+        projected = {"lease_token": "lease", "batch": {"items": [1]}}
+        manifest = {"z": "日本語", "a": {"revision": 1}}
+        before = copy.deepcopy((projected, manifest))
+        packet = compact_manifest_packet(projected, manifest, known_manifest_hash=None)
+        reordered = compact_manifest_packet(
+            projected, {"a": {"revision": 1}, "z": "日本語"}, known_manifest_hash=None
+        )
+        self.assertEqual(packet["manifest_hash"], reordered["manifest_hash"])
+        self.assertEqual(before, (projected, manifest))
+        self.assertIs(packet["batch"], projected["batch"])
+        cached = compact_manifest_packet(
+            projected, manifest, known_manifest_hash=packet["manifest_hash"]
+        )
+        self.assertEqual({k: v for k, v in packet.items() if k != "manifest"}, cached)
 
     def test_compact_claim_round_trips_cues_context_and_dynamic_task_data(self):
         standard = _claim(self.runtime)

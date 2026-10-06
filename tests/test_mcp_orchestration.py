@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 from typing import ClassVar
@@ -100,6 +101,7 @@ class OrchestrationSchemaTests(unittest.TestCase):
         )
         for kwargs in (
             {"goal": "  "},
+            {"goal": "Invalid format", "packet_format": "tiny"},
             {"passive_stages": ("translation", "translation")},
             {"overrides": {"tts": {"api_key": "secret"}}},
             {"filename": "../course.mp4", "materialize": True},
@@ -133,6 +135,77 @@ class OrchestrationSchemaTests(unittest.TestCase):
 
 
 class OrchestrationToolTests(unittest.TestCase):
+    def test_compact_plan_keeps_actions_and_settings_without_repeated_arguments(self):
+        application = _Application()
+        runtime = SimpleNamespace(require_application=lambda: application)
+        arguments = PlanOrchestratedWorkflowInput(
+            session_id="session-1",
+            goal="Prepare every passive stage",
+            passive_stages=("correction", "translation", "speech_optimization"),
+            context_capsule={"overview": "Retain terminology across the recording."},
+        )
+        compact = plan_orchestrated_workflow(runtime, arguments)
+        standard = plan_orchestrated_workflow(
+            runtime, arguments.model_copy(update={"packet_format": "standard"})
+        )
+        self.assertEqual("compact-v1", compact.result["packet_format"])
+        self.assertNotIn("current_stages", compact.result)
+        self.assertEqual(standard.next_actions, compact.next_actions)
+        self.assertEqual(standard.result["next_action"], compact.result["next_action"])
+        for lean, full in zip(
+            compact.result["phases"], standard.result["phases"], strict=True
+        ):
+            if lean["mode"] == "passive":
+                self.assertEqual(full["create_arguments"], lean["create_arguments"])
+                self.assertEqual(full["create_tool"], lean["create_tool"])
+                self.assertEqual(
+                    {"packet_format": "compact"}, lean["loop"]["claim_arguments"]
+                )
+                self.assertEqual(
+                    full["loop"],
+                    {key: value for key, value in lean["loop"].items()
+                     if key != "claim_arguments"},
+                )
+                self.assertNotIn("arguments", lean)
+                self.assertNotIn("create", lean)
+            else:
+                self.assertEqual(full["arguments"], lean["arguments"])
+                self.assertEqual(full["execute"], lean["execute"])
+                self.assertNotIn("plan_arguments", lean)
+        def serialize(result):
+            return json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+        self.assertLess(len(serialize(compact.result)), len(serialize(standard.result)))
+
+    def test_speech_context_and_timing_overrides_are_resolved_and_validated(self):
+        application = _Application()
+        runtime = SimpleNamespace(require_application=lambda: application)
+        arguments = PlanOrchestratedWorkflowInput(
+            session_id="session-1", goal="Prepare speech", passive_stages=("speech_optimization",),
+            overrides={"text": {
+                "context_before": 0, "context_after": 0, "include_timing": False,
+                "char_limit": 30_000,
+            }},
+        )
+        compact = plan_orchestrated_workflow(runtime, arguments)
+        packet = compact.result["phases"][0]["create_arguments"]
+        self.assertEqual(0, packet["context_before"])
+        self.assertEqual(0, packet["context_after"])
+        self.assertFalse(packet["include_timing"])
+        self.assertEqual(30_000, packet["char_limit"])
+        default = plan_orchestrated_workflow(
+            runtime, arguments.model_copy(update={"overrides": {}})
+        ).result["phases"][0]["create_arguments"]
+        self.assertEqual((4, 2), (default["context_before"], default["context_after"]))
+        self.assertTrue(default["include_timing"])
+        self.assertNotEqual(default["idempotency_key"], packet["idempotency_key"])
+        with self.assertRaises(PandratorMcpError) as caught:
+            plan_orchestrated_workflow(
+                runtime,
+                arguments.model_copy(update={"overrides": {"text": {"context_before": 21}}}),
+            )
+        self.assertEqual("validation_error", caught.exception.code)
+
     def test_planner_is_live_read_only_and_merges_typed_export_options(self):
         application = _Application()
         runtime = SimpleNamespace(require_application=lambda: application)

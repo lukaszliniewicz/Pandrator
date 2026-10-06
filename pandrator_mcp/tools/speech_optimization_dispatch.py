@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..compact_packets import compact_manifest_packet
 from ..context import McpRuntime
 from ..errors import NextAction
 from ..results import ToolOutcome
@@ -335,7 +336,25 @@ def claim_speech_optimization_dispatch_batch(
         lease_seconds=arguments.lease_seconds,
         idempotency_key=arguments.idempotency_key,
     )
-    return _claim(payload)
+    projected = _claim(payload)
+    task = projected.get("task")
+    batch = projected.get("batch")
+    if (
+        arguments.packet_format == "compact"
+        and isinstance(task, dict)
+        and task
+        and isinstance(batch, dict)
+        and batch.get("units")
+    ):
+        manifest = {key: value for key, value in task.items() if key not in {"kind", "output_role"}}
+        if "character_dictionary" in projected:
+            manifest["character_dictionary"] = projected["character_dictionary"]
+        projected = compact_manifest_packet(
+            projected, manifest, known_manifest_hash=arguments.known_manifest_hash
+        )
+        projected["task"] = _fields(task, ("kind", "output_role"))
+        projected.pop("character_dictionary", None)
+    return projected
 
 
 def renew_speech_optimization_dispatch_batch(

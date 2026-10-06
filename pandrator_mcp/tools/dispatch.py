@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from typing import Any
 
+from ..compact_packets import compact_manifest_packet
 from ..context import McpRuntime
 from ..errors import NextAction
 from ..results import ToolOutcome
@@ -311,16 +311,6 @@ def _claim(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _canonical_sha256(value: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
-
-
 def _turn_table(cues: list[dict[str, Any]]) -> tuple[list[Any], list[int | None]]:
     turns: list[Any] = []
     indexes: dict[str, int] = {}
@@ -350,15 +340,9 @@ def _compact_claim(
 ) -> dict[str, Any]:
     """Encode the canonical claim projection in the versioned compact form."""
 
-    result = dict(projected)
-    result["packet_format"] = "compact-v1"
-
     task = projected.get("task")
     manifest = _project_fields(task, _COMPACT_MANIFEST_KEYS) if isinstance(task, dict) else {}
-    manifest_hash = _canonical_sha256(manifest)
-    result["manifest_hash"] = manifest_hash
-    if known_manifest_hash != manifest_hash:
-        result["manifest"] = manifest
+    result = compact_manifest_packet(projected, manifest, known_manifest_hash=known_manifest_hash)
     if isinstance(task, dict):
         result["task"] = _project_fields(task, _COMPACT_TASK_KEYS)
 

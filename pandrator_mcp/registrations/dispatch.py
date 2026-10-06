@@ -252,7 +252,7 @@ def register_dispatch_batch_tools(
             ),
         ],
         lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
-        packet_format: Literal["standard", "compact"] = "standard",
+        packet_format: Literal["standard", "compact"] = "compact",
         known_manifest_hash: Annotated[
             NativeNullableString, Field(pattern=r"^[a-f0-9]{64}$")
         ] = None,

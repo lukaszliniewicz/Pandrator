@@ -416,6 +416,7 @@ def register_media_edit_dispatch_tools(
     server: Any,
     runtime: McpRuntime,
     _call_with_validated_input: Callable[..., dict[str, Any]],
+    _response: Callable[..., Any],
     *,
     read_only: Any,
     write_action: Any,
@@ -500,10 +501,11 @@ def register_media_edit_dispatch_tools(
             Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"),
         ],
         lease_seconds: Annotated[int, Field(ge=30, le=3_600)] = 900,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Claim the single global cue-evidence batch with a short lease."""
 
-        return _call_with_validated_input(
+        envelope = _call_with_validated_input(
             claim_media_edit_dispatch_batch,
             runtime,
             ClaimMediaEditDispatchBatchInput,
@@ -513,6 +515,7 @@ def register_media_edit_dispatch_tools(
                 "idempotency_key": idempotency_key,
             },
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_renew_media_edit_dispatch_batch",

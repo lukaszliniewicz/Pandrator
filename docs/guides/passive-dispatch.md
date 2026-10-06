@@ -338,18 +338,45 @@ is not automatically interchangeable.
 
 ### Compact MCP packets
 
-The default packet and response formats remain compatible. Hosts that consume
-`structuredContent` can request `response_mode=structured` on workflow, media-edit,
-subtitle-preview, evidence and subtitle-claim reads. Full data then appears once;
-the text content is a short receipt. A text-only host should keep the default.
+Subtitle, speech-optimization and performance claims default to
+`packet_format=compact` (`compact-v1`). Request `packet_format=standard` for the
+full object representation. Orchestrated plans also default to compact: passive
+phases retain `create_tool`, `create_arguments` and `loop`, while native phases
+retain `tool` and `arguments`, without repeating those arguments under aliases.
 
-Claim with `packet_format=compact` to receive `compact-v1`: map each `cue_rows`
-array through `cue_columns`, and resolve `turn_index` through `turns`. IDs, text,
+For subtitles, map each `cue_rows` array through `cue_columns`, and resolve
+`turn_index` through `turns`. IDs, text,
 timing, evidence and dynamic context remain intact. Cache `manifest` by its
 SHA-256 `manifest_hash`; on later claims supply `known_manifest_hash` only if
-that exact manifest is retained. A mismatch returns the full manifest. Policy
+that exact manifest is retained by the model processing the batch. A mismatch
+returns the full manifest. Policy
 instructions refer to `batch.cue_count`, so different batch sizes do not change
 the shared manifest. Never replace omitted context or source text with guesses.
+
+Speech manifests contain the stable task fields and character dictionary;
+`task` retains kind and output role. Performance manifests contain the batch's
+instructions, schemas and policies; `batch.items` retains the actionable units
+and their context. Changed policies or dictionaries invalidate the manifest.
+The standard representation remains available for recovery or older consumers.
+
+Hosts that consume `structuredContent` can request `response_mode=structured`
+on all five passive claim tools, orchestrated plans, performance create/get,
+and the other reads advertising that control. Full data appears once and text
+is a short receipt. Text-only hosts should keep `response_mode=standard`.
+
+Performance create/get return metadata by default; request `include_units=true`
+to inspect a bounded page of units and saved annotations. After a performance
+submission, claim the next batch. A complete claim points to plan inspection;
+review the saved annotations before adoption. Other dispatch submission receipts
+already contain status, counts, artifact IDs and recovery actions rather than
+echoing the processed source.
+
+Context is independent of presentation. At setup, choose `context_before` and
+`context_after` for continuity; zero omits the corresponding boundary excerpts.
+In an orchestrated plan, use `overrides.correction`/`overrides.translation` for
+subtitle controls and `overrides.text` for speech `context_before`,
+`context_after`, `include_timing` and `char_limit`. Keep contextual evidence
+when pronouns, speaker turns, adjacent passages or a resumed run need it.
 
 Correction can submit grouped `edits`, `deletes`, `merges` and `splits` instead of
 `operations`; translation can use `items` instead of `translations`. Do not mix
