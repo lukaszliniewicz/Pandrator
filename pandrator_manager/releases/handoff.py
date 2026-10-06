@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlsplit
 
 import psutil
@@ -50,6 +50,7 @@ from ..models import (
 from ..state import ManagerStore
 from .authority import VerifiedRelease
 from .bundles import validate_release_bundle
+from .handoff_process import LaunchedManagerProcess
 from .slots import (
     _atomic_json,
     _durable_replace,
@@ -60,6 +61,11 @@ from .trust import canonical_json
 
 _OPERATION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
 _OPERATION_ID = re.compile(_OPERATION_ID_PATTERN)
+
+
+class _ProcessOptions(TypedDict, total=False):
+    creationflags: int
+    start_new_session: bool
 
 
 class ManagerHandoffPayload(StrictModel):
@@ -512,7 +518,7 @@ def prepare_manager_handoff(
                 500,
             )
         if os.path.lexists(journal):
-            preparation, journal_path = read_preparation_journal(layout, operation_id)
+            preparation_envelope, journal_path = read_preparation_journal(layout, operation_id)
             _validate_reviewed_manager_preparation(
                 layout=layout,
                 store=store,
@@ -521,13 +527,13 @@ def prepare_manager_handoff(
                 release=release,
                 staged=staged,
                 destination=destination,
-                preparation=preparation.payload,
+                preparation=preparation_envelope.payload,
             )
             _cleanup_preparation_journal(journal_path)
     else:
         preparation: ManagerPreparationPayload
         if os.path.lexists(journal):
-            preparation, _ = read_preparation_journal(layout, operation_id)
+            preparation_envelope, _ = read_preparation_journal(layout, operation_id)
             _validate_reviewed_manager_preparation(
                 layout=layout,
                 store=store,
@@ -536,7 +542,7 @@ def prepare_manager_handoff(
                 release=release,
                 staged=staged,
                 destination=destination,
-                preparation=preparation.payload,
+                preparation=preparation_envelope.payload,
             )
             if staged.exists() and destination.exists():
                 raise ManagerError(
@@ -770,11 +776,7 @@ class ManagerHandoffCoordinator:
         log_path = self.layout.logs / "manager-handoff.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("ab", buffering=0)
-        options = (
-            {"creationflags": (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)}
-            if os.name == "nt"
-            else {"start_new_session": True}
-        )
+        options = _process_options()
         try:
             stable = installed_launcher(self.layout)
             fallback = LauncherRuntime(
@@ -822,7 +824,7 @@ def _wait_for_old_manager(payload: ManagerHandoffPayload, timeout: float) -> Non
     raise TimeoutError("The retiring manager did not exit before handoff.")
 
 
-def _process_options() -> dict[str, Any]:
+def _process_options() -> _ProcessOptions:
     if os.name == "nt":
         return {
             "creationflags": (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
@@ -863,6 +865,9 @@ def _probe_new_runtime(
             payload.operation_id,
         ]
     )
+    options: _ProcessOptions = (
+        {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    )
     result = subprocess.run(
         command,
         cwd=payload.new_application_root,
@@ -872,7 +877,7 @@ def _probe_new_runtime(
         text=True,
         shell=False,
         timeout=180,
-        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
+        **options,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -941,7 +946,7 @@ def _wait_for_new_manager(
     layout: WorkspaceLayout,
     payload: ManagerHandoffPayload,
     secret: str,
-    process: subprocess.Popen,
+    process: LaunchedManagerProcess,
     timeout: float,
 ) -> None:
     def loopback_base_url(value: str) -> bool:
@@ -963,39 +968,10 @@ def _wait_for_new_manager(
             and (address.is_loopback or (mapped is not None and mapped.is_loopback))
         )
 
-    try:
-        launch_root = psutil.Process(process.pid)
-        launch_create_time = launch_root.create_time()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-        launch_create_time = time.time()
-
-    def belongs_to_launch(candidate: psutil.Process) -> bool:
-        try:
-            if (
-                candidate.pid == process.pid
-                and abs(candidate.create_time() - launch_create_time) <= 0.01
-            ):
-                return True
-            current = candidate
-            for _depth in range(32):
-                parent_pid = current.ppid()
-                if parent_pid == process.pid:
-                    return candidate.create_time() >= launch_create_time - 1.0
-                if parent_pid <= 0 or parent_pid == current.pid:
-                    return False
-                try:
-                    current = current.parent()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    return False
-                if current is None:
-                    return False
-            return False
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            return False
-
     deadline = time.monotonic() + timeout
     last_error = "not started"
     while time.monotonic() < deadline:
+        process.observe()
         try:
             descriptor = ConnectionDescriptor.model_validate_json(
                 layout.descriptor.read_text(encoding="utf-8")
@@ -1008,7 +984,7 @@ def _wait_for_new_manager(
                 raise ValueError("descriptor endpoint is not safe loopback HTTP")
             daemon_process = psutil.Process(descriptor.pid)
             if (
-                not belongs_to_launch(daemon_process)
+                not process.belongs_to_launch(daemon_process)
                 or abs(daemon_process.create_time() - descriptor.process_create_time) > 0.01
                 or Path(daemon_process.exe()).resolve(strict=False)
                 != Path(descriptor.executable).resolve(strict=False)
@@ -1097,89 +1073,11 @@ def _mark_handoff_failed(
     )
 
 
-def _terminate_launched(
-    process: subprocess.Popen | None,
-    *,
-    layout: WorkspaceLayout | None = None,
-    payload: ManagerHandoffPayload | None = None,
-) -> None:
-    """Terminate a launched Python process or PyInstaller bootloader tree."""
-
-    targets: dict[tuple[int, float], psutil.Process] = {}
-
-    def add(candidate: psutil.Process) -> None:
-        try:
-            key = (candidate.pid, candidate.create_time())
-            targets[key] = candidate
-        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
-            return
+def _terminate_launched(process: LaunchedManagerProcess | None) -> None:
+    """Confirm the owned launch tree stopped before restoring manager state."""
 
     if process is not None:
-        try:
-            root = psutil.Process(int(process.pid))
-            for child in root.children(recursive=True):
-                add(child)
-            add(root)
-        except (
-            AttributeError,
-            TypeError,
-            ValueError,
-            psutil.NoSuchProcess,
-            psutil.AccessDenied,
-            OSError,
-        ):
-            pass
-    if layout is not None and payload is not None:
-        try:
-            descriptor = ConnectionDescriptor.model_validate_json(
-                layout.descriptor.read_text(encoding="utf-8")
-            )
-            candidate = psutil.Process(descriptor.pid)
-            if (
-                descriptor.manager_version == payload.version
-                and Path(descriptor.executable).resolve(strict=False)
-                == Path(payload.new_python).resolve(strict=False)
-                and abs(candidate.create_time() - descriptor.process_create_time) <= 0.01
-                and Path(candidate.exe()).resolve(strict=False)
-                == Path(payload.new_python).resolve(strict=False)
-            ):
-                for child in candidate.children(recursive=True):
-                    add(child)
-                add(candidate)
-        except (
-            OSError,
-            ValueError,
-            psutil.NoSuchProcess,
-            psutil.AccessDenied,
-        ):
-            pass
-    ordered = list(targets.values())
-    if not ordered:
-        if process is not None:
-            try:
-                process.terminate()
-                process.wait(timeout=10)
-            except Exception:
-                pass
-        return
-    for candidate in ordered:
-        try:
-            candidate.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    _gone, alive = psutil.wait_procs(ordered, timeout=10)
-    for candidate in alive:
-        try:
-            candidate.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    if alive:
-        psutil.wait_procs(alive, timeout=10)
-    if process is not None:
-        try:
-            process.wait(timeout=1)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        process.terminate()
 
 
 def _cleanup_success(
@@ -1249,17 +1147,17 @@ def _acquire_handoff_lock(path: Path) -> int | None:
             except FileNotFoundError:
                 pass
             continue
-        owner_payload = json.dumps(
-            {
-                "pid": os.getpid(),
-                "create_time": psutil.Process().create_time(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        os.write(descriptor, owner_payload.encode("ascii"))
-        os.fsync(descriptor)
         try:
+            owner_payload = json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "create_time": psutil.Process().create_time(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            os.write(descriptor, owner_payload.encode("ascii"))
+            os.fsync(descriptor)
             protect_path(path)
         except Exception:
             os.close(descriptor)
@@ -1312,14 +1210,10 @@ def _rollback_handoff(
     payload: ManagerHandoffPayload,
     descriptor: Path,
     database_backup: Path,
-    launched: subprocess.Popen | None,
+    launched: LaunchedManagerProcess | None,
     error: Exception,
 ) -> None:
-    _terminate_launched(
-        launched,
-        layout=layout,
-        payload=payload,
-    )
+    _terminate_launched(launched)
     try:
         layout.descriptor.unlink()
     except FileNotFoundError:
@@ -1381,8 +1275,19 @@ def run_handoff(
     backup_root = layout.backups / operation_id / "manager-handoff"
     database_backup = backup_root / "manager.sqlite3"
     old_exited = False
-    launched: subprocess.Popen | None = None
+    committed = False
+    launched: LaunchedManagerProcess | None = None
     try:
+        store = ManagerStore(layout.database)
+        operation = store.get_operation(operation_id)
+        if operation.state == OperationState.SUCCEEDED:
+            _commit_handoff(store, layout, payload)
+            _cleanup_success(layout, operation_id, descriptor, backup_root)
+            return 0
+        if operation.state != OperationState.HANDOFF_PENDING:
+            raise RuntimeError(
+                f"Manager handoff requires review in state {operation.state}; recovery files retained."
+            )
         _wait_for_old_manager(payload, shutdown_timeout)
         old_exited = True
         backup_root.mkdir(parents=True, exist_ok=True)
@@ -1406,8 +1311,6 @@ def run_handoff(
                 "activated_by": payload.operation_id,
             },
         )
-        store = ManagerStore(layout.database)
-        _commit_handoff(store, layout, payload)
         secret = read_client_secret(layout.credential)
         launch_command = (
             [
@@ -1429,7 +1332,7 @@ def run_handoff(
                 payload.operation_id,
             ]
         )
-        launched = subprocess.Popen(
+        process = subprocess.Popen(
             launch_command,
             cwd=payload.new_application_root,
             stdin=subprocess.DEVNULL,
@@ -1438,6 +1341,9 @@ def run_handoff(
             shell=False,
             **_process_options(),
         )
+        launched = LaunchedManagerProcess(
+            process, native_launcher=payload.new_runtime_mode == "native_launcher"
+        )
         _wait_for_new_manager(
             layout,
             payload,
@@ -1445,6 +1351,8 @@ def run_handoff(
             launched,
             health_timeout,
         )
+        _commit_handoff(store, layout, payload)
+        committed = True
         _cleanup_success(
             layout,
             operation_id,
@@ -1453,6 +1361,10 @@ def run_handoff(
         )
         return 0
     except Exception as error:
+        if committed:
+            raise RuntimeError(
+                "Manager handoff succeeded, but cleanup failed; the accepted manager was retained."
+            ) from error
         if old_exited:
             try:
                 _rollback_handoff(

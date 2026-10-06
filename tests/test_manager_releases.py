@@ -4,15 +4,20 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from contextlib import closing
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import psutil
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -24,6 +29,7 @@ from pandrator_manager.application import create_application
 from pandrator_manager.auth import ensure_client_secret
 from pandrator_manager.errors import ConflictError, ManagerError
 from pandrator_manager.models import (
+    ConnectionDescriptor,
     HealthResult,
     HealthState,
     ManagedService,
@@ -1680,6 +1686,13 @@ class DurableApplicationReleaseTests(unittest.TestCase):
     def test_external_handoff_success_commits_only_after_new_health(self):
         plan, operation = self._prepare_pending_manager_handoff()
         launched = _FakeLaunchedProcess()
+
+        def check_pending_until_healthy(*_args):
+            pending = self.application.store.get_operation(operation.id)
+            self.assertEqual(pending.state, OperationState.HANDOFF_PENDING)
+            self.assertIsNone(self.application.store.accepted_release("pandrator-manager"))
+            self.assertEqual(self.application.store.configuration_revision(), 0)
+
         with (
             mock.patch.object(handoff_module, "protect_path"),
             mock.patch.object(
@@ -1695,9 +1708,11 @@ class DurableApplicationReleaseTests(unittest.TestCase):
                 "Popen",
                 return_value=launched,
             ),
+            mock.patch.object(handoff_module, "LaunchedManagerProcess", return_value=launched),
             mock.patch.object(
                 handoff_module,
                 "_wait_for_new_manager",
+                side_effect=check_pending_until_healthy,
             ) as health,
         ):
             result = handoff_module.run_handoff(
@@ -1744,6 +1759,7 @@ class DurableApplicationReleaseTests(unittest.TestCase):
                 "Popen",
                 return_value=launched,
             ),
+            mock.patch.object(handoff_module, "LaunchedManagerProcess", return_value=launched),
             mock.patch.object(
                 handoff_module,
                 "_wait_for_new_manager",
@@ -1773,6 +1789,164 @@ class DurableApplicationReleaseTests(unittest.TestCase):
         self.assertFalse((self.layout.root / "manager" / "current.json").exists())
         self.assertFalse((self.layout.manager_versions / "1.0.0").exists())
         self.assertEqual(pending_handoffs(self.layout), ())
+
+    def test_external_handoff_unconfirmed_stop_preserves_recovery_state(self):
+        _plan, operation = self._prepare_pending_manager_handoff()
+        launched = _FakeLaunchedProcess()
+        descriptor = handoff_module.handoff_descriptor_path(self.layout, operation.id)
+        descriptor_bytes = descriptor.read_bytes()
+        slot = self.layout.manager_versions / "1.0.0"
+        with (
+            mock.patch.object(handoff_module, "protect_path"),
+            mock.patch.object(handoff_module, "_wait_for_old_manager"),
+            mock.patch.object(handoff_module, "_probe_new_runtime"),
+            mock.patch.object(handoff_module.subprocess, "Popen", return_value=launched),
+            mock.patch.object(handoff_module, "LaunchedManagerProcess", return_value=launched),
+            mock.patch.object(
+                handoff_module, "_wait_for_new_manager", side_effect=RuntimeError("unhealthy")
+            ),
+            mock.patch.object(
+                launched, "terminate", side_effect=RuntimeError("owned child still running")
+            ),
+            mock.patch.object(handoff_module, "_restore_sqlite") as restore,
+            mock.patch.object(handoff_module.shutil, "rmtree") as remove,
+            mock.patch.object(handoff_module, "_restart_previous_manager") as restart,
+            self.assertRaisesRegex(RuntimeError, "handoff and rollback both failed"),
+        ):
+            handoff_module.run_handoff(self.layout.workspace, operation.id)
+        restore.assert_not_called()
+        remove.assert_not_called()
+        restart.assert_not_called()
+        self.assertTrue(slot.is_dir())
+        self.assertEqual(descriptor.read_bytes(), descriptor_bytes)
+        self.assertTrue(
+            (self.layout.backups / operation.id / "manager-handoff" / "manager.sqlite3").is_file()
+        )
+        pointer = json.loads(
+            (self.layout.root / "manager" / "current.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(pointer["activated_by"], operation.id)
+        self.assertIsNone(self.application.store.accepted_release("pandrator-manager"))
+        failed = self.application.store.get_operation(operation.id)
+        self.assertEqual(failed.state, OperationState.RECOVERY_REQUIRED)
+        self.assertEqual(failed.error_code, "manager_handoff_recovery_required")
+        self.assertIn("owned child still running", failed.recovery["rollback_error"])
+        with (
+            mock.patch.object(handoff_module.subprocess, "Popen") as launch,
+            self.assertRaisesRegex(RuntimeError, "requires review"),
+        ):
+            handoff_module.run_handoff(self.layout.workspace, operation.id)
+        launch.assert_not_called()
+        self.assertEqual(descriptor.read_bytes(), descriptor_bytes)
+        self.assertTrue(slot.is_dir())
+
+    def test_external_handoff_cleanup_failure_retains_accepted_manager_and_can_resume(self):
+        _plan, operation = self._prepare_pending_manager_handoff()
+        launched = _FakeLaunchedProcess()
+        with (
+            mock.patch.object(handoff_module, "protect_path"),
+            mock.patch.object(handoff_module, "_wait_for_old_manager"),
+            mock.patch.object(handoff_module, "_probe_new_runtime"),
+            mock.patch.object(handoff_module.subprocess, "Popen", return_value=launched),
+            mock.patch.object(handoff_module, "LaunchedManagerProcess", return_value=launched),
+            mock.patch.object(handoff_module, "_wait_for_new_manager"),
+            mock.patch.object(handoff_module, "_cleanup_success", side_effect=OSError("locked")),
+            mock.patch.object(handoff_module, "_rollback_handoff") as rollback,
+            self.assertRaisesRegex(RuntimeError, "accepted manager was retained"),
+        ):
+            handoff_module.run_handoff(self.layout.workspace, operation.id)
+        rollback.assert_not_called()
+        self.assertFalse(launched.terminated)
+        self.assertEqual(
+            self.application.store.get_operation(operation.id).state, OperationState.SUCCEEDED
+        )
+        self.assertIsNotNone(self.application.store.accepted_release("pandrator-manager"))
+        self.assertTrue((self.layout.manager_versions / "1.0.0").is_dir())
+        self.assertEqual(pending_handoffs(self.layout), (operation.id,))
+        with mock.patch.object(handoff_module.subprocess, "Popen") as launch:
+            self.assertEqual(handoff_module.run_handoff(self.layout.workspace, operation.id), 0)
+        launch.assert_not_called()
+        self.assertEqual(pending_handoffs(self.layout), ())
+
+    def test_handoff_lock_closes_and_unlinks_after_owner_write_failures(self):
+        for action in ("write", "fsync"):
+            with self.subTest(action=action):
+                lock = self.layout.state / f"handoff-{action}.lock"
+                with (
+                    mock.patch.object(handoff_module.os, action, side_effect=OSError("disk error")),
+                    mock.patch.object(handoff_module.os, "close", wraps=os.close) as close,
+                    self.assertRaisesRegex(OSError, "disk error"),
+                ):
+                    handoff_module._acquire_handoff_lock(lock)
+                close.assert_called_once()
+                with self.assertRaises(OSError):
+                    os.fstat(close.call_args.args[0])
+                self.assertFalse(lock.exists())
+
+    def test_new_manager_health_requires_owned_native_process_and_authenticated_response(self):
+        _plan, operation = self._prepare_pending_manager_handoff()
+        envelope, _descriptor = handoff_module.read_handoff(self.layout, operation.id)
+        payload = envelope.payload.model_copy(update={"new_python": sys.executable})
+        secret = "disposable-health-secret"
+        instance_id = "disposable-manager-instance"
+        received = []
+
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append((self.path, self.headers.get("Authorization")))
+                if self.headers.get("Authorization") != f"Bearer {secret}":
+                    self.send_error(401)
+                    return
+                body = json.dumps(
+                    {"service": "pandrator-manager", "version": payload.version,
+                     "instance_id": instance_id}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Pandrator-Manager-Instance", instance_id)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        owner = handoff_module.LaunchedManagerProcess(child)
+        try:
+            descriptor = ConnectionDescriptor(
+                manager_version=payload.version,
+                workspace=str(self.layout.workspace),
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                instance_id=instance_id,
+                pid=child.pid,
+                process_create_time=psutil.Process(child.pid).create_time(),
+                executable=sys.executable,
+            )
+            unrelated = descriptor.model_copy(
+                update={"pid": os.getpid(), "process_create_time": psutil.Process().create_time()}
+            )
+            self.layout.descriptor.write_text(unrelated.model_dump_json(), encoding="utf-8")
+            with self.assertRaisesRegex(TimeoutError, "process identity mismatch"):
+                handoff_module._wait_for_new_manager(self.layout, payload, secret, owner, timeout=0.1)
+            self.assertEqual(received, [])
+            self.layout.descriptor.write_text(descriptor.model_dump_json(), encoding="utf-8")
+            handoff_module._wait_for_new_manager(self.layout, payload, secret, owner, timeout=5)
+            self.assertEqual(received, [("/v1/health", f"Bearer {secret}")])
+            self.assertIsNone(child.poll())
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

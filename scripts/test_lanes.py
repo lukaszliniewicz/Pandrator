@@ -162,6 +162,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_manager_application_recovery.py",
         "tests/test_manager_provider_policy.py",
         "tests/test_manager_releases.py",
+        "tests/test_manager_handoff_process.py",
         "tests/test_manager_supervisor_persistence.py",
         "tests/test_manager_tls.py",
         "tests/test_manager_tray_menu.py",
