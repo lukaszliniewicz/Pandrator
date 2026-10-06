@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from typing import Any
+from typing import Any, TypedDict
 
 from .source_passage_policy import (
     DEFAULT_CUE_JOIN_GAP_MS,
@@ -70,6 +70,16 @@ WEB_TO_RUNTIME: dict[str, str] = {
     "diagnostic_span_ms": "source_passage_diagnostic_span_ms",
 }
 RUNTIME_TO_WEB: dict[str, str] = {v: k for k, v in WEB_TO_RUNTIME.items()}
+
+
+class SourcePassageBuildKwargs(TypedDict, total=False):
+    min_chars: int
+    max_chars: int
+    sentence_lookahead_chars: int
+    pause_ms: int
+    max_span_ms: int
+    language_code: str
+
 
 __all__ = [
     "SOURCE_PASSAGE_POLICY_VERSION",
@@ -138,7 +148,7 @@ def effective_source_passage_settings(*layers: Any) -> dict[str, int]:
 
 def to_build_kwargs(
     effective: dict[str, Any], *, language_code: str = "en"
-) -> dict[str, Any]:
+) -> SourcePassageBuildKwargs:
     """Map effective web settings onto `build_source_passages` kwargs."""
     normalized = normalize_source_passage_settings(effective)
     return {

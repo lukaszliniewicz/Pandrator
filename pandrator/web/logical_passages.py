@@ -19,6 +19,7 @@ from pandrator.logic.dubbing.logical_passages import build_source_passages
 from pandrator.logic.dubbing.models import SubtitleSegment
 from pandrator.logic.dubbing.source_passage_settings import (
     SOURCE_PASSAGE_POLICY_VERSION,
+    SourcePassageBuildKwargs,
     effective_source_passage_settings,
     normalize_source_passage_settings,
     source_passage_settings_hash,
@@ -291,18 +292,15 @@ def source_passages(
         language = document.language or (record.source_language if record else None)
         if not same_timing_language(language, (reference or {}).get("language")):
             words = []
-        build_kwargs = {"language_code": language or ""}
-        if source_passage_settings is not None:
-            build_kwargs.update(
-                {
-                    key: value
-                    for key, value in to_build_kwargs(
-                        source_passage_settings,
-                        language_code=language or "",
-                    ).items()
-                    if key != "language_code"
-                }
+        build_kwargs: SourcePassageBuildKwargs
+        if source_passage_settings is None:
+            build_kwargs = {"language_code": language or ""}
+        else:
+            build_kwargs = to_build_kwargs(
+                source_passage_settings,
+                language_code=language or "",
             )
+            build_kwargs["language_code"] = language or ""
         passages = build_source_passages(cues, words, **build_kwargs)
     for row in passages:
         # Evidence tools still address real display cues in the selected artifact.
@@ -494,7 +492,8 @@ def materialize_speech_source(
     )
     expected_stage = document_stage_for_artifact_role(artifact.role)
     if (
-        expected_stage is None
+        display_revision is None
+        or expected_stage is None
         or document is None
         or document.session_id != artifact.session_id
         or document.stage != expected_stage
@@ -976,17 +975,20 @@ def rebuild_source_passages_branch(
         ]
         rebuilt["source_unit_ids"] = list(row.get("source_unit_ids", []))
         if isinstance(row.get("source_token_ranges"), list):
-            rebuilt["source_token_ranges"] = [
-                {
-                    **entry,
-                    "source_cue_id": old_to_new_segment.get(
-                        entry.get("source_cue_id"), entry.get("source_cue_id")
-                    ),
-                }
-                if isinstance(entry, dict)
-                else entry
-                for entry in row["source_token_ranges"]
-            ]
+            token_ranges = []
+            for entry in row["source_token_ranges"]:
+                if not isinstance(entry, dict):
+                    token_ranges.append(entry)
+                    continue
+                cue_id = entry.get("source_cue_id")
+                remapped = dict(entry)
+                remapped["source_cue_id"] = (
+                    old_to_new_segment.get(cue_id, cue_id)
+                    if cue_id is not None
+                    else None
+                )
+                token_ranges.append(remapped)
+            rebuilt["source_token_ranges"] = token_ranges
         remapped_rows.append(rebuilt)
     rows = remapped_rows
     branch_document.active_revision_id = branch_revision.id

@@ -1232,6 +1232,29 @@ class SubtitleEvidenceSchemaAndExcerptTests(unittest.TestCase):
             ),
         )
 
+    def test_evidence_costs_omit_overflowing_amounts_and_preserve_finite_types(self):
+        service = self._service_class()
+        for kind in ("actual", "billed"):
+            for amount in (10**1000, None):
+                with self.subTest(kind=kind, amount_type=type(amount).__name__):
+                    usage = {"kind": kind, "currency": "USD"}
+                    if amount is not None:
+                        usage["amount"] = amount
+                    self.assertEqual(
+                        {"kind": kind, "currency": "USD"},
+                        service._safe_cost({"usage": usage}, commercial=True),
+                    )
+            for amount in (2, 0.25):
+                with self.subTest(kind=kind, amount=amount):
+                    cost = service._safe_cost(
+                        {"usage": {"kind": kind, "amount": amount, "currency": "USD"}},
+                        commercial=True,
+                    )
+                    self.assertEqual(
+                        {"kind": kind, "amount": amount, "currency": "USD"}, cost
+                    )
+                    self.assertIs(type(cost["amount"]), type(amount))
+
     def test_evidence_route_catalog_reports_language_and_safe_readiness(self):
         from pandrator.web import subtitle_evidence
 

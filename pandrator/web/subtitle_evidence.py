@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -271,6 +272,15 @@ def evidence_route_catalog(
     return entries
 
 
+@dataclass(frozen=True)
+class _TimedSubtitleCue:
+    artifact: Artifact
+    revision: DocumentRevision
+    segment: Segment
+    start_ms: int
+    end_ms: int
+
+
 class SubtitleEvidenceService:
     """Create and execute subtitle-evidence requests with durable provenance."""
 
@@ -427,7 +437,7 @@ class SubtitleEvidenceService:
         session_id: str,
         source_artifact_id: str,
         cue_id: int,
-    ) -> tuple[Artifact, DocumentRevision, Segment]:
+    ) -> _TimedSubtitleCue:
         record = session.get(SessionRecord, session_id)
         if record is None or record.trashed_at is not None:
             raise KeyError(session_id)
@@ -481,11 +491,13 @@ class SubtitleEvidenceService:
         )
         if segment is None:
             raise ValueError(f"Subtitle cue {cue_id} was not found in this revision.")
-        if segment.start_ms is None or segment.end_ms is None:
+        start_ms, end_ms = segment.start_ms, segment.end_ms
+        if start_ms is None or end_ms is None:
             raise ValueError("Subtitle cue has no usable timing.")
-        if int(segment.start_ms) < 0 or int(segment.end_ms) <= int(segment.start_ms):
+        start_ms, end_ms = int(start_ms), int(end_ms)
+        if start_ms < 0 or end_ms <= start_ms:
             raise ValueError("Subtitle cue has invalid timing.")
-        return artifact, revision, segment
+        return _TimedSubtitleCue(artifact, revision, segment, start_ms, end_ms)
 
     def request(self, session_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
         """Validate, persist, and enqueue one evidence request atomically."""
@@ -504,8 +516,11 @@ class SubtitleEvidenceService:
         source_artifact_id = str(values.get("source_artifact_id") or "").strip()
         if not 1 <= len(source_artifact_id) <= 80:
             raise ValueError("source_artifact_id must be between 1 and 80 characters.")
+        raw_cue_id = values.get("cue_id")
+        if raw_cue_id is None:
+            raise ValueError("cue_id must be a positive integer.")
         try:
-            cue_id = int(values.get("cue_id"))
+            cue_id = int(raw_cue_id)
         except (TypeError, ValueError) as error:
             raise ValueError("cue_id must be a positive integer.") from error
         if cue_id < 1:
@@ -533,14 +548,15 @@ class SubtitleEvidenceService:
                 "Evidence padding must be between 0 and 15000 milliseconds."
             )
 
-        artifact, revision, segment = self._load_cue(
+        cue = self._load_cue(
             session, session_id, source_artifact_id, cue_id
         )
+        artifact, revision, segment = cue.artifact, cue.revision, cue.segment
         media = resolve_subtitle_media(session, session_id, artifact)
         self._validate_audio_models(session, audio_model_ids)
         start_ms, end_ms = self._clip_bounds(
-            int(segment.start_ms),
-            int(segment.end_ms),
+            cue.start_ms,
+            cue.end_ms,
             padding_before,
             padding_after,
         )
@@ -551,8 +567,8 @@ class SubtitleEvidenceService:
             source_revision_id=revision.id,
             source_segment_id=segment.id,
             cue_id=cue_id,
-            start_ms=int(segment.start_ms),
-            end_ms=int(segment.end_ms),
+            start_ms=cue.start_ms,
+            end_ms=cue.end_ms,
             clip_start_ms=start_ms,
             clip_end_ms=end_ms,
             reason=reason,
@@ -614,7 +630,10 @@ class SubtitleEvidenceService:
             return {
                 "session_id": session_id,
                 "items": [
-                    self._projection(item, jobs.get(item.job_id)) for item in records
+                    self._projection(
+                        item, jobs.get(item.job_id) if item.job_id is not None else None
+                    )
+                    for item in records
                 ],
             }
 
@@ -832,11 +851,15 @@ class SubtitleEvidenceService:
             return {"kind": "unknown"}
         if kind not in {"actual", "billed", "estimate", "unknown"}:
             return {"kind": "unknown"}
-        result: dict[str, Any] = {"kind": kind}
+        result = {"kind": kind}
         for key in ("amount", "currency", "unit"):
             value = usage.get(key)
             if key == "amount" and isinstance(value, (int, float)):
-                if value < 0 or not math.isfinite(float(value)):
+                try:
+                    amount = float(value)
+                except OverflowError:
+                    continue
+                if value < 0 or not math.isfinite(amount):
                     continue
             if (
                 isinstance(value, (str, int, float))
