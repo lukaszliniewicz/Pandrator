@@ -32,6 +32,48 @@ from pandrator.web.tts_providers import TtsCapabilities
 
 
 class GenerationAudioIdentityTests(unittest.TestCase):
+    def test_transient_identity_copy_policy_preserves_frozen_and_unfrozen_identity_bytes(self):
+        from copy import deepcopy
+
+        from pandrator.web.generation_controls import save_generation_controls
+        from pandrator.web.generation_performance_snapshot import (
+            freeze_generation_performance_snapshot,
+        )
+
+        session_id, revision_id, segment_ids = self._create_case(
+            [{"text": "First quiet line."}, {"text": "Second quiet line."}],
+            name="identity-copy-policy",
+        )
+        with self.database.session() as session:
+            save_generation_controls(
+                session, session_id, expected_revision=0, characters=[],
+                cast={"narrator": {"voice": "Kore"}},
+            )
+        snapshot = self._resolved(session_id, {
+            "tts": {
+                "service": "gemini", "model": "gemini-2.5-flash-tts",
+                "voice": "Kore", "casting_enabled": True,
+            },
+            "audio": {"voice_change_silence_ms": 0},
+        })
+        original = deepcopy(snapshot)
+        with self.database.session() as session:
+            segments = [session.get(GenerationSegment, segment_id) for segment_id in segment_ids]
+            frozen = deepcopy(snapshot)
+            freeze_generation_performance_snapshot(session, revision_id, frozen)
+            for source in (snapshot, frozen):
+                before = deepcopy(source)
+                ordinary = AudioIdentityContext(session, source)
+                with patch.object(ordinary, "_copy_inspection_settings", side_effect=deepcopy):
+                    expected = [ordinary.for_segment(segment) for segment in segments]
+                optimized = AudioIdentityContext(session, source)
+                actual = [optimized.for_segment(segment) for segment in segments]
+                self.assertEqual(
+                    json.dumps(expected, sort_keys=True), json.dumps(actual, sort_keys=True)
+                )
+                self.assertEqual(source, before)
+        self.assertEqual(snapshot, original)
+
     def test_material_settings_memo_uses_complete_input_and_isolates_results(self):
         from pandrator.web import generation_audio_identity
 

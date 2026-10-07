@@ -1434,6 +1434,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/events/snapshot")
     @require_auth
     def event_snapshot():
+        from .session_routes import session_project_memberships
+
         view = request.args.get("view", "full")
         if view not in {"full", "compact"}:
             return error_response("validation_error", "Unknown event snapshot view.", 422)
@@ -1449,13 +1451,17 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         hidden = services.quick_transcriptions.hidden_job_ids(
             principal.subject, (item.id for item in items)
         )
+        session_items = [_session_payload(item) for item in sessions.list()]
+        memberships = session_project_memberships(
+            database, [item["id"] for item in session_items]
+        )
+        for item in session_items:
+            item["translation_project"] = memberships.get(item["id"])
         return jsonify(
             {
                 "cursor": bounds.latest,
                 "retained_after": bounds.retained_after,
-                "sessions": {
-                    "items": [_session_payload(item) for item in sessions.list()]
-                },
+                "sessions": {"items": session_items},
                 "jobs": {
                     "items": [
                         _job_payload(item, include_details=view != "compact")

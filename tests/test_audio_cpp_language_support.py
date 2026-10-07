@@ -5,12 +5,38 @@ from __future__ import annotations
 import re
 
 import pandrator.logic.audio_cpp_catalogue as catalogue
+import pandrator.logic.language_capabilities as language_capabilities
 from pandrator.logic.language_capabilities import registry_snapshot
 
 
 def _support(model_id: str, operation: str = "tts") -> dict:
     metadata = catalogue.package_metadata(model_id)
     return metadata["language_support_by_operation"][operation]
+
+
+def test_package_language_mapping_does_not_copy_the_complete_registry(monkeypatch):
+    registry = language_capabilities._registry_data()
+    original_deepcopy = language_capabilities.copy.deepcopy
+
+    def guarded_deepcopy(value, memo=None):
+        assert value is not registry, "Package mapping copied the full language registry"
+        return original_deepcopy(value, memo)
+
+    monkeypatch.setattr(language_capabilities.copy, "deepcopy", guarded_deepcopy)
+    for model_id, count in (("fish_audio_s2_pro_q8_0", 83), ("omnivoice_q8_0", 646)):
+        first = _support(model_id)
+        assert len(first["languages"]) == count
+        expected = list(first["languages"])
+        first["languages"].clear()
+        assert _support(model_id)["languages"] == expected
+
+
+def test_language_mapping_preserves_aliases_sentinels_and_unregistered_tags():
+    assert catalogue._mapped_languages(
+        ["English", "pt_BR", "automatic", "und", "unknown", "detect", "qzz", "en-zz", "", None]
+    ) == (["en", "pt-br"], [], ["und", "qzz", "en-zz"], True)
+    assert catalogue._mapped_languages(None) == ([], [], [], False)
+    assert catalogue._mapped_languages([]) == ([], [], [], False)
 
 
 def test_pinned_source_records_bind_exact_packages_and_keep_source_revisions():

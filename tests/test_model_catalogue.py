@@ -32,6 +32,8 @@ def test_catalogue_has_local_cloud_and_static_azure_models():
     assert page["total"] > 1
     assert page["next_offset"] == 1
     assert page["items"][0]["provider_id"] == "audio_cpp"
+    tts = catalogue_page(provider="audio_cpp", category="tts", limit=1)["items"][0]
+    assert isinstance(tts["generation_limits"]["default_segment_characters"], int)
 
     audio_model_id = inventory()["packages"][0]["id"]
     audio_item = _item("audio_cpp", audio_model_id)

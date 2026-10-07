@@ -17,7 +17,7 @@ from typing import Any
 from .language_capabilities import (
     canonical_language_tag,
     language_matches,
-    registry_snapshot,
+    registry_language_tags,
     support_record,
 )
 
@@ -213,14 +213,6 @@ def _operation_specs(package: dict[str, Any], family: dict[str, Any]) -> list[tu
     return [("unknown", "unknown")]
 
 
-def _registry_language_tags() -> set[str]:
-    return {
-        str(entry["tag"])
-        for entry in registry_snapshot().get("languages", [])
-        if isinstance(entry, dict) and isinstance(entry.get("tag"), str)
-    }
-
-
 def _mapped_languages(values: Any) -> tuple[list[str], list[str], list[str], bool]:
     if values is None:
         return [], [], [], False
@@ -231,7 +223,7 @@ def _mapped_languages(values: Any) -> tuple[list[str], list[str], list[str], boo
     else:
         return [], [], [], False
 
-    tags = _registry_language_tags()
+    tags = registry_language_tags()
     languages: set[str] = set()
     native_codes: list[str] = []
     unmapped: list[str] = []

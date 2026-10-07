@@ -5,13 +5,24 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from pathlib import PurePosixPath
 
 from flask import jsonify, request, send_file
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from .domain_blueprints import DomainBlueprints
 from .http_serialization import model_payload as _model_dict
-from .models import Artifact, ArtifactEdge, Job, OutputAssembly, UsageEvent, new_id
+from .models import (
+    Artifact,
+    ArtifactEdge,
+    AudioTake,
+    GenerationSegment,
+    Job,
+    OutputAssembly,
+    SessionRecord,
+    UsageEvent,
+    new_id,
+)
 from .route_context import RouteContext
 from .schemas import OptimizationReviewRequest
 from .video_previews import VideoPreviewService, VideoPreviewUnsupported
@@ -30,6 +41,16 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
     @app.get("/api/v1/artifacts")
     @require_auth
     def artifact_list():
+        view = request.args.get("view", "full")
+        media_type = request.args.get("media_type")
+        if view not in {"full", "compact"} or media_type not in {None, "audio", "text"}:
+            return error_response("validation_error", "Invalid artifact view or media type.", 400)
+        try:
+            offset = int(request.args.get("offset", 0))
+            if offset < 0:
+                raise ValueError
+        except ValueError:
+            return error_response("validation_error", "offset must be a nonnegative integer.", 400)
         with database.session() as db_session:
             output_only = request.args.get("output_only") == "true"
             statement = select(Artifact)
@@ -54,11 +75,122 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             requested_session = str(request.args.get("session_id") or "")
             if requested_session:
                 statement = statement.where(Artifact.session_id == requested_session)
+            if media_type:
+                kinds = (
+                    (
+                        "wav",
+                        "mp3",
+                        "flac",
+                        "ogg",
+                        "m4a",
+                        "aac",
+                        "opus",
+                        "wma",
+                        "aiff",
+                        "aif",
+                        "pcm",
+                        "au",
+                    )
+                    if media_type == "audio"
+                    else (
+                        "txt",
+                        "text",
+                        "srt",
+                        "vtt",
+                        "json",
+                        "md",
+                        "html",
+                        "htm",
+                        "pdf",
+                        "epub",
+                        "docx",
+                    )
+                )
+                statement = statement.where(
+                    or_(
+                        func.lower(Artifact.mime_type).startswith(f"{media_type}/"),
+                        func.ltrim(func.lower(Artifact.kind), ".").in_(kinds),
+                    )
+                )
             try:
                 limit = max(1, min(500, int(request.args.get("limit") or 500)))
             except ValueError:
                 limit = 500
-            records = list(db_session.scalars(statement.limit(limit)).all())
+            if view == "compact":
+                total = int(
+                    db_session.scalar(
+                        select(func.count()).select_from(
+                            statement.with_only_columns(Artifact.id, maintain_column_froms=True)
+                            .order_by(None)
+                            .subquery()
+                        )
+                    )
+                    or 0
+                )
+                compact_fields = (
+                    "id",
+                    "session_id",
+                    "kind",
+                    "role",
+                    "relative_path",
+                    "mime_type",
+                    "size_bytes",
+                    "state",
+                    "created_at",
+                )
+                page = statement.with_only_columns(
+                    *(getattr(Artifact, key) for key in compact_fields),
+                    SessionRecord.name.label("session_name"),
+                    maintain_column_froms=True,
+                ).outerjoin(SessionRecord, SessionRecord.id == Artifact.session_id)
+                rows = (
+                    db_session.execute(page.order_by(Artifact.id).limit(limit).offset(offset))
+                    .mappings()
+                    .all()
+                )
+                ids = [row["id"] for row in rows]
+                take_labels = {}
+                if ids and media_type != "text":
+                    for row in db_session.execute(
+                        select(
+                            AudioTake.artifact_id,
+                            GenerationSegment.ordinal,
+                            func.substr(GenerationSegment.text, 1, 120).label("segment_text"),
+                            GenerationSegment.speaker,
+                        )
+                        .join(
+                            GenerationSegment,
+                            GenerationSegment.id == AudioTake.generation_segment_id,
+                        )
+                        .where(AudioTake.artifact_id.in_(ids))
+                        .order_by(GenerationSegment.ordinal, GenerationSegment.id, AudioTake.id)
+                    ).mappings():
+                        take_labels.setdefault(
+                            row["artifact_id"],
+                            {
+                                "segment_ordinal": row["ordinal"],
+                                "segment_text": row["segment_text"],
+                                "speaker": row["speaker"],
+                            },
+                        )
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    item["created_at"] = row["created_at"].isoformat()
+                    item["display_name"] = PurePosixPath(
+                        item.pop("relative_path").replace("\\", "/")
+                    ).name
+                    item.update(take_labels.get(row["id"], {}))
+                    items.append(item)
+                return jsonify(
+                    {
+                        "items": items,
+                        "total": total,
+                        "offset": offset,
+                        "next_offset": offset + limit if offset + limit < total else None,
+                    }
+                )
+            records = list(db_session.scalars(statement.limit(limit).offset(offset)).all())
             items = []
             for item in records:
                 serialized = _model_dict(

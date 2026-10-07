@@ -413,7 +413,7 @@ def test_execution_is_contiguous_and_failure_or_cancel_returns_no_partial_result
     )
     assert len(combined) == 30
     assert [item["duration_ms"] for item in manifest] == [10, 20]
-    assert set(manifest[0]) == {"index", "range", "voice", "source", "fallback", "speaker_ids", "duration_ms"}
+    assert set(manifest[0]) == {"index", "range", "voice", "source", "fallback", "speaker_ids", "duration_ms", "silence_before_ms"}
     assert manifest[0]["range"] == [0, 1]
 
     calls = 0

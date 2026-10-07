@@ -238,6 +238,7 @@ def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict
 def freeze_cast_snapshot(
     session, revision_id: str, snapshot: dict, settings: dict,
     _service_config_cache=None,
+    *, _settings_copy=None,
 ) -> None:
     from .generation_rendering import build_render_parts
 
@@ -277,6 +278,7 @@ def freeze_cast_snapshot(
             "text_hash": content_hash(text),
             "speech_xml": xml,
             "source_speaker": segment.speaker,
+            "subtitle_timed": segment.node_kind == "subtitle_cue",
             "voice_binding": segment_voice_binding(segment, snapshot),
         }
         entries[segment.id] = entry
@@ -294,6 +296,7 @@ def freeze_cast_snapshot(
             source_speaker=segment.speaker,
             voice_binding=entry["voice_binding"],
             apply_binding=apply,
+            _settings_copy=_settings_copy,
         )
     snapshot["generation_control_snapshot"] = {
         "schema_version": 1,
@@ -305,7 +308,8 @@ def freeze_cast_snapshot(
 
 
 def segment_render_parts(
-    settings: dict, snapshot: dict, segment_id: str, text: str
+    settings: dict, snapshot: dict, segment_id: str, text: str,
+    *, _settings_copy=None,
 ) -> list[dict[str, Any]]:
     from .generation_rendering import build_render_parts
 
@@ -315,7 +319,7 @@ def segment_render_parts(
             raise ValueError(
                 "Casting requires a frozen character/cast snapshot. Start a new run."
             )
-        return build_render_parts(text, settings)
+        return build_render_parts(text, settings, _settings_copy=_settings_copy)
     if frozen.get("schema_version") != 1:
         raise ValueError("Unsupported generation-control snapshot.")
     entry = (frozen.get("segments") or {}).get(segment_id)
@@ -323,6 +327,11 @@ def segment_render_parts(
         raise ValueError(
             "Spoken text changed after the cast was frozen. Review a new speech plan."
         )
+    settings = dict(settings)
+    settings["voice_change_silence_ms"] = int(
+        (snapshot.get("audio") or {}).get("voice_change_silence_ms") or 0
+    )
+    settings["_subtitle_timed"] = bool(entry.get("subtitle_timed"))
     return build_render_parts(
         text,
         settings,
@@ -334,6 +343,7 @@ def segment_render_parts(
         apply_binding=lambda binding, base: apply_resolved_binding(
             binding, base, frozen["resolved_bindings"]
         ),
+        _settings_copy=_settings_copy,
     )
 
 
@@ -358,6 +368,9 @@ def preview_render_parts(
                 resolutions[key] = resolve_binding(session, binding, base)
         return apply_resolved_binding(binding, base, resolutions)
 
+    segment = session.get(m.GenerationSegment, segment_id)
+    settings = dict(settings)
+    settings["_subtitle_timed"] = bool(segment and segment.node_kind == "subtitle_cue")
     return build_render_parts(
         text,
         settings,
@@ -367,7 +380,7 @@ def preview_render_parts(
         source_speaker=source_speaker,
         voice_binding=(
             segment_voice_binding(segment)
-            if (segment := session.get(m.GenerationSegment, segment_id)) is not None
+            if segment is not None
             else None
         ),
         apply_binding=apply,

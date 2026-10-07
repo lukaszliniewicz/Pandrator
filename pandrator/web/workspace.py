@@ -461,6 +461,12 @@ class GenerationService(GenerationHistoryReader):
                 silence_after_ms=segment.silence_after_ms,
             )
         )
+        pause_metadata = {
+            key: value for key, value in (segment.speech_plan_json or {}).items()
+            if key in {"silence_override_ms", "pause_kind"}
+        }
+        if "silence_after_ms" in changes:
+            pause_metadata["silence_override_ms"] = max(0, int(changes["silence_after_ms"]))
         old_effective_speech = segment.optimized_text or segment.text
         old_speech_xml = (segment.speech_plan_json or {}).get("speech_xml")
         explicit_optimized = "optimized_text" in changes
@@ -485,6 +491,10 @@ class GenerationService(GenerationHistoryReader):
                 value = str(value or "").strip() or None
             elif key == "silence_after_ms":
                 value = max(0, int(value))
+                segment.speech_plan_json = {
+                    **(segment.speech_plan_json or {}),
+                    "silence_override_ms": value,
+                }
             elif key == "node_kind" and value not in {
                 "paragraph",
                 "heading",
@@ -545,6 +555,8 @@ class GenerationService(GenerationHistoryReader):
                 }
             else:
                 segment.speech_plan_json = {}
+        if pause_metadata:
+            segment.speech_plan_json = {**(segment.speech_plan_json or {}), **pause_metadata}
         new_effective_speech = segment.optimized_text or segment.text
         if (
             new_effective_speech != old_effective_speech

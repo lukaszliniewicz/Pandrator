@@ -909,6 +909,14 @@ def build_openapi_document() -> dict:
             "/api/v1/artifacts": {
                 "get": {
                     "operationId": "listArtifacts",
+                    "parameters": [
+                        {"name": "view", "in": "query", "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"}, "description": "Compact pages omit stored metadata, hashes and paths, and add project and passage labels."},
+                        {"name": "media_type", "in": "query", "schema": {"type": "string", "enum": ["audio", "text"]}},
+                        {"name": "session_id", "in": "query", "schema": {"type": "string"}},
+                        {"name": "output_only", "in": "query", "schema": {"type": "boolean"}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0, "default": 0}},
+                    ],
                     "responses": {"200": {"description": "Artifacts"}},
                 }
             },
@@ -3019,7 +3027,13 @@ def build_openapi_document() -> dict:
                 ),
             },
             "/api/v1/sources": {
-                "get": operation("listSourceAssets", "Reusable source library")
+                "get": {
+                    **operation("listSourceAssets", "Reusable source library"),
+                    "parameters": [
+                        {"name": "view", "in": "query", "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"}, "description": "Compact library cards omit stored metadata and filesystem paths."},
+                        {"name": "include_trashed", "in": "query", "schema": {"type": "boolean", "default": False}},
+                    ],
+                }
             },
             "/api/v1/sources/{sourceAssetId}": {
                 "patch": operation(
@@ -3029,6 +3043,15 @@ def build_openapi_document() -> dict:
             },
             "/api/v1/sources/{sourceAssetId}/restore": {
                 "post": operation("restoreSourceAsset", "Source asset restored")
+            },
+            "/api/v1/sources/{sourceAssetId}/references": {
+                "get": {
+                    **operation("listSourceReferences", "Paged project attachments, including historical and trashed references"),
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "minimum": 0, "default": 0}},
+                    ],
+                }
             },
             "/api/v1/sessions/{sessionId}/sources": {
                 "get": operation("listSessionSources", "Session source attachments"),
@@ -3579,6 +3602,7 @@ def build_openapi_document() -> dict:
             "app.write",
         ),
         ("/api/v1/sources", "get", "app.read"),
+        ("/api/v1/sources/{sourceAssetId}/references", "get", "app.read"),
         ("/api/v1/automation/local-paths", "get", "app.read"),
         ("/api/v1/automation/local-paths", "put", "app.write"),
         ("/api/v1/uploads/init", "post", "app.write"),

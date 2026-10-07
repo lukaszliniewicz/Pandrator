@@ -417,6 +417,7 @@ def build_render_parts(
     voice_binding: dict[str, Any] | None = None,
     apply_binding: Callable[[dict[str, Any] | None, dict[str, Any]], dict[str, Any]]
     | None = None,
+    _settings_copy: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Plan ordered provider requests for one logical segment."""
 
@@ -450,9 +451,10 @@ def build_render_parts(
     performance_enabled = bool(settings.get("performance_enabled", True))
     casting_enabled = bool(settings.get("casting_enabled", False))
     strict_single_voice = is_strict_single_voice(settings)
+    copy_settings = _settings_copy if _settings_copy is not None else deepcopy
     planned: list[_PlannedSpan] = []
     for span in parsed.spans:
-        prepared = deepcopy(settings)
+        prepared = copy_settings(settings)
         if voice_binding and not strict_single_voice:
             # An explicit block assignment applies to the whole block, while
             # its markup still supplies delivery and boundary information.
@@ -488,7 +490,7 @@ def build_render_parts(
     result: list[dict[str, Any]] = []
     for index, group in enumerate(groups):
         anchor = group.anchor
-        group_settings = deepcopy(anchor.settings)
+        group_settings = copy_settings(anchor.settings)
         _project_performance(
             group_settings,
             parsed=parsed,
@@ -519,6 +521,11 @@ def build_render_parts(
                 "fallback": all(item.fallback for item in group.items),
                 "speaker_ids": speaker_ids,
                 "index": index,
+                "voice_key": group.voice_key,
+                "silence_before_ms": (
+                    max(0, int(settings.get("voice_change_silence_ms") or 0))
+                    if index and not settings.get("_subtitle_timed") else 0
+                ),
             }
         )
     return result
@@ -552,6 +559,9 @@ def execute_render_parts(
             raise RuntimeError(f"Speech part {index} returned invalid audio.") from exc
         if duration_ms <= 0:
             raise RuntimeError(f"Speech part {index} produced no audio.")
+        silence_before_ms = max(0, int(part.get("silence_before_ms") or 0)) if index else 0
+        if combined is not None and silence_before_ms:
+            combined += AudioSegment.silent(duration=silence_before_ms, frame_rate=combined.frame_rate)
         combined = audio if combined is None else combined + audio
         manifest.append(
             {
@@ -564,6 +574,7 @@ def execute_render_parts(
                 "fallback": bool(part.get("fallback")),
                 "speaker_ids": list(part.get("speaker_ids") or []),
                 "duration_ms": duration_ms,
+                "silence_before_ms": silence_before_ms,
             }
         )
     if combined is None:

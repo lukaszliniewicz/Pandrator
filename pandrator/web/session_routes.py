@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from flask import g, jsonify, request
 from sqlalchemy import select
 
+from .database import Database
 from .domain_blueprints import DomainBlueprints
 from .http_idempotency import MutationIdempotency
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -17,6 +18,43 @@ from .models import Job, SessionRecord, TranslationProject, TranslationProjectBr
 from .route_context import RouteContext
 from .schemas import SessionCreate, SessionForkRequest, SessionUpdate
 from .sessions import RevisionConflict
+
+
+def session_project_memberships(
+    database: Database, session_ids: Sequence[str]
+) -> dict[str, dict[str, Any]]:
+    """Read navigation memberships without loading project histories or settings."""
+    if not session_ids:
+        return {}
+    memberships: dict[str, dict[str, Any]] = {}
+    with database.session() as db_session:
+        for row in db_session.execute(
+            select(
+                TranslationProject.id,
+                TranslationProject.name,
+                TranslationProject.source_session_id,
+            ).where(TranslationProject.source_session_id.in_(session_ids))
+        ).mappings():
+            memberships[row["source_session_id"]] = {**row, "role": "source"}
+        for row in db_session.execute(
+            select(
+                TranslationProjectBranch.session_id,
+                TranslationProject.id,
+                TranslationProject.name,
+                TranslationProject.source_session_id,
+                TranslationProjectBranch.target_language,
+            )
+            .join(TranslationProject, TranslationProject.id == TranslationProjectBranch.project_id)
+            .where(TranslationProjectBranch.session_id.in_(session_ids))
+        ).mappings():
+            memberships[row["session_id"]] = {
+                "id": row["id"],
+                "name": row["name"],
+                "source_session_id": row["source_session_id"],
+                "role": "branch",
+                "target_language": row["target_language"],
+            }
+    return memberships
 
 
 def register_session_list_routes(
@@ -41,31 +79,7 @@ def register_session_list_routes(
             )
         ]
         ids = [item["id"] for item in items]
-        memberships = {}
-        with database.session() as db_session:
-            for project in db_session.scalars(
-                select(TranslationProject).where(TranslationProject.source_session_id.in_(ids))
-            ):
-                memberships[project.source_session_id] = {
-                    "id": project.id,
-                    "name": project.name,
-                    "source_session_id": project.source_session_id,
-                    "role": "source",
-                }
-            for branch, project in db_session.execute(
-                select(TranslationProjectBranch, TranslationProject)
-                .join(
-                    TranslationProject, TranslationProject.id == TranslationProjectBranch.project_id
-                )
-                .where(TranslationProjectBranch.session_id.in_(ids))
-            ):
-                memberships[branch.session_id] = {
-                    "id": project.id,
-                    "name": project.name,
-                    "source_session_id": project.source_session_id,
-                    "role": "branch",
-                    "target_language": branch.target_language,
-                }
+        memberships = session_project_memberships(database, ids)
         for item in items:
             item["translation_project"] = memberships.get(item["id"])
         return jsonify({"items": items})
@@ -274,7 +288,11 @@ def register_session_lifecycle_routes(
             record = sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
-        response = jsonify(_session_payload(record))
+        payload = _session_payload(record)
+        payload["translation_project"] = session_project_memberships(
+            database, [session_id]
+        ).get(session_id)
+        response = jsonify(payload)
         response.headers["ETag"] = f'"{record.revision}"'
         return response
 

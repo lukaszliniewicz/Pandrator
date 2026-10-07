@@ -34,13 +34,33 @@ def register_source_library_routes(
     @app.get("/api/v1/sources")
     @require_auth
     def source_library_list():
-        return jsonify(
-            {
-                "items": source_library.list(
-                    include_trashed=request.args.get("include_trashed") == "true"
+        try:
+            return jsonify(
+                {
+                    "items": source_library.list(
+                        include_trashed=request.args.get("include_trashed") == "true",
+                        view=request.args.get("view", "full"),
+                    )
+                }
+            )
+        except ValueError as error:
+            return error_response("validation_error", str(error), 400)
+
+    @app.get("/api/v1/sources/<source_asset_id>/references")
+    @require_auth
+    def source_library_references(source_asset_id: str):
+        try:
+            return jsonify(
+                source_library.references(
+                    source_asset_id,
+                    limit=int(request.args.get("limit", 50)),
+                    offset=int(request.args.get("offset", 0)),
                 )
-            }
-        )
+            )
+        except KeyError:
+            return error_response("not_found", "Source asset not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 400)
 
     @app.patch("/api/v1/sources/<source_asset_id>")
     @require_auth

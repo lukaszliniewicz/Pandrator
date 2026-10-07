@@ -490,6 +490,12 @@ def _build_item(
     ):
         if field in model_metadata:
             result[field] = copy.deepcopy(model_metadata[field])
+    if result["category"] == "tts":
+        from .tts_generation_limits import generation_limit_metadata
+
+        result["generation_limits"] = generation_limit_metadata(
+            service=provider_id, model=model_id, family=family, adapter=effective_adapter
+        )
     return result
 
 
@@ -540,6 +546,15 @@ def _catalogue_rows() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
             provider_kind=provider_kind,
             catalogue_id=f"{provider_id}:{model_id}",
         )
+        if metadata.get("category") == "tts":
+            from .tts_generation_limits import generation_limit_metadata
+
+            metadata["generation_limits"] = generation_limit_metadata(
+                service=provider_id,
+                model=model_id,
+                family=str(metadata.get("family") or ""),
+                adapter="audio_cpp",
+            )
         rows[(provider_id, model_id)] = metadata
 
     for config in configs:
@@ -661,6 +676,38 @@ def _catalogue_rows() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     return rows_list, provider_list
 
 
+@lru_cache(maxsize=1)
+def _catalogue_facets(
+    rows: tuple[tuple[str, str, str, tuple[str, ...]], ...],
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Cache global facets by immutable inventory values."""
+    from .language_capabilities import canonical_language_tag
+
+    families: dict[str, dict[str, str]] = {}
+    languages: set[str] = set()
+    for family, label, category, supported_languages in rows:
+        families.setdefault(
+            family,
+            {
+                "id": family,
+                "display_name": label,
+                "category": category,
+            },
+        )
+        for raw in supported_languages:
+            try:
+                tag = canonical_language_tag(raw)
+            except ValueError:
+                continue
+            if tag and tag not in {"mul", "zxx", "any", "all"}:
+                languages.add(tag)
+    family_list = sorted(
+        families.values(),
+        key=lambda row: (row["display_name"].casefold(), row["id"].casefold(), row["id"]),
+    )
+    return family_list, sorted(languages)
+
+
 def catalogue_page(
     *,
     category: str = "",
@@ -681,6 +728,12 @@ def catalogue_page(
         raise ValueError("Unknown commercial-use filter.")
 
     all_rows, providers = _catalogue_rows()
+    families, languages = _catalogue_facets(
+        tuple(
+            (row["family"], row["family_label"], row["category"], tuple(row["supported_languages"]))
+            for row in all_rows
+        )
+    )
     normalized_capability = {"emotions": "emotion_control"}.get(capability, capability)
     selected: list[dict[str, Any]] = []
     for row in all_rows:
@@ -726,20 +779,6 @@ def catalogue_page(
             continue
         selected.append(row)
 
-    families: dict[str, dict[str, str]] = {}
-    for row in all_rows:
-        families.setdefault(
-            row["family"],
-            {
-                "id": row["family"],
-                "display_name": row["family_label"],
-                "category": row["category"],
-            },
-        )
-    family_list = sorted(
-        families.values(),
-        key=lambda row: (row["display_name"].casefold(), row["id"].casefold(), row["id"]),
-    )
     total = len(selected)
     return {
         "schema_version": 1,
@@ -749,6 +788,7 @@ def catalogue_page(
         "limit": limit,
         "next_offset": offset + limit if offset + limit < total else None,
         "items": copy.deepcopy(selected[offset : offset + limit]),
-        "families": family_list,
+        "families": copy.deepcopy(families),
+        "languages": list(languages),
         "providers": copy.deepcopy(providers),
     }

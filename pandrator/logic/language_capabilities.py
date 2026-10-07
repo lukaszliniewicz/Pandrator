@@ -57,6 +57,15 @@ def _language_entries() -> list[dict[str, Any]]:
 
 
 @lru_cache(maxsize=1)
+def registry_language_tags() -> frozenset[str]:
+    """Share immutable registered tags for the static registry's lifetime."""
+
+    return frozenset(
+        entry["tag"] for entry in _language_entries() if isinstance(entry.get("tag"), str)
+    )
+
+
+@lru_cache(maxsize=1)
 def _alias_index() -> dict[str, str | None]:
     index: dict[str, str | None] = {}
     for entry in _language_entries():

@@ -201,6 +201,8 @@ class AudioIdentityContext:
         self._material_settings_cache: dict[str, dict[str, Any]] = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
+        self._inspection_catalogue_copies: dict[int, Any] = {}
+        self._inspection_catalogue_sources: dict[int, Any] = {}
         self._registry = TtsProviderRegistry()
         self.performance_states: dict[str, tuple[dict[str, Any], dict[str, dict[str, str]]]] = {}
         self.effective_settings_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -287,6 +289,25 @@ class AudioIdentityContext:
             self._material_settings_cache[key] = deepcopy(result)
         return deepcopy(result)
 
+    def _copy_inspection_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        """Own catalogue copies once for transient, read-only identity planning.
+
+        Internal cast callbacks change only top-level settings. Keep source
+        objects alive so their IDs cannot be reused within this request; public
+        planners and synthesis never use this copy policy.
+        """
+        for key in ("provider_configs", "service_configs"):
+            source = settings.get(key)
+            if not isinstance(source, (dict, list)):
+                continue
+            source_id = id(source)
+            if source_id not in self._inspection_catalogue_copies:
+                owned = deepcopy(source)
+                self._inspection_catalogue_sources[source_id] = source
+                self._inspection_catalogue_copies[source_id] = owned
+                self._inspection_catalogue_copies[id(owned)] = owned
+        return deepcopy(settings, dict(self._inspection_catalogue_copies))
+
     def _with_performance(
         self, segment: GenerationSegment, identity: dict[str, Any], settings: dict[str, Any]
     ) -> dict[str, Any]:
@@ -316,7 +337,8 @@ class AudioIdentityContext:
                 if not frozen_revision or frozen_revision != revision_id:
                     pinned = deepcopy(self.snapshot)
                     freeze_generation_performance_snapshot(
-                        self.session, revision_id, pinned, self._service_config_cache
+                        self.session, revision_id, pinned, self._service_config_cache,
+                        _settings_copy=self._copy_inspection_settings,
                     )
                 self.performance_states[revision_id] = (pinned, frozen_semantic_contexts(pinned))
             pinned, contexts = self.performance_states[revision_id]
@@ -326,7 +348,10 @@ class AudioIdentityContext:
             prepared = segment_performance_settings(settings, pinned, segment.id, text, contexts=contexts)
             if settings.get("casting_enabled"):
                 from .generation_cast_runtime import segment_render_parts
-                parts = segment_render_parts(prepared, pinned, segment.id, text)
+                parts = segment_render_parts(
+                    prepared, pinned, segment.id, text,
+                    _settings_copy=self._copy_inspection_settings,
+                )
                 requests = []
                 for part in parts:
                     part_settings = part["settings"]
@@ -340,6 +365,7 @@ class AudioIdentityContext:
                         "settings": self._memoized_material_settings(part_settings),
                         "references": sorted({_hash(item) for item in references}),
                         "request": compile_performance(part["text"], part_settings, None, self._service_config_cache).fingerprint,
+                        **({"silence_before_ms": part["silence_before_ms"]} if part.get("silence_before_ms") else {}),
                     })
                 # Base narrator settings/references are not audible when every
                 # part has a cast binding. Hash the actual resolved requests.
@@ -351,7 +377,8 @@ class AudioIdentityContext:
                     }),
                     "voice_reference_hash": _hash([part["references"] for part in requests]),
                     "performance_request_hash": _hash([
-                        {"range": part["range"], "request": part["request"]} for part in requests
+                        {"range": part["range"], "request": part["request"],
+                         **({"silence_before_ms": part["silence_before_ms"]} if part.get("silence_before_ms") else {})} for part in requests
                     ]),
                 }
             compiled = compile_performance(text, prepared, None, self._service_config_cache)

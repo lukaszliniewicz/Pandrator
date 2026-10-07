@@ -11548,6 +11548,64 @@
     "/api/v1/artifacts": {
       "get": {
         "operationId": "listArtifacts",
+        "parameters": [
+          {
+            "description": "Compact pages omit stored metadata, hashes and paths, and add project and passage labels.",
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "media_type",
+            "schema": {
+              "enum": [
+                "audio",
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "output_only",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Artifacts"
@@ -21585,6 +21643,29 @@
     "/api/v1/sources": {
       "get": {
         "operationId": "listSourceAssets",
+        "parameters": [
+          {
+            "description": "Compact library cards omit stored metadata and filesystem paths.",
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_trashed",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Reusable source library"
@@ -21651,6 +21732,58 @@
             "description": "Source asset updated"
           }
         }
+      }
+    },
+    "/api/v1/sources/{sourceAssetId}/references": {
+      "get": {
+        "operationId": "listSourceReferences",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sourceAssetId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged project attachments, including historical and trashed references"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/sources/{sourceAssetId}/restore": {

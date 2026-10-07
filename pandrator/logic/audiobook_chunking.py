@@ -18,6 +18,7 @@ from .tts_handler import _audio_cpp_model_metadata, _audio_cpp_selected_model_op
 DEFAULT_MANUAL_LENGTH = 200
 MAX_MANUAL_LENGTH = 8192
 QWEN_DEFAULT_MAX_TOKENS = 2048
+BREEZE_DEFAULT_MAX_TOKENS = 1500
 
 
 def _normalise_mode(value: object) -> str:
@@ -176,9 +177,11 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         or str(settings.get("provider") or "").strip().casefold() == "audio_cpp"
     )
     if is_audio_cpp and family == "qwen3_tts":
-        return "qwen3_tts", 2000, 8192, "audio.cpp Qwen application policy"
+        return "qwen3_tts", 2000, None, "audio.cpp Qwen application policy"
+    if family == "breeze_tts" or service in {"breeze", "breeze_tts"}:
+        return "breeze_tts", 600, None, "Breeze application policy"
     if family == "voxcpm2" or service in {"voxcpm", "voxcpm2"}:
-        return "voxcpm2", 2000, 2048, "VoxCPM2 application policy"
+        return "voxcpm2", 2000, None, "VoxCPM2 application policy"
     if family in {"fish_audio", "fish_audio_s2"} or service in {
         "fishs2",
         "fish_audio",
@@ -187,7 +190,7 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         return "fish_audio_s2", 200, None, "Fish application policy"
     if "kokoro" in model or service in {"kokoro", "kokoro_tts"}:
         return "kokoro", 240, None, "Kokoro application policy"
-    if model in {"gpt-4o-mini-tts", "tts-1", "tts-1-hd"}:
+    if model in {"gpt-4o-mini-tts", "tts-1", "tts-1-hd"} or model.startswith("gpt-4o-mini-tts-"):
         return "openai", 4000, 4096, "OpenAI TTS application policy"
     if model.startswith("gemini-") or service in {
         "gemini",
@@ -196,7 +199,7 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         "vertex_ai",
         "google_vertex_ai",
     }:
-        return "gemini", 2000, None, "Gemini application policy"
+        return "gemini", 4000, None, "Gemini application policy"
     if adapter in {"azure_speech", "native_azure_speech", "nativeazurespeech"} or service in {
         "azure",
         "azure_speech",
@@ -211,7 +214,7 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         "qwen",
         "qwen3",
     } or "qwen" in model:
-        return "qwen3_tts", 2000, 8192, "Qwen application policy"
+        return "qwen3_tts", 2000, None, "Qwen application policy"
     if service in {"xtts", "xtts_v2", "xtts2", "pandrator_xtts2_api"} or "xtts" in model:
         return "xtts", 200, None, "XTTS application policy"
     return "unknown", 300, None, "unknown provider/family fallback policy"
@@ -235,6 +238,14 @@ def audiobook_chunk_budget(
     cjk_qwen = profile == "qwen3_tts" and _language_is_cjk(language)
     if cjk_qwen:
         policy_limit = 500
+    model = _model_name(tts).casefold()
+    cjk_mini = (
+        profile == "openai"
+        and (model == "gpt-4o-mini-tts" or model.startswith("gpt-4o-mini-tts-"))
+        and _language_is_cjk(language)
+    )
+    if cjk_mini:
+        policy_limit = 1000
     if mode == "manual":
         value = text.get("max_sentence_length", DEFAULT_MANUAL_LENGTH)
         target = _manual_length(value)
@@ -257,21 +268,24 @@ def audiobook_chunk_budget(
         else math.floor(policy_limit * 0.9)
     )
     reason = policy_reason
-    if profile == "qwen3_tts" and input_limit == 8192:
+    if profile in {"qwen3_tts", "breeze_tts"}:
         family, model = _audio_cpp_family_and_model(tts)
         if _normalised_service(tts) in {"audio_cpp", "audio.cpp", "audiocpp"} or _selected_adapter(tts) == "audio_cpp":
             configured_tokens, source = _audio_cpp_max_tokens(tts, family, model)
-            effective_tokens = configured_tokens or QWEN_DEFAULT_MAX_TOKENS
-            if effective_tokens < QWEN_DEFAULT_MAX_TOKENS:
+            default_tokens = (
+                QWEN_DEFAULT_MAX_TOKENS if profile == "qwen3_tts" else BREEZE_DEFAULT_MAX_TOKENS
+            )
+            effective_tokens = configured_tokens or default_tokens
+            if effective_tokens < default_tokens:
                 target = math.floor(
-                    target * effective_tokens / QWEN_DEFAULT_MAX_TOKENS
+                    target * effective_tokens / default_tokens
                 )
                 reason += f"; scaled to {effective_tokens} configured max_tokens"
             elif configured_tokens is None:
-                reason += "; app policy assumes 2048 max_tokens when unconfigured"
+                reason += f"; app policy assumes {default_tokens} max_tokens when unconfigured"
             elif source != "default":
                 reason += f"; using {effective_tokens} configured max_tokens"
-    if cjk_qwen:
+    if cjk_qwen or cjk_mini:
         reason += "; CJK policy"
     return {
         "mode": mode,

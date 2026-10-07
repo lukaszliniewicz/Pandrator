@@ -52,7 +52,7 @@ def register_generation_routes(
             result = generation.create_plan(
                 session_id,
                 source_revision_id=payload.source_revision_id,
-                segments=[item.model_dump() for item in payload.segments],
+                segments=[item.model_dump(exclude_unset=True) for item in payload.segments],
                 settings=payload.settings,
             )
         except KeyError:

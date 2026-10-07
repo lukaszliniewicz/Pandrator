@@ -385,6 +385,12 @@ def prepare_resegmentation(
                 }
             },
             speech_plan_json={
+                **(
+                    {
+                        key: value for key, value in (terminal_source.speech_plan_json or {}).items()
+                        if key in {"silence_override_ms", "pause_kind"}
+                    } if terminal_source else {}
+                ),
                 "speech_xml": slice_speech_markup(
                     xml,
                     source_id=selected[0].id,

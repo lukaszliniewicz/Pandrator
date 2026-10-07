@@ -34,7 +34,8 @@ def frozen_semantic_contexts(snapshot: dict[str, Any]) -> dict[str, dict[str, st
 
 
 def freeze_generation_performance_snapshot(
-    session, revision_id: str, snapshot: dict[str, Any], _service_config_cache=None
+    session, revision_id: str, snapshot: dict[str, Any], _service_config_cache=None,
+    *, _settings_copy=None,
 ) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
@@ -70,7 +71,8 @@ def freeze_generation_performance_snapshot(
     if settings.get("performance_enabled") or settings.get("casting_enabled") or has_block_voice:
         from .generation_cast_runtime import freeze_cast_snapshot
         freeze_cast_snapshot(
-            session, revision_id, snapshot, settings, _service_config_cache
+            session, revision_id, snapshot, settings, _service_config_cache,
+            _settings_copy=_settings_copy,
         )
     if mode != "off":
         context_settings = {

@@ -84,6 +84,8 @@ class GenerationTopologyService:
             )
             session.add(revision)
             session.flush()
+            from .speech_boundaries import default_record_pause, record_pause_metadata
+
             for index, item in enumerate(clean_segments):
                 provenance = dict(
                     item.get("speech_block_provenance")
@@ -145,7 +147,12 @@ class GenerationTopologyService:
                             ).strip()
                             or None
                         ),
-                        speech_plan_json=dict(item.get("speech_plan") or {}),
+                        speech_plan_json={
+                            **dict(item.get("speech_plan") or {}),
+                            **record_pause_metadata(
+                                item, is_subtitle=item.get("node_kind") == "subtitle_cue",
+                            ),
+                        },
                         optimization_status=(
                             "optimized"
                             if str(
@@ -175,7 +182,10 @@ class GenerationTopologyService:
                         voice_id=item.get("voice_id"),
                         voice=item.get("voice"),
                         language=item.get("language"),
-                        silence_after_ms=max(0, int(item.get("silence_after_ms") or 0)),
+                        silence_after_ms=default_record_pause(
+                            item, settings or {},
+                            is_subtitle=item.get("node_kind") == "subtitle_cue",
+                        ),
                     )
                 )
             plan.active_revision_id = revision.id
@@ -898,6 +908,9 @@ class GenerationTopologyService:
                 values["optimization_source_hash"] = None
                 values["optimization_reviewed"] = False
                 values["optimization_model"] = None
+            for pause_key in ("silence_override_ms", "pause_kind"):
+                if pause_key in (segment.speech_plan_json or {}):
+                    right_values["speech_plan_json"][pause_key] = segment.speech_plan_json[pause_key]
             right_values["silence_after_ms"] = segment.silence_after_ms
             right_values["paragraph_break_after"] = segment.paragraph_break_after
             left_values["silence_after_ms"] = 0
@@ -1017,6 +1030,10 @@ class GenerationTopologyService:
                     ),
                     "speech_block_provenance_json": merged_provenance,
                     "speech_plan_json": {
+                        **{
+                            key: value for key, value in (right.speech_plan_json or {}).items()
+                            if key in {"silence_override_ms", "pause_kind"}
+                        },
                         "version": 1,
                         "status": "manual_topology",
                         "parent_segment_ids": [left.id, right.id],
@@ -1283,4 +1300,3 @@ class GenerationTopologyService:
             "preview": mappings[0] if action == "resegment" else None,
             "review_required": {"performance": True, "changed_audio": len(affected_ids)},
         }
-

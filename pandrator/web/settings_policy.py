@@ -297,6 +297,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "audio_verification_mode": "off",
         "sentence_silence_ms": 250,
         "paragraph_silence_ms": 700,
+        "clause_silence_ms": 83,
+        "voice_change_silence_ms": 0,
         "fade_enabled": False,
         "fade_in_ms": 0,
         "fade_out_ms": 0,
@@ -827,3 +829,14 @@ def validate_output_settings(value: dict[str, Any]) -> None:
     """Validate stored output overrides without touching unrelated keys."""
     if value.get("video_tail_extension_policy", "ask") not in ("ask", "extend"):
         raise ValueError("video_tail_extension_policy must be ask or extend.")
+
+
+def validate_audio_pause_settings(value: dict[str, Any]) -> None:
+    """Validate supplied pause overrides without restricting unrelated audio settings."""
+    if not isinstance(value, dict):
+        raise ValueError("Audio defaults must be an object.")
+    for key in (
+        "sentence_silence_ms", "paragraph_silence_ms", "clause_silence_ms", "voice_change_silence_ms",
+    ):
+        if key in value and (type(value[key]) is not int or not 0 <= value[key] <= 10000):
+            raise ValueError(f"{key} must be an integer from 0 to 10000.")

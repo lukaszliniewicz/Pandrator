@@ -37,6 +37,7 @@ from .settings_policy import (
     normalize_subtitle_limit_override,
     split_legacy_stt_settings,
     stable_hash,
+    validate_audio_pause_settings,
     validate_output_settings,
     validate_stt_replacement,
     validate_stt_settings,
@@ -638,6 +639,8 @@ class WorkspaceSettingsService:
         value = dict(value)
         if session_record.status == "purging":
             raise RevisionConflict("Session deletion has started; its settings can no longer change.")
+        if section == "audio":
+            validate_audio_pause_settings(value)
         if section == "text":
             from pandrator.logic.audiobook_chunking import (
                 validate_audiobook_chunking_settings,

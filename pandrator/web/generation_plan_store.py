@@ -113,6 +113,7 @@ def store_generation_plan(
 
         from .generation_cast_runtime import remap_markup
         from .generation_controls import get_generation_controls
+        from .speech_boundaries import record_pause_metadata
 
         characters = get_generation_controls(session, session_id)["characters"]
         for ordinal, record in enumerate(clean):
@@ -201,6 +202,10 @@ def store_generation_plan(
             )
             session.add(segment)
             session.flush()
+            segment.speech_plan_json = {
+                **(segment.speech_plan_json or {}),
+                **record_pause_metadata(record, is_subtitle=is_subtitle),
+            }
             if source_markup:
                 segment.speech_plan_json = {
                     **(segment.speech_plan_json or {}),

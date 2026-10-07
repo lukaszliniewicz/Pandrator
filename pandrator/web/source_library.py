@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from .artifact_selection import select_source_path
@@ -367,9 +367,17 @@ class SourceLibraryService:
             )
 
     def list(
-        self, *, session_id: str | None = None, include_trashed: bool = False
+        self,
+        *,
+        session_id: str | None = None,
+        include_trashed: bool = False,
+        view: str = "full",
     ) -> list[dict[str, Any]]:
+        if view not in {"full", "compact"}:
+            raise ValueError("Source view must be full or compact.")
         with self.database.session() as session:
+            if view == "compact":
+                return self._compact_list(session, session_id, include_trashed)
             if session_id:
                 rows = session.execute(
                     select(SessionSource, SourceAsset, Artifact.relative_path)
@@ -427,19 +435,23 @@ class SourceLibraryService:
             if not include_trashed:
                 statement = statement.where(SourceAsset.state != "trashed")
             assets = list(session.scalars(statement).all())
+            asset_ids = [asset.id for asset in assets]
             counts = {
                 asset_id: count
                 for asset_id, count in session.execute(
-                    select(SessionSource.source_asset_id, func.count()).group_by(
-                        SessionSource.source_asset_id
-                    )
+                    select(SessionSource.source_asset_id, func.count())
+                    .where(SessionSource.source_asset_id.in_(asset_ids))
+                    .group_by(SessionSource.source_asset_id)
                 ).all()
             }
             current_counts = {
                 asset_id: count
                 for asset_id, count in session.execute(
                     select(SessionSource.source_asset_id, func.count())
-                    .where(SessionSource.is_current.is_(True))
+                    .where(
+                        SessionSource.is_current.is_(True),
+                        SessionSource.source_asset_id.in_(asset_ids),
+                    )
                     .group_by(SessionSource.source_asset_id)
                 ).all()
             }
@@ -451,6 +463,130 @@ class SourceLibraryService:
                 )
                 for asset in assets
             ]
+
+    @staticmethod
+    def _compact_list(
+        session: Session, session_id: str | None, include_trashed: bool
+    ) -> list[dict[str, Any]]:
+        fields = (
+            "id",
+            "artifact_id",
+            "display_name",
+            "kind",
+            "mime_type",
+            "size_bytes",
+            "content_hash",
+            "state",
+            "revision",
+            "created_at",
+            "updated_at",
+        )
+        statement = select(*(getattr(SourceAsset, key) for key in fields))
+        if session_id:
+            statement = (
+                statement.add_columns(
+                    SessionSource.id.label("attachment_id"),
+                    SessionSource.role,
+                    SessionSource.is_current,
+                    SessionSource.revision.label("attachment_revision"),
+                )
+                .join(SessionSource, SessionSource.source_asset_id == SourceAsset.id)
+                .where(SessionSource.session_id == session_id)
+                .order_by(SessionSource.updated_at.desc(), SessionSource.id)
+            )
+        else:
+            statement = statement.order_by(SourceAsset.updated_at.desc(), SourceAsset.id)
+            if not include_trashed:
+                statement = statement.where(SourceAsset.state != "trashed")
+        rows = session.execute(statement).mappings().all()
+        ids = {row["id"] for row in rows}
+        counts = (
+            {
+                row[0]: (int(row[1]), int(row[2]))
+                for row in session.execute(
+                    select(
+                        SessionSource.source_asset_id,
+                        func.count(),
+                        func.sum(case((SessionSource.is_current.is_(True), 1), else_=0)),
+                    )
+                    .where(SessionSource.source_asset_id.in_(ids))
+                    .group_by(SessionSource.source_asset_id)
+                )
+            }
+            if ids
+            else {}
+        )
+        items = []
+        for row in rows:
+            item = {key: row[key] for key in fields}
+            for key in ("created_at", "updated_at"):
+                item[key] = item[key].isoformat()
+            item["reference_count"], item["current_reference_count"] = counts.get(row["id"], (0, 0))
+            if session_id:
+                item["attachment"] = {
+                    "id": row["attachment_id"],
+                    "role": row["role"],
+                    "is_current": row["is_current"],
+                    "revision": row["attachment_revision"],
+                }
+            items.append(item)
+        return items
+
+    def references(
+        self, source_asset_id: str, *, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("Reference limit must be 1–100 and offset must not be negative.")
+        with self.database.session() as session:
+            if (
+                session.scalar(select(SourceAsset.id).where(SourceAsset.id == source_asset_id))
+                is None
+            ):
+                raise KeyError(source_asset_id)
+            predicate = SessionSource.source_asset_id == source_asset_id
+            total = int(
+                session.scalar(select(func.count()).select_from(SessionSource).where(predicate))
+                or 0
+            )
+            rows = session.execute(
+                select(
+                    SessionSource.id.label("attachment_id"),
+                    SessionRecord.id.label("session_id"),
+                    SessionRecord.name.label("session_name"),
+                    SessionRecord.workflow_kind,
+                    SessionRecord.source_language,
+                    SessionRecord.target_language,
+                    SessionRecord.status,
+                    SessionSource.role,
+                    SessionSource.is_current,
+                    SessionSource.updated_at,
+                    SessionRecord.trashed_at,
+                )
+                .join(SessionRecord, SessionRecord.id == SessionSource.session_id)
+                .where(predicate)
+                .order_by(
+                    SessionSource.is_current.desc(),
+                    SessionSource.updated_at.desc(),
+                    SessionRecord.name,
+                    SessionRecord.id,
+                    SessionSource.id,
+                )
+                .limit(limit)
+                .offset(offset)
+            ).mappings()
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["updated_at"] = row["updated_at"].isoformat()
+                if item.pop("trashed_at") is not None:
+                    item["status"] = "trashed"
+                items.append(item)
+            return {
+                "items": items,
+                "total": total,
+                "offset": offset,
+                "next_offset": offset + limit if offset + limit < total else None,
+            }
 
     def backfill_legacy(self) -> int:
         """Deprecated compatibility hook.

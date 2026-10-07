@@ -6,6 +6,7 @@ from pandrator.logic.language_capabilities import (
     canonical_language_tag,
     language_decision,
     language_matches,
+    registry_language_tags,
     registry_snapshot,
     require_supported_language,
     source_language_record,
@@ -54,6 +55,23 @@ def test_registry_snapshot_is_a_detached_copy():
     second = registry_snapshot()
     assert second["languages"][0]["label"] == initial_label
     assert second["sources"]
+
+
+def test_registry_tag_projection_is_immutable_and_snapshot_mutations_are_isolated():
+    tags = registry_language_tags()
+    snapshot = registry_snapshot()
+    expected = frozenset(entry["tag"] for entry in snapshot["languages"])
+
+    assert isinstance(tags, frozenset)
+    assert tags == expected
+    with pytest.raises(AttributeError):
+        tags.clear()  # pyright: ignore[reportAttributeAccessIssue]
+
+    snapshot["languages"][0]["tag"] = "caller-mutation"
+    snapshot["languages"].clear()
+    assert registry_language_tags() is tags
+    assert tags == expected
+    assert frozenset(entry["tag"] for entry in registry_snapshot()["languages"]) == expected
 
 
 def test_fish_and_omni_records_retain_pinned_source_provenance_and_aliases():

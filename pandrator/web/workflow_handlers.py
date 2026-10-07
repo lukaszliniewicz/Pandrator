@@ -430,68 +430,15 @@ def _generation_segmentation_settings(settings: dict[str, Any]) -> dict[str, Any
     }
 
 
-def _record_continues_sentence(record: dict[str, Any]) -> bool:
-    value = record.get("sentence_continues_after")
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "clause"}
-    if value is not None:
-        return bool(value)
-    if str(record.get("pause_kind") or "").strip().lower() == "clause":
-        return True
-    # Prepared narration created before the explicit continuation flag still
-    # carries ``split_part``. Internal pieces lack terminal sentence
-    # punctuation, while the final piece retains it.
-    if record.get("split_part") is not None:
-        text = str(record.get("text") or record.get("original_sentence") or "").rstrip()
-        return re.search(r"[.!?…。！？…][\"'”’)\]}]*$", text) is None
-    return False
-
-
 def _default_silence_after_ms(
     record: dict[str, Any],
     settings: dict[str, Any],
     *,
     is_subtitle: bool = False,
 ) -> int:
-    explicit = record.get("silence_after_ms")
-    if explicit is not None:
-        return max(0, int(explicit or 0))
-    if is_subtitle:
-        return 0
+    from .speech_boundaries import default_record_pause
 
-    sentence_silence = max(
-        0,
-        int(
-            settings.get(
-                "sentence_silence_ms", settings.get("silence_between_sentences", 250)
-            )
-            or 0
-        ),
-    )
-    is_paragraph = (
-        bool(record.get("paragraph_break_after"))
-        or str(record.get("paragraph") or "").lower() == "yes"
-    )
-    boundary = record.get("speech_boundary_after")
-    if boundary == "continuation":
-        return 0
-    if boundary == "dialogue_turn":
-        return sentence_silence
-    if boundary in {"scene", "chapter", "paragraph"}:
-        is_paragraph = True
-    if is_paragraph:
-        return max(
-            0,
-            int(
-                settings.get(
-                    "paragraph_silence_ms", settings.get("silence_for_paragraphs", 700)
-                )
-                or 0
-            ),
-        )
-    if _record_continues_sentence(record):
-        return max(0, round(sentence_silence * CLAUSE_PAUSE_RATIO))
-    return sentence_silence
+    return default_record_pause(record, settings, is_subtitle=is_subtitle)
 
 
 def _apply_segment_tts_overrides(
