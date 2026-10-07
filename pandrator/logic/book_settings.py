@@ -13,7 +13,8 @@ BOOK_DEFAULTS: dict[str, Any] = {
     "book_target_seconds": 12,
     "book_max_seconds": 20,
     "book_max_lines": 4,
-    "book_font_size": 64,
+    "book_font_size": 80,
+    "book_heading_font_size": 44,
     "book_font_path": "",
     "book_resolution": "1080p",
     "book_background": "#202427",
@@ -37,6 +38,7 @@ BOOK_LIMITS = {
     "book_max_seconds": (3, 60),
     "book_max_lines": (1, 8),
     "book_font_size": (28, 96),
+    "book_heading_font_size": (18, 72),
 }
 
 

@@ -399,6 +399,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "book_max_seconds": "Soft reading-passage duration ceiling. An indivisible timed unit can exceed it; audio is never stretched for display.",
         "book_max_lines": "Maximum fitted lines in a reading video. Caption style uses at most two lines.",
         "book_font_size": "Text size in pixels at 1080p; scales proportionally for 720p.",
+        "book_heading_font_size": "Book title or chapter heading size in pixels at 1080p; scales proportionally for 720p, independently of passage text.",
         "book_font_path": "Optional local font file. Blank selects a system font for the book language; rendering verifies its glyph coverage.",
         "book_resolution": "Portable H.264/AAC MP4 resolution: 720p or 1080p, at 24 frames per second.",
         "book_background": "Six-digit hexadecimal background colour for the video book.",

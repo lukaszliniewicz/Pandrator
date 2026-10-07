@@ -120,6 +120,10 @@ def compose_book_cues(
                     if candidate_lines is None or (
                         index > cursor and last.end_ms - start > ceiling
                     ):
+                        # Keep the last sentence/clause together when the reading
+                        # area fills before the target duration is reached.
+                        if not captions and preferred is not None:
+                            end_index, text, lines = preferred
                         break
                     end_index, text, lines = index + 1, candidate, candidate_lines
                     natural = bool(re.search(r"[.!?。！？;；:：,，][\"'’”）)\]]*$", candidate))

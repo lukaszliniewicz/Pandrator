@@ -190,7 +190,8 @@ def write_book_ass(
     )
     primary = _colour(options["book_foreground"])
     style = f"{layout.font_family},{layout.font_size},{primary},&H00000000,&H00303030,&H00000000,0,0,0,0,100,100,0,0,1,0,0,{alignment},{margin},{margin},{round(layout.height * 0.08)},1"
-    heading_style = f"{layout.font_family},{max(18, round(layout.font_size * 0.43))},{primary},&H00000000,&H00303030,&H00000000,0,0,0,0,100,100,0,0,1,0,0,8,{margin},{margin},{round(layout.height * 0.1)},1"
+    heading_size = round(options["book_heading_font_size"] * layout.height / 1080)
+    heading_style = f"{layout.font_family},{heading_size},{primary},&H00000000,&H00303030,&H00000000,0,0,0,0,100,100,0,0,1,0,0,8,{margin},{margin},{round(layout.height * 0.1)},1"
     header = (
         f"[Script Info]\nScriptType: v4.00+\nPlayResX: {layout.width}\nPlayResY: {layout.height}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
@@ -198,6 +199,20 @@ def write_book_ass(
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
     events = []
+    heading_layout = None
+    if options["book_show_heading"] and layout.style == "reading":
+        heading_layout = BookLayout(
+            layout.width,
+            layout.height,
+            layout.font_path,
+            layout.font_family,
+            heading_size,
+            layout.content_width,
+            2,
+            layout.style,
+            "center",
+            ImageFont.truetype(str(layout.font_path), heading_size),
+        )
     for cue in cues:
         start, end = _ass_time(cue.start_ms), _ass_time(cue.end_ms)
         if start == end:
@@ -205,23 +220,8 @@ def write_book_ass(
         text = "\n".join(cue.lines) if cue.lines else cue.text
         events.append(f"Dialogue: 0,{start},{end},Reading,,0,0,0,,{_ass_text(text)}")
         heading = cue.heading or title
-        if options["book_show_heading"] and layout.style == "reading" and heading:
-            # Heading uses a smaller font and a bounded region; no book title is lost.
-            heading_size = max(18, round(layout.font_size * 0.43))
-            small_font = ImageFont.truetype(str(layout.font_path), heading_size)
-            small = BookLayout(
-                layout.width,
-                layout.height,
-                layout.font_path,
-                layout.font_family,
-                heading_size,
-                layout.content_width,
-                2,
-                layout.style,
-                "center",
-                small_font,
-            )
-            heading_lines = small.fit_lines(heading)
+        if heading_layout is not None and heading:
+            heading_lines = heading_layout.fit_lines(heading)
             if heading_lines is None:
                 raise ValueError(
                     "The book or chapter heading does not fit. Disable headings or shorten the displayed title."

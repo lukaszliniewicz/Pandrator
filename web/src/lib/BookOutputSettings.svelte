@@ -309,11 +309,29 @@
               type="number"
               min="28"
               max="96"
-              value={Number(value('book_font_size', 64))}
+              value={Number(value('book_font_size', 80))}
               oninput={(event) =>
                 onChange('book_font_size', Number(event.currentTarget.value))}
             />
           </div>
+          {#if reading && Boolean(value('book_show_heading', true))}
+            <div class="book-control">
+              {@render fieldLabel('book_heading_font_size', 'Heading size')}
+              <input
+                id={fieldId('book_heading_font_size')}
+                class="field"
+                type="number"
+                min="18"
+                max="72"
+                value={Number(value('book_heading_font_size', 44))}
+                oninput={(event) =>
+                  onChange(
+                    'book_heading_font_size',
+                    Number(event.currentTarget.value)
+                  )}
+              />
+            </div>
+          {/if}
           <div class="book-control">
             {@render fieldLabel('book_background', 'Background')}
             <input

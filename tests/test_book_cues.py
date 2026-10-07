@@ -59,7 +59,22 @@ def test_fitted_cues_do_not_split_a_mapped_name_or_lose_punctuation():
         total_duration_ms=2000,
         fit_lines=lambda value: (value,) if len(value) <= 15 else None,
     )
-    assert [cue.text for cue in cues] == ["“Sk Rooj,” said", "Marley."]
+    assert [cue.text for cue in cues] == ["“Sk Rooj,”", "said Marley."]
+
+
+def test_reading_capacity_uses_sentence_boundary_before_target_duration():
+    item = passage("A complete sentence. Christmas among the rest.", step=300)
+    cues = compose_book_cues(
+        [item],
+        {},
+        total_duration_ms=item.end_ms,
+        fit_lines=lambda text: (text,) if len(text) <= 40 else None,
+    )
+    assert [cue.text for cue in cues] == [
+        "A complete sentence.",
+        "Christmas among the rest.",
+    ]
+    assert cues[0].end_ms == cues[1].start_ms == item.words[3].start_ms
 
 
 def test_whole_segment_subtitles_skip_word_splitting_and_line_cap():
@@ -162,6 +177,8 @@ def test_whole_segment_subtitles_keep_blank_source_lines_inside_one_cue(tmp_path
         {"book_background": "red:filter=evil"},
         {"book_target_seconds": True},
         {"book_font_size": 500},
+        {"book_heading_font_size": 0},
+        {"book_heading_font_size": True},
         {"book_target_seconds": 21, "book_max_seconds": 20},
         {"book_preview_start_seconds": float("nan")},
         {"book_preview_duration_seconds": 31},
