@@ -127,10 +127,18 @@ changes do not fabricate subtitle timestamps or create additional visible
 segments. Very large integral units can still exceed a provider's request
 limit and need an explicit editorial change.
 
-Casting renders internal voice parts and joins them without extra seam
-silence into one logical take. A failed or canceled part cannot publish a
-partial segment take. Run snapshots pin accepted annotations, identities, and
-casting. Resuming a run keeps that snapshot; a new run uses current reviewed
+Casting renders internal voice parts into one logical take.
+`audio.in_segment_voice_change_silence_ms` adds 100 ms by default when the
+resolved voice changes inside a segment. Use 50 ms for a tighter join or zero
+to disable it; natural silence already in the audio remains. The separate
+`audio.voice_change_silence_ms` is a minimum between segments, disabled by
+default. Structural pauses and explicit segment overrides take priority.
+Fixed subtitle timing receives no added pause. Saved takes and resumed runs
+retain their original pacing; changing an internal gap requires a new take in
+a new generation run.
+
+A failed or canceled part cannot publish a partial segment take. Run snapshots
+pin accepted annotations, identities, and casting. A new run uses current reviewed
 settings. Audio reuse compares effective requests and voice references so
 renaming a character or editing notes does not require new audio.
 

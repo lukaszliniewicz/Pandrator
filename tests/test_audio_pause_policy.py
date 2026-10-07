@@ -23,6 +23,7 @@ PAUSE_KEYS = (
     "paragraph_silence_ms",
     "clause_silence_ms",
     "voice_change_silence_ms",
+    "in_segment_voice_change_silence_ms",
 )
 
 
@@ -42,16 +43,19 @@ def test_pause_validation_accepts_bounds_and_preserves_unrelated(value):
 
 def test_pause_validation_runs_on_session_and_global_saves(case):
     services = case["services"]
+    resolved, _ = services["workspace_settings"].resolve(case["session_id"], sections=["audio"])
+    assert resolved["audio"]["in_segment_voice_change_silence_ms"] == 100
+    assert resolved["audio"]["voice_change_silence_ms"] == 0
     with pytest.raises(ValueError, match="integer"):
         services["workspace_settings"].update(
-            case["session_id"], "audio", 0, {"clause_silence_ms": True}
+            case["session_id"], "audio", 0, {"in_segment_voice_change_silence_ms": True}
         )
     globals_service = GlobalSettingsService(services["database"], services["paths"])
     current = globals_service.defaults("audio")
     with pytest.raises(ValueError, match="integer"):
         globals_service.replace(
             "defaults.audio",
-            {"voice_change_silence_ms": "40"},
+            {"in_segment_voice_change_silence_ms": "40"},
             "*" if current["revision"] == 0 else str(current["revision"]),
         )
     assert globals_service.defaults("audio") == current
@@ -70,6 +74,7 @@ def test_default_clause_sentence_paragraph_explicit_zero_and_legacy_fallback():
     assert _default_silence_after_ms({}, settings, is_subtitle=True) == 0
     assert BUILTIN_DEFAULTS["audio"]["clause_silence_ms"] == 83
     assert BUILTIN_DEFAULTS["audio"]["voice_change_silence_ms"] == 0
+    assert BUILTIN_DEFAULTS["audio"]["in_segment_voice_change_silence_ms"] == 100
 
 
 @pytest.mark.parametrize("boundary", ["continuation", "paragraph", "dialogue_turn"])
@@ -182,7 +187,13 @@ def test_voice_change_floor_uses_actual_voice_and_explicit_pause_wins(case):
 
 @pytest.mark.parametrize(
     "same_voice,subtitle,gap,expected",
-    [(False, False, 50, 80), (True, False, 50, 10), (False, True, 50, 30), (False, False, 0, 30)],
+    [
+        (False, False, 50, 80),
+        (False, False, 100, 130),
+        (True, False, 100, 10),
+        (False, True, 100, 30),
+        (False, False, 0, 30),
+    ],
 )
 def test_render_parts_insert_one_gap_only_at_voice_change(same_voice, subtitle, gap, expected):
     controls = deepcopy(CONTROLS)
@@ -196,7 +207,8 @@ def test_render_parts_insert_one_gap_only_at_voice_change(same_voice, subtitle, 
         {
             "casting_enabled": True,
             "performance_enabled": False,
-            "voice_change_silence_ms": gap,
+            "voice_change_silence_ms": 500,
+            "in_segment_voice_change_silence_ms": gap,
             "_subtitle_timed": subtitle,
         },
         speech_xml=markup,
@@ -229,7 +241,7 @@ def test_audible_padding_changes_only_multi_voice_identity_and_snapshot_gap(case
             "speech_xml": f'<segment id="{row.id}"><speaker ref="c-one">{first}</speaker><speaker ref="c-two">{rest}</speaker></segment>'
         }
         snapshot = {
-            "audio": {"voice_change_silence_ms": 0},
+            "audio": {"voice_change_silence_ms": 0, "in_segment_voice_change_silence_ms": 0},
             "tts": {
                 "service": "openai",
                 "model": "tts-1",
@@ -241,33 +253,91 @@ def test_audible_padding_changes_only_multi_voice_identity_and_snapshot_gap(case
         freeze_cast_snapshot(session, case["revision_id"], snapshot, snapshot["tts"])
         before = AudioIdentityContext(session, snapshot).for_segment(row)
         padded = deepcopy(snapshot)
-        padded["audio"]["voice_change_silence_ms"] = 80
+        padded["audio"]["in_segment_voice_change_silence_ms"] = 50
         after = AudioIdentityContext(session, padded).for_segment(row)
         assert before["settings_hash"] == after["settings_hash"]
         assert before["voice_reference_hash"] == after["voice_reference_hash"]
         assert before["performance_request_hash"] != after["performance_request_hash"]
-        only_assembly = deepcopy(snapshot)
+        only_assembly = deepcopy(padded)
         only_assembly["audio"].update(
-            sentence_silence_ms=999, clause_silence_ms=99, paragraph_silence_ms=1234
+            sentence_silence_ms=999,
+            clause_silence_ms=99,
+            paragraph_silence_ms=1234,
+            voice_change_silence_ms=500,
         )
-        assert AudioIdentityContext(session, only_assembly).for_segment(row) == before
-        parts = segment_render_parts(
-            {**padded["tts"], "voice_change_silence_ms": 900}, padded, row.id, row.text
+        assert AudioIdentityContext(session, only_assembly).for_segment(row) == after
+        incoming = {
+            **padded["tts"],
+            "voice_change_silence_ms": 500,
+            "in_segment_voice_change_silence_ms": 100,
+        }
+        parts = segment_render_parts(incoming, padded, row.id, row.text)
+        assert parts[1]["silence_before_ms"] == 50
+        zero_parts = segment_render_parts(incoming, snapshot, row.id, row.text)
+        assert zero_parts[1]["silence_before_ms"] == 0
+        assert [
+            part["silence_before_ms"]
+            for part in segment_render_parts(incoming, only_assembly, row.id, row.text)
+        ] == [0, 50]
+        # Old snapshots preserve exactly the padding selected by their legacy key.
+        for legacy_gap in (0, 80):
+            legacy = deepcopy(snapshot)
+            legacy["audio"].pop("in_segment_voice_change_silence_ms")
+            legacy["audio"]["voice_change_silence_ms"] = legacy_gap
+            legacy_parts = segment_render_parts(incoming, legacy, row.id, row.text)
+            assert legacy_parts[1]["silence_before_ms"] == legacy_gap
+            modern_equivalent = deepcopy(legacy)
+            modern_equivalent["audio"]["in_segment_voice_change_silence_ms"] = legacy_gap
+            assert AudioIdentityContext(session, legacy).for_segment(row) == AudioIdentityContext(
+                session, modern_equivalent
+            ).for_segment(row)
+        missing = deepcopy(snapshot)
+        missing["audio"] = {}
+        assert (
+            segment_render_parts(incoming, missing, row.id, row.text)[1]["silence_before_ms"] == 0
         )
-        assert parts[1]["silence_before_ms"] == 80
-        old_parts = segment_render_parts(
-            {**padded["tts"], "voice_change_silence_ms": 900}, snapshot, row.id, row.text
-        )
-        assert old_parts[1]["silence_before_ms"] == 0
-        padded["generation_control_snapshot"]["segments"][row.id]["subtitle_timed"] = True
-        assert AudioIdentityContext(session, padded).for_segment(row) == before
+        # Fixed subtitle timing excludes audible padding for either schema.
+        for audio in (
+            {"voice_change_silence_ms": 80},
+            {
+                "voice_change_silence_ms": 500,
+                "in_segment_voice_change_silence_ms": 100,
+            },
+        ):
+            subtitle = deepcopy(snapshot)
+            subtitle["audio"] = audio
+            subtitle["generation_control_snapshot"]["segments"][row.id]["subtitle_timed"] = True
+            assert AudioIdentityContext(session, subtitle).for_segment(row) == before
         row.speech_plan_json = {}
         freeze_cast_snapshot(session, case["revision_id"], snapshot, snapshot["tts"])
         padded = deepcopy(snapshot)
-        padded["audio"]["voice_change_silence_ms"] = 80
+        padded["audio"].update(voice_change_silence_ms=500, in_segment_voice_change_silence_ms=100)
         assert AudioIdentityContext(session, padded).for_segment(row) == AudioIdentityContext(
             session, snapshot
         ).for_segment(row)
+
+
+def test_raw_renderer_preserves_legacy_gap_when_new_setting_is_absent():
+    markup = (
+        '<segment id="s"><speaker ref="c-one">A</speaker><speaker ref="c-two">B</speaker></segment>'
+    )
+    settings = {
+        "casting_enabled": True,
+        "performance_enabled": False,
+        "voice_change_silence_ms": 80,
+    }
+    legacy = build_render_parts(
+        "AB", settings, speech_xml=markup, segment_id="s", controls=CONTROLS
+    )
+    explicit_zero = build_render_parts(
+        "AB",
+        {**settings, "in_segment_voice_change_silence_ms": 0},
+        speech_xml=markup,
+        segment_id="s",
+        controls=CONTROLS,
+    )
+    assert [part["silence_before_ms"] for part in legacy] == [0, 80]
+    assert [part["silence_before_ms"] for part in explicit_zero] == [0, 0]
 
 
 def test_api_omitted_pause_follows_defaults_but_explicit_zero_survives_split(case):

@@ -328,8 +328,9 @@ def segment_render_parts(
             "Spoken text changed after the cast was frozen. Review a new speech plan."
         )
     settings = dict(settings)
-    settings["voice_change_silence_ms"] = int(
-        (snapshot.get("audio") or {}).get("voice_change_silence_ms") or 0
+    audio = snapshot.get("audio") or {}
+    settings["in_segment_voice_change_silence_ms"] = int(
+        audio.get("in_segment_voice_change_silence_ms", audio.get("voice_change_silence_ms", 0)) or 0
     )
     settings["_subtitle_timed"] = bool(entry.get("subtitle_timed"))
     return build_render_parts(

@@ -523,7 +523,12 @@ def build_render_parts(
                 "index": index,
                 "voice_key": group.voice_key,
                 "silence_before_ms": (
-                    max(0, int(settings.get("voice_change_silence_ms") or 0))
+                    max(0, int(
+                        settings.get(
+                            "in_segment_voice_change_silence_ms",
+                            settings.get("voice_change_silence_ms", 0),
+                        ) or 0
+                    ))
                     if index and not settings.get("_subtitle_timed") else 0
                 ),
             }

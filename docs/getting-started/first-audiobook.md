@@ -128,11 +128,15 @@ Manager and inspect the job rather than starting a duplicate run.
 Assembly follows the selected take for every segment and constructs the final
 audio sequence. Listen across joins and chapter boundaries before export.
 **Audio settings** offers separate pauses for regular segments, paragraphs and
-clause boundaries inside a sentence. The optional voice-change gap is a minimum
-between different voices, including changes inside one block. A manually edited
-block pause, including zero, takes priority. Fixed subtitle timings retain their
-alignment. New settings apply when creating a new generation or assembly; saved
-run snapshots keep their original pacing.
+clause boundaries inside a sentence. **Voice-change pause inside a segment**
+adds 100 ms by default, such as between dialogue and the narrator's "X said".
+Try 50 ms or zero for tighter pacing. New generation runs use this setting;
+saved takes and resumed runs keep their original pacing.
+
+The separate minimum pause at voice changes between segments is disabled by
+default. The longer sentence, paragraph or clause pause wins. A manually edited
+segment pause, including zero, takes priority. Fixed subtitle timings retain
+their alignment. Changing only assembly pauses can reuse existing takes.
 Then choose WAV, MP3, Opus, FLAC, or M4B. M4B can include chapters, metadata,
 and cover art.
 
