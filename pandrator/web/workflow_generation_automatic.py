@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from .generation_plan_store import DefaultSilenceProtocol
 from .models import Artifact, GenerationPlan, GenerationSegment, new_id, utcnow
+from .tts_provider_contracts import synthesize_with_optional_timing
 from .workflow_generation_automatic_output import (
     AutomaticAudioOutput,
     AutomaticTakePublication,
@@ -321,6 +322,7 @@ def generate_audio(
                 )
 
         render_manifest: list[dict[str, Any]] = []
+        speech_timing: dict[str, Any] | None = None
 
         def synthesize_request(
             *,
@@ -329,7 +331,8 @@ def generate_audio(
             segment_index: int = index,
             synthesis_progress_share: float = synthesis_share,
         ):
-            return context.tts_providers.synthesize(
+            return synthesize_with_optional_timing(
+                context.tts_providers,
                 text_to_synthesize,
                 settings_for_segment,
                 max_attempts=int(settings_for_segment.get("max_attempts") or 5),
@@ -358,6 +361,7 @@ def generate_audio(
             generation_segment_id: str = generation_segment_id,
             render_manifest: list[dict[str, Any]] = render_manifest,
         ):
+            nonlocal speech_timing
             if casting_enabled:
                 from .generation_cast_runtime import segment_render_parts
                 from .generation_rendering import execute_render_parts
@@ -411,25 +415,14 @@ def generate_audio(
                     raise MediaProcessCancelled("Audio generation was canceled.")
                 render_manifest.extend(manifest)
                 return assembled
-            return context.tts_providers.synthesize(
-                text_to_synthesize,
-                settings_for_segment,
-                max_attempts=int(settings_for_segment.get("max_attempts") or 5),
-                cancel_event=cancel_event,
-                retry_callback=lambda attempt, total, delay: progress(
-                    optimization_share
-                    + ((segment_index - 1) / len(records))
-                    * synthesis_progress_share,
-                    f"Retrying segment {segment_index} ({attempt}/{total}) in {delay:.1f}s",
-                ),
-                recovery_callback=lambda cycle, total, timeout: progress(
-                    optimization_share
-                    + ((segment_index - 1) / len(records))
-                    * synthesis_progress_share,
-                    f"Waiting for Qwen3 TTS before segment {segment_index} ({cycle}/{total}, up to {timeout:.0f}s)",
-                ),
-                **tts_urls,
+            result = synthesize_request(
+                text_to_synthesize=text_to_synthesize,
+                settings_for_segment=settings_for_segment,
+                segment_index=segment_index,
+                synthesis_progress_share=synthesis_progress_share,
             )
+            speech_timing = result.speech_timing
+            return result.audio
 
         if batch_results is not None and batch_context is not None:
             try:
@@ -462,6 +455,9 @@ def generate_audio(
                 audio = synthesize_one()
             else:
                 audio = batch_result.audio
+                speech_timing = getattr(batch_result, "speech_timing", None)
+                if not isinstance(speech_timing, dict):
+                    speech_timing = None
         else:
             audio = synthesize_one()
         if audio is None:
@@ -508,6 +504,7 @@ def generate_audio(
                     "synthesized_text": synthesized_text,
                     "llm_optimized": synthesized_text != text,
                     "llm_model": optimization_model or None,
+                    **({"speech_timing": speech_timing} if speech_timing is not None else {}),
                     **(
                         {"render_parts": render_manifest}
                         if render_manifest

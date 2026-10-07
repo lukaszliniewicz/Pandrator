@@ -2137,6 +2137,7 @@ def _request_elevenlabs_audio(
     tts_settings: dict,
     *,
     endpoint: dict[str, object] | None = None,
+    _timing_sink: dict | None = None,
 ) -> requests.Response:
     """Call ElevenLabs' native text-to-speech endpoint.
 
@@ -2207,11 +2208,15 @@ def _request_elevenlabs_audio(
         )
     )
     url = f"{base_url}/v1/text-to-speech/{quote(voice_id, safe='')}"
+    if _timing_sink is not None:
+        url += "/with-timestamps"
+        _timing_sink["provider_text"] = compiled.input
+        _timing_sink["output_format"] = output_format
     return _native_speech_http.post_native_speech(
         url,
         request_label="ElevenLabs speech",
         request_options=lambda: {
-            "headers": _elevenlabs_auth_headers(api_key, audio=True),
+            "headers": _elevenlabs_auth_headers(api_key, audio=_timing_sink is None),
             "params": {"output_format": output_format},
             "json": payload,
             "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
@@ -3429,6 +3434,7 @@ def _request_openai_compatible_audio(
     tts_settings: dict,
     *,
     request_session: requests.Session | None = None,
+    _timing_sink: dict | None = None,
 ) -> requests.Response:
     endpoint, error = resolve_openai_audio_endpoint(tts_settings)
     if endpoint is None:
@@ -3451,6 +3457,10 @@ def _request_openai_compatible_audio(
         return _request_azure_speech_audio(text, tts_settings, endpoint)
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == ELEVENLABS_NATIVE_ADAPTER:
+        if _timing_sink is not None:
+            return _request_elevenlabs_audio(
+                text, tts_settings, endpoint=endpoint, _timing_sink=_timing_sink,
+            )
         return _request_elevenlabs_audio(text, tts_settings, endpoint=endpoint)
 
     if _normalize_custom_adapter(endpoint.get("adapter")) == GENERIC_JSON_ADAPTER:
@@ -4165,6 +4175,7 @@ def text_to_audio(
     request_session: requests.Session | None = None,
     _audio_cpp_lock_held: bool = False,
     audio_cpp_base_url: str = AUDIO_CPP_API_BASE_URL,
+    _timing_sink: dict | None = None,
 ) -> AudioSegment | None:
     """
     Generates audio from text using the specified TTS service.
@@ -4200,6 +4211,7 @@ def text_to_audio(
                     recovery_callback=recovery_callback,
                     request_session=request_session,
                     _audio_cpp_lock_held=True,
+                    _timing_sink=_timing_sink,
                 )
     # Visual subtitle wrapping must never leak into provider payloads.  This
     # also makes direct callers consistent with dubbing speech blocks.
@@ -4269,12 +4281,18 @@ def text_to_audio(
                     text,
                     tts_settings,
                     request_session=request_session,
+                    **({"_timing_sink": _timing_sink} if _timing_sink is not None else {}),
                 )
             elif str(service).strip().lower() in {
                 ELEVENLABS_SERVICE.lower(),
                 ELEVENLABS_PROVIDER,
             }:
-                response = _request_elevenlabs_audio(text, tts_settings)
+                if _timing_sink is None:
+                    response = _request_elevenlabs_audio(text, tts_settings)
+                else:
+                    response = _request_elevenlabs_audio(
+                        text, tts_settings, _timing_sink=_timing_sink,
+                    )
             elif service == VERTEX_SERVICE:
                 response = _request_vertex_ai_audio(text, tts_settings)
             elif service == "Silero":
@@ -4326,7 +4344,24 @@ def text_to_audio(
                 raise ValueError(f"Unsupported TTS service: {service}")
 
             response.raise_for_status()
-            audio = _decode_audio_response(response)
+            if _timing_sink is not None and "provider_text" in _timing_sink:
+                import base64
+
+                from .speech_timing import elevenlabs_speech_timing
+
+                payload = response.json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("audio_base64"), str):
+                    raise RuntimeError("ElevenLabs returned no encoded audio.")
+                audio = _decode_audio_bytes(
+                    base64.b64decode(payload["audio_base64"], validate=True),
+                    format_hint=_timing_sink["output_format"],
+                )
+                _timing_sink["speech_timing"] = elevenlabs_speech_timing(
+                    _timing_sink["provider_text"], payload.get("alignment"),
+                    duration_ms=audio.frame_count() * 1000 / audio.frame_rate,
+                )
+            else:
+                audio = _decode_audio_response(response)
             return audio
 
         except ValueError as e:

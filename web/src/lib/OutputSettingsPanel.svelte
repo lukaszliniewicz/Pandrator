@@ -18,6 +18,7 @@
     SettingsPayload
   } from './api-models';
   import ArtifactPreview from './ArtifactPreview.svelte';
+  import BookOutputSettings from './BookOutputSettings.svelte';
   import { artifactFilename } from './artifact-display';
   import { onDestroy } from 'svelte';
 
@@ -150,7 +151,12 @@
         'artist',
         'album',
         'genre',
-        'cover_artifact_id'
+        'cover_artifact_id',
+        'export_mode',
+        'subtitle_format',
+        ...Object.keys(settings?.effective ?? {}).filter((key) =>
+          key.startsWith('book_')
+        )
       ]);
     if (subtitleWorkspace) return new Set(sharedSubtitleKeys);
     const keys = new Set(sharedSubtitleKeys);
@@ -497,7 +503,7 @@
     <div>
       <h2 class="mt-1 text-xl font-semibold">
         {audiobookWorkspace
-          ? 'Audiobook file, metadata, and artwork'
+          ? 'Audiobook export and presentation'
           : subtitleWorkspace
             ? 'Subtitle files'
             : hasSourceVideo
@@ -506,7 +512,7 @@
       </h2>
       <p class="muted mt-2 text-sm">
         {audiobookWorkspace
-          ? 'Configure the narration container and book metadata.'
+          ? 'Export narration, a video book, or timed text from the selected audio version.'
           : subtitleWorkspace
             ? 'Choose SRT, WebVTT, or a plain-text transcript.'
             : sourceDescription}
@@ -584,27 +590,37 @@
         >
       </div>
     {:else if audiobookWorkspace}
-      <div class="mt-6 grid gap-5 xl:grid-cols-[1fr_18rem]">
+      <BookOutputSettings
+        {sessionId}
+        {generationRunId}
+        settings={{ ...settings?.effective, ...draft }}
+        onChange={set}
+      />
+      <div
+        class={`mt-6 grid gap-5 ${['media', 'audio'].includes(exportMode) ? 'xl:grid-cols-[1fr_18rem]' : ''}`}
+      >
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <label
-            >Format<select
-              value={String(value('format', 'wav'))}
-              onchange={(event) => set('format', event.currentTarget.value)}
-              class="field"
-              ><option value="m4b">M4B audiobook</option><option value="mp3"
-                >MP3</option
-              ><option value="opus">Opus</option><option value="flac"
-                >FLAC</option
-              ><option value="wav">PCM WAV</option></select
-            ></label
-          >
-          {#if formatUsesBitrate(outputFormat)}<label
-              >Bitrate<input
-                value={String(value('bitrate', '192k'))}
-                oninput={(event) => set('bitrate', event.currentTarget.value)}
+          {#if ['media', 'audio'].includes(exportMode)}
+            <label
+              >Format<select
+                value={String(value('format', 'wav'))}
+                onchange={(event) => set('format', event.currentTarget.value)}
                 class="field"
-              /></label
-            >{/if}
+                ><option value="m4b">M4B audiobook</option><option value="mp3"
+                  >MP3</option
+                ><option value="opus">Opus</option><option value="flac"
+                  >FLAC</option
+                ><option value="wav">PCM WAV</option></select
+              ></label
+            >
+            {#if formatUsesBitrate(outputFormat)}<label
+                >Bitrate<input
+                  value={String(value('bitrate', '192k'))}
+                  oninput={(event) => set('bitrate', event.currentTarget.value)}
+                  class="field"
+                /></label
+              >{/if}
+          {/if}
           <label
             >Language identifier<input
               value={String(value('language', ''))}
@@ -613,88 +629,91 @@
               class="field"
             /></label
           >
-          <label
-            >Title<input
-              value={String(value('title', ''))}
-              oninput={(event) => set('title', event.currentTarget.value)}
-              class="field"
-            /></label
-          >
-          <label
-            >Author / artist<input
-              value={String(value('artist', ''))}
-              oninput={(event) => set('artist', event.currentTarget.value)}
-              class="field"
-            /></label
-          >
-          <label
-            >Album / series<input
-              value={String(value('album', ''))}
-              oninput={(event) => set('album', event.currentTarget.value)}
-              class="field"
-            /></label
-          >
-          <label
-            >Genre<input
-              value={String(value('genre', 'Audiobook'))}
-              oninput={(event) => set('genre', event.currentTarget.value)}
-              class="field"
-            /></label
-          >
-          <div
-            class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs leading-relaxed sm:col-span-2"
-          >
-            <strong>Narration audio</strong>
-            <p class="muted mt-1">
-              M4B carries book metadata, cover artwork, and chapter markers from
-              the generation plan.
-            </p>
-          </div>
-        </div>
-        <aside class="rounded-2xl border border-[var(--line)] p-4">
-          <div class="text-sm font-semibold">Cover artwork</div>
-          {#if selectedCover}<button
-              onclick={() => {
-                preview = selectedCover;
-              }}
-              class="mt-3 block aspect-square w-full overflow-hidden rounded-xl bg-[var(--paper)]"
-              ><img
-                src={`/api/v1/artifacts/${selectedCover.id}/content`}
-                alt={artifactFilename(selectedCover)}
-                class="size-full object-cover"
-              /></button
-            >
-            <div class="muted mt-2 truncate text-xs">
-              {artifactFilename(selectedCover)}
-            </div>{:else}<div
-              class="muted mt-3 grid aspect-square place-items-center rounded-xl border border-dashed border-[var(--line)] text-center text-xs"
-            >
-              No cover selected
-            </div>{/if}<select
-            value={coverId}
-            onchange={(event) =>
-              set('cover_artifact_id', event.currentTarget.value)}
-            class="field mt-3"
-            ><option value="">No cover</option>{#each images as image}<option
-                value={image.id}>{artifactFilename(image)}</option
-              >{/each}</select
-          >
-          <div class="mt-3 flex gap-2">
-            <label class="tool flex flex-1 cursor-pointer justify-center"
-              ><ImagePlus size={15} /> Upload<input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onchange={uploadCover}
-                class="sr-only"
+          {#if exportMode !== 'subtitles'}<label
+              >Title<input
+                value={String(value('title', ''))}
+                oninput={(event) => set('title', event.currentTarget.value)}
+                class="field"
               /></label
-            ><button
-              onclick={() => set('cover_artifact_id', '')}
-              disabled={!coverId}
-              class="tool"
-              aria-label="Remove cover"><Trash2 size={15} /></button
+            >{/if}
+          {#if ['media', 'audio'].includes(exportMode)}<label
+              >Author / artist<input
+                value={String(value('artist', ''))}
+                oninput={(event) => set('artist', event.currentTarget.value)}
+                class="field"
+              /></label
             >
-          </div>
-        </aside>
+            <label
+              >Album / series<input
+                value={String(value('album', ''))}
+                oninput={(event) => set('album', event.currentTarget.value)}
+                class="field"
+              /></label
+            >
+            <label
+              >Genre<input
+                value={String(value('genre', 'Audiobook'))}
+                oninput={(event) => set('genre', event.currentTarget.value)}
+                class="field"
+              /></label
+            >
+            <div
+              class="rounded-xl bg-[var(--accent-soft)] p-3 text-xs leading-relaxed sm:col-span-2"
+            >
+              <strong>Narration audio</strong>
+              <p class="muted mt-1">
+                M4B carries book metadata, cover artwork, and chapter markers
+                from the generation plan.
+              </p>
+            </div>
+          {/if}
+        </div>
+        {#if ['media', 'audio'].includes(exportMode)}<aside
+            class="rounded-2xl border border-[var(--line)] p-4"
+          >
+            <div class="text-sm font-semibold">Cover artwork</div>
+            {#if selectedCover}<button
+                onclick={() => {
+                  preview = selectedCover;
+                }}
+                class="mt-3 block aspect-square w-full overflow-hidden rounded-xl bg-[var(--paper)]"
+                ><img
+                  src={`/api/v1/artifacts/${selectedCover.id}/content`}
+                  alt={artifactFilename(selectedCover)}
+                  class="size-full object-cover"
+                /></button
+              >
+              <div class="muted mt-2 truncate text-xs">
+                {artifactFilename(selectedCover)}
+              </div>{:else}<div
+                class="muted mt-3 grid aspect-square place-items-center rounded-xl border border-dashed border-[var(--line)] text-center text-xs"
+              >
+                No cover selected
+              </div>{/if}<select
+              value={coverId}
+              onchange={(event) =>
+                set('cover_artifact_id', event.currentTarget.value)}
+              class="field mt-3"
+              ><option value="">No cover</option>{#each images as image}<option
+                  value={image.id}>{artifactFilename(image)}</option
+                >{/each}</select
+            >
+            <div class="mt-3 flex gap-2">
+              <label class="tool flex flex-1 cursor-pointer justify-center"
+                ><ImagePlus size={15} /> Upload<input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onchange={uploadCover}
+                  class="sr-only"
+                /></label
+              ><button
+                onclick={() => set('cover_artifact_id', '')}
+                disabled={!coverId}
+                class="tool"
+                aria-label="Remove cover"><Trash2 size={15} /></button
+              >
+            </div>
+          </aside>{/if}
       </div>
     {:else}
       <div class="mt-6 space-y-5">

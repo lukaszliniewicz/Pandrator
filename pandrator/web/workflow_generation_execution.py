@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
+from .tts_provider_contracts import TtsSynthesisResult, synthesize_with_optional_timing
 from .workflow_generation_finalization import (
     finalize_generation_run,
     restore_optional_pass_status,
@@ -562,6 +563,7 @@ def run_generation(
         take_committed = False
         take_parent_ids: list[str] = []
         render_manifest: list[dict[str, Any]] = []
+        speech_timing: dict[str, Any] | None = None
         cast_render = operation != "rvc" and bool(
             (selected_tts_runtime or tts_settings).get("casting_enabled")
         )
@@ -679,8 +681,9 @@ def run_generation(
                     text_to_synthesize: str = synthesized_text,
                     settings_for_segment: dict[str, Any] = segment_tts_settings,
                     segment_index: int = index,
-                ) -> AudioSegment | None:
-                    return context.tts_providers.synthesize(
+                ) -> TtsSynthesisResult:
+                    return synthesize_with_optional_timing(
+                        context.tts_providers,
                         text_to_synthesize,
                         settings_for_segment,
                         max_attempts=int(
@@ -708,9 +711,11 @@ def run_generation(
                     segment_id: str = segment_id,
                     synthesized_text: str = synthesized_text,
                 ) -> AudioSegment | None:
-                    nonlocal render_manifest
+                    nonlocal render_manifest, speech_timing
                     if not segment_tts_settings.get("casting_enabled"):
-                        return synthesize_request()
+                        result = synthesize_request()
+                        speech_timing = result.speech_timing
+                        return result.audio
                     from .generation_cast_runtime import segment_render_parts
                     from .generation_rendering import execute_render_parts
 
@@ -722,7 +727,7 @@ def run_generation(
                         part_text: str,
                         part_settings: dict[str, Any],
                         segment_id: str = segment_id,
-                    ) -> AudioSegment | None:
+                    ) -> TtsSynthesisResult:
                         prepared = context.prepare_audio_cpp_voice_reference(part_settings)
                         context._ensure_qwen_cloned_voice(
                             prepared, base_url=tts_urls["kobold_qwen_base_url"],
@@ -781,6 +786,9 @@ def run_generation(
                         audio = synthesize_one()
                     else:
                         audio = batch_result.audio
+                        speech_timing = getattr(batch_result, "speech_timing", None)
+                        if not isinstance(speech_timing, dict):
+                            speech_timing = None
                 else:
                     audio = synthesize_one()
                 if audio is None:
@@ -798,6 +806,10 @@ def run_generation(
                             "Choose an RVC model before generating an alternate RVC take."
                         )
                     audio = rvc_handler.process_with_rvc(audio, rvc_settings)
+                    speech_timing = None
+                    for part in render_manifest:
+                        for key in ("speech_timing", "start_frame", "end_frame", "sample_rate_hz"):
+                            part.pop(key, None)
                     take_kind = "tts_rvc"
                     take_settings = {**segment_tts_settings, "rvc": rvc_settings}
             verification = context._verification_metadata(
@@ -859,6 +871,7 @@ def run_generation(
                             "source_text": text,
                             "synthesized_text": synthesized_text,
                             **({"render_parts": render_manifest} if render_manifest else {}),
+                            **({"speech_timing": speech_timing} if speech_timing is not None else {}),
                             "llm_optimized": (operation != "rvc" and synthesized_text != text),
                             "llm_model": optimization_model or None,
                             **({"audio_verification": verification} if verification is not None else {}),

@@ -1109,7 +1109,7 @@ def build_server(runtime: McpRuntime):
         ] = (),
         final_stage: Literal["generate_audio", "export"] = "export",
         overrides: dict[str, Any] | None = None,
-        export_mode: Literal["media", "audio", "subtitles", "text"] = "media",
+        export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
         subtitle_selection: Literal["source", "translation", "dual"] = "translation",
@@ -1148,7 +1148,7 @@ def build_server(runtime: McpRuntime):
     def export_variant_plan_tool(
         session_id: str,
         generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
-        export_mode: Literal["media", "audio", "subtitles", "text"] = "media",
+        export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
         subtitle_selection: Literal["source", "translation", "dual"] = "translation",

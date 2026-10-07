@@ -238,6 +238,7 @@ def assemble_generation_output(
 
         loaded: list[tuple[GenerationSegment, AudioTake, Artifact, Path, int]] = []
         manifest: list[dict[str, Any]] = []
+        timeline_metadata: dict[str, Any] = {}
         chapter_markers: list[tuple[float, str]] = []
         parent_ids: list[str] = []
         for index, (segment, take, artifact) in enumerate(selected):
@@ -577,6 +578,13 @@ def assemble_generation_output(
                     strict=True,
                 )
             ]
+            timeline_metadata = {
+                "audio_timeline": {
+                    "version": 1,
+                    "sample_rate_hz": assembly_result.sample_rate_hz,
+                    "total_frames": assembly_result.total_frames,
+                }
+            }
             for index, (
                 segment,
                 take,
@@ -595,6 +603,8 @@ def assemble_generation_output(
                         "artifact_id": artifact.id,
                         "kind": take.kind,
                         "duration_ms": assembly_result.part_duration_ms[index],
+                        "start_frame": assembly_result.part_start_frames[index],
+                        "end_frame": assembly_result.part_end_frames[index],
                         "silence_after_ms": planned_parts[index].silence_after_ms,
                     }
                 )
@@ -671,7 +681,16 @@ def assemble_generation_output(
             settings={
                 "audio": audio_settings,
                 "output": output_settings,
-                "takes": manifest,
+                # Frame coordinates describe the rendered output, not settings.
+                # Keep the historical settings hash input unchanged.
+                "takes": [
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"start_frame", "end_frame"}
+                    }
+                    for item in manifest
+                ],
             },
             metadata={
                 "output_assembly_id": assembly_id,
@@ -687,6 +706,7 @@ def assemble_generation_output(
                     for start, title in chapter_markers
                 ],
                 "takes": manifest,
+                **timeline_metadata,
                 "synchronization": alignment_diagnostics,
                 "output_settings": output_settings_snapshot,
             },
@@ -734,6 +754,7 @@ def assemble_generation_output(
                 assembly.settings_json = {
                     **dict(assembly.settings_json or {}),
                     "takes": manifest,
+                    **timeline_metadata,
                     "duration_ms": assembly_result.duration_ms,
                     "assembly_backend": assembly_result.backend,
                     "synchronization": alignment_diagnostics,

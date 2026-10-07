@@ -8,7 +8,7 @@ from typing import Any
 from .source_resolution import PrimarySourceResolution
 
 EXPORT_CONTRACT_VERSION = 1
-EXPORT_MODES = frozenset({"media", "audio", "subtitles", "text"})
+EXPORT_MODES = frozenset({"media", "audio", "subtitles", "text", "video_book"})
 AUDIO_MODE_ALIASES = {
     "preserve": "preserve",
     "source": "preserve",
@@ -25,6 +25,10 @@ def normalize_export_mode(value: Any, *, workflow_kind: str) -> str:
         raise ValueError("A subtitle workspace export must be subtitles or text.")
     if normalized not in EXPORT_MODES:
         raise ValueError(f"Unsupported export mode: {normalized or '(empty)'}")
+    if normalized == "video_book" and workflow_kind != "audiobook":
+        raise ValueError("Video-book export is available for audiobook projects.")
+    if workflow_kind == "audiobook" and normalized == "text":
+        raise ValueError("Choose audio, a video book, or timed subtitles for an audiobook project.")
     return normalized
 
 

@@ -100,6 +100,10 @@ def export(
         )
         if audio is None:
             raise ValueError("Audiobook export requires generated audio.")
+        if settings.get("export_mode") in {"video_book", "subtitles"}:
+            from .workflow_book_export import export_book
+
+            return export_book(context, inputs, audio, payload, progress, cancel_event)
         _audio_record, audio_path = context._resolve_input(audio.id)
         audio_dir.mkdir(parents=True, exist_ok=True)
         destination = context.artifacts.next_available_path(

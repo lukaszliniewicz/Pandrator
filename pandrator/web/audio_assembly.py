@@ -137,6 +137,10 @@ class AudioAssemblyResult:
     part_duration_ms: tuple[int, ...]
     chapter_starts_ms: tuple[int, ...]
     backend: str
+    sample_rate_hz: int = 0
+    total_frames: int = 0
+    part_start_frames: tuple[int, ...] = ()
+    part_end_frames: tuple[int, ...] = ()
 
 
 def resolve_assembly_backend(explicit: str | None = None) -> str:
@@ -457,6 +461,8 @@ def _assemble_streaming(
         chapters_by_part.setdefault(chapter.part_index, []).append(chapter_index)
     chapter_starts = [0] * len(plan.chapters)
     part_durations: list[int] = []
+    part_start_frames: list[int] = []
+    part_end_frames: list[int] = []
     total_frames = 0
 
     with tempfile.TemporaryDirectory(prefix=".assembly-stream-", dir=work_dir) as temporary:
@@ -479,6 +485,7 @@ def _assemble_streaming(
                     cancel_event=cancel_event,
                 )
                 total_frames += before_frames
+                part_start_frames.append(total_frames)
                 actual_start_ms = int(round(total_frames * 1000 / encoding.sample_rate_hz))
                 for chapter_index in chapters_by_part.get(index, ()):
                     chapter_starts[chapter_index] = actual_start_ms
@@ -511,6 +518,7 @@ def _assemble_streaming(
                     int(round(copied_frames * 1000 / encoding.sample_rate_hz))
                 )
                 total_frames += copied_frames
+                part_end_frames.append(total_frames)
 
                 after_frames = int(round(encoding.sample_rate_hz * part.silence_after_ms / 1000))
                 _write_silence(
@@ -547,6 +555,10 @@ def _assemble_streaming(
         part_duration_ms=tuple(part_durations),
         chapter_starts_ms=tuple(chapter_starts),
         backend=STREAMING_BACKEND,
+        sample_rate_hz=encoding.sample_rate_hz,
+        total_frames=total_frames,
+        part_start_frames=tuple(part_start_frames),
+        part_end_frames=tuple(part_end_frames),
     )
 
 
@@ -569,6 +581,8 @@ def _assemble_pydub(
         chapters_by_part.setdefault(chapter.part_index, []).append(chapter_index)
     chapter_starts = [0] * len(plan.chapters)
     part_durations: list[int] = []
+    part_start_frames: list[int] = []
+    part_end_frames: list[int] = []
     for index, part in enumerate(plan.parts):
         if cancel_event is not None and cancel_event.is_set():
             raise MediaProcessCancelled("Audio assembly was canceled.")
@@ -577,6 +591,7 @@ def _assemble_pydub(
                 duration=part.silence_before_ms,
                 frame_rate=encoding.sample_rate_hz,
             ).set_channels(encoding.channels)
+        part_start_frames.append(int(combined.frame_count()))
         for chapter_index in chapters_by_part.get(index, ()):
             chapter_starts[chapter_index] = len(combined)
         audio = (
@@ -591,6 +606,7 @@ def _assemble_pydub(
             audio = audio.fade_out(min(part.fade_out_ms, len(audio)))
         part_durations.append(len(audio))
         combined += audio
+        part_end_frames.append(int(combined.frame_count()))
         if part.silence_after_ms:
             combined += AudioSegment.silent(
                 duration=part.silence_after_ms,
@@ -612,6 +628,10 @@ def _assemble_pydub(
         part_duration_ms=tuple(part_durations),
         chapter_starts_ms=tuple(chapter_starts),
         backend=PYDUB_BACKEND,
+        sample_rate_hz=combined.frame_rate,
+        total_frames=int(combined.frame_count()),
+        part_start_frames=tuple(part_start_frames),
+        part_end_frames=tuple(part_end_frames),
     )
 
 

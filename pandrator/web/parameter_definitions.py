@@ -10,6 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from pandrator.logic.book_settings import BOOK_CHOICES, BOOK_LIMITS
+
 from .settings_policy import BUILTIN_DEFAULTS, SETTING_SECTIONS
 
 DOCUMENTED_SECTIONS = SETTING_SECTIONS
@@ -389,7 +391,22 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
     "output": {
         "format": "Selects the container used for assembled audio output; supported values are WAV, MP3, M4B, Opus, and FLAC, with M4B restricted to audiobook workflows.",
         "bitrate": "Sets the codec bitrate string used for lossy audio formats such as MP3, M4B, and Opus; the codec and provider/FFmpeg parser define accepted bitrate syntax.",
-        "export_mode": "Selects video/media, audio-only soundtrack, subtitle files, or concatenated text; subtitle workflows are restricted to subtitle or text export.",
+        "export_mode": "Selects media, audio, subtitle files, or text; audiobook projects also offer video_book, an MP4 with fitted reading passages. Subtitle projects allow subtitles or text.",
+        "book_style": "Reading shows centred passages; captions uses conventional subtitle line and duration limits.",
+        "book_cue_mode": "Passages use native word timing or forced alignment; segments display each complete segment at its saved audio boundaries and skip alignment.",
+        "book_text_mode": "Auto preserves original spellings when timing can be mapped and reports any fallback to spoken wording. Original requires a verified mapping; spoken displays the actual synthesized transcript.",
+        "book_target_seconds": "Target duration of a reading passage; natural boundaries and measured line capacity also govern splitting.",
+        "book_max_seconds": "Soft reading-passage duration ceiling. An indivisible timed unit can exceed it; audio is never stretched for display.",
+        "book_max_lines": "Maximum fitted lines in a reading video. Caption style uses at most two lines.",
+        "book_font_size": "Text size in pixels at 1080p; scales proportionally for 720p.",
+        "book_font_path": "Optional local font file. Blank selects a system font for the book language; rendering verifies its glyph coverage.",
+        "book_resolution": "Portable H.264/AAC MP4 resolution: 720p or 1080p, at 24 frames per second.",
+        "book_background": "Six-digit hexadecimal background colour for the video book.",
+        "book_foreground": "Six-digit hexadecimal text colour for the video book.",
+        "book_alignment": "Centres or left-aligns the displayed passage within its reading area.",
+        "book_show_heading": "Shows the chapter heading, or book title when no chapter heading exists, above reading passages.",
+        "book_alignment_engine": "Auto selects the existing language-appropriate aligner. Explicit CrispASR or Qwen requires its supported language and runtime.",
+        "book_use_native_timings": "Uses validated timing returned during speech generation when available; otherwise aligns the known transcript against saved audio.",
         "audio_match_source_duration": "Match the associated recording’s complete timeline, including initial and trailing silence. Speech overruns are rejected rather than silently clipped; turn off only when a longer independent audio file is intended.",
         "audio_mode": "Selects the source-audio policy for voiceover media export: preserve source audio, mix source with generated speech, or export dubbing only.",
         "subtitle_mode": "Selects whether selected subtitles are omitted, muxed as soft tracks, or burned into a rendered video; burning forces video transcoding.",
@@ -962,7 +979,9 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
     },
     "output": {
         "format": {"choices": ["wav", "mp3", "m4b", "opus", "flac"]},
-        "export_mode": {"choices": ["media", "audio", "subtitles", "text"]},
+        "export_mode": {"choices": ["media", "audio", "subtitles", "text", "video_book"]},
+        **{key: {"choices": list(choices)} for key, choices in BOOK_CHOICES.items()},
+        **{key: {"minimum": low, "maximum": high} for key, (low, high) in BOOK_LIMITS.items()},
         "audio_mode": {"choices": ["mixed", "preserve", "dubbing_only"]},
         "subtitle_mode": {"choices": ["none", "soft", "burned"]},
         "subtitle_selection": {"choices": ["source", "translation", "dual"]},
@@ -1106,6 +1125,8 @@ def describe_parameters(
         ):
             continue
         for name in BUILTIN_DEFAULTS.get(section, {}):
+            if requested_workflow is not None and requested_workflow != "audiobook" and section == "output" and name.startswith("book_"):
+                continue
             if name_filter and name not in name_filter:
                 continue
             item = _REGISTRY[section][name]

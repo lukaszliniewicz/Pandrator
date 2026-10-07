@@ -140,6 +140,13 @@ their alignment. Changing only assembly pauses can reuse existing takes.
 Then choose WAV, MP3, Opus, FLAC, or M4B. M4B can include chapters, metadata,
 and cover art.
 
+For a video book, open **Output**, select the completed audio version, and choose
+**Video book**. Start with **Reading passages** and preview 25 seconds before the
+full export. Choose **Timed subtitles** to export only SRT or WebVTT; **Whole segments**
+skips word alignment for a quick result. See
+[video books and timed audiobook text](../reference/formats-and-exports.md#video-books-and-timed-audiobook-text)
+for passage length, original wording, and presentation controls.
+
 Keep the source document, selected speech revision, chosen takes, and exported
 file as distinct review points. A successful generation job does not imply
 that assembly or export has run.

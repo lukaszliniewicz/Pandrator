@@ -192,6 +192,7 @@ from .tts_provider_contracts import (
 from .tts_provider_contracts import (
     TtsRetryPolicy as TtsRetryPolicy,
 )
+from .tts_provider_contracts import TtsSynthesisResult as TtsSynthesisResult
 from .tts_provider_contracts import _is_tts_batch_synthesizer
 
 
@@ -1189,6 +1190,17 @@ class TtsProviderRegistry:
                 retryable=True,
             ) from error
 
+    def synthesize_with_timing(
+        self, text: str, settings: dict[str, Any], **options: Any,
+    ) -> TtsSynthesisResult:
+        """Capture optional native alignment across the legacy adapter boundary."""
+        adapter = self.get(self.service_id_for_settings(settings))
+        sink: dict[str, Any] = {}
+        if isinstance(adapter, LegacyTtsAdapter):
+            options["_timing_sink"] = sink
+        audio = self.synthesize(text, settings, **options)
+        return TtsSynthesisResult(audio, sink.get("speech_timing"))
+
     def synthesis_capabilities(
         self,
         settings: dict[str, Any],
@@ -1295,13 +1307,13 @@ class TtsProviderRegistry:
             if is_cancelled():
                 return None
             try:
+                result = self.synthesize_with_timing(
+                    item.text, dict(item.settings), **dict(options),
+                )
                 return TtsBatchResult(
                     id=item.id,
-                    audio=self.synthesize(
-                        item.text,
-                        dict(item.settings),
-                        **dict(options),
-                    ),
+                    audio=result.audio,
+                    speech_timing=result.speech_timing,
                 )
             except Exception as error:  # noqa: BLE001 - stable result boundary
                 projected = (

@@ -220,6 +220,20 @@ def resolve_workflow_stage_in_session(
     record = session.get(SessionRecord, session_id)
     if record is None:
         raise KeyError(session_id)
+    if stage_key == "export" and record.workflow_kind == "audiobook" and flattened.get("export_mode") in {"video_book", "subtitles"}:
+        from .settings_policy import BUILTIN_DEFAULTS, stable_hash, validate_output_settings
+
+        validate_output_settings(flattened)
+        # Text timing is measured against lossless PCM. Preserve the selected
+        # audio export format in the stored profile; freeze WAV for this job.
+        resolved = deepcopy(resolved)
+        resolved["output"].update({key: flattened[key] for key in BUILTIN_DEFAULTS["output"] if key in flattened})
+        resolved["output"]["format"] = "wav"
+        flattened["format"] = "wav"
+        flattened.setdefault("stt_compute_backend", "cpu")
+        flattened.setdefault("qwen_aligner_backend", "cpu")
+        flattened.setdefault("stt_threads", 4)
+        settings_hash = stable_hash(resolved)
     media_edit_plan = (
         session.scalar(
             select(MediaEditPlan).where(MediaEditPlan.session_id == session_id)

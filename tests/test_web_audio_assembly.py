@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import wave
 from copy import deepcopy
 from pathlib import Path
 from unittest import mock
@@ -202,7 +203,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
         _artifact, output_path = ArtifactService(self.database, self.paths).resolve(artifact_id)
         self.assertEqual(240, len(AudioSegment.from_file(output_path)))
 
-    def _plan_with_takes(self):
+    def _plan_with_takes(self, frame_counts=None):
         plan = self.generation.create_plan(
             self.record.id,
             source_revision_id=None,
@@ -231,9 +232,16 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             zip(segment_ids, (100, 140), strict=False)
         ):
             path = self.session_dir / f"take-{index}.wav"
-            Sine(440 + index * 110).to_audio_segment(duration=duration).export(
-                path, format="wav"
-            ).close()
+            if frame_counts is None:
+                Sine(440 + index * 110).to_audio_segment(duration=duration).export(
+                    path, format="wav"
+                ).close()
+            else:
+                with wave.open(str(path), "wb") as writer:
+                    writer.setframerate(44100)
+                    writer.setnchannels(1)
+                    writer.setsampwidth(2)
+                    writer.writeframes(b"\x01\x00" * frame_counts[index])
             artifact = artifacts.register(
                 path, kind="audio", role="generation_take", session_id=self.record.id
             )
@@ -251,6 +259,48 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                     )
                 )
         return segment_ids
+
+    def test_sequential_manifest_frames_follow_actual_selected_take_order(self):
+        segment_ids = self._plan_with_takes(frame_counts=(51, 109))
+        queued = self.generation.create_assembly(
+            self.record.id, run_override={"output": {"format": "wav"}}
+        )
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            settings_hash = assembly.settings_hash
+            resolved = deepcopy(assembly.settings_json["resolved"])
+            take_ids = [
+                session.scalar(select(AudioTake.id).where(AudioTake.generation_segment_id == segment_id))
+                for segment_id in segment_ids
+            ]
+        result = WorkflowHandlers(self.database, self.paths).assemble_generation_output(
+            {"output_assembly_id": queued["id"]}, lambda *_args: None, threading.Event(),
+        )
+        artifact, path = ArtifactService(self.database, self.paths).resolve(result["artifact_id"])
+        gap_frames = 44100 * 180 // 1000
+        timeline = {"version": 1, "sample_rate_hz": 44100, "total_frames": 51 + gap_frames + 109}
+        manifest = artifact.metadata_json["takes"]
+        self.assertEqual(segment_ids, [item["segment_id"] for item in manifest])
+        self.assertEqual(take_ids, [item["take_id"] for item in manifest])
+        self.assertEqual([0, 51 + gap_frames], [item["start_frame"] for item in manifest])
+        self.assertEqual([51, timeline["total_frames"]], [item["end_frame"] for item in manifest])
+        self.assertEqual(timeline, artifact.metadata_json["audio_timeline"])
+        with wave.open(str(path), "rb") as reader:
+            self.assertEqual(timeline["total_frames"], reader.getnframes())
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertEqual(manifest, assembly.settings_json["takes"])
+            self.assertEqual(timeline, assembly.settings_json["audio_timeline"])
+            self.assertEqual(settings_hash, assembly.settings_hash)
+            self.assertEqual(resolved, assembly.settings_json["resolved"])
+        legacy_manifest = [
+            {key: value for key, value in item.items() if key not in {"start_frame", "end_frame"}}
+            for item in manifest
+        ]
+        self.assertEqual(
+            stable_hash({"audio": resolved["audio"], "output": resolved["output"], "takes": legacy_manifest}),
+            artifact.settings_hash,
+        )
 
     def test_export_variant_assembles_completed_run_inline_before_export(self):
         self._plan_with_takes()
@@ -796,6 +846,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 for item in artifact.metadata_json["takes"]
             )
         )
+        self.assertNotIn("audio_timeline", artifact.metadata_json)
+        self.assertTrue(all("start_frame" not in item and "end_frame" not in item for item in artifact.metadata_json["takes"]))
+        with self.database.session() as session:
+            assembly = session.get(OutputAssembly, queued["id"])
+            self.assertNotIn("audio_timeline", assembly.settings_json)
 
     def test_subtitle_generation_assembly_joins_explicit_alignment_group_before_timing(
         self,

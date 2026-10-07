@@ -8,6 +8,7 @@ from copy import deepcopy
 from difflib import get_close_matches
 from typing import Any
 
+from pandrator.logic.book_settings import BOOK_DEFAULTS
 from pandrator.logic.dubbing.source_passage_settings import (
     SOURCE_PASSAGE_DEFAULTS as _SOURCE_PASSAGE_DEFAULTS,
 )
@@ -332,6 +333,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "request_timeout_seconds": 600,
     },
     "output": {
+        **BOOK_DEFAULTS,
         "format": "wav",
         "bitrate": "192k",
         "export_mode": "media",
@@ -830,6 +832,9 @@ def validate_output_settings(value: dict[str, Any]) -> None:
     """Validate stored output overrides without touching unrelated keys."""
     if value.get("video_tail_extension_policy", "ask") not in ("ask", "extend"):
         raise ValueError("video_tail_extension_policy must be ask or extend.")
+    from pandrator.logic.book_settings import validate_book_settings
+
+    validate_book_settings(value)
 
 
 def validate_audio_pause_settings(value: dict[str, Any]) -> None:

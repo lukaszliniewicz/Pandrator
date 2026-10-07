@@ -50,6 +50,7 @@
   } from '$lib/artifact-display';
   import OutputSettingsPanel from '$lib/OutputSettingsPanel.svelte';
   import OutputSettingsSnapshot from '$lib/OutputSettingsSnapshot.svelte';
+  import BookExportNotice from '$lib/BookExportNotice.svelte';
   const sessionId = String(page.params.id);
   let artifacts = $state<ArtifactRecord[]>([]);
   let runs = $state<GenerationRun[]>([]);
@@ -506,7 +507,7 @@
         {session?.workflow_kind === 'subtitles'
           ? 'Save the selected subtitle document as SRT, WebVTT, or concatenated plain text.'
           : session?.workflow_kind === 'audiobook'
-            ? 'Assemble the selected narration takes with book metadata, chapters, and optional cover artwork.'
+            ? 'Export the selected narration as audio, a video book, or timed subtitles. Audio versions retain book metadata, chapters, and artwork.'
             : hasSourceVideo
               ? 'Export video or an audio-only soundtrack, using original audio, generated speech, or the complete mix.'
               : 'Create standalone voiceover audio plus optional subtitle or text documents.'}
@@ -685,7 +686,9 @@
                             >{outputName(artifact)}</strong
                           >
                           <span class="muted text-xs"
-                            >{artifactRoleLabel(artifact.role)}</span
+                            >{artifact.metadata_json?.preview === true
+                              ? 'Export preview'
+                              : artifactRoleLabel(artifact.role)}</span
                           >
                         </div>
                         <div
@@ -749,6 +752,7 @@
                     <OutputSettingsSnapshot
                       snapshot={artifact.metadata_json?.output_settings}
                     />
+                    <BookExportNotice metadata={artifact.metadata_json} />
                   </article>{/each}
               </div>
             </div>{/if}

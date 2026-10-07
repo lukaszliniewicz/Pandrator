@@ -41,10 +41,35 @@ class TtsBatchItem:
 
 
 @dataclass(frozen=True, slots=True)
+class TtsSynthesisResult:
+    audio: AudioSegment | None
+    speech_timing: dict[str, Any] | None = None
+
+
+def synthesize_with_optional_timing(
+    provider: Any, text: str, settings: dict[str, Any], **options: Any,
+) -> TtsSynthesisResult:
+    """Use declared timed hooks while supporting legacy providers/test doubles.
+
+    Looking up a declared hook avoids auto-created Mock attributes masquerading
+    as provider capabilities. Only our concrete result type carries metadata.
+    """
+    hook = getattr(type(provider), "synthesize_with_timing", None)
+    if not callable(hook):
+        hook = getattr(provider, "__dict__", {}).get("synthesize_with_timing")
+    result = (
+        provider.synthesize_with_timing(text, settings, **options)
+        if callable(hook) else provider.synthesize(text, settings, **options)
+    )
+    return result if isinstance(result, TtsSynthesisResult) else TtsSynthesisResult(result)
+
+
+@dataclass(frozen=True, slots=True)
 class TtsBatchResult:
     id: str
     audio: AudioSegment | None = None
     error: TtsProviderError | None = None
+    speech_timing: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

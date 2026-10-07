@@ -24,6 +24,8 @@ from pandrator.logic.speech_markup import (
 )
 from pandrator.logic.speech_performance import validate_annotation
 
+from .tts_provider_contracts import TtsSynthesisResult
+
 _EMPTY_DELIVERY = {
     "instruction": "",
     "emotion": "",
@@ -539,7 +541,7 @@ def build_render_parts(
 def execute_render_parts(
     parts: list[dict[str, Any]],
     *,
-    synthesize: Callable[[str, dict[str, Any]], AudioSegment | None],
+    synthesize: Callable[[str, dict[str, Any]], AudioSegment | TtsSynthesisResult | None],
     cancelled: Callable[[], bool],
 ) -> tuple[AudioSegment, list[dict[str, Any]]]:
     """Synthesize and concatenate all planned parts without partial results."""
@@ -551,9 +553,11 @@ def execute_render_parts(
     for index, part in enumerate(parts):
         if cancelled():
             raise RuntimeError("Speech rendering was cancelled.")
-        audio = synthesize(
+        result = synthesize(
             str(part.get("text") or ""), deepcopy(part.get("settings") or {})
         )
+        audio = result.audio if isinstance(result, TtsSynthesisResult) else result
+        timing = result.speech_timing if isinstance(result, TtsSynthesisResult) else None
         if cancelled():
             raise RuntimeError("Speech rendering was cancelled.")
         if audio is None:
@@ -567,6 +571,18 @@ def execute_render_parts(
         silence_before_ms = max(0, int(part.get("silence_before_ms") or 0)) if index else 0
         if combined is not None and silence_before_ms:
             combined += AudioSegment.silent(duration=silence_before_ms, frame_rate=combined.frame_rate)
+        target_rate = max(combined.frame_rate, audio.frame_rate) if combined is not None else audio.frame_rate
+        start_frame = int(combined.frame_count()) if combined is not None else 0
+        if combined is not None and combined.frame_rate != target_rate:
+            old_rate = combined.frame_rate
+            start_frame = (start_frame - 1) * target_rate // old_rate + 1 if start_frame else 0
+            for previous in manifest:
+                for key in ("start_frame", "end_frame"):
+                    frames = previous[key]
+                    # audioop.ratecv retains the first frame and emits only
+                    # complete subsequent sample positions (floor, not round).
+                    previous[key] = (frames - 1) * target_rate // old_rate + 1 if frames else 0
+                previous["sample_rate_hz"] = target_rate
         combined = audio if combined is None else combined + audio
         manifest.append(
             {
@@ -580,6 +596,10 @@ def execute_render_parts(
                 "speaker_ids": list(part.get("speaker_ids") or []),
                 "duration_ms": duration_ms,
                 "silence_before_ms": silence_before_ms,
+                "start_frame": start_frame,
+                "end_frame": int(combined.frame_count()),
+                "sample_rate_hz": combined.frame_rate,
+                **({"speech_timing": deepcopy(timing)} if timing is not None else {}),
             }
         )
     if combined is None:

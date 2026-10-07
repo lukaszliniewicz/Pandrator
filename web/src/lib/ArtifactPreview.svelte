@@ -22,6 +22,7 @@
   import { artifactApi } from './domain-api';
   import type { ArtifactRecord, UsageSummary } from './api-models';
   import AudioPlayer from './AudioPlayer.svelte';
+  import BookExportNotice from './BookExportNotice.svelte';
   import TextDiff from './TextDiff.svelte';
   import { modalFocus } from './modal-focus';
   import WorkspaceMaximizeButton from './WorkspaceMaximizeButton.svelte';
@@ -258,7 +259,11 @@
       class="flex items-start gap-4 border-b border-[var(--line)] px-5 py-4 sm:px-6"
     >
       <div class="min-w-0 flex-1">
-        <div class="section-label">{artifactRoleLabel(artifact.role)}</div>
+        <div class="section-label">
+          {artifact.metadata_json?.preview === true
+            ? 'Export preview'
+            : artifactRoleLabel(artifact.role)}
+        </div>
         <h2
           id="artifact-preview-title"
           class="mt-1 truncate text-xl font-semibold"
@@ -272,6 +277,7 @@
               >· {formatBytes(artifact.size_bytes)}</span
             >{/if}{#if artifact.state}<span>· {artifact.state}</span>{/if}
         </div>
+        <BookExportNotice metadata={artifact.metadata_json} />
       </div>
       {#if usageSummary?.commercial || usageSummary?.total_tokens}<div
           class="cost-badge"

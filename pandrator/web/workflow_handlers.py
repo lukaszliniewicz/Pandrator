@@ -3298,8 +3298,13 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 )
             )
             if existing is not None and existing.artifact_id:
-                progress(0.68, "Using the selected generation run assembly")
-                return existing.artifact_id
+                output = resolved_settings_snapshot.get("output", {})
+                record = session.get(SessionRecord, session_id)
+                book_timing = output.get("export_mode") in {"video_book", "subtitles"} and record is not None and record.workflow_kind == "audiobook"
+                artifact = session.get(Artifact, existing.artifact_id)
+                if not book_timing or (artifact is not None and (artifact.metadata_json or {}).get("audio_timeline")):
+                    progress(0.68, "Using the selected generation run assembly")
+                    return existing.artifact_id
             assembly = OutputAssembly(
                 session_id=session_id,
                 generation_run_id=generation_run_id,
