@@ -211,8 +211,9 @@ def write_book_subtitles(cues: Sequence[BookCue], destination: Path, format: str
     blocks = []
     for index, cue in enumerate(cues, 1):
         text = "\n".join(cue.lines) if cue.lines else cue.text
-        # Cue text is data. Strip CR/control characters that can corrupt parsers.
-        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text).replace("\n\n", "\n")
+        # Blank lines terminate a cue, including whitespace-only source lines.
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        text = "\n".join(line for line in text.split("\n") if line.strip())
         if format == "vtt":
             from html import escape
 

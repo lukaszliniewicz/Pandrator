@@ -141,6 +141,21 @@ def test_preview_clips_bounds_without_estimating_word_durations(tmp_path):
         assert content.startswith("WEBVTT") == (format == "vtt")
 
 
+@pytest.mark.parametrize("format", ["srt", "vtt"])
+def test_whole_segment_subtitles_keep_blank_source_lines_inside_one_cue(tmp_path, format):
+    item = passage("First.\n\n\n\n \t\nSecond.\x00\nThird.")
+    cues = compose_book_cues([item], {"book_cue_mode": "segments"}, total_duration_ms=item.end_ms)
+    path = tmp_path / f"whole-segment.{format}"
+    write_book_subtitles(cues, path, format)
+
+    content = path.read_text()
+    blocks = content.strip().split("\n\n")
+    if format == "vtt":
+        assert blocks.pop(0) == "WEBVTT"
+    assert len(blocks) == 1
+    assert blocks[0].splitlines()[2:] == ["First.", "Second.", "Third."]
+
+
 @pytest.mark.parametrize(
     "settings",
     [
