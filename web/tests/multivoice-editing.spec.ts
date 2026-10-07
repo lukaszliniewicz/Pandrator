@@ -85,7 +85,7 @@ async function login(page: Page) {
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Create a session' })
+    page.getByRole('heading', { name: 'Create a project' })
   ).toBeVisible();
   const tour = page.getByRole('button', { name: 'Close tour' });
   if (await tour.isVisible()) await tour.click();

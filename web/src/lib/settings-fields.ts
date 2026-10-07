@@ -430,6 +430,8 @@ const SETTING_ORDER: Record<string, string[]> = {
     'audio_verification_mode',
     'sentence_silence_ms',
     'paragraph_silence_ms',
+    'clause_silence_ms',
+    'voice_change_silence_ms',
     'fade_enabled',
     'fade_in_ms',
     'fade_out_ms',

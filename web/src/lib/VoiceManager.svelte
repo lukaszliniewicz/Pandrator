@@ -557,7 +557,7 @@
       if (requestAccess) {
         if (!window.isSecureContext)
           throw new Error(
-            'Microphone access requires HTTPS or a local browser session.'
+            'Microphone access requires HTTPS or a local browser project.'
           );
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true
@@ -2068,7 +2068,7 @@
 {#if sttSettingsOpen}<SettingsModal
     section="stt"
     title="Speech recognition and VAD defaults"
-    description="These defaults are reused for voice-reference transcription and new session transcription runs. Per-operation controls can still override them."
+    description="These defaults are reused for voice-reference transcription and new project transcription runs. Per-operation controls can still override them."
     onclose={() => (sttSettingsOpen = false)}
   />{/if}
 

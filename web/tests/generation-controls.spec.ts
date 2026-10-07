@@ -457,7 +457,7 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   await expect(header).toBeVisible();
   expect((await header.boundingBox())?.y).toBe(0);
   await expect(
-    header.getByRole('combobox', { name: 'Session section' })
+    header.getByRole('combobox', { name: 'Project section' })
   ).toHaveValue(`/sessions/${sid}`);
   await page
     .getByRole('button', { name: 'Open navigation', exact: true })
@@ -523,7 +523,7 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   });
   await character.getByLabel('Identity notes').fill('An unsaved change.');
   await header
-    .getByRole('combobox', { name: 'Session section' })
+    .getByRole('combobox', { name: 'Project section' })
     .selectOption(`/sessions/${sid}/text`);
   const guard = page.getByRole('dialog', {
     name: 'Save your changes before leaving?'
@@ -532,13 +532,13 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   await guard.getByRole('button', { name: 'Stay here', exact: true }).click();
   await expect(page).toHaveURL(`/sessions/${sid}`);
   await expect(
-    header.getByRole('combobox', { name: 'Session section' })
+    header.getByRole('combobox', { name: 'Project section' })
   ).toHaveValue(`/sessions/${sid}`);
   await expect(character.getByLabel('Identity notes')).toHaveValue(
     'An unsaved change.'
   );
   await header
-    .getByRole('combobox', { name: 'Session section' })
+    .getByRole('combobox', { name: 'Project section' })
     .selectOption(`/sessions/${sid}/text`);
   await guard
     .getByRole('button', { name: 'Discard and continue', exact: true })
@@ -572,7 +572,7 @@ test('leaving a section can save character, direction and generation-default dra
     .getByLabel('Block delivery direction', { exact: true })
     .fill('A quiet aside.');
   await page
-    .getByRole('combobox', { name: 'Session section' })
+    .getByRole('combobox', { name: 'Project section' })
     .selectOption(`/sessions/${sid}/text`);
   const guard = page.getByRole('dialog', {
     name: 'Save your changes before leaving?'

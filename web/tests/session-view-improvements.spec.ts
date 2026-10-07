@@ -92,11 +92,11 @@ test('audiobook rows expose compact options and merge adjacent segments', async 
   ).toHaveText('First passage. Second passage.');
 });
 
-test('session tabs sit above the title and stay sticky', async ({ page }) => {
+test('project tabs sit above the title and stay sticky', async ({ page }) => {
   await signIn(page);
   const session = await createSession(page, 'voiceover');
   await page.goto(`/sessions/${session.id}`);
-  const nav = page.getByRole('navigation', { name: 'Session sections' });
+  const nav = page.getByRole('navigation', { name: 'Project sections' });
   await expect(nav).toBeVisible();
   await expect(nav.getByRole('link', { name: 'Sources' })).toBeVisible();
   await expect(nav.getByRole('link', { name: 'Overview' })).toHaveAttribute(
@@ -105,7 +105,7 @@ test('session tabs sit above the title and stay sticky', async ({ page }) => {
   );
 
   const order = await page.evaluate(() => {
-    const navEl = document.querySelector('nav[aria-label="Session sections"]');
+    const navEl = document.querySelector('nav[aria-label="Project sections"]');
     const title = document.querySelector('.session-shell h1');
     const navBox = navEl?.getBoundingClientRect();
     const titleBox = title?.getBoundingClientRect();
@@ -139,7 +139,7 @@ test('session tabs sit above the title and stay sticky', async ({ page }) => {
   await expect(nav).toBeHidden();
   const header = page.locator('.mobile-app-header');
   await expect(header).toBeVisible();
-  const section = header.getByRole('combobox', { name: 'Session section' });
+  const section = header.getByRole('combobox', { name: 'Project section' });
   await expect(section).toHaveValue(`/sessions/${session.id}`);
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   const geometry = await header.evaluate((el) => ({

@@ -265,4 +265,14 @@
     font-size: 0.65rem;
     line-height: 1.2;
   }
+  @media (max-width: 640px) {
+    .audio-player {
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .failure {
+      flex-basis: 100%;
+      max-width: none;
+    }
+  }
 </style>

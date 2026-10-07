@@ -54,7 +54,7 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   const sessionName = uniqueName('Playwright subtitles');
   await signIn(page);
   await expect(
-    page.getByRole('heading', { name: 'Create a session' })
+    page.getByRole('heading', { name: 'Create a project' })
   ).toBeVisible();
   await page
     .getByRole('button', { name: /Create subtitles/ })
@@ -63,7 +63,7 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await page.getByRole('button', { name: 'Add later' }).click();
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
-  await page.getByLabel('Session name').fill(sessionName);
+  await page.getByLabel('Project name').fill(sessionName);
   await page.getByRole('button', { name: 'Create workspace' }).click();
   await page.waitForURL(/\/sessions\/[^/?]+$/);
   await expect(page.getByRole('heading', { name: sessionName })).toBeVisible({
@@ -73,7 +73,7 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
   await expect(page.getByRole('button', { name: 'Tour' })).toBeVisible();
 });
 
-test('media-edit wizard attaches a reused recording and uploaded captions with current session revisions', async ({
+test('media-edit wizard attaches a reused recording and uploaded captions with current project revisions', async ({
   page
 }) => {
   const sessionName = uniqueName('Playwright recording edit');
@@ -107,12 +107,12 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
   });
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
-  await page.getByLabel('Session name').fill(sessionName);
+  await page.getByLabel('Project name').fill(sessionName);
   await expect(
     page.getByRole('dialog').getByText('Transcribe', { exact: true })
   ).toHaveCount(0);
 
-  const sessionNameBox = await page.getByLabel('Session name').boundingBox();
+  const sessionNameBox = await page.getByLabel('Project name').boundingBox();
   const pipelineBox = await page.getByText('Prepared pipeline').boundingBox();
   expect(sessionNameBox).not.toBeNull();
   expect(pipelineBox).not.toBeNull();
@@ -303,7 +303,7 @@ test('correction and translation cards expose independent reasoning levels', asy
   ).toBeUndefined();
 
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(dialog.getByText('Saved for this session.')).toBeVisible();
+  await expect(dialog.getByText('Saved for this project.')).toBeVisible();
   await dialog.getByRole('button', { name: 'Close settings' }).click();
   dialog = page.getByRole('dialog');
   await expect(
@@ -730,7 +730,7 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
   ).toBeFocused();
 });
 
-test('a selected correction checkpoint can fork a clean session branch', async ({
+test('a selected correction checkpoint can fork a clean project branch', async ({
   page
 }) => {
   await signIn(page);
@@ -828,7 +828,7 @@ test('a selected correction checkpoint can fork a clean session branch', async (
   await expect(dialog).toContainText(
     'Its translations, voices and exports can then develop independently.'
   );
-  await dialog.getByLabel('New session name').fill('Polish alternate');
+  await dialog.getByLabel('New project name').fill('Polish alternate');
   await dialog.getByRole('button', { name: 'Create fork' }).click();
 
   await expect(page).toHaveURL(`/sessions/${forkedId}`);
@@ -876,12 +876,12 @@ test('theme and setup dock remain available after navigation', async ({
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 });
 
-test('sessions page launches creation and workspace source picker exposes every source mode', async ({
+test('projects page launches creation and workspace source picker exposes every source mode', async ({
   page
 }) => {
   await signIn(page);
-  await page.getByRole('link', { name: 'Sessions' }).click();
-  await page.getByRole('button', { name: 'Add session' }).click();
+  await page.getByRole('link', { name: 'Projects' }).click();
+  await page.getByRole('button', { name: 'Add project' }).click();
   await expect(
     page.getByRole('heading', { name: 'What would you like to make?' })
   ).toBeVisible();
@@ -914,7 +914,7 @@ test('sessions page launches creation and workspace source picker exposes every 
   await page
     .getByRole('textbox', { name: 'Text', exact: true })
     .fill(
-      'AİB cafe\u0301 cafe. This source source was pasted directly into an existing session.'
+      'AİB cafe\u0301 cafe. This source source was pasted directly into an existing project.'
     );
   await page.getByLabel('Find in pasted source').fill('İ');
   await page.getByLabel('Replace in pasted source').fill('X');
@@ -922,7 +922,7 @@ test('sessions page launches creation and workspace source picker exposes every 
   await expect(
     page.getByRole('textbox', { name: 'Text', exact: true })
   ).toHaveValue(
-    'AXB cafe\u0301 cafe. This source source was pasted directly into an existing session.'
+    'AXB cafe\u0301 cafe. This source source was pasted directly into an existing project.'
   );
   await page.getByLabel('Find in pasted source').fill('cafe');
   await page.getByLabel('Replace in pasted source').fill('bistro');
@@ -932,7 +932,7 @@ test('sessions page launches creation and workspace source picker exposes every 
   await expect(
     page.getByRole('textbox', { name: 'Text', exact: true })
   ).toHaveValue(
-    'AXB cafe\u0301 bistro. This source source was pasted directly into an existing session.'
+    'AXB cafe\u0301 bistro. This source source was pasted directly into an existing project.'
   );
   await page.getByLabel('Find in pasted source').fill('source');
   await page.getByLabel('Replace in pasted source').fill('asset');
@@ -940,7 +940,7 @@ test('sessions page launches creation and workspace source picker exposes every 
   await expect(
     page.getByRole('textbox', { name: 'Text', exact: true })
   ).toHaveValue(
-    'AXB cafe\u0301 bistro. This asset asset was pasted directly into an existing session.'
+    'AXB cafe\u0301 bistro. This asset asset was pasted directly into an existing project.'
   );
   await page.getByRole('button', { name: 'Add and select' }).click();
   await expect(
@@ -2409,7 +2409,7 @@ test('alternate regeneration sends one selected-only setting set and returns to 
       name: 'Regenerate 2 selected segments with…'
     })
   ).toBeVisible();
-  await expect(dialog.getByText('current session settings')).toBeVisible();
+  await expect(dialog.getByText('current project settings')).toBeVisible();
   await dialog.getByLabel('Speech service').selectOption('Chatterbox');
   await expect(dialog.getByLabel('Voice / managed reference')).toHaveValue('');
   await dialog.getByLabel('Model').selectOption('chatterbox-second');

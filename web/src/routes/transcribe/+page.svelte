@@ -288,7 +288,7 @@
       Quick Transcribe
     </h1>
     <p class="muted mt-3 max-w-2xl">
-      Turn a file or a microphone recording into text or subtitles. No session
+      Turn a file or a microphone recording into text or subtitles. No project
       to create, no library to tidy up.
     </p>
   </header>

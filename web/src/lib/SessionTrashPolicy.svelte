@@ -37,8 +37,8 @@
         })
       });
       message = enabled
-        ? `Sessions moved to Trash from now on will be deleted after ${days} days.`
-        : 'Automatic session deletion is off.';
+        ? `Projects moved to Trash from now on will be deleted after ${days} days.`
+        : 'Automatic project deletion is off.';
     } catch (caught) {
       error = errorMessage(caught);
     } finally {
@@ -50,10 +50,10 @@
   });
 </script>
 
-<section class="surface rounded-2xl p-5" aria-label="Session trash retention">
-  <h2 class="text-lg font-semibold">Session Trash</h2>
+<section class="surface rounded-2xl p-5" aria-label="Project trash retention">
+  <h2 class="text-lg font-semibold">Project Trash</h2>
   <p class="muted mt-2 text-sm">
-    Keep deleted sessions for recovery, or choose when to remove them
+    Keep deleted projects for recovery, or choose when to remove them
     permanently.
   </p>
   {#if error}<p role="alert" class="mt-3 text-sm text-red-600">
@@ -63,7 +63,7 @@
     <fieldset disabled={busy} class="mt-4 space-y-3">
       <label class="flex items-center gap-2 text-sm"
         ><input type="checkbox" bind:checked={enabled} />Automatically delete
-        sessions from Trash</label
+        projects from Trash</label
       >
       {#if enabled}<label class="block text-sm"
           >Days in Trash<input
@@ -78,7 +78,7 @@
       <p class="muted text-xs leading-relaxed">
         {enabled
           ? 'Deletion is permanent. This policy applies to future moves to Trash; existing entries keep their saved dates. Disabling it pauses scheduled deletion. Cleanup runs while Pandrator is open and catches up after startup. Cleanup that has already started will finish.'
-          : 'Sessions stay recoverable until you choose Delete permanently. Previously scheduled deletion is paused. Cleanup that has already started will finish.'}
+          : 'Projects stay recoverable until you choose Delete permanently. Previously scheduled deletion is paused. Cleanup that has already started will finish.'}
       </p>
       <button
         class="btn"

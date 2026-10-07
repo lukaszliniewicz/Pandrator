@@ -275,11 +275,11 @@
         'rvc_audio'
       ].includes(artifact.role)
     )
-      return `${session?.name ?? 'Session'} — assembled audio${extension}`;
+      return `${session?.name ?? 'Project'} — assembled audio${extension}`;
     if (artifact.role.startsWith('export_subtitle_'))
-      return `${session?.name ?? 'Session'} — ${artifactRoleLabel(artifact.role).toLowerCase()}${extension}`;
+      return `${session?.name ?? 'Project'} — ${artifactRoleLabel(artifact.role).toLowerCase()}${extension}`;
     if (artifact.role.startsWith('export_text_'))
-      return `${session?.name ?? 'Session'} — ${artifactRoleLabel(artifact.role).toLowerCase()}${extension}`;
+      return `${session?.name ?? 'Project'} — ${artifactRoleLabel(artifact.role).toLowerCase()}${extension}`;
     return artifactFilename(artifact);
   }
   async function copyAbsolutePath(artifact: ArtifactRecord) {

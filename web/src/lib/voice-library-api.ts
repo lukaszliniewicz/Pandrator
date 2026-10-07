@@ -92,10 +92,34 @@ export const emptyVoiceProfile = (): VoiceProfile => ({
 });
 export const voiceFacetLabel = (value: string) =>
   value.replaceAll('_', ' ').replace(/^\w/, (v) => v.toUpperCase());
+export const voiceOriginLabel = (value: string) =>
+  (
+    ({
+      designed: 'Designed',
+      imported: 'Cloned / reference',
+      builtin: 'Built-in',
+      built_in: 'Built-in',
+      provider: 'Provider voice',
+      unknown: 'Unspecified'
+    }) as Record<string, string>
+  )[value] ?? voiceFacetLabel(value);
 
 const catalogRequests = new Map<string, Promise<VoiceCatalogPage>>();
 
 export const voiceLibraryApi = {
+  managedVoice: async (id: string): Promise<CatalogVoice | null> => {
+    // Cast fields mount together. Share one inventory request, then fall back
+    // to an exact lookup for libraries larger than the first page.
+    const page = await voiceLibraryApi.query({ kind: 'managed', limit: 100 });
+    const voice = page.items.find((item) => item.id === id);
+    if (voice || !page.next_cursor) return voice ?? null;
+    const exact = await voiceLibraryApi.query({
+      query: id,
+      kind: 'managed',
+      limit: 1
+    });
+    return exact.items.find((item) => item.id === id) ?? null;
+  },
   query: (params: Record<string, string | boolean | number | undefined>) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {

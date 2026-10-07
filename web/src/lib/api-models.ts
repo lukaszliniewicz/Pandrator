@@ -477,6 +477,49 @@ export type SessionSource = SourceAsset & {
   };
 };
 
+type SourceReference = {
+  attachment_id: string;
+  session_id: string;
+  session_name: string;
+  workflow_kind: SessionRecord['workflow_kind'];
+  source_language: string;
+  target_language: string | null;
+  status: string;
+  role: string;
+  is_current: boolean;
+  updated_at: string;
+};
+
+export type SourceReferencesPage = {
+  items: SourceReference[];
+  total: number;
+  offset: number;
+  next_offset: number | null;
+};
+
+export type ArtifactCandidate = {
+  id: string;
+  session_id: string | null;
+  session_name: string | null;
+  display_name: string;
+  role: string;
+  kind: string;
+  mime_type: string | null;
+  size_bytes: number;
+  state: string;
+  created_at: string;
+  segment_ordinal?: number;
+  segment_text?: string;
+  speaker?: string | null;
+};
+
+export type ArtifactCandidatesPage = {
+  items: ArtifactCandidate[];
+  total: number;
+  offset: number;
+  next_offset: number | null;
+};
+
 type DocumentRevisionRecord = {
   id: string;
   revision_number: number;

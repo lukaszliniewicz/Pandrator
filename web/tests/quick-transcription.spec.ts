@@ -172,7 +172,7 @@ test('Qwen quick transcription explains timing limits and submits local model an
   );
 });
 
-test('upload, switch formats, reload result and delete without a session', async ({
+test('upload, switch formats, reload result and delete without a project', async ({
   page
 }) => {
   const mock = await mockTranscription(page);

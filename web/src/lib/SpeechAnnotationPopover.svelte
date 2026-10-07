@@ -73,7 +73,7 @@
     narrator: 'Narrator cast',
     category: 'Voice category',
     source_speaker: 'Source speaker',
-    session: 'Session voice',
+    session: 'Project voice',
     inline: 'Voice in speech markup',
     default: 'Renderer default'
   };
@@ -248,7 +248,7 @@
         Character casting is off. Block voice overrides still apply.
       </p>{/if}
     {#if span.fallback || part?.fallback}<p class="note warning">
-        This phrase falls back to the narrator or session voice.
+        This phrase falls back to the narrator or project voice.
       </p>{/if}
     {#if deliveryDescription(span.delivery)}<div class="directions">
         <strong>Delivery</strong>

@@ -1951,12 +1951,12 @@
             sourceProviderId,
             completed
           );
-          completed.push(`${sectionDisplay(update.section)} session settings`);
+          completed.push(`${sectionDisplay(update.section)} project settings`);
           if (isCurrent()) settingsBases[update.section] = saved;
         }
         if (isCurrent())
           stageMessage =
-            'Saved as the application defaults for future sessions.';
+            'Saved as the application defaults for future projects.';
       } else {
         for (const update of submitted) {
           const saved = await persistSection(
@@ -2417,7 +2417,7 @@
                   >Existing combined text and speaker preparation</summary
                 >
                 <p class="muted my-2 text-xs">
-                  This session already has recognition enabled in its text step.
+                  This project already has recognition enabled in its text step.
                   These settings are preserved for compatibility. Use the
                   separate speech-plan analysis for new speaker passes.
                 </p>
@@ -2455,7 +2455,7 @@
                   <p class="muted text-xs">
                     Dialogue annotations preserve integral segments and avoid
                     treating each dialogue line as a long paragraph pause.
-                    Character proposals use the session dictionary. Review
+                    Character proposals use the project dictionary. Review
                     structure and casting before generation; emotional
                     directions remain optional.
                   </p>
@@ -2933,7 +2933,7 @@
     sessionId={session.id}
     section={fullSettingsSection}
     title={`${sectionDisplay(fullSettingsSection)} settings`}
-    description="These settings are saved as session overrides and inherited by future runs."
+    description="These settings are saved as project overrides and inherited by future runs."
     initialOverride={fullSettingsDraft ?? {}}
     onpersisted={syncStageAfterFullSettings}
     onclose={closeFullSettings}

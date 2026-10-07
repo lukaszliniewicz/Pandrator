@@ -135,7 +135,7 @@
       class="mt-5 grid gap-3 sm:grid-cols-2"
     >
       <legend class="sr-only">Voice mode</legend>
-      {#each [{ value: 'single_voice' as const, title: setup.workflow_kind === 'audiobook' ? 'One narrator' : 'One voice', detail: 'Use the session voice throughout.' }, { value: 'multi_voice' as const, title: 'Multiple voices', detail: 'Use source speakers, identify dialogue, or assign voices manually.' }] as choice}
+      {#each [{ value: 'single_voice' as const, title: setup.workflow_kind === 'audiobook' ? 'One narrator' : 'One voice', detail: 'Use the project voice throughout.' }, { value: 'multi_voice' as const, title: 'Multiple voices', detail: 'Use source speakers, identify dialogue, or assign voices manually.' }] as choice}
         <label class="mode-option" class:selected={setup.mode === choice.value}>
           <input
             type="radio"
@@ -227,8 +227,8 @@
         </p>{/if}
     {:else}<p class="muted mt-4 text-sm">
         {setup.tts.voice
-          ? `Session voice: ${setup.tts.voice}`
-          : 'Choose the session voice in Voice & audio.'}
+          ? `Project voice: ${setup.tts.voice}`
+          : 'Choose the project voice in Voice & audio.'}
         <a
           class="underline underline-offset-2"
           href={`/sessions/${encodeURIComponent(sessionId)}/voice`}
@@ -237,7 +237,7 @@
       </p>{/if}
     {#if setup.legacy_voice_overrides && setup.mode === 'single_voice'}
       <p class="muted mt-4 text-sm">
-        This older session may have individual voice overrides.
+        This older project may have individual voice overrides.
       </p>
       <button
         class="btn mt-2"

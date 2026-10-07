@@ -53,10 +53,10 @@
   <header class="flex flex-wrap items-end justify-between gap-6">
     <div>
       <h1 class="mt-2 text-4xl font-semibold tracking-[-.04em]">
-        Create a session
+        Create a project
       </h1>
       <p class="muted mt-3 max-w-2xl">
-        Start with a clear outcome or return to a session. Advanced controls
+        Start with a clear outcome or return to a project. Advanced controls
         remain close, without crowding the first decision.
       </p>
     </div>
@@ -67,7 +67,7 @@
         wizard = true;
       }}
       class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white"
-      ><CirclePlus size={18} /> New session</button
+      ><CirclePlus size={18} /> New project</button
     >
   </header>
   <section class="mt-9 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -103,7 +103,7 @@
       ><strong class="block">Quick Transcribe</strong><span
         class="muted text-sm"
         >Upload or record audio. Get text or subtitles without creating a
-        session.</span
+        project.</span
       ></span
     >
     <ChevronRight size={18} class="ml-auto shrink-0" />
@@ -111,7 +111,7 @@
   <div class="mt-10 grid gap-7 xl:grid-cols-[1.4fr_.8fr]">
     <section>
       <div class="mb-3 flex items-center justify-between">
-        <div class="section-label">Recent sessions</div>
+        <div class="section-label">Recent projects</div>
         <a
           href="/sessions"
           class="muted flex items-center gap-1 text-xs font-semibold"
@@ -123,7 +123,7 @@
             class="grid min-h-28 place-items-center"
           >
             <span class="section-label animate-pulse"
-              >Loading recent sessions…</span
+              >Loading recent projects…</span
             >
           </div>{:else}{#each appState.sessions.slice(0, 6) as session}<a
               href={`/sessions/${session.id}`}
@@ -147,7 +147,7 @@
               </div>
               <ChevronRight size={17} /></a
             >{:else}<div class="muted p-9 text-center text-sm">
-              No sessions yet. Start with one of the outcome tiles above.
+              No projects yet. Start with one of the outcome tiles above.
             </div>{/each}{/if}
       </div>
     </section>
@@ -176,7 +176,7 @@
           <div class="readiness">
             <FolderClock size={18} />
             <div>
-              <strong>Sessions</strong><span
+              <strong>Projects</strong><span
                 >{appState.sessions.length} available workspaces</span
               >
             </div>

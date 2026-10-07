@@ -129,8 +129,12 @@ changes do not fabricate subtitle timestamps or create additional visible
 segments. Very large integral units can still exceed a provider's request
 limit and need an explicit editorial change.
 
-Casting renders internal voice parts and joins them without extra seam
-silence into one logical take. A failed or canceled part cannot publish a
+Casting renders internal voice parts into one logical take. The optional
+**Voice change silence** adds a gap when the resolved voice changes; its default
+is zero. Between blocks it acts as a minimum alongside the regular, paragraph or
+clause pause. Explicit block pauses take priority, and timed subtitle cues retain
+their timing. Changing padding inside a block requires a new take; changing only
+assembly pauses can reuse existing takes. A failed or canceled part cannot publish a
 partial segment take. Run snapshots pin accepted annotations, identities, and
 casting. Resuming a run keeps that snapshot; a new run uses current reviewed
 settings. Audio reuse compares effective requests and voice references so

@@ -116,8 +116,8 @@
     source_speaker: 'Source speaker cast',
     category: 'Category default',
     narrator: 'Narrator',
-    inherited: 'Session voice',
-    base: 'Session voice',
+    inherited: 'Project voice',
+    base: 'Project voice',
     mixed: 'Combined assignments'
   };
   let {
@@ -1231,7 +1231,7 @@
                   class="text-xs rounded-lg bg-[var(--accent-soft)] p-2"
                 >
                   <strong
-                    >Part {index + 1}: {part.voice || 'session voice'}</strong
+                    >Part {index + 1}: {part.voice || 'project voice'}</strong
                   >
                   · {voiceSourceLabels[part.voice_source ?? 'base'] ??
                     part.voice_source}{part.fallback ? ' · fallback' : ''}

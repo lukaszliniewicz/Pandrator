@@ -585,7 +585,7 @@ test('folded stage forced open by a run latches open when it completes', async (
   expect(errors).toEqual([]);
 });
 
-test('switching sessions starts folded again', async ({ page }) => {
+test('switching projects starts folded again', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await login(page);
@@ -605,7 +605,7 @@ test('switching sessions starts folded again', async ({ page }) => {
     const link = document.createElement('a');
     link.href = `/sessions/${sessionId}`;
     link.dataset.testid = 'switch-session-client-link';
-    link.textContent = 'Switch test session';
+    link.textContent = 'Switch test project';
     link.style.cssText =
       'position:fixed;top:80px;right:16px;z-index:9999;background:var(--paper);padding:8px;';
     document.body.append(link);

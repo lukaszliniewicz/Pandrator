@@ -73,14 +73,14 @@
   }
   const blockerLabel = (reason: string) =>
     reason.startsWith('unfinished:')
-      ? 'This session has unfinished work. Finish or cancel it before deleting.'
+      ? 'This project has unfinished work. Finish or cancel it before deleting.'
       : reason.startsWith('external_reference:')
-        ? 'Another item depends on this session. Remove that dependency before deleting.'
+        ? 'Another item depends on this project. Remove that dependency before deleting.'
         : reason.startsWith('unsafe_path:') ||
             reason.startsWith('unmanaged_artifact:')
           ? 'Some files cannot be safely removed from managed storage.'
           : reason === 'not_trashed'
-            ? 'Move this session to Trash first.'
+            ? 'Move this project to Trash first.'
             : reason.replaceAll('_', ' ');
   onMount(() => {
     void load();
@@ -93,11 +93,11 @@
   class="compact-confirmation m-auto max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto rounded-2xl border border-[var(--line)] bg-[var(--paper)] p-6 text-[var(--ink)] backdrop:bg-black/40"
 >
   <h2 id="delete-session-title" class="text-xl font-semibold">
-    Delete session permanently?
+    Delete project permanently?
   </h2>
   <p class="mt-3 break-words font-semibold">{session.name}</p>
   <p class="muted mt-2 text-sm">
-    This removes the session and its owned recordings, text revisions, and
+    This removes the project and its owned recordings, text revisions, and
     managed files. You cannot restore it from Trash afterward.
   </p>
   {#if preview}
@@ -138,7 +138,7 @@
       >Refresh deletion preview</button
     >{/if}
   {#if started}<p class="mt-2 text-sm">
-      Deletion has started. Retry cleanup to finish; this session can no longer
+      Deletion has started. Retry cleanup to finish; this project can no longer
       be restored.
     </p>{/if}
   <div class="mt-6 flex flex-wrap justify-end gap-3">

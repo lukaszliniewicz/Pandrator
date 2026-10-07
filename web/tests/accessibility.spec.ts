@@ -57,7 +57,7 @@ test('modal focus enters, remains contained, closes with Escape, and returns to 
   page
 }) => {
   await signIn(page);
-  const opener = page.getByRole('button', { name: 'New session' });
+  const opener = page.getByRole('button', { name: 'New project' });
   await opener.focus();
   await opener.click();
 

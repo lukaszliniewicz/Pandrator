@@ -80,15 +80,21 @@ than cross-batch consistency.
 
 ## Parallel languages from one recording
 
-The session's **Translate** card lists language versions, their subtitle
+The project's **Translate** card lists language versions, their subtitle
 status and links to open them. It also links to **Languages** for managing
 branches.
 
 Open **Languages** after selecting the corrected subtitle artifact. Create a
-project, then choose the target languages to create independent sessions. The
+language project, then choose target languages to create independent versions. The
 project pins that exact correction and edited timeline. Each language has its
 own translation, voice setup, speech review, generation and exports. Adding
 languages does not start translation or synthesis.
+
+**Projects** groups the source and its language versions together. Open a version
+and use **Project language** to switch its voice, generation and output controls.
+**Sources**, recording edits and **Languages** link to the shared source workspace.
+Each version uses the pinned correction; later source edits do not silently
+rewrite translations or generated audio.
 
 The project shows the pinned correction, timeline and independent readiness for
 translation, review, voice, generation and export. Select languages to preview
@@ -96,11 +102,11 @@ an action, inspect its captured inputs and blocked reasons, then submit eligible
 jobs. Completed children are preserved when retrying failures. Collect verified
 exports as a manifest or a complete ZIP; subtitle-only exports do not need audio.
 
-You can also choose **Multilingual project** in the new-session wizard for
+You can also choose **Multilingual project** in the new-project wizard for
 subtitles, voiceovers or recording edits. Select target languages with the
 searchable checkboxes and choose subtitles only or subtitles with voiceovers.
-The language plan is saved with the source session; correction is required and
-translation and audio generation take place in the language sessions. The
+The language plan is saved with the source project; correction is required and
+translation and audio generation take place in the language versions. The
 overview shows the saved plan and next step. **Languages** lets you edit the
 plan until the project is created. After reviewing the correction, **Create
 language workspaces** pins the chosen source and creates all selected languages

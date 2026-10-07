@@ -12,7 +12,7 @@
 </script>
 
 <div>
-  <h2 class="text-2xl font-semibold">Session activity</h2>
+  <h2 class="text-2xl font-semibold">Project activity</h2>
   <p class="muted mt-2">
     Jobs, complete logs, errors, progress, and costs for this workspace.
   </p>

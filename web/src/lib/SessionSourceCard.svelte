@@ -215,7 +215,7 @@
   class={compact
     ? 'rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-3.5'
     : 'surface rounded-3xl border border-[var(--line)] p-5 sm:p-6'}
-  aria-label="Session source"
+  aria-label="Project source"
 >
   {#if !compact}<header class="flex items-start gap-4">
       <span
@@ -227,7 +227,7 @@
         <p class="muted mt-1 text-sm">
           {sourceInfo?.subtitle.supported
             ? 'Authoritative subtitle text and its optional recording.'
-            : 'The input from which this session is built.'}
+            : 'The input from which this project is built.'}
         </p>
       </div>
     </header>{/if}
@@ -415,15 +415,15 @@
       <h2 id="source-reset-heading" class="text-xl font-semibold">
         {pending.role === 'primary'
           ? pending.sourceId
-            ? 'Replace source and reset this session?'
-            : 'Remove source and reset this session?'
+            ? 'Replace source and reset this project?'
+            : 'Remove source and reset this project?'
           : pending.sourceId
             ? 'Use this associated recording?'
             : 'Remove the associated recording?'}
       </h2>
       <p class="mt-4 text-sm leading-6">
         {pending.role === 'primary'
-          ? 'The current source’s derived text versions, speech plans, generated takes, assemblies and exports will be removed from this session. This cannot be undone.'
+          ? 'The current source’s derived text versions, speech plans, generated takes, assemblies and exports will be removed from this project. This cannot be undone.'
           : 'Subtitle text, corrections, translations, speech plans and reusable raw takes will be kept. Results tied to the old recording’s timing or soundtrack will need regeneration.'}
       </p>
       {#if pending.role === 'primary'}
@@ -434,7 +434,7 @@
             .derived_files} derived files
         </p>
         <p class="muted mt-3 text-sm">
-          Source-library originals, files shared with other sessions, settings,
+          Source-library originals, files shared with other projects, settings,
           voices and usage records are retained.
         </p>
       {/if}
@@ -449,7 +449,7 @@
             class="btn"
             disabled={busy}
             onclick={() => void startNewSession()}
-            >Use a new session instead</button
+            >Use a new project instead</button
           >{/if}
         <button
           class="btn btn-primary"

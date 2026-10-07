@@ -54,7 +54,7 @@
   <div class="rounded-xl border border-[var(--line)] p-4 text-sm">
     <strong>Compatibility provider</strong>
     <p class="muted mt-1">
-      This session keeps its existing engine. For new generation, you can switch
+      This project keeps its existing engine. For new generation, you can switch
       to the matching audio.cpp model and review its voice and settings.
     </p>
     <button

@@ -289,7 +289,7 @@
         await onstarted(run, boundPreview);
       } catch (caught) {
         if (mounted)
-          postError = `Generation started, but refreshing the view failed: ${errorMessage(caught)} Close and reload the session to see the new run.`;
+          postError = `Generation started, but refreshing the view failed: ${errorMessage(caught)} Close and reload the project to see the new run.`;
       }
     } catch (caught) {
       // No automatic retry or restart after a conflict: preserve the error,

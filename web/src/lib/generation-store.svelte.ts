@@ -155,9 +155,14 @@ export class GenerationStore {
       }
       const previousTotal = this.payload.total;
       const previousRunId = this.activeRun?.id ?? '';
-      const [runPayload, latestAssembly] = await Promise.all([
+      const [runPayload, latestAssembly, activeSegments] = await Promise.all([
         generationApi.runs(this.sessionId, controller.signal),
-        generationApi.latestAssembly(this.sessionId, controller.signal)
+        generationApi.latestAssembly(this.sessionId, controller.signal),
+        // The active plan needs no run-history lookup. Load its rows alongside
+        // history/output; history views still resolve their frozen version first.
+        options.selectedRunId
+          ? Promise.resolve(null)
+          : generationApi.segments(this.sessionId, query, controller.signal)
       ]);
       if (controller.signal.aborted) {
         return {
@@ -183,11 +188,13 @@ export class GenerationStore {
         options.selectedRunVersionId
       );
       if (selectedVersion) query.set('generation_run_id', selectedVersion.id);
-      const next = await generationApi.segments(
-        this.sessionId,
-        query,
-        controller.signal
-      );
+      const next =
+        activeSegments ??
+        (await generationApi.segments(
+          this.sessionId,
+          query,
+          controller.signal
+        ));
       if (controller.signal.aborted) {
         return { selectedRunId, shouldExpand: false, discarded: true };
       }

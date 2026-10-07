@@ -312,7 +312,7 @@ async function fixture(page: Page) {
 const submit = (page: Page) =>
   page.getByRole('button', { name: 'Create alternate take', exact: true });
 
-test('alternate settings preserve session defaults and submit compatible model, language and RVC choices', async ({
+test('alternate settings preserve project defaults and submit compatible model, language and RVC choices', async ({
   page
 }, info) => {
   const data = await fixture(page);

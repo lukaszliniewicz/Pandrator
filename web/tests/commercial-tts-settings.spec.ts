@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('session TTS settings filter MAI voices by model and language and retain multilingual voices', async ({
+test('project TTS settings filter MAI voices by model and language and retain multilingual voices', async ({
   page
 }, testInfo) => {
   await page.goto('/');

@@ -57,6 +57,47 @@
           · {readable(model.license.commercial_use)}</span
         >{/if}
     </div>
+    {#if model.generation_limits}
+      {@const limits = model.generation_limits}
+      <section class="space-y-1" aria-label="Generation length">
+        <h4 class="font-semibold">Generation length</h4>
+        <p>
+          Default audiobook target: {limits.default_segment_characters.toLocaleString()}
+          characters. Language and configured output budgets can reduce this target.
+        </p>
+        {#if limits.input_characters}<p>
+            Provider input limit: {limits.input_characters.toLocaleString()} characters.
+          </p>{/if}
+        {#if limits.input_tokens}<p>
+            Provider input limit: {limits.input_tokens.toLocaleString()} tokens, including
+            instructions where applicable.
+          </p>{/if}
+        {#if limits.output_tokens}<p>
+            Provider output limit: {limits.output_tokens.toLocaleString()} tokens.
+          </p>{/if}
+        {#if limits.output_seconds}<p>
+            Provider audio limit: {limits.output_seconds / 60} minutes per request.
+          </p>{/if}
+        {#if limits.runtime_chunk_characters}<p>
+            Runtime text splitting default: {limits.runtime_chunk_characters.toLocaleString()}
+            characters. This is configurable.
+          </p>{/if}
+        {#if limits.runtime_output_budget}<p>
+            Runtime output budget: {limits.runtime_output_budget.value.toLocaleString()}
+            {limits.runtime_output_budget.unit.replaceAll('_', ' ')}.
+          </p>{/if}
+        <p class="muted">
+          Longer requests can improve continuity, but output budgets and voice
+          quality still need checking for the selected model. Limits checked {limits.checked_at}.
+        </p>
+        {#if limits.source_urls.length}<a
+            class="inline-block underline underline-offset-2"
+            href={limits.source_urls[0]}
+            target="_blank"
+            rel="noreferrer">Generation documentation</a
+          >{/if}
+      </section>
+    {/if}
     <dl class="grid gap-x-4 gap-y-1 sm:grid-cols-2">
       <div>
         <dt class="inline font-semibold">Reference audio:</dt>

@@ -97,18 +97,18 @@
           type="button"
           onclick={onclose}
           class="rounded-xl p-2"
-          aria-label="Close session fork dialog"><X size={19} /></button
+          aria-label="Close project fork dialog"><X size={19} /></button
         >
       </div>
 
       <p id="session-fork-description" class="muted mt-4 text-sm leading-6">
-        The new session keeps your sources, settings, and selected subtitles
+        The new project keeps your sources, settings, and selected subtitles
         through this {stageLabel.toLowerCase()}. Its translations, voices and
         exports can then develop independently.
       </p>
 
       <label class="mt-5 block text-sm font-semibold" for="session-fork-name">
-        New session name
+        New project name
       </label>
       <input
         id="session-fork-name"
@@ -127,7 +127,7 @@
           <span class="block font-semibold">Keep edited video and timeline</span
           >
           <span class="muted mt-1 block"
-            >Use the same cuts and base video in the new session.</span
+            >Use the same cuts and base video in the new project.</span
           >
         </span>
       </label>

@@ -126,7 +126,7 @@ async function attachRecording(
   mimeType: string,
   buffer: Buffer
 ) {
-  const card = page.getByRole('region', { name: 'Session source' });
+  const card = page.getByRole('region', { name: 'Project source' });
   await card.getByRole('button', { name: 'Attach audio or video' }).click();
   const picker = page.getByRole('dialog', { name: 'Add a source' });
   await expect(picker).toBeVisible();
@@ -643,7 +643,7 @@ test('Source card attaches independent media and keeps timed text after reopenin
 }) => {
   const { session, endpoint, source } = await setup(page);
   await page.goto(`/sessions/${session.id}`);
-  const card = page.getByRole('region', { name: 'Session source' });
+  const card = page.getByRole('region', { name: 'Project source' });
   await expect(card).toBeVisible();
   await expect(
     card.getByRole('button', { name: 'Align existing words' })
@@ -848,7 +848,7 @@ test('the Generate picker selects an older speech plan without copying a revisio
   await expect(picker).toHaveValue(first.selected_revision_id);
 });
 
-test('source reset cancellation preserves work, while confirmation removes only session derivations', async ({
+test('source reset cancellation preserves work, while confirmation removes only project derivations', async ({
   page
 }) => {
   const { session, endpoint, source } = await setup(page);
@@ -869,10 +869,10 @@ test('source reset cancellation preserves work, while confirmation removes only 
   if ((await drawerToggle.getAttribute('aria-expanded')) === 'true') {
     await drawerToggle.click();
   }
-  const card = page.getByRole('region', { name: 'Session source' });
+  const card = page.getByRole('region', { name: 'Project source' });
   await card.getByRole('button', { name: 'Remove source' }).click();
   const confirmation = page.getByRole('dialog', {
-    name: 'Remove source and reset this session?'
+    name: 'Remove source and reset this project?'
   });
   await expect(confirmation.getByText(/1 speech-plan histories/)).toBeVisible();
   await confirmation

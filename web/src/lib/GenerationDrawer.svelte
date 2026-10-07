@@ -162,7 +162,7 @@
       const message = queued.waiting_for_job
         ? queued.waiting_for_job.kind.startsWith('export')
           ? 'Regeneration queued — waiting for export'
-          : 'Generation queued — waiting for other session work'
+          : 'Generation queued — waiting for other project work'
         : 'Generation queued — waiting for a worker';
       for (const item of payload.items) {
         if (!ids.length || ids.includes(item.id)) messages[item.id] = message;
@@ -1226,7 +1226,7 @@
         ? `History · ${selectedHistoryRun?.label ?? selectedRun.label}`
         : settingsSourceRun
           ? `History · ${settingsSourceRun.label}`
-          : 'the current session settings'
+          : 'the current project settings'
     };
   }
 
@@ -1966,7 +1966,7 @@
   ></button>
 {/if}
 
-{#if payload.total > 0 || payload.plan_revision_id || run || searchQuery || filter !== 'all'}
+{#if payload.total > 0 || payload.plan_revision_id || run || searchQuery || filter !== 'all' || generationStore.status === 'loading' || generationStore.status === 'failed'}
   <div
     aria-hidden="true"
     style={`height:${mode === 'collapsed' ? headerHeight + 16 : 80}px`}
@@ -1984,6 +1984,8 @@
     >
       <button
         onclick={() => (mode = mode === 'collapsed' ? 'full' : 'collapsed')}
+        disabled={generationStore.status === 'loading' &&
+          !payload.plan_revision_id}
         aria-expanded={mode !== 'collapsed'}
         class="drawer-toggle flex min-h-11 items-center gap-2 font-semibold"
       >
@@ -1995,9 +1997,10 @@
       <span
         class="drawer-summary muted min-w-0 text-xs lg:flex-1 lg:truncate"
         title={`${payload.total} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
-        >{payload.total} segments · {selectedHistoryRun?.label ??
-          'Active mix'}{#if selectedAssembly}
-          · output {selectedAssembly.status}{/if}</span
+        >{#if generationStore.status === 'loading'}Loading speech plan…{:else if generationStore.status === 'failed' && !payload.plan_revision_id}Could
+          not load generation controls{:else}{payload.total} segments · {selectedHistoryRun?.label ??
+            'Active mix'}{#if selectedAssembly}
+            · output {selectedAssembly.status}{/if}{/if}</span
       >
       {#if selectedRunUsage?.commercial}<span class="cost-pill"
           >{selectedRunUsage.estimated ? 'Est.' : ''}
@@ -2486,7 +2489,7 @@
               }}
               class="action icon-action"
               class:active={settingsMenuOpen}
-              title="Session generation settings & speech services"
+              title="Project generation settings & speech services"
               aria-label="Settings and speech services"
               aria-expanded={settingsMenuOpen}
             >
@@ -2656,7 +2659,7 @@
               'export'
             )
               ? 'export'
-              : 'other session work'}.
+              : 'other project work'}.
             {run.waiting_for_job.progress_detail ?? ''}
           </p>
         {/if}

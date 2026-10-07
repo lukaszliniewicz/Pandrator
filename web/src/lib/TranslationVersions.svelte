@@ -109,7 +109,7 @@
                 {translationLanguageName(branch.target_language)}
               </a>
               {#if branch.session_id === sessionId}<span class="muted">
-                  · This session</span
+                  · This project</span
                 >{/if}
               <span class="muted mt-1 block"
                 >{translationBranchStatus(branch)}</span

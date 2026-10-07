@@ -240,7 +240,7 @@
         </h2>
         <p class="muted mt-2 text-sm">
           {onpick
-            ? 'Upload or choose a managed replacement. The current session is unchanged until you confirm.'
+            ? 'Upload or choose a managed replacement. The current project is unchanged until you confirm.'
             : allowTranscriptRole
               ? 'Attach the recording to edit or a timed transcript to guide it. Earlier source history remains available.'
               : 'The new source becomes current; earlier sources and their artifact histories remain available.'}

@@ -5,7 +5,7 @@ async function signIn(page: Page) {
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(
-    page.getByRole('heading', { name: 'Create a session' })
+    page.getByRole('heading', { name: 'Create a project' })
   ).toBeVisible();
   const tour = page.getByRole('button', { name: 'Close tour' });
   if (await tour.isVisible()) await tour.click();
@@ -232,7 +232,7 @@ test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', a
   await expect(page.locator('article')).toContainText('gpt-4o-mini-tts');
   await provider.selectOption('gemini');
   await apply.click();
-  await expect(page.locator('article')).toHaveCount(3);
+  await expect(page.locator('article')).toHaveCount(4);
   await provider.selectOption('azure');
   await capability.selectOption('emotion_control');
   await apply.click();

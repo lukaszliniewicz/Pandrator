@@ -328,7 +328,7 @@
       </p>{/if}
     {#if step === 'unsaved'}
       <p class="muted mt-4 text-sm">
-        Your changes haven’t been saved. Save them for this session, or discard
+        Your changes haven’t been saved. Save them for this project, or discard
         them and keep the previous settings.
       </p>
       {#if !valid}<p class="mt-3 text-sm text-amber-700" role="status">

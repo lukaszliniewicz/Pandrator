@@ -107,14 +107,14 @@ async function fixture(
 }
 
 for (const scenario of [
-  { name: 'session source language', override: {}, expected: 'zh' },
+  { name: 'project source language', override: {}, expected: 'zh' },
   {
     name: 'normalized legacy source-language alias',
     override: { original_language: 'zh' },
     expected: 'zh'
   },
   {
-    name: 'explicit transcription language over session language',
+    name: 'explicit transcription language over project language',
     override: { stt_language: 'ja' },
     expected: 'ja'
   }

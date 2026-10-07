@@ -89,7 +89,7 @@ for (const width of [1280, 390]) {
     await page.getByLabel('Owner password').fill('pandrator-e2e');
     await page.getByRole('button', { name: 'Sign in' }).click();
     await expect(
-      page.getByRole('heading', { name: 'Create a session' })
+      page.getByRole('heading', { name: 'Create a project' })
     ).toBeVisible();
     const tour = page.getByRole('button', { name: 'Close tour' });
     if (await tour.isVisible()) await tour.click();

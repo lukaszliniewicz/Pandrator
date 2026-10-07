@@ -3296,6 +3296,22 @@ export interface paths {
         patch: operations["updateSourceAsset"];
         trace?: never;
     };
+    "/api/v1/sources/{sourceAssetId}/references": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSourceReferences"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sources/{sourceAssetId}/restore": {
         parameters: {
             query?: never;
@@ -8880,7 +8896,15 @@ export interface operations {
     };
     listArtifacts: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Compact pages omit stored metadata, hashes and paths, and add project and passage labels. */
+                view?: "full" | "compact";
+                media_type?: "audio" | "text";
+                session_id?: string;
+                output_only?: boolean;
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -16095,7 +16119,11 @@ export interface operations {
     };
     listSourceAssets: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Compact library cards omit stored metadata and filesystem paths. */
+                view?: "full" | "compact";
+                include_trashed?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -16147,6 +16175,29 @@ export interface operations {
         };
         responses: {
             /** @description Source asset updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSourceReferences: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                sourceAssetId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paged project attachments, including historical and trashed references */
             200: {
                 headers: {
                     [name: string]: unknown;

@@ -1,6 +1,6 @@
 # Create your first audiobook
 
-An audiobook session turns a document or pasted text into reviewable narration
+An audiobook project turns a document or pasted text into reviewable narration
 segments, generated takes, an assembled timeline, and a final audio or M4B
 export. Preparation, generation, assembly, and export are separate stages so a
 new take does not silently replace a finished book.
@@ -19,9 +19,9 @@ before generating a large book.
 If cleanup or speech-text optimization will use an LLM, check whether it is
 local or cloud-hosted and which document text it will receive.
 
-## 1. Create the session and import text
+## 1. Create the project and import text
 
-Create an **Audiobook** session and provide TXT, PDF, EPUB, DOCX, MOBI, pasted
+Create an **Audiobook** project and provide TXT, PDF, EPUB, DOCX, MOBI, pasted
 text, or a reusable document from the source library. PDF quality varies:
 text-native PDFs are easier than scans, and OCR should be reviewed carefully.
 The public-URL importer is for audio/video transcription workflows, not general
@@ -67,7 +67,7 @@ sampling or style controls. For a cloned voice, use a clean, single-speaker
 sample with an accurate transcript. Short tests reveal pronunciation,
 language, noise, and pacing problems much more cheaply than a full run.
 
-The session card's TTS settings list pre-built voices for the selected model
+The project card's TTS settings list pre-built voices for the selected model
 and language, including commercial providers. For compatible cloud providers,
 **Concurrent TTS requests** accepts 1–8 (default 1). Higher values submit small
 groups in parallel; results remain in segment order. The current group can finish
@@ -127,6 +127,12 @@ Manager and inspect the job rather than starting a duplicate run.
 
 Assembly follows the selected take for every segment and constructs the final
 audio sequence. Listen across joins and chapter boundaries before export.
+**Audio settings** offers separate pauses for regular segments, paragraphs and
+clause boundaries inside a sentence. The optional voice-change gap is a minimum
+between different voices, including changes inside one block. A manually edited
+block pause, including zero, takes priority. Fixed subtitle timings retain their
+alignment. New settings apply when creating a new generation or assembly; saved
+run snapshots keep their original pacing.
 Then choose WAV, MP3, Opus, FLAC, or M4B. M4B can include chapters, metadata,
 and cover art.
 

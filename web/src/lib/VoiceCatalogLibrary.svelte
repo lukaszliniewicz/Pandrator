@@ -23,6 +23,7 @@
   import {
     emptyVoiceProfile,
     voiceFacetLabel,
+    voiceOriginLabel,
     voiceLibraryApi,
     type CatalogVoice,
     type VoiceCatalogPage,
@@ -61,6 +62,7 @@
   } = $props();
   let query = $state('');
   let language = $state('');
+  let origin = $state('');
   let accent = $state('');
   let category = $state('');
   let pitch = $state('');
@@ -100,6 +102,7 @@
   let collectionForm = $state(false);
   let collectionBusy = $state(false);
   let designerOpen = $state(false);
+  let redesignVoice = $state<CatalogVoice | null>(null);
   let compare = $state<CatalogVoice[]>([]);
   let comparisonOpen = $state(false);
   let bulkMode = $state(false);
@@ -155,6 +158,7 @@
   const parameters = $derived({
     query,
     language,
+    origin,
     accent,
     voice_category: category,
     pitch,
@@ -175,6 +179,7 @@
   const filterCount = $derived(
     [
       language,
+      origin,
       accent,
       category,
       pitch,
@@ -191,6 +196,11 @@
     ].filter(Boolean).length
   );
   const languages = $derived(Object.keys(page?.facets.language ?? {}).sort());
+  const origins = $derived(Object.keys(page?.facets.origin ?? {}).sort());
+  function openDesigner(voice: CatalogVoice | null = null) {
+    redesignVoice = voice;
+    designerOpen = true;
+  }
 
   async function load(cursor?: string) {
     const ticket = ++sequence;
@@ -511,6 +521,7 @@
   }
   function clearFilters() {
     language = '';
+    origin = '';
     accent = '';
     category = '';
     pitch = '';
@@ -565,7 +576,7 @@
           </p>
         </div>{/if}
       <div class="flex flex-wrap gap-2">
-        <button class="btn btn-primary" onclick={() => (designerOpen = true)}
+        <button class="btn btn-primary" onclick={() => openDesigner()}
           ><WandSparkles size={16} />Design voice</button
         ><button
           class="btn btn-secondary"
@@ -606,6 +617,11 @@
           </p>
         </div>
         <div class="flex flex-wrap gap-2">
+          {#if detail.origin === 'designed' && !editing}<button
+              class="btn btn-secondary"
+              onclick={() => openDesigner(detail)}
+              ><WandSparkles size={15} />Redesign</button
+            >{/if}
           {#if !detail.bundled && !editing}<button
               class="btn btn-secondary"
               onclick={edit}><SlidersHorizontal size={15} />Edit profile</button
@@ -973,6 +989,14 @@
         </div>
         <div class="space-y-4">
           <label class="filter-label"
+            >Voice origin<select class="input mt-1 w-full" bind:value={origin}
+              ><option value="">Any origin</option
+              >{#each origins as value}<option {value}
+                  >{voiceOriginLabel(value)}</option
+                >{/each}</select
+            ></label
+          >
+          <label class="filter-label"
             >Language<select class="input mt-1 w-full" bind:value={language}
               ><option value="">Any language</option
               >{#each languages as lang}<option value={lang}
@@ -1140,7 +1164,7 @@
           >
         </div>
         {#if filterCount}<div class="mb-4 flex flex-wrap gap-2">
-            {#each [language && voiceLanguageName(language), accent, category && voiceFacetLabel(category), pitch && `${voiceFacetLabel(pitch)} pitch`, useCase && voiceFacetLabel(useCase), texture, perceivedAge && voiceFacetLabel(perceivedAge), deliveryPreset && voiceFacetLabel(deliveryPreset), tag && `#${tag}`, kind !== defaultKind && (kind === 'provider' ? 'Provider catalog' : kind === 'managed' ? 'Saved voices' : 'All voices'), service && (services.find((item) => item.id === service)?.name ?? service), model, readyOnly && 'Ready', reviewedOnly && 'Reviewed'].filter(Boolean) as filter}<span
+            {#each [language && voiceLanguageName(language), origin && voiceOriginLabel(origin), accent, category && voiceFacetLabel(category), pitch && `${voiceFacetLabel(pitch)} pitch`, useCase && voiceFacetLabel(useCase), texture, perceivedAge && voiceFacetLabel(perceivedAge), deliveryPreset && voiceFacetLabel(deliveryPreset), tag && `#${tag}`, kind !== defaultKind && (kind === 'provider' ? 'Provider catalog' : kind === 'managed' ? 'Saved voices' : 'All voices'), service && (services.find((item) => item.id === service)?.name ?? service), model, readyOnly && 'Ready', reviewedOnly && 'Reviewed'].filter(Boolean) as filter}<span
                 class="catalog-chip">{filter}</span
               >{/each}
           </div>{/if}
@@ -1228,6 +1252,12 @@
                     />Compare</label
                   >{/if}
                 <div class="flex flex-wrap gap-2">
+                  {#if voice.origin === 'designed'}<button
+                      class="btn btn-secondary btn-sm"
+                      aria-label={`Redesign ${voice.name}`}
+                      onclick={() => openDesigner(voice)}
+                      ><WandSparkles size={14} />Redesign</button
+                    >{/if}
                   {#if voice.preview_artifact_id}<button
                       class="btn btn-secondary btn-sm"
                       aria-expanded={playing === voice.key}
@@ -1270,7 +1300,7 @@
                     >Clear filters</button
                   ><button
                     class="btn btn-primary"
-                    onclick={() => (designerOpen = true)}>Design a voice</button
+                    onclick={() => openDesigner()}>Design a voice</button
                   >
                 </div>{/if}
             </div>
@@ -1313,23 +1343,29 @@
 {#if designerOpen}<VoiceDesignDialog
     {services}
     {voices}
-    initialAccent={accent}
-    initialPitch={pitch}
-    initialCategory={category}
-    initialPrompt={[
-      query,
-      accent && `${accent} accent`,
-      category,
-      pitch && `${pitch} pitch`,
-      useCase && voiceFacetLabel(useCase)
-    ]
-      .filter(Boolean)
-      .join(', ')}
-    onclose={() => (designerOpen = false)}
+    initialVoiceId={redesignVoice?.id ?? ''}
+    initialAccent={redesignVoice?.profile.languages[0]?.accent ?? accent}
+    initialPitch={redesignVoice?.profile.pitch ?? pitch}
+    initialCategory={redesignVoice?.voice_category ?? category}
+    initialPrompt={redesignVoice?.description ||
+      [
+        query,
+        accent && `${accent} accent`,
+        category,
+        pitch && `${pitch} pitch`,
+        useCase && voiceFacetLabel(useCase)
+      ]
+        .filter(Boolean)
+        .join(', ')}
+    onclose={() => {
+      designerOpen = false;
+      redesignVoice = null;
+    }}
     onsaved={async (voiceId, _providerVoiceId, warning) => {
       const targetCollectionId = collectionId;
       const warnings = warning ? [warning] : [];
       designerOpen = false;
+      redesignVoice = null;
       try {
         await refreshAuxiliary();
         const result = await voiceLibraryApi.query({

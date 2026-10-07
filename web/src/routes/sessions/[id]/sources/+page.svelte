@@ -62,7 +62,7 @@
   async function detach(source: SessionSource) {
     if (
       !confirm(
-        `Detach ${source.display_name} from this session? The library source and managed file will be preserved.`
+        `Detach ${source.display_name} from this project? The library source and managed file will be preserved.`
       )
     )
       return;
@@ -186,7 +186,7 @@
                   : 'Previous version'}</span
               ><span class="badge">Record revision {source.revision}</span><span
                 class="badge"
-                >{source.reference_count} session reference{source.reference_count ===
+                >{source.reference_count} project reference{source.reference_count ===
                 1
                   ? ''
                   : 's'}</span
@@ -245,7 +245,7 @@
     {:else}<button
         onclick={() => (sourceDialog = true)}
         class="muted col-span-full rounded-2xl border border-dashed border-[var(--line)] p-10 text-center"
-        ><Plus class="mx-auto mb-2" />Add the first source for this session.</button
+        ><Plus class="mx-auto mb-2" />Add the first source for this project.</button
       >{/each}
   </div>
 </div>

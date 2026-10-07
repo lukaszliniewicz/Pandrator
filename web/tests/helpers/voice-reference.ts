@@ -28,7 +28,7 @@ export async function voiceReferenceFixture(page: Page, reviewed = true) {
   await page.getByLabel('Owner password').fill('pandrator-e2e');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'New session', exact: true })
+    page.getByRole('button', { name: 'New project', exact: true })
   ).toBeVisible();
   const closeTour = page.getByRole('button', { name: 'Close tour' });
   if (await closeTour.isVisible()) await closeTour.click();

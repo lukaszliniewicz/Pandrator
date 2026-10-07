@@ -241,7 +241,7 @@
       }
       draft = sanitizeOutput({ ...settings.override });
       audioDraft = sanitizeAudio({ ...audioSettings!.override });
-      message = 'Output settings saved for this session.';
+      message = 'Output settings saved for this project.';
       return {
         // Some API responses omit freshly saved overrides from `effective`.
         // The export decision must still use the values the user just submitted.

@@ -1115,7 +1115,7 @@
               kind="captions"
               src={captionTrackUrl}
               srclang="und"
-              label="Session transcript"
+              label="Project transcript"
               default
             />
           </video>

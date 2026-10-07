@@ -720,7 +720,7 @@
         override
       );
       override = { ...payload.override };
-      message = 'Saved for this session.';
+      message = 'Saved for this project.';
       await onpersisted?.(payload);
     } catch (caught) {
       message = errorMessage(caught);
@@ -917,7 +917,7 @@
                   compact
                 />{#if Object.prototype.hasOwnProperty.call(override, key)}<span
                     class="mt-1 block text-[.65rem] text-[var(--accent)]"
-                    >Session override</span
+                    >Project override</span
                   >{:else}<span class="muted mt-1 block text-[.65rem]"
                     >Inherited</span
                   >{/if}{#if key === 'apply_reviewed_pronunciations'}<span
@@ -963,7 +963,7 @@
                     key
                   )}
                   >{Object.prototype.hasOwnProperty.call(override, key)
-                    ? 'Session override'
+                    ? 'Project override'
                     : 'Inherited'}</span
                 >
               </div>{/each}
@@ -994,7 +994,7 @@
             />
             {#if Object.prototype.hasOwnProperty.call(override, key)}<span
                 class="mt-1 block text-[.65rem] text-[var(--accent)]"
-                >Session override</span
+                >Project override</span
               >{:else}<span class="muted mt-1 block text-[.65rem]"
                 >Inherited</span
               >{/if}
@@ -1036,7 +1036,7 @@
               override,
               'web_research_enabled'
             )
-              ? 'Session override'
+              ? 'Project override'
               : 'Inherited'}</span
           >
         </div>
@@ -1066,7 +1066,7 @@
                     key
                   )}
                   >{Object.prototype.hasOwnProperty.call(override, key)
-                    ? 'Session override'
+                    ? 'Project override'
                     : 'Inherited'}</span
                 >
               </div>
@@ -1200,7 +1200,7 @@
               />{/if}
             {#if Object.prototype.hasOwnProperty.call(override, key)}<span
                 class="mt-1 block text-[.65rem] text-[var(--accent)]"
-                >Session override</span
+                >Project override</span
               >{:else}<span class="muted mt-1 block text-[.65rem]"
                 >Inherited</span
               >{/if}

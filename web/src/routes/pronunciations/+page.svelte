@@ -204,7 +204,7 @@
         Reviewed entries are deterministic, speech-only respellings. Pandrator
         uses them only when <strong class="text-[var(--ink)]"
           >Apply reviewed pronunciation-library overrides</strong
-        > is enabled in Text settings and the entry matches the session, language,
+        > is enabled in Text settings and the entry matches the project, language,
         and TTS backend. Display and source text stay unchanged. Hyphens make syllables
         readable here; the speech renderer removes them deterministically.
       </p>
@@ -265,7 +265,7 @@
       <select bind:value={scope} aria-label="Scope filter"
         ><option value="">All scopes</option><option value="global"
           >Global</option
-        ><option value="session">Session</option></select
+        ><option value="project">Project</option></select
       >
       <input
         bind:value={language}
@@ -337,7 +337,7 @@
               <div class="font-semibold">
                 {item.scope === 'global'
                   ? 'Global library'
-                  : item.session_name || 'Session override'}
+                  : item.session_name || 'Project override'}
               </div>
               {#if item.notes}<p class="muted mt-1 line-clamp-2">
                   {item.notes}
@@ -457,14 +457,14 @@
           >
           <label class="field"
             ><span>Scope</span><select bind:value={form.scope}
-              ><option value="global">Global</option><option value="session"
-                >One session</option
+              ><option value="global">Global</option><option value="project"
+                >One project</option
               ></select
             ></label
           >
           {#if form.scope === 'session'}<label class="field"
-              ><span>Session</span><select bind:value={form.session_id} required
-                ><option value="">Choose a session</option
+              ><span>Project</span><select bind:value={form.session_id} required
+                ><option value="">Choose a project</option
                 >{#each sessions as session}<option value={session.id}
                     >{session.name}</option
                   >{/each}</select

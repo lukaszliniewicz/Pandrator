@@ -11,7 +11,10 @@
   } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { toolApi } from './admin-api';
-  import type { JobRecord } from './api-models';
+  import { artifactApi } from './domain-api';
+  import { appState } from './app-state.svelte';
+  import type { ArtifactCandidate, JobRecord } from './api-models';
+  import AudioPlayer from './AudioPlayer.svelte';
 
   let {
     onback,
@@ -39,6 +42,15 @@
     items: []
   });
   let artifacts = $state<Artifact[]>([]);
+  let candidates = $state<ArtifactCandidate[]>([]);
+  let candidateTotal = $state(0);
+  let candidateOffset = $state<number | null>(null);
+  let candidatesLoading = $state(false);
+  let candidateError = $state('');
+  let candidateProject = $state('');
+  let includeTakes = $state(false);
+  let audioSearch = $state('');
+  let candidateRequest = 0;
   let training = $state<Training[]>([]);
   let weights = $state<File | null>(null);
   let index = $state<File | null>(null);
@@ -79,7 +91,7 @@
   let message = $state('');
   let error = $state('');
 
-  const audioArtifacts = $derived(
+  const trainingAudioArtifacts = $derived(
     artifacts.filter(
       (item) =>
         item.state === 'current' &&
@@ -88,33 +100,87 @@
             'audiobook_audio',
             'dubbing_audio',
             'voice_sample',
-            'rvc_audio',
-            'upload'
+            'rvc_audio'
           ].includes(item.role))
     )
   );
+  function audioLabel(item: ArtifactCandidate) {
+    const project = item.session_name || 'Voice library';
+    if (item.segment_ordinal != null)
+      return `${project} — Segment ${item.segment_ordinal + 1}${item.speaker ? ` · ${item.speaker}` : ''}${item.segment_text ? ` — ${item.segment_text}` : ''}`;
+    return `${project} — ${item.role === 'export' ? 'Output' : item.role.replaceAll('_', ' ')} · ${item.display_name}`;
+  }
+  const audioArtifacts = $derived(
+    candidates.filter(
+      (item) =>
+        item.state === 'current' &&
+        audioLabel(item)
+          .toLowerCase()
+          .includes(audioSearch.trim().toLowerCase())
+    )
+  );
+  async function loadCandidates(more = false) {
+    const current = ++candidateRequest;
+    candidatesLoading = true;
+    candidateError = '';
+    try {
+      const result = await artifactApi.candidates('audio', {
+        sessionId: candidateProject || undefined,
+        outputOnly: !includeTakes,
+        offset: more ? (candidateOffset ?? 0) : 0
+      });
+      if (current !== candidateRequest) return;
+      candidates = more ? [...candidates, ...result.items] : result.items;
+      candidateTotal = result.total;
+      candidateOffset = result.next_offset;
+      if (
+        !candidates.some(
+          (item) => item.id === sourceArtifact && item.state === 'current'
+        )
+      )
+        sourceArtifact =
+          candidates.find((item) => item.state === 'current')?.id ?? '';
+    } catch (caught) {
+      if (current === candidateRequest) candidateError = errorMessage(caught);
+    } finally {
+      if (current === candidateRequest) candidatesLoading = false;
+    }
+  }
   const textArtifacts = $derived(
     artifacts.filter(
       (item) =>
         item.state === 'current' &&
         (item.mime_type?.startsWith('text/') ||
-          ['clean_text', 'upload'].includes(item.role))
+          ['clean_text'].includes(item.role))
     )
   );
 
   async function load() {
     error = '';
     try {
-      const [models, artifactPayload, trainingPayload] = await Promise.all([
-        toolApi.rvcModels(),
-        toolApi.artifacts(),
-        toolApi.training<Training>()
+      const results = await Promise.allSettled([
+        ...(mode !== 'training'
+          ? [
+              toolApi.rvcModels().then((models) => {
+                rvc = models;
+                rvcModel ||= models.items[0] ?? '';
+              }),
+              loadCandidates()
+            ]
+          : []),
+        ...(mode !== 'rvc'
+          ? [
+              toolApi.artifacts().then((payload) => {
+                artifacts = payload.items;
+              }),
+              toolApi.training<Training>().then((payload) => {
+                training = payload.items;
+              })
+            ]
+          : [])
       ]);
-      rvc = models;
-      artifacts = artifactPayload.items;
-      training = trainingPayload.items;
-      rvcModel ||= models.items[0] ?? '';
-      sourceArtifact ||= audioArtifacts[0]?.id ?? '';
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') error = errorMessage(failed.reason);
     } catch (caught) {
       error = errorMessage(caught);
     }
@@ -280,7 +346,10 @@
       {message}
     </div>{/if}
   <div class="grid gap-5 xl:grid-cols-2">
-    <section class:hidden={mode === 'training'} class="surface rounded-3xl p-6">
+    <section
+      class:hidden={mode === 'training'}
+      class="surface min-w-0 rounded-3xl p-6"
+    >
       <div class="flex items-center gap-3">
         <div
           class="grid size-11 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"
@@ -324,11 +393,50 @@
         >
       </div>
       <div class="my-6 border-t border-[var(--line)]"></div>
+      <div class="mb-4 grid gap-3 sm:grid-cols-2">
+        <label class="text-sm font-semibold"
+          >Project<select
+            class="field"
+            bind:value={candidateProject}
+            onchange={() => void loadCandidates()}
+            ><option value="">All projects</option
+            >{#each appState.sessions as project (project.id)}<option
+                value={project.id}>{project.name}</option
+              >{/each}</select
+          ></label
+        >
+        <label class="text-sm font-semibold"
+          >Find audio<input
+            class="field"
+            type="search"
+            bind:value={audioSearch}
+            placeholder="Project, output, speaker or passage…"
+          /></label
+        >
+        <label class="flex items-center gap-2 text-sm sm:col-span-2"
+          ><input
+            type="checkbox"
+            bind:checked={includeTakes}
+            onchange={() => void loadCandidates()}
+          />Include individual takes &amp; recordings</label
+        >
+      </div>
+      {#if candidateError}<p class="mb-3 text-sm text-red-500" role="alert">
+          {candidateError}<button
+            class="btn btn-sm btn-secondary ml-2"
+            onclick={() => void loadCandidates()}>Retry audio list</button
+          >
+        </p>{/if}
       <div class="grid gap-4 sm:grid-cols-2">
         <label class="text-sm font-semibold sm:col-span-2"
-          >Audio artifact<select bind:value={sourceArtifact} class="field"
+          >Audio recording<select
+            bind:value={sourceArtifact}
+            class="field"
+            disabled={candidatesLoading}
+            ><option value=""
+              >{candidatesLoading ? 'Loading audio…' : 'Choose audio'}</option
             >{#each audioArtifacts as item}<option value={item.id}
-                >{item.role} · {item.relative_path.split('/').at(-1)}</option
+                >{audioLabel(item)}</option
               >{/each}</select
           ></label
         ><label class="text-sm font-semibold"
@@ -346,6 +454,24 @@
           /></label
         >
       </div>
+      <div
+        class="muted mt-3 flex flex-wrap items-center justify-between gap-2 text-xs"
+      >
+        <span
+          >{audioArtifacts.length} matching recordings in {candidates.length} loaded
+          · {candidateTotal} available</span
+        >{#if candidateOffset !== null}<button
+            class="btn btn-sm btn-secondary"
+            disabled={candidatesLoading}
+            onclick={() => void loadCandidates(true)}>Load more audio</button
+          >{/if}
+      </div>
+      {#if sourceArtifact && !candidatesLoading}<div class="mt-3">
+          <AudioPlayer
+            src={`/api/v1/artifacts/${sourceArtifact}/content`}
+            label="Selected recording"
+          />
+        </div>{/if}
       <details class="mt-4 rounded-2xl border border-[var(--line)] p-4">
         <summary class="cursor-pointer text-sm font-semibold"
           >Conversion settings</summary
@@ -420,7 +546,7 @@
           >Model name<input bind:value={modelName} class="field" /></label
         ><label class="text-sm font-semibold sm:col-span-2"
           >Training audio<select bind:value={sourceArtifact} class="field"
-            >{#each audioArtifacts as item}<option value={item.id}
+            >{#each trainingAudioArtifacts as item}<option value={item.id}
                 >{item.role} · {item.relative_path.split('/').at(-1)}</option
               >{/each}</select
           ></label
@@ -622,12 +748,17 @@
 <style>
   .field {
     margin-top: 0.35rem;
+    min-width: 0;
+    max-width: 100%;
     width: 100%;
     border: 1px solid var(--line);
     border-radius: 0.75rem;
     background: var(--paper);
     padding: 0.6rem 0.7rem;
     font-weight: 400;
+  }
+  label {
+    min-width: 0;
   }
   .check {
     display: flex;

@@ -129,7 +129,7 @@ async function fixture(page: Page) {
   };
 }
 
-test('session settings use compact choices and ignore late metadata from another model', async ({
+test('project settings use compact choices and ignore late metadata from another model', async ({
   page
 }) => {
   const data = await fixture(page);

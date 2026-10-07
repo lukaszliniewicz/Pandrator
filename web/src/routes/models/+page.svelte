@@ -11,6 +11,11 @@
   import AudioCppModelDetails from '$lib/AudioCppModelDetails.svelte';
   import { readable, type AudioCppCatalogue } from '$lib/audio-cpp-catalogue';
   import { MODEL_CAPABILITY_OPTIONS } from '$lib/local-model-groups';
+  import {
+    canonicalLanguageTag,
+    languageLabel,
+    languageMatches
+  } from '$lib/language-registry';
 
   let catalogue = $state<AudioCppCatalogue | null>(null);
   let query = $state('');
@@ -28,12 +33,24 @@
     const current = ++requestId;
     busy = true;
     error = '';
+    const languageCode = canonicalLanguageTag(language);
+    if (
+      language.trim() &&
+      (!languageCode ||
+        !catalogue?.languages?.some((code) =>
+          languageMatches(code, languageCode)
+        ))
+    ) {
+      error = 'Choose a language supported by a model in the catalogue.';
+      busy = false;
+      return;
+    }
     const params = new URLSearchParams({
       query,
       category,
       capability,
       provider,
-      language,
+      language: languageCode,
       commercial_use: commercialUse,
       recommended_only: String(recommended),
       limit: '20',
@@ -124,13 +141,20 @@
         </select>
       </label>
       <label class="text-xs font-semibold"
-        >Language code
+        >Language
         <input
           class="field mt-1 w-full"
           bind:value={language}
-          placeholder="e.g. en, pl, zh"
+          aria-label="Language"
+          list="model-catalogue-languages"
+          placeholder="Search language or code…"
           maxlength="40"
         />
+        <datalist id="model-catalogue-languages"
+          >{#each catalogue?.languages ?? [] as code}<option value={code}
+              >{languageLabel(code)}</option
+            >{/each}</datalist
+        >
       </label>
     </div>
     <label class="mt-3 block max-w-sm text-xs font-semibold"
@@ -193,6 +217,12 @@
             : ''}
         </p>
         <p class="mt-3 text-sm leading-relaxed">{model.description}</p>
+        {#if model.generation_limits}<p class="muted mt-2 text-xs">
+            Default audiobook target: <strong
+              >{model.generation_limits.default_segment_characters.toLocaleString()}
+              characters</strong
+            > per segment.
+          </p>{/if}
         {#if typeof model.package_availability === 'object'}
           <p class="muted mt-2 text-xs">
             <strong>{readable(model.package_availability.status)}:</strong>

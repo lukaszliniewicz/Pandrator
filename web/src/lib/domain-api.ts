@@ -44,6 +44,8 @@ import type {
   SessionSource,
   SettingsPayload,
   SourceAsset,
+  SourceReferencesPage,
+  ArtifactCandidatesPage,
   StageArtifactPage,
   StageRerunImpact,
   StageSettingsMismatch,
@@ -978,14 +980,26 @@ export const sessionApi = {
 };
 
 export const sourceApi = {
-  list: (includeTrashed = false) =>
+  list: (includeTrashed = false, compact = false) =>
     typedApiJson<'/api/v1/sources', 'get', ItemPage<SourceAsset>>(
       '/api/v1/sources',
       'get',
-      includeTrashed
-        ? { query: new URLSearchParams({ include_trashed: 'true' }) }
-        : {}
+      {
+        query: new URLSearchParams({
+          include_trashed: String(includeTrashed),
+          ...(compact ? { view: 'compact' } : {})
+        })
+      }
     ),
+  references: (sourceId: string, offset = 0) =>
+    typedApiJson<
+      '/api/v1/sources/{sourceAssetId}/references',
+      'get',
+      SourceReferencesPage
+    >('/api/v1/sources/{sourceAssetId}/references', 'get', {
+      path: { sourceAssetId: sourceId },
+      query: { limit: 50, offset }
+    }),
   rename: (source: SourceAsset, displayName: string) =>
     typedApiJson<'/api/v1/sources/{sourceAssetId}', 'patch', SourceAsset>(
       '/api/v1/sources/{sourceAssetId}',
@@ -1017,6 +1031,24 @@ export const sourceApi = {
 };
 
 export const artifactApi = {
+  candidates: (
+    mediaType: 'audio' | 'text',
+    options: { sessionId?: string; outputOnly?: boolean; offset?: number } = {}
+  ) => {
+    const query = new URLSearchParams({
+      view: 'compact',
+      media_type: mediaType,
+      limit: '100',
+      offset: String(options.offset ?? 0)
+    });
+    if (options.sessionId) query.set('session_id', options.sessionId);
+    if (options.outputOnly) query.set('output_only', 'true');
+    return typedApiJson<'/api/v1/artifacts', 'get', ArtifactCandidatesPage>(
+      '/api/v1/artifacts',
+      'get',
+      { query }
+    );
+  },
   upload: (file: File, sessionId?: string, purpose?: string) => {
     const body = new FormData();
     if (sessionId) body.set('session_id', sessionId);

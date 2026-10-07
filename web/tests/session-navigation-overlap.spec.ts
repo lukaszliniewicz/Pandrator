@@ -109,7 +109,7 @@ test('catalogue sharing is inflight-only with guarded cleanup', () => {
   );
 });
 
-test('late responses for the previous session never overwrite the current one', async ({
+test('late responses for the previous project never overwrite the current one', async ({
   page
 }) => {
   const pageErrors: Error[] = [];
@@ -121,7 +121,7 @@ test('late responses for the previous session never overwrite the current one', 
     'session-beta': 0
   };
   for (const id of ['session-alpha', 'session-beta'] as const) {
-    const label = id === 'session-alpha' ? 'Session Alpha' : 'Session Beta';
+    const label = id === 'session-alpha' ? 'Project Alpha' : 'Project Beta';
     await page.route(`**/api/v1/sessions/${id}`, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, delayMs[id] ?? 0));
       await route.fulfill({
@@ -156,7 +156,7 @@ test('late responses for the previous session never overwrite the current one', 
   // Phase 1: fully load Alpha so the layout (and its stores) is constructed
   // with the Alpha id. Client-side navigation to Beta must then reuse it.
   await page.goto('/sessions/session-alpha');
-  await expect(title).toContainText('Session Alpha');
+  await expect(title).toContainText('Project Alpha');
   const documentMarker = await page.evaluate(() => performance.timeOrigin);
   // Fixture links: SvelteKit intercepts same-origin anchor clicks. Pinned
   // above the fixed app sidebar so a real click reaches them.
@@ -177,9 +177,9 @@ test('late responses for the previous session never overwrite the current one', 
   await expect
     .poll(async () => page.url(), { timeout: 8000 })
     .toContain('/sessions/session-beta');
-  await expect(title).toContainText('Session Beta');
+  await expect(title).toContainText('Project Beta');
   await page.getByTestId('fixture-go-alpha').click();
-  await expect(title).toContainText('Session Alpha');
+  await expect(title).toContainText('Project Alpha');
   await expect(page.getByRole('link', { name: 'Sources' })).toHaveAttribute(
     'href',
     '/sessions/session-alpha/sources'
@@ -188,8 +188,8 @@ test('late responses for the previous session never overwrite the current one', 
   // Let every delayed Beta response land, then re-assert: no flash of Beta,
   // the same document throughout, and a clean console.
   await page.waitForTimeout(900);
-  await expect(title).toContainText('Session Alpha');
-  await expect(title).not.toContainText('Session Beta');
+  await expect(title).toContainText('Project Alpha');
+  await expect(title).not.toContainText('Project Beta');
   await expect(page.getByRole('link', { name: 'Sources' })).toHaveAttribute(
     'href',
     '/sessions/session-alpha/sources'

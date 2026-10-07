@@ -74,7 +74,7 @@
   {/if}
   {#if selected?.catalogue_role === 'compatibility'}
     <p class="muted mt-2 text-xs">
-      This saved provider is kept for compatibility. For a saved session, use
+      This saved provider is kept for compatibility. For a saved project, use
       Generation settings to review the audio.cpp model and voice before
       switching. Changing the service here clears the old model and voice.
     </p>

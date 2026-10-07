@@ -24,6 +24,18 @@ export type AudioCppModelInfo = {
   package_availability?: string | { status?: string; reason?: string };
   verified_runtime?: string;
   sources?: string[];
+  generation_limits?: {
+    default_segment_characters: number;
+    policy_max_segment_characters: number;
+    input_characters?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    output_seconds?: number;
+    runtime_chunk_characters?: number;
+    runtime_output_budget?: { value: number; unit: string };
+    checked_at: string;
+    source_urls: string[];
+  };
 };
 
 export type AudioCppCatalogue = {
@@ -34,6 +46,7 @@ export type AudioCppCatalogue = {
   items: AudioCppModelInfo[];
   families: { id: string; display_name: string; category: string }[];
   providers?: { id: string; name: string; kind: string }[];
+  languages?: string[];
 };
 
 export const featureLabels: Record<string, string> = {

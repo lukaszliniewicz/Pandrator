@@ -16,7 +16,7 @@
     label,
     value,
     inherited = null,
-    inheritedLabel = 'Session voice',
+    inheritedLabel = 'Project voice',
     voices = [],
     suggestions = [],
     service = '',
@@ -78,7 +78,7 @@
                 ? 'Reference not found in the library'
                 : effective?.voice
                   ? 'Check service availability before generation'
-                  : 'Uses the session’s default voice'
+                  : 'Uses the project’s default voice'
   );
   $effect(() => {
     const reference = effective;
@@ -93,30 +93,30 @@
     }
     let stale = false;
     checking = true;
-    void voiceLibraryApi
-      .query(
-        reference.voice_id
-          ? { query: reference.voice_id, kind: 'managed', limit: 1 }
-          : {
-              query: reference.voice!,
-              kind: 'provider',
-              service_id: targetService,
-              model: targetModel,
-              limit: 200
-            }
-      )
-      .then((result) => {
-        if (!stale)
-          catalogVoice =
-            result.items.find((item) =>
-              reference.voice_id
-                ? item.id === reference.voice_id
-                : item.reference.kind === 'provider' &&
+    const lookup = reference.voice_id
+      ? voiceLibraryApi.managedVoice(reference.voice_id)
+      : voiceLibraryApi
+          .query({
+            query: reference.voice!,
+            kind: 'provider',
+            service_id: targetService,
+            model: targetModel,
+            limit: 200
+          })
+          .then(
+            (result) =>
+              result.items.find(
+                (item) =>
+                  item.reference.kind === 'provider' &&
                   item.reference.voice === reference.voice &&
                   (!targetService ||
                     item.reference.service_id === targetService) &&
                   (!targetModel || item.reference.model === targetModel)
-            ) ?? null;
+              ) ?? null
+          );
+    void lookup
+      .then((voice) => {
+        if (!stale) catalogVoice = voice;
       })
       .catch(() => {
         if (!stale) checkFailed = true;

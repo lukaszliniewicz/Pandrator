@@ -58,7 +58,7 @@
 
   const navigation = [
     { href: '/', label: 'Home', icon: Home },
-    { href: '/sessions', label: 'Sessions', icon: Folders },
+    { href: '/sessions', label: 'Projects', icon: Folders },
     { href: '/transcribe', label: 'Quick Transcribe', icon: FileAudio },
     { href: '/sources', label: 'Source library', icon: LibraryBig },
     { href: '/voices', label: 'Voices', icon: Mic2 },
@@ -204,7 +204,7 @@
 {:else}
   <div
     class="app-shell min-h-screen md:grid"
-    style={`grid-template-columns:${compactSidebar ? '5rem' : '17rem'} minmax(0,1fr);--sidebar-offset:${compactSidebar ? '5rem' : '17rem'}`}
+    style={`grid-template-columns:${compactSidebar ? '5rem' : '14rem'} minmax(0,1fr);--sidebar-offset:${compactSidebar ? '5rem' : '14rem'}`}
   >
     <header
       class="mobile-app-header fixed inset-x-0 top-0 z-40 flex h-16 items-center gap-3 border-b border-[var(--line)] bg-[var(--paper-strong)] px-3 md:hidden"
@@ -220,7 +220,7 @@
         <div class="min-w-0 flex-1">
           <div class="muted truncate text-xs">{mobileSession.title}</div>
           <select
-            aria-label="Session section"
+            aria-label="Project section"
             class="block w-full min-w-0 bg-transparent py-1 text-base font-semibold"
             value={page.url.pathname}
             onchange={(event) => {
@@ -260,7 +260,7 @@
       class:collapsed={appState.sidebarCollapsed}
       class:tablet-rail={tabletRail}
       class:mobile-open={mobileOpen}
-      class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[17rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:z-20 md:h-[100svh] md:w-auto"
+      class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[14rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:z-20 md:h-[100svh]"
     >
       <div class="sidebar-brand mb-5 flex items-center gap-3 px-2">
         <img
@@ -340,7 +340,7 @@
       class="content-column flex min-h-screen min-w-0 flex-col md:col-start-2"
     >
       <main
-        class="min-w-0 flex-1 px-3 pb-12 pt-20 sm:px-8 md:px-6 md:pt-9 lg:px-10 xl:px-14"
+        class="min-w-0 flex-1 px-3 pb-12 pt-20 sm:px-6 md:pt-9 lg:px-8 xl:px-10"
       >
         {#if appState.securityWarning}<div
             role="alert"
@@ -352,7 +352,7 @@
           </div>{/if}<ManagerOperationBanner />{@render children()}
       </main>
       <footer
-        class="app-footer mx-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-8 md:mx-10 xl:mx-14"
+        class="app-footer mx-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] py-5 text-xs sm:mx-6 lg:mx-8 xl:mx-10"
       >
         <span class="muted"
           >Pandrator{applicationVersion ? ` v${applicationVersion}` : ''} · created
@@ -448,10 +448,6 @@
     .content-column {
       min-height: 100svh;
     }
-    .app-footer {
-      margin-left: 2.5rem;
-      margin-right: 2.5rem;
-    }
   }
   @media (min-width: 768px) and (max-width: 1023px) {
     .app-sidebar.tablet-rail {
@@ -461,7 +457,7 @@
     }
     .app-sidebar.tablet-rail:hover,
     .app-sidebar.tablet-rail:focus-within {
-      width: 17rem;
+      width: 14rem;
       box-shadow: var(--shadow);
     }
     .app-sidebar.tablet-rail:not(:hover):not(:focus-within) .sidebar-brand,

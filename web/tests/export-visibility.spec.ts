@@ -200,7 +200,7 @@ for (const kind of ['export.create', 'export.variant']) {
           job_kind: jobKind,
           session_id: 'another-session',
           status: 'running',
-          detail: 'Do not display other sessions',
+          detail: 'Do not display other projects',
           changed_entities: ['jobs']
         });
         window.__emitExportTestEvent?.('job.progress', {
@@ -224,7 +224,7 @@ for (const kind of ['export.create', 'export.variant']) {
       { sid: session.id, jobKind: kind }
     );
     await expect(page.getByText('Attaching subtitle tracks')).toBeVisible();
-    await expect(page.getByText('Do not display other sessions')).toHaveCount(
+    await expect(page.getByText('Do not display other projects')).toHaveCount(
       0
     );
     await expect(

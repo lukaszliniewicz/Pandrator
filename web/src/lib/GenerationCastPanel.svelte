@@ -108,7 +108,7 @@
     hasVoiceBinding(cast.narrator)
       ? 'narrator override'
       : hasVoiceBinding(inheritedSession)
-        ? 'session voice'
+        ? 'project voice'
         : 'no narrator'
   );
   const hasConflict = $derived(message.includes('changed elsewhere'));
@@ -320,7 +320,7 @@
         <p class="muted text-xs self-center">
           Dialogue uses an assigned character voice, a source speaker
           assignment, or a dialogue fallback. Remaining parts use the narrator,
-          then the session voice. All voices in a run use its selected service
+          then the project voice. All voices in a run use its selected service
           and model.
         </p>
       </div>
@@ -369,7 +369,7 @@
               ? `${character.voice_category === 'unspecified' ? 'Unknown speaker' : character.voice_category} dialogue default`
               : cast.narrator
                 ? 'Narrator'
-                : 'Session voice'}
+                : 'Project voice'}
             {voices}
             {suggestions}
             service={rendererId}
@@ -478,7 +478,7 @@
               label={`${category === 'unspecified' ? 'Unknown speaker' : category[0].toUpperCase() + category.slice(1)} dialogue default`}
               value={cast.categories[category]}
               inherited={cast.narrator ?? inheritedSession}
-              inheritedLabel={cast.narrator ? 'Narrator' : 'Session voice'}
+              inheritedLabel={cast.narrator ? 'Narrator' : 'Project voice'}
               {voices}
               {suggestions}
               service={rendererId}

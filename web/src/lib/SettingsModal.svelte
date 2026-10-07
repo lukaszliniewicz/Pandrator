@@ -41,7 +41,7 @@
     >
       <div>
         <div class="section-label">
-          {sessionId ? 'Session settings' : 'Application defaults'}
+          {sessionId ? 'Project settings' : 'Application defaults'}
         </div>
         <h2 id="settings-modal-title" class="mt-1 text-2xl font-semibold">
           {title}

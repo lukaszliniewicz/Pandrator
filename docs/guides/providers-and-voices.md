@@ -1,5 +1,16 @@
 # Providers, local models, and voices
 
+The **Audio models** catalogue offers language-name and code autocomplete from
+its supported-language inventory. Speech model details show the default audiobook
+segment target separately from provider input/output limits and configurable
+runtime text-splitting defaults. Planning targets leave headroom for output
+budgets; they are starting points for representative listening tests.
+
+In **Voices**, filter by origin to find designed voices, reference recordings or
+built-in speakers. **Redesign** opens an existing designed voice with its current
+brief and save target, so you can change the prompt and audition new candidates
+before saving a sample.
+
 Pandrator separates providers, models, voices, and generated takes. A provider
 is a configured service; a model is one of its processing choices; a voice is a
 reusable identity or reference; and a take is generated audio for one segment.
@@ -51,12 +62,12 @@ verification.
 
 Standalone Qwen3 TTS, Fish S2 Pro, VoxCPM2, Chatterbox, and Magpie are
 compatibility providers. Existing installations remain manageable and saved
-sessions keep their provider, model, voice, and takes. An upgrade also preserves
+projects keep their provider, model, voice, and takes. An upgrade also preserves
 an existing workspace's inherited TTS default. Uninstalled compatibility
 components are grouped under **Compatibility backends**; ordinary speech
 pickers show a compatibility provider when it is the saved selection.
 
-To move a session, start audio.cpp with the desired model package installed,
+To move a project, start audio.cpp with the desired model package installed,
 open **Generate audio** settings, and choose **Switch to audio.cpp**. Pandrator
 proposes an installed model from the matching family. Review its model and
 voice, preview a representative sample, then save. If the family is not
@@ -67,7 +78,7 @@ the managed voice has a ready audio.cpp reference link. Otherwise, choose or
 link the reference in the Voice Library. Old provider options and reference
 settings are cleared on the switch; model IDs, quantizations, and voice uploads
 are not treated as equivalent. The original component and generated takes
-remain available. Changing a global or generic session service setting also
+remain available. Changing a global or generic project service setting also
 clears stale selections, so choose a valid target model and voice before
 starting generation.
 
@@ -93,7 +104,7 @@ Language support differs by model and sometimes by voice. Pandrator filters
 choices using capabilities reported by an installed service, but that cannot
 guarantee pronunciation quality for every language pair or cloned voice.
 
-For audio.cpp 0.7.2, Pandrator translates the session language into the model's
+For audio.cpp 0.7.2, Pandrator translates the project language into the model's
 request format:
 
 | Model family | Language sent to audio.cpp |
@@ -102,7 +113,7 @@ request format:
 | FireRedTTS3 | Native names such as `German`, with native `ZH_*` dialect tags preserved. |
 | MagpieTTS | Language codes, preserving `ar-AE`, `ar-SA`, `ar-MSA`, and `pt-BR`. |
 | Chatterbox, OmniVoice | Base language codes such as `de`. |
-| Fish Audio S2, VoxCPM2, BreezeTTS | No language hint: these sessions infer language from the input. |
+| Fish Audio S2, VoxCPM2, BreezeTTS | No language hint: these projects infer language from the input. |
 | PocketTTS | No request hint: language belongs to the loaded package. The English package rejects a request to switch languages. |
 
 An omitted hint does not add language support to a model. These contracts were
@@ -153,7 +164,7 @@ An uploadable XTTS bundle is one flat directory containing exactly:
 - `vocab.json`
 
 Update Pandrator and repair or update XTTS before importing if an older service
-does not advertise model upload. In a session's **Generate audio** settings,
+does not advertise model upload. In a project's **Generate audio** settings,
 select XTTS, choose a new model ID, and upload all four files together. Nested
 training directories, incomplete exports, and an existing model ID are
 rejected. User models belong in managed user data, not a versioned service

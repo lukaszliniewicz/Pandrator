@@ -130,7 +130,7 @@
             : 'Not detected'}
         </div>
         {#each gpuDevices as device}<div
-            class="ml-3 rounded-lg border border-[var(--line)] px-3 py-2"
+            class="rounded-lg border border-[var(--line)] px-3 py-2"
           >
             <strong class="text-[var(--ink)]">{device.name}</strong><span
               class="mt-0.5 block text-xs"
@@ -182,10 +182,10 @@
   <McpLocalPathsPanel />
   <section class="surface mt-6 rounded-2xl p-6">
     <h2 class="mt-2 text-xl font-semibold">
-      Defaults for new and existing sessions
+      Defaults for new and existing projects
     </h2>
     <p class="muted mt-2 text-sm">
-      Session overrides take precedence. Provider and endpoint connections live
+      Project overrides take precedence. Provider and endpoint connections live
       under Providers & services.
     </p>
     <div class="mt-5 space-y-2">

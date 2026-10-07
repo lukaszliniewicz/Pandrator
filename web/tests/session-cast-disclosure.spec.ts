@@ -196,7 +196,7 @@ test('unsaved cast draft guards navigation and keeps warnings visible', async ({
     .fill('An unsaved disclosure change.');
 
   await page
-    .getByRole('combobox', { name: 'Session section' })
+    .getByRole('combobox', { name: 'Project section' })
     .selectOption(`/sessions/${id}/text`);
   const guard = page.getByRole('dialog', { name: 'Keep your cast changes?' });
   await expect(guard).toBeVisible();
