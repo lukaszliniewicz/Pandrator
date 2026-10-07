@@ -180,6 +180,30 @@ class WebSecurityBoundaryTests(unittest.TestCase):
             finally:
                 app.extensions["pandrator"]["database"].dispose()
 
+    def test_generic_local_cookie_does_not_replace_owner_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepare_web_test_data_root(directory)
+            bootstrap = BootstrapTokenStore()
+            app = create_app(data_root=directory, testing=True, bootstrap_tokens=bootstrap)
+            try:
+                client = app.test_client()
+                client.set_cookie("session", "another-local-app", secure=True)
+                response = client.post(
+                    "/api/v1/auth/bootstrap", json={"token": bootstrap.issue()},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.headers["Set-Cookie"].startswith("pandrator_session="))
+                self.assertEqual(client.get_cookie("session").value, "another-local-app")
+                client.set_cookie("session", "another-app-refreshed", secure=True)
+                self.assertTrue(client.get("/api/v1/auth/status").get_json()["authenticated"])
+                csrf = response.get_json()["csrf_token"]
+                logout = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
+                self.assertEqual(logout.status_code, 200)
+                self.assertFalse(client.get("/api/v1/auth/status").get_json()["authenticated"])
+                self.assertEqual(client.get_cookie("session").value, "another-app-refreshed")
+            finally:
+                app.extensions["pandrator"]["database"].dispose()
+
     def test_remote_login_failures_are_throttled_but_loopback_is_not(self):
         with tempfile.TemporaryDirectory() as directory:
             prepare_web_test_data_root(directory)

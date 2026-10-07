@@ -54,6 +54,9 @@ def create_app(
             SECRET_KEY=load_or_create_flask_secret(services.paths),
             TESTING=testing,
             MAX_CONTENT_LENGTH=10 * 1024 * 1024 * 1024,
+            # Cookies are shared across ports on a host. Keep local apps from
+            # replacing Pandrator's authenticated session with their own.
+            SESSION_COOKIE_NAME="pandrator_session",
             SESSION_COOKIE_HTTPONLY=True,
             SESSION_COOKIE_SAMESITE="Lax",
             SESSION_COOKIE_SECURE=secure_cookies,
