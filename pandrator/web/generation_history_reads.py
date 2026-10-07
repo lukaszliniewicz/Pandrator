@@ -363,8 +363,8 @@ class GenerationHistoryReader:
                 status=row[7],
                 created_at=row[8],
                 settings_snapshot_json={
-                    EARLY_REPAIR_MARKER_KEY: row[9],
-                    REGROUP_MARKER_KEY: row[10],
+                    EARLY_REPAIR_MARKER_KEY: row[9] if isinstance(row[9], str) else None,
+                    REGROUP_MARKER_KEY: row[10] if isinstance(row[10], str) else None,
                 },
             )
             operation: object = row[11]

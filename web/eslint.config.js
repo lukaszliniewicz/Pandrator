@@ -63,10 +63,17 @@ export default tseslint.config(
     }
   },
   {
-    files: ['**/*.js'],
+    files: ['**/*.{js,mjs}'],
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       globals: globals.node
+    }
+  },
+  {
+    files: ['**/*.mjs'],
+    rules: {
+      // ES module imports may shadow Node globals; duplicate local names still fail.
+      'no-redeclare': ['error', { builtinGlobals: false }]
     }
   }
 );
