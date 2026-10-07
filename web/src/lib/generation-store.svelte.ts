@@ -393,14 +393,16 @@ export class GenerationStore {
 
   connect(
     getOptions: () => GenerationLoadOptions,
-    onLoaded: (result: GenerationLoadResult) => void
+    onLoaded: (result: GenerationLoadResult) => void,
+    shouldRefresh: () => boolean = () => true
   ) {
     if (this.unsubscribe) return this.unsubscribe;
     this.unsubscribe = invalidationBus.subscribe((batch) => {
       this.patchLiveProgress(batch);
       if (
-        invalidates(batch, 'generation', this.sessionId) ||
-        invalidates(batch, 'output', this.sessionId)
+        shouldRefresh() &&
+        (invalidates(batch, 'generation', this.sessionId) ||
+          invalidates(batch, 'output', this.sessionId))
       ) {
         const terminal = batch.events.some(
           (event) =>

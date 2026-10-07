@@ -241,7 +241,7 @@ class TranslationProjectServiceTests(unittest.TestCase):
     def test_missing_and_changed_correction_rejected(self):
         with self.database.session() as db:
             self.assertEqual(
-                {"project": None, "setup": None, "setup_state": "none", "setup_blocked_reason": None, "correction_checkpoint_artifact_id": None},
+                {"project": None, "setup": None, "setup_state": "none", "setup_blocked_reason": None, "correction_checkpoint_artifact_id": None, "source_checkpoint_artifact_id": None},
                 get_session_project(db, self.source.id),
             )
         with self.assertRaises(KeyError):

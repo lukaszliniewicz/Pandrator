@@ -90,6 +90,10 @@ export class WorkflowStore {
     return this.resource.error;
   }
 
+  markStale() {
+    this.resource.markStale();
+  }
+
   async load(force = false) {
     const sessionId = this.sessionId;
     return this.resource.load(

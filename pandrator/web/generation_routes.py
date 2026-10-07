@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from .domain_blueprints import DomainBlueprints
 from .generation_history_reads import project_generation_run
+from .generation_summary import get_generation_summary
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -41,6 +42,14 @@ def register_generation_routes(
     require_auth = context.guards.require_auth
     mutation_idempotency_key = idempotency.require_key
     idempotency_failure = idempotency.failure
+
+    @app.get("/api/v1/sessions/<session_id>/generation/summary")
+    @require_auth
+    def generation_summary(session_id: str):
+        try:
+            return jsonify(get_generation_summary(database, session_id))
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
 
     @app.post("/api/v1/sessions/<session_id>/generation-plan")
     @require_auth

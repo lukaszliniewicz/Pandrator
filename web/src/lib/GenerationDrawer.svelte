@@ -91,6 +91,7 @@
     ReadingBlock
   } from './generation-view-models';
   import { GenerationPlaybackController } from './generation-playback.svelte';
+  import { GenerationSummaryStore } from './generation-summary-store.svelte';
   const hasArtifact = (take: AudioTake): take is PlayableTake =>
     Boolean(take.artifact_id);
 
@@ -103,10 +104,21 @@
   } = $props();
   const isVoiceover = $derived(workflowKind === 'voiceover');
   const generationStore = new GenerationStore(untrack(() => sessionId));
+  const summaryStore = new GenerationSummaryStore(untrack(() => sessionId));
   let mode = $state<'collapsed' | 'half' | 'full'>('collapsed');
   let headerHeight = $state(64);
   const payload = $derived(generationStore.payload);
   const run = $derived(generationStore.activeRun);
+  const summary = $derived(summaryStore.value);
+  const headerRun = $derived(mode === 'collapsed' ? summary?.active_run : run);
+  const headerTotal = $derived(
+    mode === 'collapsed' || generationStore.status === 'idle'
+      ? (summary?.total ?? 0)
+      : payload.total
+  );
+  const headerPlanId = $derived(
+    payload.plan_revision_id ?? summary?.plan_revision_id
+  );
   const runs = $derived(visibleGenerationRuns(generationStore.runs));
   const takeNumbers = $derived.by(() => {
     const numbers = new Map<string, number>();
@@ -662,6 +674,9 @@
     selectedRun?.assembly ??
       (!selectedRun && !assembly?.generation_run_id ? assembly : null)
   );
+  const headerAssembly = $derived(
+    mode === 'collapsed' ? summary?.assembly : selectedAssembly
+  );
   const selectedRunUsage = $derived(
     selectedHistoryRun?.timing_repair?.usage ?? selectedRun?.usage
   );
@@ -1167,6 +1182,14 @@
   }
 
   async function openGenerationStart(mode: GenerationStartMode) {
+    if (
+      !payload.plan_revision_id ||
+      (summary?.plan_revision_id &&
+        summary.plan_revision_id !== payload.plan_revision_id)
+    ) {
+      await load(true, false);
+      if (generationStore.error) return;
+    }
     if (selectedRun) settingsSourceRunId = selectedRun.id;
     try {
       await editQueue.settledIds([]);
@@ -1338,7 +1361,11 @@
     playback.stop();
   }
 
-  function togglePlaylistPlayback() {
+  async function togglePlaylistPlayback() {
+    if (generationStore.status === 'idle') {
+      await load(true, false);
+      if (generationStore.error) return;
+    }
     // Starting the playlist takes over audibility: drop any mounted row
     // preview so the previous take stops with its unmounted element.
     if (!playback.active) previewSegmentId = '';
@@ -1852,12 +1879,12 @@
   }
 
   onMount(() => {
+    const disconnectSummary = summaryStore.connect();
     const openPlan = (requestedSessionId: string) => {
       if (requestedSessionId !== sessionId) return;
       selectedRunId = '';
       filter = 'all';
       mode = 'full';
-      void load(true, false);
     };
     const disconnectPlanEditor = subscribeSpeechPlanEditor(openPlan);
     const disconnect = generationStore.connect(
@@ -1867,11 +1894,13 @@
         selectedRunVersionId,
         search: searchParams
       }),
-      applyLoadResult
+      applyLoadResult,
+      () => mode !== 'collapsed'
     );
     return () => {
       speechOptions.dispose();
       disconnect();
+      disconnectSummary();
       disconnectPlanEditor();
       if (timer) window.clearTimeout(timer);
       searchController?.abort();
@@ -1881,6 +1910,19 @@
   });
   $effect(() => {
     if (mode !== 'collapsed') void untrack(loadSupportingOptions);
+  });
+  let priorSummary: { runId: string; total: number } | null = null;
+  $effect(() => {
+    if (!summary) return;
+    const next = { runId: summary.active_run?.id ?? '', total: summary.total };
+    const previous = untrack(() => priorSummary);
+    priorSummary = next;
+    if (
+      previous &&
+      ((next.runId && next.runId !== previous.runId) ||
+        (next.total > 0 && previous.total === 0))
+    )
+      untrack(expandIfCollapsed);
   });
   $effect(() => {
     void payload.plan_revision_id;
@@ -1913,6 +1955,7 @@
     void searchOpen;
     void searchScope;
     void searchField;
+    if (mode === 'collapsed') return;
     searchLoading = Boolean(searchQuery);
     const controller = new AbortController();
     searchController = controller;
@@ -1928,22 +1971,24 @@
   $effect(() => {
     if (timer) clearTimeout(timer);
     const active =
-      (run &&
+      (headerRun &&
         [
           'queued',
           'running',
           'pausing',
           'pause_requested',
           'cancel_requested'
-        ].includes(run.status)) ||
-      (selectedAssembly &&
-        ['queued', 'running'].includes(selectedAssembly.status));
+        ].includes(headerRun.status)) ||
+      (headerAssembly && ['queued', 'running'].includes(headerAssembly.status));
     if (active) {
       // Events remain the primary update path, but a stream can look healthy
       // while a terminal event is lost during reconnect. Reconcile active work
       // periodically so filtered segments cannot remain stale indefinitely.
       timer = window.setTimeout(
-        () => load(true, true),
+        () =>
+          mode === 'collapsed'
+            ? summaryStore.load(true).catch(() => undefined)
+            : load(true, true),
         appState.eventsHealthy ? 10_000 : 2_500
       );
     }
@@ -1966,7 +2011,7 @@
   ></button>
 {/if}
 
-{#if payload.total > 0 || payload.plan_revision_id || run || searchQuery || filter !== 'all' || generationStore.status === 'loading' || generationStore.status === 'failed'}
+{#if headerTotal > 0 || headerPlanId || headerRun || searchQuery || filter !== 'all' || summaryStore.status === 'loading' || summaryStore.status === 'failed' || generationStore.status === 'loading' || generationStore.status === 'failed'}
   <div
     aria-hidden="true"
     style={`height:${mode === 'collapsed' ? headerHeight + 16 : 80}px`}
@@ -1984,8 +2029,7 @@
     >
       <button
         onclick={() => (mode = mode === 'collapsed' ? 'full' : 'collapsed')}
-        disabled={generationStore.status === 'loading' &&
-          !payload.plan_revision_id}
+        disabled={summaryStore.status === 'loading' && !headerPlanId}
         aria-expanded={mode !== 'collapsed'}
         class="drawer-toggle flex min-h-11 items-center gap-2 font-semibold"
       >
@@ -1996,11 +2040,12 @@
       </button>
       <span
         class="drawer-summary muted min-w-0 text-xs lg:flex-1 lg:truncate"
-        title={`${payload.total} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${selectedAssembly ? ` · output ${selectedAssembly.status}` : ''}`}
-        >{#if generationStore.status === 'loading'}Loading speech plan…{:else if generationStore.status === 'failed' && !payload.plan_revision_id}Could
-          not load generation controls{:else}{payload.total} segments · {selectedHistoryRun?.label ??
-            'Active mix'}{#if selectedAssembly}
-            · output {selectedAssembly.status}{/if}{/if}</span
+        title={`${headerTotal} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${headerAssembly ? ` · output ${headerAssembly.status}` : ''}`}
+        >{#if summaryStore.status === 'loading' && !summary}Loading generation
+          summary…{:else if summaryStore.status === 'failed' && !headerPlanId}Could
+          not load generation controls{:else}{headerTotal} segments · {selectedHistoryRun?.label ??
+            'Active mix'}{#if headerAssembly}
+            · output {headerAssembly.status}{/if}{/if}</span
       >
       {#if selectedRunUsage?.commercial}<span class="cost-pill"
           >{selectedRunUsage.estimated ? 'Est.' : ''}
@@ -2008,48 +2053,49 @@
             ? ' + unpriced usage'
             : ''}</span
         >{/if}
-      {#if run && ['queued', 'running', 'pausing', 'cancel_requested'].includes(run.status)}
+      {#if headerRun && ['queued', 'running', 'pausing', 'pause_requested', 'cancel_requested'].includes(headerRun.status)}
         <div
           class="run-progress"
           role="progressbar"
           aria-label="Generation progress"
           aria-valuemin="0"
           aria-valuemax="100"
-          aria-valuenow={progressPercent(run.progress)}
+          aria-valuenow={progressPercent(headerRun.progress)}
         >
-          <span style={`width:${progressPercent(run.progress)}%`}></span>
+          <span style={`width:${progressPercent(headerRun.progress)}%`}></span>
         </div>
         <span class="muted text-[.65rem] tabular-nums"
-          >{progressPercent(run.progress)}%</span
+          >{progressPercent(headerRun.progress)}%</span
         >
-        {#if run.progress_detail || run.status === 'queued'}
+        {#if headerRun.progress_detail || headerRun.status === 'queued'}
           <span
             class="muted max-w-64 truncate text-[.65rem]"
-            title={run.progress_detail ?? ''}
-            >{run.progress_detail ?? 'Waiting for an available worker'}</span
+            title={headerRun.progress_detail ?? ''}
+            >{headerRun.progress_detail ??
+              'Waiting for an available worker'}</span
           >
         {/if}
       {/if}
-      {#if selectedAssembly && ['queued', 'running'].includes(selectedAssembly.status)}
+      {#if headerAssembly && ['queued', 'running'].includes(headerAssembly.status)}
         <div
           class="run-progress"
           role="progressbar"
           aria-label="Output assembly progress"
           aria-valuemin="0"
           aria-valuemax="100"
-          aria-valuenow={progressPercent(selectedAssembly.progress)}
+          aria-valuenow={progressPercent(headerAssembly.progress)}
         >
-          <span style={`width:${progressPercent(selectedAssembly.progress)}%`}
+          <span style={`width:${progressPercent(headerAssembly.progress)}%`}
           ></span>
         </div>
         <span class="muted text-[.65rem] tabular-nums"
-          >{progressPercent(selectedAssembly.progress)}%</span
+          >{progressPercent(headerAssembly.progress)}%</span
         >
-        {#if selectedAssembly.progress_detail || selectedAssembly.status === 'queued'}
+        {#if headerAssembly.progress_detail || headerAssembly.status === 'queued'}
           <span
             class="muted max-w-64 truncate text-[.65rem]"
-            title={selectedAssembly.progress_detail ?? ''}
-            >{selectedAssembly.progress_detail ??
+            title={headerAssembly.progress_detail ?? ''}
+            >{headerAssembly.progress_detail ??
               'Waiting for an available worker'}</span
           >
         {/if}
@@ -2273,7 +2319,11 @@
         {/if}
       {/if}
       <div class="drawer-actions ml-auto flex flex-wrap gap-2">
-        {#if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
+        {#if mode === 'collapsed' && headerRun}
+          <button class="action" onclick={() => (mode = 'full')}
+            >Open generation controls</button
+          >
+        {:else if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
           <button
             onclick={() =>
               openGenerationStart(selectedRun ? 'all' : 'continue')}
@@ -2285,14 +2335,14 @@
             ><Play size={14} /> Generate audio…</button
           >
         {/if}
-        {#if run?.status === 'paused'}
+        {#if mode !== 'collapsed' && run?.status === 'paused'}
           <button
             onclick={() => action('resume')}
             class="action"
             title="Continue the paused run with its saved voice and settings"
             ><Play size={14} /> Resume previous run</button
           >
-        {:else if run && ['queued', 'running'].includes(run.status)}
+        {:else if mode !== 'collapsed' && run && ['queued', 'running'].includes(run.status)}
           <button
             onclick={() => action('pause')}
             class="action icon-action"

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { onMount, setContext, tick } from 'svelte';
+  import { onMount, setContext, tick, untrack } from 'svelte';
   import type { Snippet } from 'svelte';
   import {
     Activity,
@@ -23,9 +23,15 @@
   import { errorMessage } from '$lib/errors';
   import { invalidates, invalidationBus } from '$lib/invalidation';
   import { loadLazyModule } from '$lib/lazy-module';
-  import { SESSION_CONTEXT, type SessionContext } from '$lib/session-context';
-  import { SessionStore } from '$lib/session-store.svelte';
-  import { WorkflowStore } from '$lib/workflow-store.svelte';
+  import {
+    SESSION_CONTEXT,
+    SOURCE_SESSION_CONTEXT,
+    type SessionContext
+  } from '$lib/session-context';
+  import {
+    PROJECT_WORKSPACE,
+    ProjectWorkspace
+  } from '$lib/project-workspace.svelte';
   import type WorkflowCustomizer from '$lib/WorkflowCustomizer.svelte';
   import type GenerationDrawer from '$lib/GenerationDrawer.svelte';
   let { children }: { children: Snippet } = $props();
@@ -37,7 +43,7 @@
   let drawerLoadFailed = $state(false);
   let customizerLoadFailed = $state(false);
   let loadingCustomizer = $state(false);
-  let mounted = false;
+  let mounted = $state(false);
   let sourceProfile = $state('none');
   let editingName = $state(false);
   let nameDraft = $state('');
@@ -45,10 +51,11 @@
   let savingName = $state(false);
   let nameError = $state('');
   let nameInput = $state<HTMLInputElement>();
-  const sessionStore = new SessionStore(page.params.id ?? '', (session) =>
-    appState.upsertSession(session)
+  const workspace = new ProjectWorkspace(
+    page.params.id ?? '',
+    () => void openWorkflowCustomizer()
   );
-  const workflowStore = new WorkflowStore(page.params.id ?? '');
+  const sessionStore = $derived(workspace.selected.record);
   const contextState: SessionContext = {
     get session() {
       return sessionStore.session;
@@ -65,33 +72,51 @@
     get error() {
       return sessionStore.error;
     },
-    workflow: workflowStore,
+    get workflow() {
+      return workspace.selected.workflow;
+    },
     reload: async () => {
-      await Promise.all([sessionStore.load(true), loadSourceProfile()]);
+      await workspace.load(true);
+      await loadSourceProfile();
     },
     customize: () => void openWorkflowCustomizer()
   };
   setContext(SESSION_CONTEXT, contextState);
+  const sourceContext: SessionContext = {
+    get session() {
+      return workspace.source.record.session;
+    },
+    get outcome() {
+      return workspace.source.record.outcome;
+    },
+    get status() {
+      return workspace.source.record.status;
+    },
+    get loading() {
+      return workspace.source.record.loading;
+    },
+    get error() {
+      return workspace.source.record.error;
+    },
+    get workflow() {
+      return workspace.source.workflow;
+    },
+    reload: async () => {
+      await workspace.source.record.load(true);
+    },
+    customize: contextState.customize
+  };
+  setContext(SOURCE_SESSION_CONTEXT, sourceContext);
+  setContext(PROJECT_WORKSPACE, workspace);
   // Declared before the initial reload(): loadSourceProfile() bumps this
   // counter synchronously, so a later declaration would throw (TDZ).
   let sourceProfileRequest = 0;
-  reload();
-  // SvelteKit reuses this layout when navigating between /sessions/[id]
-  // pages, but the stores above capture page.params.id once at construction.
-  // Retarget them on id change; reset() discards in-flight loads for the old
-  // id via the resource epoch, and reload() fetches the new session.
+  let sourceProfileSessionId = '';
+  void workspace.load().catch(() => undefined);
   const routeSessionId = $derived(page.params.id ?? '');
-  const membership = $derived(
-    contextState.session?.translation_project ??
-      appState.sessions.find((item) => item.id === routeSessionId)
-        ?.translation_project
-  );
-  const sourceSessionId = $derived(
-    membership?.source_session_id ?? routeSessionId
-  );
-  const sourceSession = $derived(
-    appState.sessions.find((item) => item.id === sourceSessionId)
-  );
+  const membership = $derived(workspace.membership);
+  const sourceSessionId = $derived(workspace.sourceId);
+  const sourceSession = $derived(sourceContext.session);
   const languageVersions = $derived(
     appState.sessions
       .filter(
@@ -131,24 +156,37 @@
   }
   $effect(() => {
     const id = routeSessionId;
-    const sessionRetargeted = sessionStore.retarget(id);
-    const workflowRetargeted = workflowStore.retarget(id);
-    if (sessionRetargeted || workflowRetargeted) void reload();
+    if (id !== workspace.selectedId) {
+      workspace.select(id);
+      void untrack(() => workspace.load()).catch(() => undefined);
+    }
   });
-  async function loadSourceProfile() {
+  $effect(() => {
+    const source = workspace.source;
+    const selected = workspace.selected;
+    if (!mounted) return;
+    const disconnectSource = source.connect();
+    const disconnectSelected =
+      selected !== source ? selected.connect() : () => {};
+    void untrack(loadSourceProfile);
+    return () => {
+      disconnectSource();
+      disconnectSelected();
+    };
+  });
+  async function loadSourceProfile(force = false) {
+    const id = workspace.sourceId;
+    if (!force && sourceProfileSessionId === id) return;
     const request = ++sourceProfileRequest;
-    const id = page.params.id ?? '';
     try {
       const settings = await sessionApi.settings(id, 'output');
       if (request !== sourceProfileRequest) return;
       sourceProfile = String(settings.context?.source_profile ?? 'none');
+      sourceProfileSessionId = id;
     } catch {
       if (request !== sourceProfileRequest) return;
       sourceProfile = 'none';
     }
-  }
-  function reload() {
-    return contextState.reload();
   }
   async function openWorkflowCustomizer() {
     if (loadingCustomizer) return;
@@ -185,9 +223,9 @@
     window.location.reload();
   }
   async function editName() {
-    if (!contextState.session) return;
-    nameDraft = contextState.session.name;
-    nameRevision = contextState.session.revision;
+    if (!sourceContext.session) return;
+    nameDraft = sourceContext.session.name;
+    nameRevision = sourceContext.session.revision;
     nameError = '';
     editingName = true;
     await tick();
@@ -195,18 +233,18 @@
     nameInput?.select();
   }
   async function saveName() {
-    if (!contextState.session || savingName || !nameDraft.trim()) return;
-    if (nameDraft.trim() === contextState.session.name) {
+    if (!sourceContext.session || savingName || !nameDraft.trim()) return;
+    if (nameDraft.trim() === sourceContext.session.name) {
       editingName = false;
       return;
     }
     savingName = true;
     nameError = '';
     try {
-      await sessionApi.update(contextState.session.id, nameRevision, {
+      await sessionApi.update(sourceContext.session.id, nameRevision, {
         name: nameDraft.trim()
       });
-      await sessionStore.load(true);
+      await sourceContext.reload();
       editingName = false;
     } catch (caught) {
       nameError = errorMessage(caught);
@@ -216,20 +254,18 @@
   }
   onMount(() => {
     mounted = true;
-    const disconnectSession = sessionStore.connect();
-    const disconnectWorkflow = workflowStore.connect();
+    const disconnectCache = workspace.connectCache();
     const disconnectSourceProfile = invalidationBus.subscribe((batch) => {
       if (
-        invalidates(batch, 'sources', page.params.id ?? '') ||
-        invalidates(batch, 'workflow', page.params.id ?? '')
+        invalidates(batch, 'sources', workspace.sourceId) ||
+        invalidates(batch, 'workflow', workspace.sourceId)
       )
-        void loadSourceProfile();
+        void loadSourceProfile(true);
     });
     void loadGenerationDrawer();
     return () => {
       mounted = false;
-      disconnectSession();
-      disconnectWorkflow();
+      disconnectCache();
       disconnectSourceProfile();
     };
   });
@@ -264,7 +300,7 @@
     const sessionId = page.params.id ?? '';
     appState.mobileSessionNavigation = {
       sessionId,
-      title: contextState.session?.name ?? 'Project',
+      title: sourceContext.session?.name ?? 'Project',
       items: tabs.map((tab) => ({
         href: sectionHref(tab.href),
         label: tab.label
@@ -277,11 +313,11 @@
   });
 </script>
 
-{#if contextState.loading}
+{#if sourceContext.loading && !sourceContext.session}
   <div class="surface grid min-h-64 place-items-center rounded-3xl">
     <div class="section-label animate-pulse">Loading project…</div>
   </div>
-{:else if contextState.session}
+{:else if sourceContext.session}
   <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-clip">
     <nav
       aria-label="Project sections"
@@ -297,12 +333,6 @@
     </nav>
     <header class="mt-5 flex flex-wrap items-end justify-between gap-5">
       <div class="min-w-0">
-        {#if membership}
-          <a
-            class="muted text-sm font-semibold underline underline-offset-4"
-            href={`/sessions/${sourceSessionId}`}>{membership.name}</a
-          >
-        {/if}
         {#if editingName}
           <form
             class="mt-2 flex flex-wrap items-center gap-2"
@@ -348,11 +378,11 @@
           <h1 class="mt-1 text-3xl font-semibold tracking-[-.035em]">
             <button
               onclick={editName}
-              aria-label={`Rename project ${contextState.session.name}`}
+              aria-label={`Rename project ${sourceContext.session.name}`}
               title="Click to rename this project"
               class="group inline-flex max-w-full items-center gap-2 rounded-lg text-left hover:text-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
               ><span class="min-w-0 break-words [overflow-wrap:anywhere]"
-                >{contextState.session.name}</span
+                >{sourceContext.session.name}</span
               ><Pencil
                 size={17}
                 class="muted shrink-0 opacity-50 group-hover:opacity-100"
@@ -367,18 +397,16 @@
           class="muted mt-2 flex flex-wrap items-center gap-2 text-xs capitalize"
         >
           <span
-            >{contextState.session.status} · {contextState.outcome?.value
-              ?.focus ?? 'custom'} plan</span
+            >{contextState.session?.status ?? sourceContext.session.status} · {sourceContext
+              .outcome?.value?.focus ?? 'custom'} plan</span
           ><span
             class="rounded-full bg-[var(--accent-soft)] px-2 py-1 font-semibold uppercase text-[var(--accent)]"
-            >{contextState.session
-              .source_language}{#if contextState.session.target_language}
-              → {contextState.session.target_language}{/if}</span
+            >{sourceContext.session.source_language}</span
           >
         </div>
       </div>
       <div class="flex flex-wrap items-end gap-3">
-        {#if membership && languageVersions.length > 1}
+        {#if membership && languageVersions.length > 1 && page.url.pathname !== `/sessions/${routeSessionId}` && !sharedSections.has(page.url.pathname.slice(`/sessions/${routeSessionId}`.length))}
           <label class="text-xs font-semibold"
             >Project language
             <select
@@ -406,9 +434,9 @@
         >
       </div>
     </header>
-    {#if membership?.role === 'branch'}
+    {#if membership?.role === 'branch' && page.url.pathname !== `/sessions/${routeSessionId}`}
       <p class="muted mt-4 text-sm">
-        This language version uses a pinned copy of the corrected source. Voice
+        This language version uses a pinned copy of the shared source. Voice
         settings, generation and outputs apply to this language. <a
           class="font-semibold underline underline-offset-4"
           href={`/sessions/${sourceSessionId}/text`}
@@ -428,18 +456,22 @@
       </div>
     {/if}
     <div class="session-content min-w-0 max-w-full py-7">
-      {@render children()}
+      {#if page.url.pathname === `/sessions/${routeSessionId}`}
+        {@render children()}
+      {:else}
+        {#key routeSessionId}{@render children()}{/key}
+      {/if}
     </div>
   </div>
   {#if customizeOpen && WorkflowCustomizerComponent}<WorkflowCustomizerComponent
-      sessionId={contextState.session.id}
+      sessionId={contextState.session?.id ?? sourceSessionId}
       onclose={() => (customizeOpen = false)}
       onsaved={contextState.reload}
     />{/if}
 {:else}<p class="text-red-500">
     {contextState.error || 'Project not found.'}
   </p>{/if}
-{#if Boolean(contextState.session) && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}{#key page.params.id}<GenerationDrawerComponent
+{#if contextState.session?.id === routeSessionId && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}{#key routeSessionId}<GenerationDrawerComponent
       sessionId={page.params.id ?? ''}
       workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
     />{/key}{/if}

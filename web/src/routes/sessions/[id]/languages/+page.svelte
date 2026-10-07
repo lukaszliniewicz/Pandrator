@@ -66,18 +66,28 @@
   const correction = $derived(
     context.workflow.snapshot?.stages.find((stage) => stage.key === 'correct')
   );
-  const selectedCorrectionId = $derived(
-    correction?.selected_artifact_id || correction?.artifact?.id || ''
+  const transcription = $derived(
+    context.workflow.snapshot?.stages.find(
+      (stage) => stage.key === 'transcribe'
+    )
+  );
+  const selectedSourceId = $derived(
+    correction?.selected_artifact_id ||
+      correction?.artifact?.id ||
+      transcription?.selected_artifact_id ||
+      transcription?.artifact?.id ||
+      ''
   );
   const checkpointId = $derived(
     chosenCheckpointId ||
-      (checkpointOptions.some(
-        (item) => item.artifact_id === selectedCorrectionId
-      )
-        ? selectedCorrectionId
+      (checkpointOptions.some((item) => item.artifact_id === selectedSourceId)
+        ? selectedSourceId
         : '') ||
       readyCheckpointId ||
-      checkpointOptions.at(-1)?.artifact_id ||
+      checkpointOptions.findLast((item) => item.stage === 'correction')
+        ?.artifact_id ||
+      checkpointOptions.findLast((item) => item.stage === 'transcription')
+        ?.artifact_id ||
       ''
   );
   const effectiveSourceLanguage = $derived(
@@ -120,7 +130,10 @@
         setup = result.setup;
         setupState = result.setup_state;
         blockedReason = result.setup_blocked_reason ?? '';
-        readyCheckpointId = result.correction_checkpoint_artifact_id ?? '';
+        readyCheckpointId =
+          result.source_checkpoint_artifact_id ??
+          result.correction_checkpoint_artifact_id ??
+          '';
         if (!editingSetup) {
           plannedLanguages = [...(setup?.target_languages ?? [])];
           plannedVoiceover = setup?.generate_voiceover ?? false;
@@ -130,7 +143,9 @@
         }
         checkpointOptions =
           catalog?.items.filter(
-            (item) => item.stage === 'correction' && item.state === 'current'
+            (item) =>
+              ['correction', 'transcription'].includes(item.stage) &&
+              item.state === 'current'
           ) ?? [];
         error = '';
       }
@@ -292,8 +307,8 @@
         <Languages size={24} />Languages
       </h2>
       <p class="muted mt-2 max-w-3xl text-sm leading-6">
-        Share one corrected source and edited video. Keep each language’s
-        translation, voice and exports independent.
+        Share one source and edited video, with optional correction. Keep each
+        language’s translation, voice and exports independent.
       </p>
     </div>
     <button
@@ -326,12 +341,12 @@
         · {languageName(project.source_language)}
       </p>
       <p class="muted mt-2 text-sm leading-6">
-        New languages start from the saved correction and timeline. Changes
-        within one language do not change the others.
+        New languages start from the pinned source and timeline. Changes within
+        one language do not change the others.
       </p>
       {#if project.source_status}<p class="muted mt-2 break-all text-xs">
-          Pinned correction {project.source_status.pinned_checkpoint
-            .revision_id || project.checkpoint_artifact_id} · {new Date(
+          Pinned source {project.source_status.pinned_checkpoint.revision_id ||
+            project.checkpoint_artifact_id} · {new Date(
             project.source_status.pinned_checkpoint.revision_created_at ||
               project.source_status.pinned_checkpoint.created_at ||
               project.created_at
@@ -344,11 +359,14 @@
             class="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
             role="status"
           >
-            <p class="font-semibold">
-              The source has changed since this project was created.
-            </p>
+            <p class="font-semibold">A newer source is available.</p>
             <p class="mt-1">
-              Existing languages keep their pinned correction and timeline.
+              Existing languages keep their pinned source and timeline. Use the
+              <a
+                class="font-semibold underline"
+                href={`/sessions/${project.source_session_id}`}>overview</a
+              >
+              to update the source for newly added languages.
             </p>
             {#each project.source_status.reasons as reason}<p
                 class="muted mt-1 text-xs"
@@ -596,10 +614,10 @@
           </p>
           <p class="mt-3 text-sm leading-6" role="status">
             {setupState === 'ready'
-              ? 'Source correction is ready. Review it before creating your language workspaces.'
+              ? 'The source is ready. Review it before creating your language versions.'
               : setupState === 'blocked'
                 ? blockedReason
-                : 'First correct and review the source subtitles. Your selected languages are saved.'}
+                : 'Create and review the source subtitles first. Your selected languages are saved.'}
           </p>
         {/if}
         <a
@@ -612,7 +630,7 @@
     <form onsubmit={createProject} class="surface max-w-3xl rounded-2xl p-6">
       <h3 class="text-lg font-semibold">Create a multilingual project</h3>
       <p class="muted mt-2 text-sm leading-6">
-        Save the current corrected source as the starting point for every
+        Save the current source checkpoint as the starting point for every
         language. {#if setup}Create all selected workspaces together;
           translation and voice generation start separately inside each one.{/if}
       </p>
@@ -620,7 +638,7 @@
         {#if checkpointOptions.length > 1}
           <label
             for="project-correction"
-            class="mt-5 block text-sm font-semibold">Corrected source</label
+            class="mt-5 block text-sm font-semibold">Source checkpoint</label
           >
           <select
             id="project-correction"
@@ -631,8 +649,8 @@
             class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
           >
             {#each checkpointOptions as item}<option value={item.artifact_id}
-                >Correction v{item.version} · {item.language ??
-                  'Source language'}</option
+                >{item.stage === 'correction' ? 'Correction' : 'Transcription'} v{item.version}
+                · {item.language ?? 'Source language'}</option
               >{/each}
           </select>
         {/if}
@@ -662,7 +680,7 @@
               : 'Create multilingual project'}{/if}
         </button>
       {:else}<p class="mt-4 text-sm">
-          Finish subtitle correction before creating language branches.
+          Create and review source subtitles before adding languages.
         </p>
         <a
           class="mt-3 inline-block text-sm font-semibold text-[var(--accent)]"

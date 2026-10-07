@@ -148,6 +148,7 @@ export type TranslationProjectBranch = {
   target_language: string;
   workflow_kind: 'subtitles' | 'voiceover';
   source_checkpoint_artifact_id: string;
+  source_checkpoint_role?: string;
   source_content_hash: string;
   status: string;
   trashed_at: string | null;
@@ -263,6 +264,7 @@ export type TranslationProject = {
   source_session_name: string;
   source_language: string;
   checkpoint_artifact_id: string;
+  checkpoint_role?: string;
   source_content_hash: string;
   source_media_edit_revision_id: string | null;
   source_media_edit_content_hash: string | null;
@@ -272,6 +274,11 @@ export type TranslationProject = {
   source_status?: {
     source_changed: boolean;
     reasons: string[];
+    current_checkpoint?: {
+      artifact_id: string | null;
+      role?: string | null;
+      state?: string | null;
+    };
     pinned_checkpoint: {
       artifact_id: string;
       revision_id?: string | null;
@@ -289,12 +296,35 @@ export type MultilingualSetup = {
   carry_source_subtitle_settings?: boolean;
 };
 
+type GenerationActivitySummary = {
+  id: string;
+  status: string;
+  progress: number;
+  progress_detail: string | null;
+};
+
+export type GenerationSummary = {
+  session_id: string;
+  plan_revision_id: string | null;
+  total: number;
+  included_total: number;
+  active_run: GenerationActivitySummary | null;
+  assembly: GenerationActivitySummary | null;
+};
+
 export type TranslationProjectPayload = {
   project: TranslationProject | null;
   setup: MultilingualSetup | null;
-  setup_state: 'none' | 'awaiting_correction' | 'blocked' | 'ready' | 'active';
+  setup_state:
+    | 'none'
+    | 'awaiting_source'
+    | 'awaiting_correction'
+    | 'blocked'
+    | 'ready'
+    | 'active';
   setup_blocked_reason: string | null;
   correction_checkpoint_artifact_id: string | null;
+  source_checkpoint_artifact_id?: string | null;
 };
 
 export type JobRecord = {

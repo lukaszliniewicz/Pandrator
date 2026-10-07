@@ -66,7 +66,7 @@
   let multilingualVoiceover = $state(
     untrack(() => initialKind === 'voiceover')
   );
-  const correctionEnabled = $derived(correct || multilingual);
+  const correctionEnabled = $derived(correct);
   const sourceGeneratesAudio = $derived(
     !multilingual &&
       (kind === 'voiceover' ||
@@ -707,12 +707,10 @@
               type="checkbox"
               checked={correctionEnabled}
               onchange={(event) => (correct = event.currentTarget.checked)}
-              disabled={multilingual}
             /><span
               ><strong>Correct same-language subtitles</strong><small
-                >{multilingual
-                  ? 'Required: every language starts from this reviewed source.'
-                  : 'Creates a separate reviewed source-language asset.'}</small
+                >Creates a reviewed source shared by all target languages. You
+                can skip this when the source subtitles are already suitable.</small
               ></span
             ></label
           ><label class="text-sm font-semibold">
@@ -722,7 +720,9 @@
             >
               <option value="none">Source language only</option>
               <option value="single">Translate into one language</option>
-              <option value="multilingual">Multilingual project</option>
+              <option value="multilingual"
+                >Translate into multiple languages</option
+              >
             </select>
           </label>
           {#if multilingual}<div
@@ -769,10 +769,10 @@
                 >
               </label>
               <p class="muted text-sm leading-6">
-                Correct and review the source first. Your language choices are
-                saved now; create their independent workspaces from Languages
-                when the source is ready. Translation and speech generation
-                start separately.
+                Your language choices are saved now. Prepare the shared source,
+                then add languages at Translate in the overview. Each language
+                keeps its voices, settings and outputs. Translation and speech
+                generation start separately.
               </p>
             </div>{/if}
           {#if translate}<label class="text-sm font-semibold"

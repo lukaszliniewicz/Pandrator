@@ -298,8 +298,10 @@ class WorkService:
     # Existing owner/admin routes retain their historical response shape. They
     # still pass through this facade so all queue-facing HTTP reads have one
     # application boundary while the new /work API stays payload-free.
-    def diagnostic_list(self, limit: int = 100) -> list[Job]:
-        return self.queue.list(limit)
+    def diagnostic_list(
+        self, limit: int = 100, *, session_id: str | None = None, kind: str | None = None
+    ) -> list[Job]:
+        return self.queue.list(limit, session_id=session_id, kind=kind)
 
     def diagnostic_get(self, job_id: str) -> Job:
         return self.queue.get(job_id)

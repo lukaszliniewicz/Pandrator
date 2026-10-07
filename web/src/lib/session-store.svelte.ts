@@ -42,6 +42,10 @@ export class SessionStore {
     return this.resource.error;
   }
 
+  markStale() {
+    this.resource.markStale();
+  }
+
   async load(force = false) {
     const sessionId = this.sessionId;
     const bundle = await this.resource.load(

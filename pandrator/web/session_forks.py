@@ -241,32 +241,16 @@ class SessionForkService:
             value.pop("source_artifact_id", None)
         setting.value_json = value
 
-    def fork_in_session(
-        self,
+    @staticmethod
+    def validate_media_checkpoint(
         session: Session,
-        source_session_id: str,
-        checkpoint_artifact_id: str,
+        source: SessionRecord,
+        checkpoint: Artifact,
         *,
-        name: str = "",
         carry_media_assets: bool = True,
-        target_language: str | None = None,
-        expected_revision: int | None = None,
-    ) -> SessionForkResult:
-        source = session.get(SessionRecord, source_session_id)
-        checkpoint = session.get(Artifact, checkpoint_artifact_id)
-        if source is None or source.trashed_at is not None:
-            raise KeyError(source_session_id)
-        if checkpoint is None or checkpoint.session_id != source_session_id:
-            raise KeyError(checkpoint_artifact_id)
-        if checkpoint.role not in {"correction", "translation"}:
-            raise ValueError("A session can be forked only after correction or translation.")
-        if checkpoint.state == "deleted":
-            raise ValueError("The selected checkpoint is no longer available.")
-        if expected_revision is not None and source.revision != expected_revision:
-            raise RevisionConflict(
-                f"Session revision conflict: expected {expected_revision}, current is {source.revision}."
-            )
-
+    ) -> tuple[MediaEditPlanRevision | None, list[Artifact], list[Artifact]]:
+        """Read the existing fork prerequisites without cloning or changing records."""
+        source_session_id = source.id
         plan = None
         active_edit = None
         render_sources: list[Artifact] = []
@@ -320,7 +304,7 @@ class SessionForkService:
                     )
                 render_sources.append(timing_render)
 
-        checkpoints = self._coherent_checkpoints(
+        checkpoints = SessionForkService._coherent_checkpoints(
             session,
             source_session_id,
             checkpoint,
@@ -351,6 +335,41 @@ class SessionForkService:
                 raise ValueError(
                     "The current text checkpoint is not derived from the active edited timeline."
                 )
+        return active_edit, render_sources, checkpoints
+
+    def fork_in_session(
+        self,
+        session: Session,
+        source_session_id: str,
+        checkpoint_artifact_id: str,
+        *,
+        name: str = "",
+        carry_media_assets: bool = True,
+        target_language: str | None = None,
+        expected_revision: int | None = None,
+        allow_source_checkpoint: bool = False,
+    ) -> SessionForkResult:
+        source = session.get(SessionRecord, source_session_id)
+        checkpoint = session.get(Artifact, checkpoint_artifact_id)
+        if source is None or source.trashed_at is not None:
+            raise KeyError(source_session_id)
+        if checkpoint is None or checkpoint.session_id != source_session_id:
+            raise KeyError(checkpoint_artifact_id)
+        allowed_roles = {"correction", "translation"}
+        if allow_source_checkpoint:
+            allowed_roles.add("transcription")
+        if checkpoint.role not in allowed_roles:
+            raise ValueError("A session can be forked only after correction or translation.")
+        if checkpoint.state == "deleted":
+            raise ValueError("The selected checkpoint is no longer available.")
+        if expected_revision is not None and source.revision != expected_revision:
+            raise RevisionConflict(
+                f"Session revision conflict: expected {expected_revision}, current is {source.revision}."
+            )
+
+        active_edit, render_sources, checkpoints = self.validate_media_checkpoint(
+            session, source, checkpoint, carry_media_assets=carry_media_assets,
+        )
         checkpoint_sources = [
             (artifact, self.paths.managed_path(artifact.relative_path)) for artifact in checkpoints
         ]

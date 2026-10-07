@@ -23,6 +23,7 @@ import type {
   ProjectExportManifest,
   ProjectExportBundle,
   GenerationRun,
+  GenerationSummary,
   GenerationSegment,
   GenerationSegmentPage,
   SpeechBlockTopologyResult,
@@ -176,11 +177,19 @@ export const appApi = {
         ? { query: new URLSearchParams({ include_trashed: 'true' }) }
         : {}
     ),
-  jobs: (limit = 40) =>
+  jobs: (limit = 40, scope: { sessionId?: string; kind?: string } = {}) =>
     typedApiJson<'/api/v1/jobs', 'get', ItemPage<JobRecord>>(
       '/api/v1/jobs',
       'get',
-      { query: new URLSearchParams({ limit: String(limit) }) }
+      {
+        query: new URLSearchParams({
+          limit: String(limit),
+          ...(scope.sessionId !== undefined
+            ? { session_id: scope.sessionId }
+            : {}),
+          ...(scope.kind !== undefined ? { kind: scope.kind } : {})
+        })
+      }
     ),
   capabilities: (refresh = false) =>
     typedApiJson<'/api/v1/capabilities', 'get', RuntimeCapabilities>(
@@ -191,6 +200,23 @@ export const appApi = {
 };
 
 export const translationProjectApi = {
+  updateSource: (
+    projectId: string,
+    body: {
+      expected_revision: number;
+      expected_source_revision: number;
+      checkpoint_artifact_id: string;
+    },
+    key: string
+  ) =>
+    apiJson<TranslationProjectPayload>(
+      `/translation-projects/${encodeURIComponent(projectId)}/source`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        body: JSON.stringify(body)
+      }
+    ),
   exportManifest: (id: string) =>
     apiJson<ProjectExportManifest>(
       `/translation-project-operations/${encodeURIComponent(id)}/exports/manifest`
@@ -272,9 +298,9 @@ export const translationProjectApi = {
         body: JSON.stringify({ expected_project_revision: revision })
       }
     ),
-  forSession: (sessionId: string) =>
+  forSession: (sessionId: string, view: 'full' | 'compact' = 'full') =>
     apiJson<TranslationProjectPayload>(
-      `/sessions/${sessionId}/translation-project`
+      `/sessions/${sessionId}/translation-project${view === 'compact' ? '?view=compact' : ''}`
     ),
   create: (
     sessionId: string,
@@ -1141,7 +1167,21 @@ export const artifactApi = {
 };
 
 export const jobApi = {
-  list: (limit = 100) => appApi.jobs(limit),
+  list: (limit = 100, scope: { sessionId?: string; kind?: string } = {}) =>
+    appApi.jobs(limit, scope),
+  exports: async (sessionId: string, limit = 8) => {
+    const pages = await Promise.all(
+      ['export.create', 'export.variant'].map((kind) =>
+        appApi.jobs(limit, { sessionId, kind })
+      )
+    );
+    return {
+      items: pages
+        .flatMap((page) => page.items)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .slice(0, limit)
+    };
+  },
   get: (jobId: string, signal?: AbortSignal) =>
     typedApiJson<'/api/v1/jobs/{jobId}', 'get', JobRecord>(
       '/api/v1/jobs/{jobId}',
@@ -1186,6 +1226,15 @@ export type SpeechBlockTopologyOperation = {
 };
 
 export const generationApi = {
+  summary: (sessionId: string, signal?: AbortSignal) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/generation/summary',
+      'get',
+      GenerationSummary
+    >('/api/v1/sessions/{sessionId}/generation/summary', 'get', {
+      path: { sessionId },
+      signal
+    }),
   previewSpeech: (sessionId: string, revisionId: string, segmentId: string) =>
     apiJson<SpeechPreview>(
       `/sessions/${encodeURIComponent(sessionId)}/speech-plan/preview`,

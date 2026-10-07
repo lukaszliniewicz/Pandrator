@@ -54,8 +54,6 @@ def validate_source(
         raise ValueError("Multilingual setup requires a subtitle or media workflow.")
     if target_language is not None:
         raise ValueError("Multilingual source cannot have a target language.")
-    if "correct" not in included_stages:
-        raise ValueError("Multilingual source requires the correction stage.")
     if source_language and source_language.strip().lower() != "auto":
         language = canonical_language(source_language)
         if language in setup.target_languages:
@@ -83,7 +81,7 @@ def write_setup(db: Session, session_id: str, setup: MultilingualSetup | None) -
 
 
 def deferred_source_outcome(value: dict[str, Any], *, workflow_kind: str) -> dict[str, Any]:
-    """Keep source correction active while deferring translation and speech."""
+    """Keep selected source preparation active while deferring translation and speech."""
     result = deepcopy(value)
     result["workflow_kind"] = workflow_kind
     deliverables = dict(result.get("deliverables") or {})
@@ -93,7 +91,8 @@ def deferred_source_outcome(value: dict[str, Any], *, workflow_kind: str) -> dic
     transformations.update({"translate": False, "generate_audio": False, "rvc": False})
     result["transformations"] = transformations
     inputs = dict(result.get("inputs") or {})
-    inputs.update({"translation": "correction", "generation": "correction"})
+    source_input = "correction" if transformations.get("correct") else "source"
+    inputs.update({"translation": source_input, "generation": source_input})
     result["inputs"] = inputs
     export = dict(result.get("export") or {})
     export.update({"audio": "preserve", "subtitles": "source"})

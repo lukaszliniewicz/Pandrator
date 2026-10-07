@@ -350,6 +350,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_web_provider_test_identity.py",
         "tests/test_web_automation_security.py",
         "tests/test_web_database_efficiency.py",
+        "tests/test_job_list_scope.py",
         "tests/test_web_workflow_agent_projection.py",
         "tests/test_web_workflow_agent_recovery.py",
     ),
@@ -413,6 +414,9 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_generation_display_subtitles.py",
     ),
     "web-08-serial": (
+        "tests/test_generation_summary.py",
+        "tests/test_translation_project_source.py",
+        "tests/test_translation_project_summary.py",
         "tests/test_session_source_plan_controls.py",
         "tests/test_session_purge.py",
         "tests/test_web_session_lifecycle.py",

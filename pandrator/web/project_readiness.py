@@ -32,7 +32,7 @@ from .multilingual_setup import canonical_language
 from .output_settings_snapshot import build_output_settings_snapshot
 from .settings_policy import stable_hash
 from .speech_plan_workspace import speech_plan_status
-from .translation_projects import _checkpoint, _source_edit
+from .translation_projects import _checkpoint, _selected_checkpoint, _source_edit
 from .voice_setup import get_voice_setup
 
 _ACTIVE_JOBS = frozenset({"queued", "running", "retrying"})
@@ -150,23 +150,19 @@ def _job_fields(job: Job | None) -> dict:
 def _source_status(db, services, project: dict, artifacts: list[Artifact], revisions: dict) -> dict:
     source_id = project["source_session_id"]
     pinned = next((a for a in artifacts if a.id == project["checkpoint_artifact_id"]), None)
-    current = next(
-        (
-            a
-            for a in artifacts
-            if a.session_id == source_id and a.role == "correction" and a.state == "current"
-        ),
-        None,
-    )
+    correction = _selected_checkpoint(db, source_id, "correction")
+    current = correction if correction is not None else _selected_checkpoint(db, source_id, "transcription")
     pinned_revision = (
         revisions.get((pinned.metadata_json or {}).get("revision_id")) if pinned else None
     )
     current_revision = (
         revisions.get((current.metadata_json or {}).get("revision_id")) if current else None
     )
-    document = db.scalar(
-        select(Document).where(Document.session_id == source_id, Document.stage == "correction")
-    )
+    document = db.get(Document, pinned_revision.document_id) if pinned_revision else None
+    current_document = db.get(Document, current_revision.document_id) if current_revision else None
+    correction_revision = revisions.get((correction.metadata_json or {}).get("revision_id")) if correction else None
+    correction_document = db.get(Document, correction_revision.document_id) if correction_revision else None
+    role = pinned.role if pinned else project.get("checkpoint_role") or "source"
     plan = db.scalar(select(MediaEditPlan).where(MediaEditPlan.session_id == source_id))
     edit = (
         db.get(MediaEditPlanRevision, plan.active_revision_id)
@@ -183,13 +179,13 @@ def _source_status(db, services, project: dict, artifacts: list[Artifact], revis
             expected_hash=project["source_content_hash"],
         )
         if language != project["source_language"]:
-            reasons.append("The source correction language changed.")
+            reasons.append(f"The source {role} language changed.")
     except (KeyError, ValueError, OSError) as error:
         reasons.append(str(error))
     if current is None or current.id != project["checkpoint_artifact_id"]:
-        reasons.append("The pinned correction is no longer current.")
+        reasons.append(f"The pinned {role} is no longer the current source checkpoint.")
     if pinned_revision and document and document.active_revision_id != pinned_revision.id:
-        reasons.append("The correction document revision changed.")
+        reasons.append(f"The {role} document revision changed.")
     try:
         live_edit = _source_edit(db, source_id)
         if live_edit != (
@@ -205,10 +201,13 @@ def _source_status(db, services, project: dict, artifacts: list[Artifact], revis
     return {
         "pinned_checkpoint": {
             **_identity(pinned, pinned_revision),
+            "role": pinned.role if pinned else None,
             "content_hash": project["source_content_hash"],
         },
-        "current_correction": _identity(current, current_revision),
-        "current_correction_revision_id": document.active_revision_id if document else None,
+        "current_checkpoint": {**_identity(current, current_revision), "role": current.role if current else None},
+        "current_checkpoint_revision_id": current_document.active_revision_id if current_document else None,
+        "current_correction": _identity(correction, correction_revision),
+        "current_correction_revision_id": correction_document.active_revision_id if correction_document else None,
         "pinned_media_edit": {
             "revision_id": project["source_media_edit_revision_id"],
             "content_hash": project["source_media_edit_content_hash"],

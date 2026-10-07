@@ -2075,6 +2075,41 @@
         "title": "EventBounds",
         "type": "object"
       },
+      "GenerationActivitySummary": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "number"
+          },
+          "progress_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Detail"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "progress",
+          "progress_detail"
+        ],
+        "title": "GenerationActivitySummary",
+        "type": "object"
+      },
       "GenerationControlsUpdateRequest": {
         "additionalProperties": false,
         "description": "Revision-checked replacement of one or both generation-control sections.",
@@ -2916,6 +2951,65 @@
           }
         },
         "title": "GenerationStartRequest",
+        "type": "object"
+      },
+      "GenerationSummary": {
+        "properties": {
+          "active_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationActivitySummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "assembly": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GenerationActivitySummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "included_total": {
+            "description": "Nonexcluded blocks in the active plan.",
+            "title": "Included Total",
+            "type": "integer"
+          },
+          "plan_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Revision Id"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "total": {
+            "description": "All blocks in the active plan, including excluded blocks.",
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id",
+          "plan_revision_id",
+          "total",
+          "included_total",
+          "active_run",
+          "assembly"
+        ],
+        "title": "GenerationSummary",
         "type": "object"
       },
       "GenerationTopologyEdit": {
@@ -9834,6 +9928,34 @@
         "title": "TranslationProjectCreateRequest",
         "type": "object"
       },
+      "TranslationProjectSourceUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "checkpoint_artifact_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Checkpoint Artifact Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_source_revision": {
+            "minimum": 1,
+            "title": "Expected Source Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "expected_source_revision",
+          "checkpoint_artifact_id"
+        ],
+        "title": "TranslationProjectSourceUpdateRequest",
+        "type": "object"
+      },
       "TtsEndpointDiscoveryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -12851,6 +12973,32 @@
     "/api/v1/jobs": {
       "get": {
         "operationId": "listJobs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Jobs"
@@ -16769,6 +16917,56 @@
             "description": "Generation segments updated atomically"
           }
         }
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation/summary": {
+      "get": {
+        "operationId": "getGenerationSummary",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationSummary"
+                }
+              }
+            },
+            "description": "Snapshot of generation header status without histories"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope"
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Compact active-plan counts and generation activity"
       }
     },
     "/api/v1/sessions/{sessionId}/media-edit": {
@@ -20766,6 +20964,20 @@
         "operationId": "getSessionTranslationProject",
         "parameters": [
           {
+            "description": "Compact returns bounded metadata without branch readiness histories.",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -23189,6 +23401,20 @@
         "operationId": "getTranslationProject",
         "parameters": [
           {
+            "description": "Compact returns bounded metadata without branch readiness histories.",
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "in": "path",
             "name": "projectId",
             "required": true,
@@ -23371,6 +23597,76 @@
         ],
         "x-required-scopes": [
           "app.read"
+        ]
+      }
+    },
+    "/api/v1/translation-projects/{projectId}/source": {
+      "post": {
+        "operationId": "updateTranslationProjectSource",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslationProjectSourceUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Translation project state"
+          },
+          "404": {
+            "description": "Session, checkpoint, or project not found"
+          },
+          "409": {
+            "description": "Changed revision, source, or duplicate language"
+          },
+          "422": {
+            "description": "Invalid project request"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
         ]
       }
     },

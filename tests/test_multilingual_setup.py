@@ -107,11 +107,31 @@ def test_create_validation_persists_deferred_plan_without_jobs(case):
     assert state["setup_blocked_reason"] is None
 
 
+def test_create_setup_without_correction_keeps_transcription_and_source_inputs(case):
+    client, headers, services = case
+    response = _source(
+        client, headers, name="OptionalCorrection", source_language="en",
+        included_stages=["transcribe", "translate", "generate_audio", "export"],
+        setup={"target_languages": ["ja"]},
+    )
+    assert response.status_code == 201, response.get_json()
+    created = response.get_json()
+    assert created["included_stages_json"] == ["transcribe", "export"]
+    outcome = client.get(f"/api/v1/sessions/{created['id']}/outcome-plan").get_json()
+    assert outcome["value"]["inputs"]["translation"] == "source"
+    assert outcome["value"]["inputs"]["generation"] == "source"
+    assert outcome["value"]["transformations"]["correct"] is False
+    state = client.get(f"/api/v1/sessions/{created['id']}/translation-project").get_json()
+    assert state["setup_state"] == "awaiting_source"
+    assert state["source_checkpoint_artifact_id"] is None
+    with services["database"].session() as db:
+        assert db.scalars(select(Job).where(Job.session_id == created["id"])).all() == []
+
+
 @pytest.mark.parametrize("change", [
     {"workflow_kind": "audiobook"},
     {"target_language": "fr"},
     {"source_language": "pl"},
-    {"included_stages": ["transcribe", "export"]},
     {"multilingual_setup": {"target_languages": ["pl", "PL"]}},
     {"multilingual_setup": {"target_languages": ["auto"]}},
 ])
@@ -164,7 +184,6 @@ def test_update_revalidates_effective_source_before_mutation(case):
         {"workflow_kind": "audiobook"},
         {"source_language": "pl"},
         {"target_language": "de"},
-        {"included_stages": ["translate", "export"]},
     ):
         response = client.patch(url, json=change, headers={**headers, "If-Match": "1"})
         assert response.status_code in {409, 422}, response.get_json()

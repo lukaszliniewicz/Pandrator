@@ -80,40 +80,47 @@ than cross-batch consistency.
 
 ## Parallel languages from one recording
 
-The project's **Translate** card lists language versions, their subtitle
-status and links to open them. It also links to **Languages** for managing
-branches.
+The overview keeps source assets, transcription, recording edits and optional
+correction above **Translate**. Choose a target language there to show its
+translation, voices, speech plan, generation and output controls. Returning to a
+visited language restores its overview controls; every language retains its own
+saved settings and recordings. **Languages** provides detailed branch management.
 
-Open **Languages** after selecting the corrected subtitle artifact. Create a
-language project, then choose target languages to create independent versions. The
-project pins that exact correction and edited timeline. Each language has its
+Use **Add language** at Translate, or open **Languages**, after selecting a
+transcription or corrected subtitle artifact. The project pins that exact source
+checkpoint and edited timeline. Each language has its
 own translation, voice setup, speech review, generation and exports. Adding
 languages does not start translation or synthesis.
 
-**Projects** groups the source and its language versions together. Open a version
-and use **Project language** to switch its voice, generation and output controls.
+**Projects** groups the source and its language versions together. The overview
+uses **Target language**; other language-specific pages use **Project language**
+to switch their controls.
 **Sources**, recording edits and **Languages** link to the shared source workspace.
-Each version uses the pinned correction; later source edits do not silently
+Each version uses its pinned source; later source edits do not silently
 rewrite translations or generated audio.
 
-The project shows the pinned correction, timeline and independent readiness for
+When a newer source is available, **Use newer source for added languages** updates
+the checkpoint used by future languages. Existing versions retain their earlier
+checkpoint, settings and assets, and display an earlier-source notice.
+
+The Languages page shows the pinned source, timeline and independent readiness for
 translation, review, voice, generation and export. Select languages to preview
 an action, inspect its captured inputs and blocked reasons, then submit eligible
 jobs. Completed children are preserved when retrying failures. Collect verified
 exports as a manifest or a complete ZIP; subtitle-only exports do not need audio.
 
-You can also choose **Multilingual project** in the new-project wizard for
+You can also choose **Translate into multiple languages** in the new-project wizard for
 subtitles, voiceovers or recording edits. Select target languages with the
 searchable checkboxes and choose subtitles only or subtitles with voiceovers.
-The language plan is saved with the source project; correction is required and
+The language plan is saved with the source project; correction is optional and
 translation and audio generation take place in the language versions. The
 overview shows the saved plan and next step. **Languages** lets you edit the
-plan until the project is created. After reviewing the correction, **Create
+plan until the project is created. After reviewing the selected source, **Create
 language workspaces** pins the chosen source and creates all selected languages
 in one operation. Failed creation leaves no partial project or language sessions.
 
 Through MCP, use `pandrator_create_translation_project` with the inspected
-source session revision, correction artifact ID and an idempotency key. Then
+source session revision, transcription or correction artifact ID and an idempotency key. Then
 use `pandrator_create_translation_branches` with the project revision and
 `targets: [{"target_language": "de"}, {"target_language": "ja"}]`. Inspect
 the project from either the source or a branch with
@@ -124,7 +131,7 @@ For the same deferred setup through MCP, pass `multilingual_setup` to
 `{"target_languages": ["de", "ja"], "generate_voiceover": true,
 "keep_source_subtitles": true}`. Inspect the saved setup and readiness with
 `pandrator_get_translation_project`; update it through
-`pandrator_update_session` before project creation. After correction and review,
+`pandrator_update_session` before project creation. After source review,
 use `pandrator_create_translation_project` with `create_planned_branches: true`
 to create the project and planned languages atomically. Subtitle-only language
 sessions preserve the original audio; voiceover sessions require independent
@@ -135,8 +142,8 @@ start provider work.
 Translation runs in different language sessions can proceed concurrently.
 Passive batches within each run retain sequential context and glossary
 continuity. Claim and submit batches separately for each returned session.
-If the pinned source correction or timeline changes, adding another language
-is refused rather than silently mixing source versions.
+If the pinned source checkpoint or timeline changes, adding another language
+requires an explicit source-pin update rather than silently mixing source versions.
 
 For a standalone alternative, use `pandrator_fork_session` with an exact
 correction or translation checkpoint, the inspected session revision and an

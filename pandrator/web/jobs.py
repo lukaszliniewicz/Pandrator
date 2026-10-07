@@ -710,12 +710,19 @@ class JobQueue:
             )
             return True
 
-    def list(self, limit: int = 100) -> list[Job]:
+    def list(
+        self, limit: int = 100, *, session_id: str | None = None, kind: str | None = None
+    ) -> list[Job]:
         self._reconcile_stale()
+        statement = select(Job)
+        if session_id is not None:
+            statement = statement.where(Job.session_id == session_id)
+        if kind is not None:
+            statement = statement.where(Job.kind == kind)
         with self.database.session() as session:
             jobs = list(
                 session.scalars(
-                    select(Job)
+                    statement
                     .order_by(Job.created_at.desc())
                     .limit(max(1, min(limit, 500)))
                 ).all()

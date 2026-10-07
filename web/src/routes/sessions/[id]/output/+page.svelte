@@ -141,7 +141,7 @@
       generationApi.runs(sessionId),
       sessionApi.get(sessionId),
       sessionApi.settings(sessionId, 'output'),
-      jobApi.list(500)
+      jobApi.exports(sessionId)
     ]);
     if (revision !== loadRevision) return;
     artifacts = artifactPayload.items

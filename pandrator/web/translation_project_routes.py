@@ -12,12 +12,14 @@ from sqlalchemy.exc import IntegrityError
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .project_readiness import enrich_project_payload
 from .settings_policy import RevisionConflict
+from .translation_project_summary import get_compact_project, get_compact_session_project
 from .translation_projects import (
     TranslationProjectConflict,
     create_branches_in_session,
     create_project_in_session,
     get_project,
     get_session_project,
+    update_project_source_in_session,
 )
 
 
@@ -45,12 +47,21 @@ class TranslationBranchesCreateRequest(BaseModel):
     targets: list[TranslationBranchTarget] = Field(min_length=1, max_length=20)
 
 
+class TranslationProjectSourceUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    expected_source_revision: int = Field(ge=1)
+    checkpoint_artifact_id: str = Field(min_length=1, max_length=80)
+
+
 PROJECT_SCHEMAS = {
     model.__name__: model
     for model in (
         TranslationProjectCreateRequest,
         TranslationBranchTarget,
         TranslationBranchesCreateRequest,
+        TranslationProjectSourceUpdateRequest,
     )
 }
 
@@ -71,6 +82,12 @@ def translation_project_paths() -> dict:
             TranslationProjectCreateRequest,
         ),
         ("/api/v1/translation-projects/{projectId}", "get", "getTranslationProject", None),
+        (
+            "/api/v1/translation-projects/{projectId}/source",
+            "post",
+            "updateTranslationProjectSource",
+            TranslationProjectSourceUpdateRequest,
+        ),
         (
             "/api/v1/translation-projects/{projectId}/branches",
             "post",
@@ -119,6 +136,12 @@ def translation_project_paths() -> dict:
                     }
                 },
             }
+        else:
+            operation["parameters"] = [{
+                "name": "view", "in": "query", "required": False,
+                "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"},
+                "description": "Compact returns bounded metadata without branch readiness histories.",
+            }]
         paths.setdefault(path, {})[method] = operation
     return paths
 
@@ -149,6 +172,12 @@ def register_translation_project_routes(
             return model.model_validate(request.get_json(silent=True) or {}).model_dump()
         except ValidationError as error:
             return failure(error)
+
+    def compact_view() -> bool:
+        view = request.args.get("view", "full")
+        if view not in {"full", "compact"}:
+            raise ValueError("view must be full or compact.")
+        return view == "compact"
 
     def mutate(resource_id: str, operation_id: str, payload: dict, action):
         try:
@@ -207,9 +236,13 @@ def register_translation_project_routes(
     @require_auth
     def session_translation_project(session_id):
         try:
-            with services.database.session() as db:
-                result = get_session_project(db, session_id, paths=services.paths)
-            return jsonify(enrich_project_payload(services, result))
+            compact = compact_view()
+            with (services.database.snapshot_session() if compact else services.database.session()) as db:
+                if compact:
+                    result = get_compact_session_project(db, session_id, paths=services.paths)
+                else:
+                    result = get_session_project(db, session_id, paths=services.paths)
+            return jsonify(result if compact else enrich_project_payload(services, result))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 
@@ -234,9 +267,10 @@ def register_translation_project_routes(
     @require_auth
     def translation_project_get(project_id):
         try:
-            with services.database.session() as db:
-                result = get_project(db, project_id)
-            return jsonify(enrich_project_payload(services, result))
+            compact = compact_view()
+            with (services.database.snapshot_session() if compact else services.database.session()) as db:
+                result = get_compact_project(db, project_id) if compact else get_project(db, project_id)
+            return jsonify(result if compact else enrich_project_payload(services, result))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
 
@@ -257,5 +291,20 @@ def register_translation_project_routes(
                 session_forks=services.session_forks,
                 paths=services.paths,
                 created_directories=directories,
+            ),
+        )
+
+    @app.post("/api/v1/translation-projects/<project_id>/source")
+    @require_auth
+    def translation_project_source_update(project_id):
+        payload = parsed(TranslationProjectSourceUpdateRequest)
+        if not isinstance(payload, dict):
+            return payload
+        return mutate(
+            project_id,
+            "updateTranslationProjectSource",
+            payload,
+            lambda db, _directories: update_project_source_in_session(
+                db, project_id, **payload, paths=services.paths,
             ),
         )

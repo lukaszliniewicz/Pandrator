@@ -9,6 +9,7 @@ from .generation_control_openapi import (
     GENERATION_CONTROL_SCHEMAS,
     generation_control_paths,
 )
+from .generation_summary import GenerationSummary
 from .identity import ApplicationIdentityDocument
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
 from .project_export_bundle_routes import PROJECT_EXPORT_BUNDLE_SCHEMAS, project_export_bundle_paths
@@ -47,6 +48,7 @@ def build_openapi_document() -> dict:
         **PROJECT_EXPORT_BUNDLE_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
+        "GenerationSummary": GenerationSummary,
         **AUDIOBOOK_SCHEMAS,
         **VOICE_SETUP_SCHEMAS,
         **SPEECH_SELECTION_SCHEMAS,
@@ -587,6 +589,11 @@ def build_openapi_document() -> dict:
             "/api/v1/jobs": {
                 "get": {
                     "operationId": "listJobs",
+                    "parameters": [
+                        {"name": "session_id", "in": "query", "schema": {"type": "string"}},
+                        {"name": "kind", "in": "query", "schema": {"type": "string"}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
+                    ],
                     "responses": {"200": {"description": "Jobs"}},
                 },
                 "post": {
@@ -3173,6 +3180,26 @@ def build_openapi_document() -> dict:
             },
             "/api/v1/sessions/{sessionId}/generation-runs/latest": {
                 "get": operation("getLatestGenerationRun", "Latest generation run")
+            },
+            "/api/v1/sessions/{sessionId}/generation/summary": {
+                "get": {
+                    "operationId": "getGenerationSummary",
+                    "summary": "Compact active-plan counts and generation activity",
+                    "security": [
+                        {"cookieAuth": []}, {"bearerToken": []}, {"nativeOAuth": ["app.read"]},
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Snapshot of generation header status without histories",
+                            "content": {"application/json": {
+                                "schema": {"$ref": "#/components/schemas/GenerationSummary"},
+                            }},
+                        },
+                        "401": {"description": "Authentication required"},
+                        "403": {"description": "Insufficient scope"},
+                        "404": {"description": "Session not found"},
+                    },
+                },
             },
             "/api/v1/sessions/{sessionId}/generation-runs": {
                 "get": {

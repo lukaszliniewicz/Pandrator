@@ -1006,7 +1006,11 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @app.get("/api/v1/jobs")
     @require_auth
     def job_list():
-        items = work.diagnostic_list(request.args.get("limit", 100, type=int))
+        items = work.diagnostic_list(
+            request.args.get("limit", 100, type=int),
+            session_id=request.args.get("session_id"),
+            kind=request.args.get("kind"),
+        )
         principal = context.guards.principal()
         assert principal is not None
         hidden = services.quick_transcriptions.hidden_job_ids(

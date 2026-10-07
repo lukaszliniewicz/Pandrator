@@ -1982,6 +1982,23 @@ export interface paths {
         patch: operations["updateGenerationSegments"];
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/generation/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Compact active-plan counts and generation activity */
+        get: operations["getGenerationSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/media-edit": {
         parameters: {
             query?: never;
@@ -3756,6 +3773,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/translation-projects/{projectId}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["updateTranslationProjectSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads": {
         parameters: {
             query?: never;
@@ -5039,6 +5072,17 @@ export interface components {
              */
             schema_version?: "1";
         };
+        /** GenerationActivitySummary */
+        GenerationActivitySummary: {
+            /** Id */
+            id: string;
+            /** Progress */
+            progress: number;
+            /** Progress Detail */
+            progress_detail: string | null;
+            /** Status */
+            status: string;
+        };
         /**
          * GenerationControlsUpdateRequest
          * @description Revision-checked replacement of one or both generation-control sections.
@@ -5358,6 +5402,25 @@ export interface components {
              * @default false
              */
             stale_only?: boolean;
+        };
+        /** GenerationSummary */
+        GenerationSummary: {
+            active_run: components["schemas"]["GenerationActivitySummary"] | null;
+            assembly: components["schemas"]["GenerationActivitySummary"] | null;
+            /**
+             * Included Total
+             * @description Nonexcluded blocks in the active plan.
+             */
+            included_total: number;
+            /** Plan Revision Id */
+            plan_revision_id: string | null;
+            /** Session Id */
+            session_id: string;
+            /**
+             * Total
+             * @description All blocks in the active plan, including excluded blocks.
+             */
+            total: number;
         };
         /** GenerationTopologyEdit */
         GenerationTopologyEdit: {
@@ -8144,6 +8207,15 @@ export interface components {
              */
             name?: string;
         };
+        /** TranslationProjectSourceUpdateRequest */
+        TranslationProjectSourceUpdateRequest: {
+            /** Checkpoint Artifact Id */
+            checkpoint_artifact_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Expected Source Revision */
+            expected_source_revision: number;
+        };
         /** TtsEndpointDiscoveryRequest */
         TtsEndpointDiscoveryRequest: {
             /**
@@ -9969,7 +10041,11 @@ export interface operations {
     };
     listJobs: {
         parameters: {
-            query?: never;
+            query?: {
+                session_id?: string;
+                kind?: string;
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -12677,6 +12753,49 @@ export interface operations {
         responses: {
             /** @description Generation segments updated atomically */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getGenerationSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Snapshot of generation header status without histories */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationSummary"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Session not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15499,7 +15618,10 @@ export interface operations {
     };
     getSessionTranslationProject: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Compact returns bounded metadata without branch readiness histories. */
+                view?: "full" | "compact";
+            };
             header?: never;
             path: {
                 sessionId: string;
@@ -17247,7 +17369,10 @@ export interface operations {
     };
     getTranslationProject: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Compact returns bounded metadata without branch readiness histories. */
+                view?: "full" | "compact";
+            };
             header?: never;
             path: {
                 projectId: string;
@@ -17401,6 +17526,57 @@ export interface operations {
                 content?: never;
             };
             /** @description Invalid selection or request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateTranslationProjectSource: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranslationProjectSourceUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Translation project state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session, checkpoint, or project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, source, or duplicate language */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project request */
             422: {
                 headers: {
                     [name: string]: unknown;

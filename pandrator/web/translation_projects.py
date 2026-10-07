@@ -1,4 +1,4 @@
-"""Durable, explicitly pinned language projects for corrected subtitle sessions."""
+"""Durable, explicitly pinned language projects for source subtitle sessions."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .models import (
     OutcomePlan,
     SessionRecord,
     SessionSetting,
+    SessionStageSelection,
     TranslationProject,
     TranslationProjectBranch,
     utcnow,
@@ -36,6 +37,34 @@ from .workspace_settings import WorkspaceSettingsService
 
 class TranslationProjectConflict(RevisionConflict):
     """A pinned snapshot or project revision no longer matches the live source."""
+
+
+def _selected_checkpoint(session: Session, source_session_id: str, role: str) -> Artifact | None:
+    """Respect explicit stage selections and active documents before legacy defaults."""
+    stage = "correct" if role == "correction" else "transcribe"
+    selection = session.get(SessionStageSelection, (source_session_id, stage))
+    if selection is not None:
+        artifact = session.get(Artifact, selection.artifact_id) if selection.artifact_id else None
+        return artifact if (
+            artifact is not None and artifact.state == "current"
+            and artifact.session_id == source_session_id and artifact.role == role
+        ) else None
+    candidates = session.scalars(
+        select(Artifact).where(
+            Artifact.session_id == source_session_id,
+            Artifact.role == role,
+            Artifact.state == "current",
+        ).order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    )
+    documents = list(session.scalars(select(Document).where(
+        Document.session_id == source_session_id, Document.stage == role,
+    )))
+    active_ids = {document.active_revision_id for document in documents if document.active_revision_id}
+    for candidate in candidates:
+        revision_id = (candidate.metadata_json or {}).get("revision_id")
+        if not documents or revision_id in active_ids:
+            return candidate
+    return None
 
 
 def _source_edit(session: Session, source_session_id: str) -> tuple[str | None, str | None]:
@@ -62,18 +91,21 @@ def _checkpoint(
     checkpoint = session.get(Artifact, checkpoint_artifact_id)
     if checkpoint is None or checkpoint.session_id != source_session_id:
         raise KeyError(checkpoint_artifact_id)
-    if checkpoint.role != "correction" or checkpoint.state != "current":
-        raise TranslationProjectConflict("The pinned correction is no longer current.")
+    if checkpoint.role not in {"transcription", "correction"}:
+        raise TranslationProjectConflict("A source checkpoint requires transcription or correction.")
+    role = checkpoint.role
+    if checkpoint.state != "current":
+        raise TranslationProjectConflict(f"The pinned {role} is no longer current.")
     if not checkpoint.content_hash or (
         expected_hash is not None and checkpoint.content_hash != expected_hash
     ):
-        raise TranslationProjectConflict("The pinned correction hash changed.")
+        raise TranslationProjectConflict(f"The pinned {role} hash changed.")
     try:
         source_path = paths.managed_path(checkpoint.relative_path)
     except ValueError as error:
-        raise TranslationProjectConflict("The correction path is invalid.") from error
+        raise TranslationProjectConflict(f"The {role} path is invalid.") from error
     if not source_path.is_file() or sha256_file(source_path) != checkpoint.content_hash:
-        raise TranslationProjectConflict("The correction file is missing or changed.")
+        raise TranslationProjectConflict(f"The {role} file is missing or changed.")
     revision_id = str((checkpoint.metadata_json or {}).get("revision_id") or "")
     if revision_id:
         revision = session.get(DocumentRevision, revision_id)
@@ -82,10 +114,10 @@ def _checkpoint(
             revision is None
             or document is None
             or document.session_id != source_session_id
-            or document.stage != "correction"
+            or document.stage != role
             or document.active_revision_id != revision.id
         ):
-            raise TranslationProjectConflict("The correction document revision changed.")
+            raise TranslationProjectConflict(f"The {role} document revision changed.")
     language = str((checkpoint.metadata_json or {}).get("language") or "").strip()
     if not language or language.lower() == "auto":
         source = session.get(SessionRecord, source_session_id)
@@ -99,6 +131,7 @@ def _branch_payload(session: Session, branch: TranslationProjectBranch) -> dict[
     record = session.get(SessionRecord, branch.session_id)
     if record is None:
         raise TranslationProjectConflict("A language session is missing.")
+    checkpoint = session.get(Artifact, branch.source_checkpoint_artifact_id)
     current = session.scalar(
         select(Artifact)
         .where(
@@ -149,6 +182,8 @@ def _branch_payload(session: Session, branch: TranslationProjectBranch) -> dict[
         "workflow_kind": record.workflow_kind,
         "target_language": branch.target_language,
         "source_checkpoint_artifact_id": branch.source_checkpoint_artifact_id,
+        "source_checkpoint_role": checkpoint.role if checkpoint else None,
+        "source_checkpoint_revision_id": (checkpoint.metadata_json or {}).get("revision_id") if checkpoint else None,
         "source_content_hash": branch.source_content_hash,
         "status": record.status,
         "trashed_at": record.trashed_at.isoformat() if record.trashed_at else None,
@@ -182,6 +217,7 @@ def project_payload(session: Session, project: TranslationProject) -> dict[str, 
             "source_session_name": source.name if source else None,
             "source_language": project.source_language,
             "checkpoint_artifact_id": project.checkpoint_artifact_id,
+            "checkpoint_role": checkpoint.role if checkpoint else None,
             "checkpoint_revision_id": checkpoint_revision_id,
             "checkpoint_created_at": checkpoint.created_at.isoformat() if checkpoint else None,
             "checkpoint_revision_created_at": checkpoint_revision.created_at.isoformat() if checkpoint_revision else None,
@@ -202,10 +238,54 @@ def get_project(session: Session, project_id: str) -> dict[str, Any]:
     return project_payload(session, project)
 
 
+def update_project_source_in_session(
+    db: Session,
+    project_id: str,
+    checkpoint_artifact_id: str,
+    expected_revision: int,
+    expected_source_revision: int,
+    *,
+    paths: DataPaths,
+) -> dict[str, Any]:
+    """Explicitly pin a newer source for future branches, preserving existing sessions."""
+    project = db.get(TranslationProject, project_id)
+    if project is None:
+        raise KeyError(project_id)
+    if project.revision != expected_revision:
+        raise RevisionConflict("The translation project changed in another client.")
+    source = db.get(SessionRecord, project.source_session_id)
+    if source is None or source.trashed_at is not None:
+        raise KeyError(project.source_session_id)
+    if source.revision != expected_source_revision:
+        raise RevisionConflict("The source session changed in another client.")
+    checkpoint, language = _checkpoint(db, paths, source.id, checkpoint_artifact_id)
+    assert checkpoint.content_hash is not None
+    if language != project.source_language:
+        raise TranslationProjectConflict("The source checkpoint language changed.")
+    edit_id, edit_hash = _source_edit(db, source.id)
+    SessionForkService.validate_media_checkpoint(db, source, checkpoint)
+    if (
+        project.checkpoint_artifact_id == checkpoint.id
+        and project.source_content_hash == checkpoint.content_hash
+        and project.source_media_edit_revision_id == edit_id
+        and project.source_media_edit_content_hash == edit_hash
+    ):
+        return project_payload(db, project)
+    project.checkpoint_artifact_id = checkpoint.id
+    project.source_content_hash = checkpoint.content_hash
+    project.source_media_edit_revision_id = edit_id
+    project.source_media_edit_content_hash = edit_hash
+    project.revision += 1
+    project.updated_at = utcnow()
+    db.flush()
+    return project_payload(db, project)
+
+
 def get_session_project(
     session: Session, session_id: str, *, paths: DataPaths | None = None
 ) -> dict[str, Any]:
-    if session.get(SessionRecord, session_id) is None:
+    source = session.get(SessionRecord, session_id)
+    if source is None:
         raise KeyError(session_id)
     project = session.scalar(
         select(TranslationProject).where(TranslationProject.source_session_id == session_id)
@@ -223,30 +303,24 @@ def get_session_project(
     state = "active" if setup is not None and project and not branch else "none"
     blocked_reason = None
     if setup is not None and state == "none":
-        state = "awaiting_correction"
+        state = "awaiting_correction" if "correct" in (source.included_stages_json or []) else "awaiting_source"
         if paths is not None:
-            candidates = session.scalars(
-                select(Artifact).where(
-                    Artifact.session_id == session_id,
-                    Artifact.role == "correction",
-                    Artifact.state == "current",
-                ).order_by(Artifact.created_at.desc(), Artifact.id.desc()).limit(50)
-            )
-            for candidate in candidates:
+            candidate = _selected_checkpoint(session, session_id, "correction")
+            if candidate is None:
+                candidate = _selected_checkpoint(session, session_id, "transcription")
+            if candidate is not None:
                 try:
                     _, source_language = _checkpoint(session, paths, session_id, candidate.id)
                     _source_edit(session, session_id)
                 except (KeyError, ValueError, RevisionConflict, OSError) as error:
                     blocked_reason = blocked_reason or str(error)
-                    continue
-                if source_language in setup.target_languages:
+                else:
                     checkpoint_id = candidate.id
-                    blocked_reason = blocked_reason or "A planned target repeats the correction language."
-                    continue
-                checkpoint_id = candidate.id
-                state = "ready"
-                blocked_reason = None
-                break
+                    if source_language in setup.target_languages:
+                        blocked_reason = "A planned target repeats the source language."
+                    else:
+                        state = "ready"
+                        blocked_reason = None
             if state != "ready" and blocked_reason is not None:
                 state = "blocked"
     result: dict[str, Any] = project_payload(session, project) if project else {"project": None}
@@ -255,6 +329,7 @@ def get_session_project(
         "setup_state": state,
         "setup_blocked_reason": blocked_reason,
         "correction_checkpoint_artifact_id": checkpoint_id,
+        "source_checkpoint_artifact_id": checkpoint_id,
     })
     return result
 
@@ -293,7 +368,7 @@ def create_project_in_session(
     if create_planned_branches and setup is None:
         raise ValueError("Save multilingual setup before creating planned branches.")
     if setup is not None and language in setup.target_languages:
-        raise ValueError("A planned target repeats the correction language.")
+        raise ValueError("A planned target repeats the source language.")
     title = str(name or "").strip() or f"{source.name} translations"
     if len(title) > 255:
         raise ValueError("A project name cannot exceed 255 characters.")
@@ -354,7 +429,7 @@ def create_branches_in_session(
         expected_hash=project.source_content_hash,
     )
     if live_language != project.source_language:
-        raise TranslationProjectConflict("The source correction language changed.")
+        raise TranslationProjectConflict("The source checkpoint language changed.")
     if _source_edit(db, source.id) != (
         project.source_media_edit_revision_id,
         project.source_media_edit_content_hash,
@@ -409,6 +484,7 @@ def create_branches_in_session(
             carry_media_assets=True,
             target_language=language,
             expected_revision=source.revision,
+            allow_source_checkpoint=True,
         )
         created_directories.append(fork.directory)
         record = fork.record
@@ -535,7 +611,7 @@ def create_branches_in_session(
         )
         value["transformations"] = transformations
         inputs = dict(value.get("inputs") or {})
-        inputs["translation"] = "correction"
+        inputs["translation"] = "source" if _pinned_checkpoint.role == "transcription" else "correction"
         inputs["generation"] = "translation"
         value["inputs"] = inputs
         deliverables = dict(value.get("deliverables") or {})
@@ -563,7 +639,7 @@ def create_branches_in_session(
         cloned = db.get(Artifact, fork.checkpoint_artifact_id)
         if cloned is None or cloned.content_hash != project.source_content_hash:
             raise TranslationProjectConflict(
-                "The fork did not preserve the pinned correction hash."
+                "The fork did not preserve the pinned source hash."
             )
         db.flush()
         initial_settings = {

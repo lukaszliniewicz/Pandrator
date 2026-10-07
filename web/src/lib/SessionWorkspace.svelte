@@ -31,7 +31,7 @@
   } from './api-models';
   import { appState } from './app-state.svelte';
   import type { PreviewableArtifact } from './artifact-display';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { type WorkflowStore } from './workflow-store.svelte';
   import type PdfEditor from './PdfEditor.svelte';
   import type AddSourceDialog from './AddSourceDialog.svelte';
@@ -55,13 +55,21 @@
     outcome: initialOutcome,
     workflowStore,
     onupdated,
-    initialSettingsStage = ''
+    initialSettingsStage = '',
+    scope = 'all',
+    workspaceMode = $bindable<'review' | 'automatic'>('review'),
+    manageMode = true,
+    active = true
   }: {
     session: SessionRecord;
     outcome: OutcomePlan;
     workflowStore: WorkflowStore;
     onupdated: (session: SessionRecord) => void;
     initialSettingsStage?: string;
+    scope?: 'all' | 'source' | 'language';
+    workspaceMode?: 'review' | 'automatic';
+    manageMode?: boolean;
+    active?: boolean;
   } = $props();
 
   let audiobookCastPanel = $state<CastDraftController>();
@@ -69,6 +77,21 @@
   type Stage = WorkflowStage;
 
   const snapshot = $derived(workflowStore.snapshot);
+  const sharedStages = new Set([
+    'transcribe',
+    'prepare_text',
+    'edit_media',
+    'correct'
+  ]);
+  const visibleStages = $derived(
+    snapshot?.stages.filter(
+      (stage) =>
+        scope === 'all' ||
+        (scope === 'source'
+          ? sharedStages.has(stage.key)
+          : !sharedStages.has(stage.key))
+    ) ?? []
+  );
 
   let speechPlan = $state<SpeechPlanState | null>(null);
 
@@ -96,6 +119,8 @@
 
   async function loadSpeechPlan() {
     if (
+      scope === 'source' ||
+      !active ||
       !workflowStore.snapshot?.stages.some(
         (item) => item.key === 'generate_audio'
       )
@@ -218,8 +243,9 @@
   onMount(() =>
     invalidationBus.subscribe((change) => {
       if (
-        invalidates(change, 'generation', session.id) ||
-        invalidates(change, 'workflow', session.id)
+        active &&
+        (invalidates(change, 'generation', session.id) ||
+          invalidates(change, 'workflow', session.id))
       )
         void loadSpeechPlan();
     })
@@ -263,8 +289,6 @@
   let TextOptimizationReviewComponent = $state<
     typeof TextOptimizationReview | null
   >(null);
-
-  let workspaceMode = $state<'review' | 'automatic'>('review');
 
   let preview = $state<PreviewableArtifact | null>(null);
 
@@ -835,12 +859,13 @@
   }
 
   onMount(async () => {
-    workspaceMode =
-      localStorage.getItem(`pandrator:workspace-mode:${session.id}`) ===
-      'automatic'
-        ? 'automatic'
-        : 'review';
-    await load({ initial: true });
+    if (manageMode)
+      workspaceMode =
+        localStorage.getItem(`pandrator:workspace-mode:${session.id}`) ===
+        'automatic'
+          ? 'automatic'
+          : 'review';
+    if (scope !== 'language') await load({ initial: true });
     if (initialSettingsStage) {
       const stage = workflowStore.snapshot?.stages.find(
         (item) => item.key === initialSettingsStage
@@ -850,7 +875,12 @@
   });
 
   $effect(() => {
-    if (typeof localStorage !== 'undefined')
+    if (scope === 'language' && active)
+      void untrack(() => load({ initial: true }));
+  });
+
+  $effect(() => {
+    if (manageMode && typeof localStorage !== 'undefined')
       localStorage.setItem(
         `pandrator:workspace-mode:${session.id}`,
         workspaceMode
@@ -858,7 +888,11 @@
   });
 
   $effect(() => {
-    if (!snapshot?.stages.some((stage) => stage.status === 'running')) return;
+    if (
+      !active ||
+      !snapshot?.stages.some((stage) => stage.status === 'running')
+    )
+      return;
     if (appState.eventsHealthy) return;
     const timer = window.setTimeout(() => load({ initial: false }), 5000);
     return () => window.clearTimeout(timer);
@@ -886,47 +920,49 @@
 </script>
 
 <div class="min-w-0 max-w-full overflow-x-hidden">
-  <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
-    <div>
-      {#if session.workflow_kind !== 'subtitles'}<div
-          class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
-          aria-label="Workspace mode"
-        >
-          <button
-            onclick={() => (workspaceMode = 'review')}
-            aria-pressed={workspaceMode === 'review'}
-            class:mode-active={workspaceMode === 'review'}
-            class="mode-choice">Review each stage</button
-          ><button
-            onclick={() => (workspaceMode = 'automatic')}
-            aria-pressed={workspaceMode === 'automatic'}
-            class:mode-active={workspaceMode === 'automatic'}
-            class="mode-choice">Automatic workflow</button
+  {#if scope !== 'language'}
+    <header class="mb-6 flex flex-wrap items-end justify-between gap-6">
+      <div>
+        {#if session.workflow_kind !== 'subtitles'}<div
+            class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
+            aria-label="Workspace mode"
           >
-        </div>{/if}
-    </div>
-    <div class="flex flex-wrap gap-2">
-      <button
-        onclick={() => (workflowTour = true)}
-        class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-        ><Sparkles size={17} /> Tour</button
-      >{#if snapshot?.sources.find((item) => item.filename
-          .toLowerCase()
-          .endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find(
-          (item) => item.filename.toLowerCase().endsWith('.pdf')
-        )!}<button
-          onclick={() => openPdfEditor(availablePdf)}
-          class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-          ><Crop size={18} /> Edit PDF</button
-        >{/if}
-    </div>
-  </header>
+            <button
+              onclick={() => (workspaceMode = 'review')}
+              aria-pressed={workspaceMode === 'review'}
+              class:mode-active={workspaceMode === 'review'}
+              class="mode-choice">Review each stage</button
+            ><button
+              onclick={() => (workspaceMode = 'automatic')}
+              aria-pressed={workspaceMode === 'automatic'}
+              class:mode-active={workspaceMode === 'automatic'}
+              class="mode-choice">Automatic workflow</button
+            >
+          </div>{/if}
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <button
+          onclick={() => (workflowTour = true)}
+          class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
+          ><Sparkles size={17} /> Tour</button
+        >{#if snapshot?.sources.find((item) => item.filename
+            .toLowerCase()
+            .endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find(
+            (item) => item.filename.toLowerCase().endsWith('.pdf')
+          )!}<button
+            onclick={() => openPdfEditor(availablePdf)}
+            class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
+            ><Crop size={18} /> Edit PDF</button
+          >{/if}
+      </div>
+    </header>
+  {/if}
   {#if sourceMessage}<div
       class="mb-5 rounded-xl bg-[var(--accent-soft)] px-4 py-3 text-sm"
     >
       {sourceMessage}
     </div>{/if}
-  {#if session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
+  {#if scope !== 'source' && session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
     <section
       class="surface mb-6 flex flex-col gap-4 rounded-3xl border border-[var(--accent)]/25 p-5 sm:flex-row sm:items-center sm:p-6"
     >
@@ -954,44 +990,46 @@
       >
     </section>
   {/if}
-  <details
-    class="mb-5 rounded-xl border border-[var(--line)] px-4 py-3 text-sm"
-    data-testid="session-workflow-help"
-  >
-    <summary class="cursor-pointer font-semibold"
-      >Workflow steps &amp; help</summary
+  {#if scope !== 'language'}
+    <details
+      class="mb-5 rounded-xl border border-[var(--line)] px-4 py-3 text-sm"
+      data-testid="session-workflow-help"
     >
-    <p class="muted mt-3">
-      {#if session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
-        Choosing this mode does not start a job. Use Generate audio segments to
-        prepare missing steps and record audio. Review and export remain
-        separate.
-      {:else}
-        Run a step, review its result, then continue. A later step becomes
-        available when its input is ready.
-      {/if}
-    </p>
-    {#if outcome?.pipeline?.length}
-      <ol
-        class="mt-3 flex flex-wrap items-center gap-2"
-        aria-label="Workflow steps"
+      <summary class="cursor-pointer font-semibold"
+        >Workflow steps &amp; help</summary
       >
-        {#each outcome.pipeline as stage, index}
-          <li class="flex items-center gap-2">
-            <span
-              class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-xs font-semibold"
-              >{stage.title}</span
-            >
-            {#if index < outcome.pipeline.length - 1}<ChevronRight
-                class="muted"
-                size={14}
-                aria-hidden="true"
-              />{/if}
-          </li>
-        {/each}
-      </ol>
-    {/if}
-  </details>
+      <p class="muted mt-3">
+        {#if session.workflow_kind !== 'subtitles' && workspaceMode === 'automatic'}
+          Choosing this mode does not start a job. Use Generate audio segments
+          to prepare missing steps and record audio. Review and export remain
+          separate.
+        {:else}
+          Run a step, review its result, then continue. A later step becomes
+          available when its input is ready.
+        {/if}
+      </p>
+      {#if outcome?.pipeline?.length}
+        <ol
+          class="mt-3 flex flex-wrap items-center gap-2"
+          aria-label="Workflow steps"
+        >
+          {#each outcome.pipeline as stage, index}
+            <li class="flex items-center gap-2">
+              <span
+                class="rounded-lg bg-[var(--accent-soft)] px-3 py-2 text-xs font-semibold"
+                >{stage.title}</span
+              >
+              {#if index < outcome.pipeline.length - 1}<ChevronRight
+                  class="muted"
+                  size={14}
+                  aria-hidden="true"
+                />{/if}
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </details>
+  {/if}
 
   {#if error || workflowStore.error}<div
       class="mb-5 flex items-start gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm"
@@ -1041,36 +1079,39 @@
     </div>
   {:else if snapshot}
     <div class="space-y-4">
-      {#if !sourceCardStage}{@render sessionSource()}{/if}
-      {#if session.workflow_kind !== 'audiobook' && session.included_stages_json.includes('correct') && !session.included_stages_json.includes('translate')}
+      {#if scope !== 'language' && !sourceCardStage}{@render sessionSource()}{/if}
+      {#if scope === 'all' && session.workflow_kind !== 'audiobook' && !session.included_stages_json.includes('translate')}
         <TranslationVersions sessionId={session.id} plannedOnly />
       {/if}
-      {#if session.workflow_kind === 'audiobook' || (session.workflow_kind === 'voiceover' && session.included_stages_json.includes('generate_audio'))}
-        <VoiceSetupCard
-          bind:castPanel={audiobookCastPanel}
-          navigationManaged={workspaceMode === 'review' &&
-            Boolean(speechPlan?.selected_revision_id)}
-          sessionId={session.id}
-          plan={speechPlan}
-          busy={planBusy || inputsLocked}
-          onchanged={async () => {
-            const [record, nextOutcome] = await Promise.all([
-              sessionApi.get(session.id),
-              sessionApi.outcome(session.id)
-            ]);
-            outcome = nextOutcome;
-            onupdated(record);
-            await load();
-          }}
-          onsettings={() => {
-            const stage = snapshot?.stages.find(
-              (item) => item.key === 'prepare_text'
-            );
-            if (stage) void openSettings(stage);
-          }}
-        />
-      {/if}
-      {#each snapshot.stages as stage}
+      {#snippet voiceSetup()}
+        {#if session.workflow_kind === 'audiobook' || (session.workflow_kind === 'voiceover' && session.included_stages_json.includes('generate_audio'))}
+          <VoiceSetupCard
+            bind:castPanel={audiobookCastPanel}
+            navigationManaged={workspaceMode === 'review' &&
+              Boolean(speechPlan?.selected_revision_id)}
+            sessionId={session.id}
+            plan={speechPlan}
+            busy={planBusy || inputsLocked}
+            onchanged={async () => {
+              const [record, nextOutcome] = await Promise.all([
+                sessionApi.get(session.id),
+                sessionApi.outcome(session.id)
+              ]);
+              outcome = nextOutcome;
+              onupdated(record);
+              await load();
+            }}
+            onsettings={() => {
+              const stage = snapshot?.stages.find(
+                (item) => item.key === 'prepare_text'
+              );
+              if (stage) void openSettings(stage);
+            }}
+          />
+        {/if}
+      {/snippet}
+      {#if scope === 'all' || (scope === 'language' && !visibleStages.some((stage) => stage.key === 'translate'))}{@render voiceSetup()}{/if}
+      {#each visibleStages as stage (stage.key)}
         {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
           {#if planNotice}<p class="muted text-sm" role="status">
               {planNotice}
@@ -1132,7 +1173,7 @@
           onloadmore={() => loadMoreStageArtifacts(stage)}
         >
           {#snippet languageVersions()}
-            {#if stage.key === 'translate' && stage.included && session.workflow_kind !== 'audiobook'}
+            {#if scope === 'all' && stage.key === 'translate' && stage.included && session.workflow_kind !== 'audiobook'}
               <TranslationVersions sessionId={session.id} />
             {/if}
           {/snippet}
@@ -1186,6 +1227,7 @@
             {/if}
           {/snippet}
         </WorkflowStageCard>
+        {#if scope === 'language' && stage.key === 'translate'}{@render voiceSetup()}{/if}
       {/each}
     </div>
   {/if}
