@@ -42,6 +42,7 @@
   import { SourcePassageSettingsState } from './source-passage-settings.svelte';
 
   const draft = new StageSettingsDraft();
+  const radioGroupId = $props.id();
 
   let {
     session,
@@ -2370,12 +2371,12 @@
               >
               <div class="mt-2 grid gap-2">
                 <label
-                  class="flex items-start gap-3 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
+                  class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
                   ><input
                     type="radio"
+                    name={`${radioGroupId}-optimization-timing`}
                     bind:group={draft.optimizationTiming}
                     value="document"
-                    class="mt-1 accent-[var(--accent)]"
                   /><span
                     ><strong class="block"
                       >Before generation · reviewable revision</strong
@@ -2386,13 +2387,13 @@
                     ></span
                   ></label
                 ><label
-                  class="flex items-start gap-3 rounded-xl bg-[var(--accent-soft)] p-3 text-sm"
+                  class="selection-tile flex items-start gap-3 rounded-xl p-3 text-sm"
                   ><input
                     type="radio"
+                    name={`${radioGroupId}-optimization-timing`}
                     bind:group={draft.optimizationTiming}
                     value="generation"
                     disabled={draft.speechAnnotationMode !== 'off'}
-                    class="mt-1 accent-[var(--accent)]"
                   /><span
                     ><strong class="block"
                       >During plan preparation · final speech units</strong

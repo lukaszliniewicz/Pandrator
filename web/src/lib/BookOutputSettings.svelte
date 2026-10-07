@@ -203,7 +203,7 @@
     <legend>Export target</legend>
     <div class="output-choices">
       {#each outputChoices as choice}
-        <label class="output-choice" class:selected={mode === choice.value}>
+        <label class="output-choice selection-tile">
           <input
             type="radio"
             name={`${componentId}-export-mode`}
@@ -578,35 +578,8 @@
     min-width: 0;
     align-items: center;
     gap: 0.65rem;
-    border: 1px solid var(--line);
     border-radius: 0.85rem;
-    background: var(--paper);
     padding: 0.95rem;
-    cursor: pointer;
-  }
-  .output-choice:hover {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent-soft) 35%, var(--paper));
-  }
-  .output-choice.selected {
-    border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent-soft) 65%, var(--paper-strong));
-    box-shadow: inset 0 0 0 1px
-      color-mix(in srgb, var(--accent) 18%, transparent);
-  }
-  .output-choice:focus-within {
-    outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
-    outline-offset: 2px;
-  }
-  .output-choice input {
-    width: 1rem;
-    height: 1rem;
-    flex: none;
-    margin: 0;
-    accent-color: var(--accent);
-  }
-  .output-choice input:focus-visible {
-    outline: none;
   }
   .output-choice :global(svg) {
     flex: none;

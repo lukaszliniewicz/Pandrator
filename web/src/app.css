@@ -279,6 +279,46 @@ body::-webkit-scrollbar-thumb:hover,
   color: var(--muted);
 }
 
+/* Keep native radio behavior; the tile carries the visible control states. */
+.selection-tile {
+  position: relative;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  cursor: pointer;
+}
+.selection-tile > input[type='radio'] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+.selection-tile:has(> input[type='radio']:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 65%, var(--paper-strong));
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.selection-tile:has(> input[type='radio']:focus-visible) {
+  outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline-offset: 2px;
+}
+.selection-tile:has(> input[type='radio']:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+@media (hover: hover) {
+  .selection-tile:has(> input[type='radio']:not(:disabled)):hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-soft) 35%, var(--paper));
+  }
+  .selection-tile:has(> input[type='radio']:checked:not(:disabled)):hover {
+    background: color-mix(in srgb, var(--accent-soft) 65%, var(--paper-strong));
+  }
+}
+
 /* Shared speech-control fields, including the character and cast editor. */
 .speech-controls .input {
   min-width: 0;

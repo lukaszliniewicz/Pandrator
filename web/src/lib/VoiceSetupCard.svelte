@@ -136,7 +136,7 @@
     >
       <legend class="sr-only">Voice mode</legend>
       {#each [{ value: 'single_voice' as const, title: setup.workflow_kind === 'audiobook' ? 'One narrator' : 'One voice', detail: 'Use the project voice throughout.' }, { value: 'multi_voice' as const, title: 'Multiple voices', detail: 'Use source speakers, identify dialogue, or assign voices manually.' }] as choice}
-        <label class="mode-option" class:selected={setup.mode === choice.value}>
+        <label class="mode-option selection-tile">
           <input
             type="radio"
             name={`audiobook-mode-${sessionId}`}
@@ -278,18 +278,8 @@
     display: flex;
     gap: 0.7rem;
     align-items: start;
-    border: 1px solid var(--line);
     border-radius: 0.8rem;
     padding: 1rem;
-    cursor: pointer;
-  }
-  .mode-option input {
-    margin-top: 0.2rem;
-    accent-color: var(--accent);
-  }
-  .mode-option.selected {
-    border-color: var(--accent);
-    background: var(--accent-soft);
   }
   .mode-option strong {
     font-size: 0.85rem;

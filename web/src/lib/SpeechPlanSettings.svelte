@@ -416,7 +416,7 @@
             </legend>
             <div class="mt-2 grid gap-2">
               <label
-                class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm"
+                class="selection-tile flex items-start gap-3 rounded-xl p-4 text-sm"
               >
                 <input
                   type="radio"
@@ -424,7 +424,6 @@
                   value="passage"
                   checked={generationMode === 'passage'}
                   onchange={() => (generationMode = 'passage')}
-                  class="mt-1"
                 />
                 <span>
                   <span class="font-semibold">Separate passages (default)</span>
@@ -434,7 +433,7 @@
                 </span>
               </label>
               <label
-                class="flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm"
+                class="selection-tile flex items-start gap-3 rounded-xl p-4 text-sm"
               >
                 <input
                   type="radio"
@@ -442,7 +441,6 @@
                   value="legacy"
                   checked={generationMode === 'legacy'}
                   onchange={() => (generationMode = 'legacy')}
-                  class="mt-1"
                 />
                 <span>
                   <span class="font-semibold">Legacy grouping</span>

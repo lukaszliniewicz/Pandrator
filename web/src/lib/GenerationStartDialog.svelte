@@ -352,7 +352,7 @@
 
     <fieldset class="mode-group" disabled={startBusy}>
       <legend class="text-sm font-semibold">What should be generated?</legend>
-      <label class="mode-option">
+      <label class="mode-option selection-tile">
         <input
           type="radio"
           name="generation-start-mode"
@@ -372,7 +372,7 @@
           </span>
         </span>
       </label>
-      <label class="mode-option">
+      <label class="mode-option selection-tile">
         <input
           type="radio"
           name="generation-start-mode"
@@ -392,7 +392,7 @@
           </span>
         </span>
       </label>
-      <label class="mode-option">
+      <label class="mode-option selection-tile">
         <input
           type="radio"
           name="generation-start-mode"
@@ -606,13 +606,8 @@
     display: flex;
     gap: 0.6rem;
     align-items: flex-start;
-    border: 1px solid var(--line);
     border-radius: 0.8rem;
     padding: 0.7rem 0.9rem;
-    cursor: pointer;
-  }
-  .mode-option input {
-    margin-top: 0.2rem;
   }
   .preview-panel {
     border: 1px solid var(--line);

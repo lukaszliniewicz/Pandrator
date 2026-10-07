@@ -15,6 +15,7 @@
   import type { TextSearchMatch } from './search-replace';
   import { modalFocus } from './modal-focus';
 
+  const radioGroupId = $props.id();
   let {
     sessionId,
     allowTranscriptRole = false,
@@ -261,14 +262,24 @@
     {#if allowTranscriptRole}<fieldset class="mt-6">
         <legend class="text-sm font-semibold">Use this source as</legend>
         <div class="mt-2 grid gap-2 sm:grid-cols-2">
-          <label class:active={role === 'primary'} class="source-role"
-            ><input type="radio" bind:group={role} value="primary" /><span
+          <label class="source-role selection-tile"
+            ><input
+              type="radio"
+              name={`${radioGroupId}-source-role`}
+              bind:group={role}
+              value="primary"
+            /><span
               ><strong>Recording</strong><small
                 >The video that will be cut.</small
               ></span
             ></label
-          ><label class:active={role === 'transcript'} class="source-role"
-            ><input type="radio" bind:group={role} value="transcript" /><span
+          ><label class="source-role selection-tile"
+            ><input
+              type="radio"
+              name={`${radioGroupId}-source-role`}
+              bind:group={role}
+              value="transcript"
+            /><span
               ><strong>Captions</strong><small
                 >Zoom VTT, SRT, or another timed transcript.</small
               ></span
@@ -417,17 +428,8 @@
   .source-role {
     display: flex;
     gap: 0.65rem;
-    border: 1px solid var(--line);
     border-radius: 0.9rem;
     padding: 0.8rem;
-  }
-  .source-role.active {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-  }
-  .source-role input {
-    margin-top: 0.15rem;
-    accent-color: var(--accent);
   }
   .source-role strong,
   .source-role small {
