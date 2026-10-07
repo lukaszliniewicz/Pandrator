@@ -237,7 +237,7 @@ test('RVC browses compact outputs by default and gives takes readable passage la
     };
     return route.fulfill({
       json: {
-        total: 1,
+        total: takes ? 1 : 2,
         offset: 0,
         next_offset: null,
         items: [
@@ -253,7 +253,17 @@ test('RVC browses compact outputs by default and gives takes readable passage la
                   segment_text: 'Bah, humbug!'
                 }
               : {})
-          }
+          },
+          ...(!takes
+            ? [
+                {
+                  ...common,
+                  id: 'assembly-uuid',
+                  role: 'assembled_audio',
+                  display_name: 'assembly-internal-uuid.wav'
+                }
+              ]
+            : [])
         ]
       }
     });
@@ -261,6 +271,12 @@ test('RVC browses compact outputs by default and gives takes readable passage la
   await page.goto('/rvc');
   await expect(page.getByLabel('Audio recording')).toContainText(
     'Christmas Carol — Output · Stave One.wav'
+  );
+  await expect(page.getByLabel('Audio recording')).toContainText(
+    'Christmas Carol — Assembled audio · '
+  );
+  await expect(page.getByLabel('Audio recording')).not.toContainText(
+    'assembly-internal-uuid'
   );
   await page.getByLabel('Include individual takes & recordings').check();
   await expect(page.getByLabel('Audio recording')).toContainText(

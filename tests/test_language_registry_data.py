@@ -19,7 +19,7 @@ def _load_json(path: Path) -> dict[str, object]:
 def test_language_registry_is_stable_and_referentially_valid() -> None:
     registry = _load_json(LOGIC_ROOT / "language_registry.json")
     assert registry["schema_version"] == 1
-    assert registry["catalogue_revision"] == "2026-10-05"
+    assert registry["catalogue_revision"] == "2026-10-07"
 
     sources = registry["sources"]
     assert isinstance(sources, list)
@@ -52,6 +52,7 @@ def test_language_registry_is_stable_and_referentially_valid() -> None:
             alias_owner[alias] = entry["tag"]
 
     assert alias_owner["jw"] == "jv"
+    assert alias_owner["cmn"] == "zh"
     assert {"no", "nb", "nn", "tl", "fil"}.issubset(tag_set)
     assert {"sw", "my", "km", "lo"}.issubset(tag_set)
     assert {"az", "ba", "cv", "xal", "myv", "mni", "raj"}.issubset(tag_set)
@@ -61,6 +62,15 @@ def test_language_registry_is_stable_and_referentially_valid() -> None:
     assert by_tag["cmn-tw"]["label"] == "Chinese, Mandarin (Taiwan)"
     assert by_tag["en-in"]["label"] == "English (India)"
     assert by_tag["es-es"]["label"] == "Spanish (Spain)"
+    for tag, label in {
+        "es-us": "Spanish (United States)",
+        "kok": "Konkani",
+        "mg": "Malagasy",
+        "or": "Odia",
+    }.items():
+        assert by_tag[tag]["label"] == label
+        assert by_tag[tag]["aliases"] == []
+        assert by_tag[tag]["source_ids"] == ["gemini_legacy_tts_languages"]
 
 
 def test_model_language_sources_preserve_counts_and_coverage_meaning() -> None:
@@ -134,3 +144,40 @@ def test_silero_records_keep_pack_scoped_codes_and_concrete_languages() -> None:
     assert len(indic["languages"]) == 9
     assert "indic" not in indic["languages"]
     assert set(indic["languages"]) == {"bn", "gu", "hi", "kn", "ml", "mni", "raj", "ta", "te"}
+
+
+def test_legacy_gemini_language_subsets_preserve_documented_codes_and_provenance() -> None:
+    registry = _load_json(LOGIC_ROOT / "language_registry.json")
+    model_data = _load_json(LOGIC_ROOT / "model_language_sources.json")
+    source_id = "gemini_legacy_tts_languages"
+    registry_source = next(source for source in registry["sources"] if source["id"] == source_id)
+    model_source = next(source for source in model_data["sources"] if source["id"] == source_id)
+    assert registry_source == model_source
+    assert registry_source == {
+        "id": source_id,
+        "url": "https://firebase.google.com/docs/ai-logic/generate-speech",
+        "revision": "Firebase-Gemini-TTS-docs@updated-2026-10-06; retrieved-2026-10-07",
+        "retrieved_on": "2026-10-07",
+        "sha256": "4c9f87494d724014a1315e7f0949f6deceb7367662b3ba7f1463878fe44744df",
+    }
+    common = set(
+        "ar-eg de-de en-us es-us fr-fr hi-in id-id it-it ja-jp ko-kr pt-br ru-ru "
+        "nl-nl pl-pl th-th tr-tr vi-vn ro-ro uk-ua bn-bd en-in mr-in ta-in te-in".split()
+    )
+    additional = set(
+        "af fil sq fi am gl hy ka az el eu gu be ht bg he my hu ca is ceb jv cmn kn "
+        "hr kok cs lo da la et lv lt lb mk mai mg ms ml mn ne nb nn or ps fa pa sr "
+        "sd si sk sl sw sv ur".split()
+    )
+    for key, native in [
+        ("gemini25_tts_languages", common),
+        ("gemini31_tts_languages", common | additional),
+    ]:
+        record = model_data["records"][key]
+        canonical = {"zh" if tag == "cmn" else tag for tag in native}
+        assert record["coverage"] == "subset"
+        assert record["languages"] == sorted(canonical)
+        assert record["native_language_codes"] == sorted(native)
+        assert record["request_aliases"] == {}
+        assert record["source_ids"] == [source_id]
+        assert record["revision"] == registry_source["revision"]

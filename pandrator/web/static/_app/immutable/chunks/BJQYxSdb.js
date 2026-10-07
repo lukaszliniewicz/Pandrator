@@ -1,0 +1,1 @@
+import{a}from"./B4H5lVTD.js";function r(t){return a(t)}function s(t){return t.trashed_at?"In trash":t.translation_status==="running"?"Translation in progress":t.translation_status==="completed"?"Subtitles translated":t.translation_status==="stale"?"Translation needs updating":"Ready to translate"}export{s as a,r as t};

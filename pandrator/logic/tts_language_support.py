@@ -23,6 +23,9 @@ from .language_capabilities import (
 )
 
 _SOURCE_RECORDS: dict[tuple[str, str], str] = {
+    ("gemini", "gemini-2.5-flash-preview-tts"): "gemini25_tts_languages",
+    ("gemini", "gemini-2.5-pro-preview-tts"): "gemini25_tts_languages",
+    ("gemini", "gemini-3.1-flash-tts-preview"): "gemini31_tts_languages",
     ("gemini", "gemini-3.8-flash-tts"): "gemini38_tts_languages",
     ("vertex_ai", "gemini-3.8-flash-tts"): "vertex_gemini38_tts_languages",
     ("fishs2", "fishaudio/s2-pro"): "fish_s2_pro83",

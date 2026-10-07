@@ -1021,7 +1021,11 @@ export function settingLabel(key: string): string {
     speech_block_max_chars: 'Maximum characters per request',
     speech_block_merge_threshold: 'Speech-block merge gap (ms)',
     speech_block_max_internal_gap_ms:
-      'Maximum silence inside one TTS chunk (ms)'
+      'Maximum silence inside one TTS chunk (ms)',
+    sentence_silence_ms: 'Sentence pause (ms)',
+    paragraph_silence_ms: 'Paragraph pause (ms)',
+    clause_silence_ms: 'Clause pause (ms)',
+    voice_change_silence_ms: 'Minimum pause when changing voices (ms)'
   };
   if (labels[key]) return labels[key];
   return key

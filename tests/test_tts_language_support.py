@@ -38,11 +38,65 @@ def test_vertex_language_matrix_is_not_borrowed_by_direct_gemini_models():
     direct_gemini = tts_language_support("gemini", "gemini-2.5-flash-preview-tts")
     vertex = tts_language_support("vertex_ai", "gemini-2.5-flash-tts")
 
-    assert direct_gemini["coverage"] == "unknown"
-    assert direct_gemini["languages"] == []
-    assert direct_gemini["source_key"] == ""
+    assert direct_gemini["coverage"] == "subset"
+    assert direct_gemini["source_key"] == "gemini25_tts_languages"
+    assert direct_gemini["source_ids"] == ["gemini_legacy_tts_languages"]
+    assert language_decision(direct_gemini, "en") == "supported"
+    assert language_decision(direct_gemini, "af") == "unverified"
     assert direct_gemini["native_route"] == "gemini_generate_content"
     assert vertex["languages"]
+
+
+def test_legacy_gemini_subsets_are_specific_to_model_and_provider():
+    expected = {
+        "gemini-2.5-flash-preview-tts": "gemini25_tts_languages",
+        "gemini-2.5-pro-preview-tts": "gemini25_tts_languages",
+        "gemini-3.1-flash-tts-preview": "gemini31_tts_languages",
+    }
+    for model_id, source_key in expected.items():
+        record = tts_language_support("gemini", model_id)
+        assert record["coverage"] == "subset"
+        assert record["source_key"] == source_key
+        assert record["source_ids"] == ["gemini_legacy_tts_languages"]
+        assert language_decision(record, "en") == "supported"
+        assert language_decision(record, "qzz") == "unverified"
+        assert language_decision(record, "af") == (
+            "supported" if source_key == "gemini31_tts_languages" else "unverified"
+        )
+        assert record["native_route"] == "gemini_generate_content"
+
+    gemini31 = tts_language_support("gemini", "gemini-3.1-flash-tts-preview")
+    assert "zh" in gemini31["languages"]
+    assert "cmn" not in gemini31["languages"]
+    assert "cmn" in gemini31["native_language_codes"]
+
+    for provider_id, model_id in [
+        ("gemini", "future-model"),
+        ("gemini", "gemini-2.5-flash-tts"),
+        ("unknown-provider", "gemini-3.1-flash-tts-preview"),
+    ]:
+        record = tts_language_support(provider_id, model_id)
+        assert record["coverage"] == "unknown"
+        assert record["languages"] == []
+        assert record["source_key"] == ""
+
+
+def test_legacy_gemini_models_survive_catalogue_english_filter():
+    legacy_ids = {
+        "gemini-2.5-flash-preview-tts",
+        "gemini-2.5-pro-preview-tts",
+        "gemini-3.1-flash-tts-preview",
+    }
+    english = catalogue_page(provider="gemini", language="en", limit=100)
+    english_ids = {row["id"] for row in english["items"]}
+    assert legacy_ids <= english_ids
+    assert "gemini-3.8-flash-tts" in english_ids
+
+    afrikaans = catalogue_page(provider="gemini", language="af", limit=100)
+    assert {row["id"] for row in afrikaans["items"]} == {
+        "gemini-3.1-flash-tts-preview",
+        "gemini-3.8-flash-tts",
+    }
 
 
 def test_static_source_map_is_exact_to_provider_and_model_identity():
@@ -220,8 +274,11 @@ def test_model_catalogue_exposes_support_record_and_does_not_use_provider_wide_f
 
     assert fish["language_support"]["coverage"] == "claim"
     assert fish["supported_languages"] == fish["language_support"]["languages"]
-    assert direct_gemini["language_support"]["coverage"] == "unknown"
-    assert direct_gemini["supported_languages"] == []
+    assert direct_gemini["language_support"]["coverage"] == "subset"
+    assert "en-us" in direct_gemini["supported_languages"]
+    assert direct_gemini["language_support"]["source_ids"] == [
+        "gemini_legacy_tts_languages"
+    ]
     assert vertex["language_support"]["native_route"] == "vertex_generate_content"
     assert kokoro_alias["language_support"]["coverage"] == "claim"
     assert "en-gb" in kokoro_alias["supported_languages"]

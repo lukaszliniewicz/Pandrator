@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalogue_revision": "2026-10-05",
+  "catalogue_revision": "2026-10-07",
   "sources": [
     {
       "id": "dots_tts_readme",
@@ -29,6 +29,13 @@
       "revision": "Gemini-3.8-TTS-docs@2026-10-05",
       "retrieved_on": "2026-10-05",
       "sha256": "dabb5bbee6d976fb9ee3d2c3d2db561c74a9be2e2a084c32939f258c73aabd78"
+    },
+    {
+      "id": "gemini_legacy_tts_languages",
+      "url": "https://firebase.google.com/docs/ai-logic/generate-speech",
+      "revision": "Firebase-Gemini-TTS-docs@updated-2026-10-06; retrieved-2026-10-07",
+      "retrieved_on": "2026-10-07",
+      "sha256": "4c9f87494d724014a1315e7f0949f6deceb7367662b3ba7f1463878fe44744df"
     },
     {
       "id": "higgs_v3_tts_readme",
@@ -1794,6 +1801,14 @@
       ]
     },
     {
+      "tag": "es-us",
+      "label": "Spanish (United States)",
+      "aliases": [],
+      "source_ids": [
+        "gemini_legacy_tts_languages"
+      ]
+    },
+    {
       "tag": "esu",
       "label": "Central Yupik",
       "aliases": [],
@@ -3316,6 +3331,14 @@
       ]
     },
     {
+      "tag": "kok",
+      "label": "Konkani",
+      "aliases": [],
+      "source_ids": [
+        "gemini_legacy_tts_languages"
+      ]
+    },
+    {
       "tag": "kok-in",
       "label": "Konkani (India)",
       "aliases": [],
@@ -3876,6 +3899,14 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "mg",
+      "label": "Malagasy",
+      "aliases": [],
+      "source_ids": [
+        "gemini_legacy_tts_languages"
       ]
     },
     {
@@ -4644,6 +4675,14 @@
         "higgs_v3_tts_readme",
         "omnivoice_langmap",
         "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "or",
+      "label": "Odia",
+      "aliases": [],
+      "source_ids": [
+        "gemini_legacy_tts_languages"
       ]
     },
     {

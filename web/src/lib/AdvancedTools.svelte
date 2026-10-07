@@ -108,6 +108,10 @@
     const project = item.session_name || 'Voice library';
     if (item.segment_ordinal != null)
       return `${project} — Segment ${item.segment_ordinal + 1}${item.speaker ? ` · ${item.speaker}` : ''}${item.segment_text ? ` — ${item.segment_text}` : ''}`;
+    if (item.role === 'assembled_audio') {
+      const created = new Date(item.created_at);
+      return `${project} — Assembled audio${Number.isNaN(created.getTime()) ? '' : ` · ${created.toLocaleString()}`}`;
+    }
     return `${project} — ${item.role === 'export' ? 'Output' : item.role.replaceAll('_', ' ')} · ${item.display_name}`;
   }
   const audioArtifacts = $derived(
