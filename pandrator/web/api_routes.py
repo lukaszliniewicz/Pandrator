@@ -308,6 +308,9 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .generation_control_routes import register_generation_control_routes
 
     register_generation_control_routes(app, context)
+    from .generation_recast_routes import register_generation_recast_routes
+
+    register_generation_recast_routes(app, context)
     from .audiobook_routes import register_audiobook_routes
     from .speech_selection_routes import register_speech_selection_routes
 

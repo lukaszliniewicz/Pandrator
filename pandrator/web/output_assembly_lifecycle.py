@@ -57,6 +57,16 @@ def mark_output_assemblies_stale(
         filters.append((OutputAssembly.generation_run_id.is_(None)) | run_filter)
     records = list(session.scalars(select(OutputAssembly).where(*filters)).all())
     for record in records:
+        assembly_run = (
+            session.get(GenerationRun, record.generation_run_id)
+            if record.generation_run_id else None
+        )
+        if assembly_run is not None and assembly_run.audio_version_json:
+            # A pinned version cannot inherit a later change to its old root.
+            if record.generation_run_id != generation_run_id:
+                continue
+            if (record.settings_json or {}).get("audio_version_side") == "before":
+                continue
         job = session.get(Job, record.job_id) if record.job_id else None
         if (
             cancel_active
@@ -84,4 +94,3 @@ def mark_output_assemblies_stale(
             if artifact is not None:
                 artifact.state = "stale"
                 ArtifactService._mark_descendants_stale(session, artifact.id)
-

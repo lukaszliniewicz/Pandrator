@@ -48,6 +48,12 @@ def test_two_voices_preserve_one_logical_text_and_precedence():
     assert "".join(part["text"] for part in parts) == "AB"
     assert parts[0]["speaker_ids"] == ["c-one"]
     assert parts[1]["speaker_ids"] == ["c-two"]
+    assert [part["speaker_labels"] for part in parts] == [["One"], ["Two"]]
+    _audio, manifest = execute_render_parts(
+        parts, synthesize=lambda *_: AudioSegment.silent(duration=20),
+        cancelled=lambda: False,
+    )
+    assert [part["speaker_labels"] for part in manifest] == [["One"], ["Two"]]
 
 
 def test_category_only_speaker_uses_category_cast_without_character_dictionary():

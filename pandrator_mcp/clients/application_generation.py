@@ -9,6 +9,27 @@ from .application_requests import ApplicationRequests
 
 
 class ApplicationGenerationMethods(ApplicationRequests):
+    def generation_recast_request(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call only the four revision-fenced recast and undo endpoints."""
+        if action not in {"preview", "recast", "undo_preview", "undo"}:
+            raise ValueError("Unknown generation-recast action.")
+        values = dict(arguments)
+        key = values.pop("idempotency_key", None)
+        if action in {"preview", "recast"}:
+            identifier = values.pop("session_id")
+            path = f"/api/v1/sessions/{quote(str(identifier), safe='')}/generation-recast"
+            if action == "preview":
+                path += "/preview"
+        else:
+            identifier = values.pop("generation_run_id")
+            path = f"/api/v1/generation-runs/{quote(str(identifier), safe='')}/audio-version"
+            path += "/undo-preview" if action == "undo_preview" else "/undo"
+        # Null selectors mean changed voices only; [] means an explicit empty selection.
+        return self._request_json(
+            path, method="POST", body=values, idempotency_key=key,
+            maximum_body_bytes=512 * 1024,
+        )
+
     def performance_plan_request(self, action: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Bounded, allowlisted performance API; no arbitrary paths or endpoints."""
         methods = {
@@ -157,11 +178,13 @@ class ApplicationGenerationMethods(ApplicationRequests):
         around_ordinal: int | None = None,
         source_cue_id: str | None = None,
         radius: int = 2,
+        audio_version_side: str = "after",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "cursor": max(0, int(cursor)),
             "limit": max(1, min(int(limit), 100)),
         }
+        params["audio_version_side"] = audio_version_side
         optional = {
             "generation_run_id": generation_run_id,
             "plan_revision_id": plan_revision_id,
@@ -388,8 +411,9 @@ class ApplicationGenerationMethods(ApplicationRequests):
         *,
         generation_run_id: str | None = None,
         idempotency_key: str,
+        audio_version_side: str = "after",
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {}
+        body: dict[str, Any] = {"audio_version_side": audio_version_side}
         if generation_run_id:
             body["generation_run_id"] = generation_run_id
         return self._request_json(

@@ -29,11 +29,13 @@
   type Props = {
     sessionId: string;
     generationRunId?: string;
+    audioVersionSide?: 'before' | 'after';
     onSaveForExportReady?: (save: () => Promise<SavedOutputProfile>) => void;
   };
   let {
     sessionId,
     generationRunId = '',
+    audioVersionSide = 'after',
     onSaveForExportReady
   }: Props = $props();
   let settings = $state<SettingsPayload | null>(null);
@@ -307,6 +309,7 @@
         sessionId,
         {
           generation_run_id: generationRunId,
+          audio_version_side: audioVersionSide,
           start_seconds:
             previewStartSeconds == null
               ? null
@@ -599,6 +602,7 @@
       <BookOutputSettings
         {sessionId}
         {generationRunId}
+        {audioVersionSide}
         settings={{ ...settings?.effective, ...draft }}
         onChange={set}
       />

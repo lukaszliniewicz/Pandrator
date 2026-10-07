@@ -17,6 +17,11 @@
     type VoiceBinding
   } from './generation-controls';
   import CastVoiceField from './CastVoiceField.svelte';
+  import CastRecastDialog from './CastRecastDialog.svelte';
+  import RecastVoiceAction from './RecastVoiceAction.svelte';
+  import { previewRecast, type RecastPreview } from './generation-recast';
+  import { invalidationBus, invalidates } from './invalidation';
+  import { notifySessionFlowChange } from './session-flow';
   let {
     sessionId,
     service = '',
@@ -59,6 +64,45 @@
   let pendingLeave = $state<(() => void) | null>(null);
   let allowLeave = false;
   let services = $state<TtsService[]>([]);
+  let impact = $state<RecastPreview | null>(null);
+  let impactError = $state('');
+  let impactLoading = $state(false);
+  let recastKeys = $state<string[] | null | undefined>(undefined);
+  let impactController: AbortController | undefined;
+  let impactTimer: ReturnType<typeof setTimeout> | undefined;
+  const impactByKey = $derived(
+    new Map((impact?.selectors ?? []).map((item) => [item.key, item]))
+  );
+  $effect(() => {
+    void service;
+    void model;
+    void revision;
+    if (loaded && open)
+      untrack(() => {
+        void refreshImpact();
+      });
+  });
+  async function refreshImpact() {
+    impactController?.abort();
+    const controller = new AbortController();
+    impactController = controller;
+    impactLoading = true;
+    impactError = '';
+    try {
+      const result = await previewRecast(sessionId, {}, controller.signal);
+      if (!controller.signal.aborted && alive) impact = result;
+    } catch (caught) {
+      if (!controller.signal.aborted && alive)
+        impactError = errorMessage(caught);
+    } finally {
+      if (!controller.signal.aborted && alive) impactLoading = false;
+    }
+  }
+  async function reviewRecast(keys: string[] | null) {
+    if (blocked || !draftState().valid) return;
+    if (dirty && !(await save())) return;
+    recastKeys = keys;
+  }
   const selectedService = $derived(
     services.find((item) => item.id === service || item.name === service)
   );
@@ -74,6 +118,29 @@
   );
   onMount(() => {
     if (standalone) void load();
+    return invalidationBus.subscribe((batch) => {
+      if (
+        !loaded ||
+        !open ||
+        dirty ||
+        !invalidates(batch, 'generation', sessionId)
+      )
+        return;
+      if (
+        !batch.events.some(
+          (event) =>
+            event.type === 'session.flow.changed' ||
+            ['succeeded', 'failed', 'canceled', 'interrupted'].includes(
+              String(event.status)
+            )
+        )
+      )
+        return;
+      clearTimeout(impactTimer);
+      impactTimer = setTimeout(() => {
+        void refreshImpact();
+      }, 250);
+    });
   });
   beforeNavigate((event) => {
     if (!standalone || navigationManaged || allowLeave || !dirty) return;
@@ -89,6 +156,8 @@
   let alive = true;
   onDestroy(() => {
     alive = false;
+    impactController?.abort();
+    clearTimeout(impactTimer);
   });
   const dirty = $derived(
     loaded && JSON.stringify({ characters, cast }) !== baseline
@@ -228,6 +297,7 @@
       message =
         'Characters and cast saved. New generation requests use these assignments.';
       onchanged?.(characters);
+      notifySessionFlowChange(sessionId);
       return true;
     } catch (caught) {
       if (alive) error = errorMessage(caught);
@@ -306,17 +376,25 @@
     </p>
     {#if loaded}
       <div class="grid gap-4 sm:grid-cols-2">
-        <CastVoiceField
-          label="Narrator voice"
-          value={cast.narrator}
-          inherited={inheritedSession}
-          {voices}
-          {suggestions}
-          service={rendererId}
-          {model}
-          disabled={blocked}
-          onchange={(value) => (cast = { ...cast, narrator: value })}
-        />
+        <div>
+          <CastVoiceField
+            label="Narrator voice"
+            value={cast.narrator}
+            inherited={inheritedSession}
+            {voices}
+            {suggestions}
+            service={rendererId}
+            {model}
+            disabled={blocked}
+            onchange={(value) => (cast = { ...cast, narrator: value })}
+          />
+          <RecastVoiceAction
+            impact={impactByKey.get('narrator')}
+            {dirty}
+            disabled={blocked || !draftState().valid}
+            onclick={() => void reviewRecast(['narrator'])}
+          />
+        </div>
         <p class="muted text-xs self-center">
           Dialogue uses an assigned character voice, a source speaker
           assignment, or a dialogue fallback. Remaining parts use the narrator,
@@ -376,6 +454,12 @@
             {model}
             disabled={blocked}
             onchange={(value) => bindVoice('characters', character.id, value)}
+          />
+          <RecastVoiceAction
+            impact={impactByKey.get(`character:${character.id}`)}
+            {dirty}
+            disabled={blocked || !draftState().valid}
+            onclick={() => void reviewRecast([`character:${character.id}`])}
           />
           <details
             open={expandedCharacters.includes(character.id)}
@@ -474,34 +558,50 @@
         </p>
         <div class="grid gap-4 sm:grid-cols-2">
           {#each voiceCategories as category}
-            <CastVoiceField
-              label={`${category === 'unspecified' ? 'Unknown speaker' : category[0].toUpperCase() + category.slice(1)} dialogue default`}
-              value={cast.categories[category]}
-              inherited={cast.narrator ?? inheritedSession}
-              inheritedLabel={cast.narrator ? 'Narrator' : 'Project voice'}
-              {voices}
-              {suggestions}
-              service={rendererId}
-              {model}
-              disabled={blocked}
-              onchange={(value) => bindVoice('categories', category, value)}
-            />
+            <div>
+              <CastVoiceField
+                label={`${category === 'unspecified' ? 'Unknown speaker' : category[0].toUpperCase() + category.slice(1)} dialogue default`}
+                value={cast.categories[category]}
+                inherited={cast.narrator ?? inheritedSession}
+                inheritedLabel={cast.narrator ? 'Narrator' : 'Project voice'}
+                {voices}
+                {suggestions}
+                service={rendererId}
+                {model}
+                disabled={blocked}
+                onchange={(value) => bindVoice('categories', category, value)}
+              />
+              <RecastVoiceAction
+                impact={impactByKey.get(`category:${category}`)}
+                {dirty}
+                disabled={blocked || !draftState().valid}
+                onclick={() => void reviewRecast([`category:${category}`])}
+              />
+            </div>
           {/each}
         </div>
       </details>
       <details class="text-sm">
         <summary class="cursor-pointer">Source speaker assignments</summary>
         <div class="mt-3 space-y-3">
-          {#each Object.keys(cast.source_speakers) as speaker}<CastVoiceField
-              label={`Source speaker ${speaker}`}
-              value={cast.source_speakers[speaker]}
-              {voices}
-              {suggestions}
-              service={rendererId}
-              {model}
-              disabled={blocked}
-              onchange={(value) => bindVoice('source_speakers', speaker, value)}
-            />{/each}
+          {#each Object.keys(cast.source_speakers) as speaker}<div>
+              <CastVoiceField
+                label={`Source speaker ${speaker}`}
+                value={cast.source_speakers[speaker]}
+                {voices}
+                {suggestions}
+                service={rendererId}
+                {model}
+                disabled={blocked}
+                onchange={(value) =>
+                  bindVoice('source_speakers', speaker, value)}
+              /><RecastVoiceAction
+                impact={impactByKey.get(`source:${speaker}`)}
+                {dirty}
+                disabled={blocked || !draftState().valid}
+                onclick={() => void reviewRecast([`source:${speaker}`])}
+              />
+            </div>{/each}
           <label class="block"
             >Source speaker label<input
               class="input mt-1 w-full"
@@ -526,6 +626,16 @@
         </div>
       </details>
       <div class="flex flex-wrap items-center gap-2">
+        {#if impact?.selectors.some((item) => item.affected_count > item.missing_count)}
+          <button
+            class="btn btn-primary"
+            disabled={blocked || !draftState().valid}
+            onclick={() => void reviewRecast(null)}
+            >{dirty
+              ? 'Save & regenerate changed voices…'
+              : 'Regenerate changed voices…'}</button
+          >
+        {/if}
         <button
           class="btn btn-primary"
           disabled={blocked ||
@@ -546,6 +656,15 @@
             }}>Discard cast changes</button
           >{/if}
       </div>
+      {#if impactLoading}<p role="status" class="muted text-xs">
+          Comparing the saved cast with current recordings…
+        </p>{/if}
+      {#if impactError}<p class="muted text-xs">
+          Recording comparison unavailable: {impactError}
+          <button class="underline" onclick={() => void refreshImpact()}
+            >Retry comparison</button
+          >
+        </p>{/if}
     {:else}<p class="muted text-sm">
         {pending
           ? 'Loading characters and voices…'
@@ -553,6 +672,19 @@
       </p>{/if}
   </div>
 </details>
+
+{#if recastKeys !== undefined}
+  <CastRecastDialog
+    {sessionId}
+    initialKeys={recastKeys}
+    onclose={() => (recastKeys = undefined)}
+    onstarted={(run) => {
+      recastKeys = undefined;
+      message = `${run.label} queued. Existing audio remains available in history.`;
+      void refreshImpact();
+    }}
+  />
+{/if}
 
 {#if pendingLeave}<div
     class="fixed inset-0 z-[90] grid place-items-center bg-black/45 p-4"

@@ -69,6 +69,13 @@ from .generation_controls import (
     VoiceBinding,
     VoiceCategory,
 )
+from .generation_recast import (
+    GENERATION_RECAST_INPUT_MODELS,
+    PreviewRecastInput,
+    PreviewUndoRecastInput,
+    RecastVoicesInput,
+    UndoRecastInput,
+)
 from .guidance import GUIDE_TOPICS, ExplainSystemInput, GuideTopic
 from .inventory import ListArtifactsInput, ProviderStatusInput, VoiceCatalogInput
 from .manager import (
@@ -250,6 +257,7 @@ TOOL_INPUT_MODELS = (
     *SESSION_PURGE_INPUT_MODELS,
     *PERFORMANCE_INPUT_MODELS,
     *GENERATION_CONTROLS_INPUT_MODELS,
+    *GENERATION_RECAST_INPUT_MODELS,
     *VOICE_METADATA_INPUT_MODELS,
     ExplainSystemInput,
     RecommendNextStepsInput,
@@ -483,6 +491,11 @@ __all__ = [
     "VoiceBinding",
     "VoiceCategory",
     "GENERATION_CONTROLS_INPUT_MODELS",
+    "GENERATION_RECAST_INPUT_MODELS",
+    "PreviewRecastInput",
+    "PreviewUndoRecastInput",
+    "RecastVoicesInput",
+    "UndoRecastInput",
 
     "ListDispatchRunsInput",
     "ListSourceCleaningDispatchRunsInput",

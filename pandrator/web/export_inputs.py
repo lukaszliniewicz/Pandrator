@@ -173,7 +173,7 @@ def resolve_export_inputs(
                 raise ValueError(
                     "The selected generation run does not belong to this session."
                 )
-            if generation_run.status != "completed":
+            if generation_run.status != "completed" and generation_run.audio_version_json is None:
                 raise ValueError(
                     "Only a completed generation run can be exported."
                 )
@@ -194,9 +194,16 @@ def resolve_export_inputs(
                             else {}
                         ),
                         artifact_id=pinned_assembly_artifact_id or None,
+                        audio_version_side=str(settings.get("audio_version_side") or "after"),
                     )
                 )
             else:
+                from .generation_audio_version_assembly import audio_version_assembly_selection
+
+                version_selection, _version_rows = audio_version_assembly_selection(
+                    session, session_id, generation_run,
+                    str(settings.get("audio_version_side") or "after"),
+                )
                 # Compatibility for older direct API/MCP callers that pinned a
                 # generation run before resolved export snapshots were queued.
                 # Without the immutable snapshot we cannot prove output-setting
@@ -223,6 +230,12 @@ def resolve_export_inputs(
                     candidate
                     for candidate in legacy_candidates
                     if (
+                        (candidate.settings_json or {}).get("audio_version_side", "after") == str(settings.get("audio_version_side") or "after")
+                        and (version_selection is None or all(
+                            (candidate.settings_json or {}).get(key) == value
+                            for key, value in version_selection.items()
+                        ))
+                        and (
                         not str(
                             (candidate.settings_json or {}).get("plan_revision_id")
                             or ""
@@ -232,6 +245,7 @@ def resolve_export_inputs(
                             or ""
                         )
                         == generation_run.plan_revision_id
+                        )
                     )
                 ]
                 if len(legacy_candidates) > 1:

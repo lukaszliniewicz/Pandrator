@@ -641,7 +641,7 @@ class WorkflowExecutionPlanService:
                         "The selected generation run does not belong to this session.",
                         422,
                     )
-                if generation_run.status != "completed":
+                if generation_run.status != "completed" and generation_run.audio_version_json is None:
                     raise WorkflowPlanError(
                         "generation_run_not_ready",
                         "Only a completed generation run can be exported.",
@@ -653,6 +653,7 @@ class WorkflowExecutionPlanService:
                         session_id=session_id,
                         run=generation_run,
                         resolved_settings_snapshot=snapshot,
+                        audio_version_side=str(settings.get("audio_version_side") or "after"),
                     )
                 )
             steps.append(

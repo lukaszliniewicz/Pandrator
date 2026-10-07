@@ -22,6 +22,7 @@ COMPACT_SEGMENT_FIELDS = (
     "id", "ordinal", "revision", "text", "source_segment_ids", "status", "removed",
     "optimization_status", "take_count", "active_take_id", "has_usable_take",
     "audio_reuse_reason", "has_reusable_take",
+    "history_take_id",
 )
 EXTRA_SEGMENT_FIELDS = {"take_count", "active_take_id", "has_usable_take"}
 PROJECTABLE_SEGMENT_FIELDS = set(COMPACT_SEGMENT_FIELDS) | {

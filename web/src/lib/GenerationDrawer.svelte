@@ -1,5 +1,6 @@
 <script lang="ts">
   import GenerationRunHistory from './GenerationRunHistory.svelte';
+  import GenerationAudioVersionHistory from './GenerationAudioVersionHistory.svelte';
   import GenerationAlternateDialog, {
     type GenerationAlternateDraft
   } from './GenerationAlternateDialog.svelte';
@@ -124,6 +125,7 @@
     const numbers = new Map<string, number>();
     for (const item of payload.items) {
       [...item.takes]
+        .filter((take) => !take.is_reused)
         .sort((left, right) =>
           String(left.created_at ?? '').localeCompare(
             String(right.created_at ?? '')
@@ -157,6 +159,7 @@
   });
   let selectedRunId = $state('');
   let selectedRunVersionId = $state('');
+  let audioVersionSide = $state<'before' | 'after'>('after');
   // Editing creates a new plan; its settings source survives leaving history.
   let settingsSourceRunId = $state('');
   const settingsSourceRun = $derived(
@@ -671,7 +674,12 @@
     return rows;
   });
   const selectedAssembly = $derived(
-    selectedRun?.assembly ??
+    (selectedRun?.audio_version
+      ? (selectedRun.audio_version_assemblies?.[audioVersionSide] ??
+        (selectedRun.assembly?.audio_version_side === audioVersionSide
+          ? selectedRun.assembly
+          : null))
+      : selectedRun?.assembly) ??
       (!selectedRun && !assembly?.generation_run_id ? assembly : null)
   );
   const headerAssembly = $derived(
@@ -798,6 +806,7 @@
           filter,
           selectedRunId,
           selectedRunVersionId,
+          audioVersionSide,
           reset,
           preserveLoaded,
           search: searchParams
@@ -1280,7 +1289,12 @@
     error = '';
     try {
       generationStore.setAssembly(
-        await generationApi.createAssembly(sessionId, selectedRun?.id || null)
+        await generationApi.createAssembly(
+          sessionId,
+          selectedRun?.id || null,
+          {},
+          selectedRun?.audio_version ? audioVersionSide : 'after'
+        )
       );
       await load();
     } catch (caught) {
@@ -1292,6 +1306,11 @@
 
   function activeTake(item: GenerationSegment): PlayableTake | undefined {
     if (selectedRun) {
+      if (selectedRun.audio_version)
+        return item.takes?.find(
+          (take): take is PlayableTake =>
+            take.id === item.history_take_id && hasArtifact(take)
+        );
       const sequences = new Map(
         generationStore.runs.map((item) => [
           item.id,
@@ -1405,6 +1424,25 @@
       alternate && owner
         ? `${owner.label.split(':')[0]}: ${alternate}`
         : (owner?.label ?? 'Legacy');
+    if (take.rendered_voices?.length) {
+      const voices = [
+        ...new Set(
+          take.rendered_voices.map((part) => {
+            const speakers = part.speaker_labels?.length
+              ? part.speaker_labels
+              : part.speaker_ids.length
+                ? part.speaker_ids
+                : [
+                    part.source === 'narrator' || part.source === 'base'
+                      ? 'Narrator'
+                      : 'Voice'
+                  ];
+            return `${speakers.join(', ')}${part.voice ? `: ${part.voice}` : ''}`;
+          })
+        )
+      ];
+      return `${owner?.label ?? 'Legacy'} · ${voices.join(', ')} · ${take.is_reused ? 'Reused recording' : `Take ${takeNumbers.get(take.id) ?? 1}`}`;
+    }
     return `${label} · Take ${takeNumbers.get(take.id) ?? 1} · ${String(take.kind || 'audio').toUpperCase()}`;
   }
 
@@ -1544,6 +1582,7 @@
   async function changeSelectedRun(event: Event) {
     selectedRunId = (event.currentTarget as HTMLSelectElement).value;
     selectedRunVersionId = '';
+    audioVersionSide = 'after';
     settingsSourceRunId = selectedRunId;
     selectedRow = '';
     selectedRows = [];
@@ -1665,6 +1704,7 @@
           selectedRunId,
           selectedRunVersionId,
           search: searchParams,
+          audioVersionSide,
           reset: true,
           preserveLoaded: false,
           startOrdinal: item.ordinal
@@ -1892,7 +1932,8 @@
         filter,
         selectedRunId,
         selectedRunVersionId,
-        search: searchParams
+        search: searchParams,
+        audioVersionSide
       }),
       applyLoadResult,
       () => mode !== 'collapsed'
@@ -1939,7 +1980,7 @@
     // effects that read through the payload object, even when the revision
     // ID is unchanged. Compare the previous/current primitive scope so a
     // take switch keeps its mounted player instead of unmounting it.
-    const scope = `${payload.plan_revision_id ?? ''}|${selectedRunId}|${selectedRunVersionId}`;
+    const scope = `${payload.plan_revision_id ?? ''}|${selectedRunId}|${selectedRunVersionId}|${audioVersionSide}`;
     if (scope !== untrack(() => lastPreviewScope)) {
       lastPreviewScope = scope;
       previewSegmentId = '';
@@ -2587,6 +2628,27 @@
               activeMix={!selectedRunId}
               disabled={loading}
               onSelectVersion={selectRepairVersion}
+            />
+          </div>
+        {/if}
+        {#if selectedRun?.audio_version}
+          <div class="border-b border-[var(--line)] p-3">
+            <GenerationAudioVersionHistory
+              run={selectedRun}
+              side={audioVersionSide}
+              disabled={loading}
+              onchoose={(side) => {
+                audioVersionSide = side;
+                stopPlayback();
+                void load(true, false);
+              }}
+              onundone={(updated) => {
+                generationStore.upsertRun(updated);
+                selectedRunId = '';
+                selectedRunVersionId = '';
+                audioVersionSide = 'after';
+                void load(true, false);
+              }}
             />
           </div>
         {/if}

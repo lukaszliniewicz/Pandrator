@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from .database import Database
+from .generation_audio_versions import audio_version_summary
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, utcnow
 
 
@@ -25,7 +26,11 @@ def finalize_generation_run(
         run = session.get(GenerationRun, run_id)
         if run is None:
             raise KeyError(run_id)
-        if operation == "rvc" or (
+        version_summary = audio_version_summary(run)
+        if version_summary is not None:
+            incomplete = int(version_summary["remaining_count"])
+            repair_requested = False
+        elif operation == "rvc" or (
             operation == "regenerate" and run.output_generation_run_id is None
         ):
             incomplete = int(
@@ -65,11 +70,20 @@ def finalize_generation_run(
         final_status = "partial" if incomplete else "completed"
         if run.cancel_requested or run.status in {"cancel_requested", "canceled"}:
             final_status = run.status
+            if version_summary is not None and final_status not in {"cancel_requested", "canceled"}:
+                final_status = "canceled"
+                run.status = final_status
+                run.updated_at = utcnow()
+        elif (version_summary is not None and run.status == "failed"
+              and version_summary["generated_count"] == 0):
+            final_status = "failed"
         elif run.pause_requested or run.status in {"pausing", "pause_requested", "paused"}:
             final_status = "paused"
             if run.status != "paused":
                 run.status = "paused"
                 run.updated_at = utcnow()
+            if version_summary is not None:
+                final_status = "paused"
         else:
             run.status = (
                 "running" if repair_requested and final_status == "completed" else final_status

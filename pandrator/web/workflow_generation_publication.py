@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .artifacts import ArtifactService, PreparedArtifactRegistration
-from .models import AudioTake, GenerationSegment, UsageEvent, utcnow
+from .models import AudioTake, GenerationRun, GenerationSegment, UsageEvent, utcnow
 
 
 class MarkOutputAssembliesStaleProtocol(Protocol):
@@ -79,6 +79,12 @@ def publish_generation_take(
     )
     expected_selection = publication.expected_selection
     activate_new = selection_is_unchanged(selected_before, expected_selection)
+    run = session.get(GenerationRun, publication.run_id)
+    controls_revision = (run.settings_snapshot_json or {}).get("generation_recast_controls_revision") if run else None
+    if controls_revision is not None:
+        from .generation_controls import get_generation_controls
+
+        activate_new = activate_new and get_generation_controls(session, publication.session_id)["revision"] == controls_revision
     if activate_new:
         deactivate = update(AudioTake).where(
             AudioTake.generation_segment_id == segment_id,
@@ -103,9 +109,15 @@ def publish_generation_take(
     )
     session.add(new_take)
     session.flush()
+    from .generation_audio_versions import record_audio_version_take
+
+    record_audio_version_take(session, publication.run_id, new_take, applied=activate_new)
     from .generation_edit_audio import publish_to_edit_copy
 
-    publish_to_edit_copy(session, segment, new_take, artifact, expected_selection)
+    publish_to_edit_copy(
+        session, segment, new_take, artifact, expected_selection,
+        allow_activation=activate_new if run is not None and run.audio_version_json else True,
+    )
     segment.status = (
         "completed" if activate_new else (selected_before.status if selected_before else "ready")
     )

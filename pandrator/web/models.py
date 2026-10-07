@@ -936,6 +936,7 @@ class GenerationRun(Base):
     settings_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    audio_version_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     settings_hash: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

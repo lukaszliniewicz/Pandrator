@@ -350,6 +350,7 @@ def build_server(runtime: McpRuntime):
         open_world_hint=False,
     )
 
+    from .registrations.generation_recast import register_generation_recast_tools
     from .tools.audiobook import register_audiobook_tools
     from .tools.generation_controls import register_generation_controls_tools
     from .tools.performance import register_performance_tools
@@ -367,6 +368,10 @@ def build_server(runtime: McpRuntime):
         _call_with_validated_input,
         read_only=read_only,
         write_action=write_action,
+    )
+    register_generation_recast_tools(
+        server, runtime, _call_with_validated_input,
+        read_only=read_only, write_action=write_action,
     )
     register_audiobook_tools(
         server, runtime, _call_with_validated_input,
@@ -1148,6 +1153,7 @@ def build_server(runtime: McpRuntime):
     def export_variant_plan_tool(
         session_id: str,
         generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
+        audio_version_side: Literal["before", "after"] = "after",
         export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
         subtitle_mode: Literal["none", "soft", "burned"] = "none",
@@ -1163,6 +1169,7 @@ def build_server(runtime: McpRuntime):
             lambda: PlanExportVariantInput(
                 session_id=session_id,
                 generation_run_id=generation_run_id,
+                audio_version_side=audio_version_side,
                 export_mode=export_mode,
                 audio_mode=audio_mode,
                 subtitle_mode=subtitle_mode,

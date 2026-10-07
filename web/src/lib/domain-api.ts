@@ -1402,7 +1402,8 @@ export const generationApi = {
   createAssembly: (
     sessionId: string,
     generationRunId: string | null,
-    runOverride: Record<string, unknown> = {}
+    runOverride: Record<string, unknown> = {},
+    audioVersionSide: 'before' | 'after' = 'after'
   ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/output-assemblies',
@@ -1412,6 +1413,7 @@ export const generationApi = {
       path: { sessionId },
       body: {
         generation_run_id: generationRunId,
+        audio_version_side: audioVersionSide,
         run_override: runOverride
       }
     }),

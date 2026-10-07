@@ -858,11 +858,13 @@ class OptimizationReviewRequest(StrictModel):
 
 class OutputAssemblyCreateRequest(StrictModel):
     generation_run_id: str | None = None
+    audio_version_side: Literal["before", "after"] = "after"
     run_override: dict[str, Any] = Field(default_factory=dict)
 
 
 class OutputMixPreviewRequest(StrictModel):
     generation_run_id: str = Field(min_length=1, max_length=160)
+    audio_version_side: Literal["before", "after"] = "after"
     start_seconds: float | None = Field(default=None, ge=0.0, le=604800.0)
     duration_seconds: float = Field(default=12.0, ge=4.0, le=30.0)
     mix_source_gain_db: float = Field(default=0.0, ge=-60.0, le=12.0)

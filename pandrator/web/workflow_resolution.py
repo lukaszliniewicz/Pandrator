@@ -411,7 +411,7 @@ def resolve_workflow_stage_in_session(
                 raise ValueError(
                     "The selected generation run does not belong to this session."
                 )
-            if generation_run.status != "completed":
+            if generation_run.status != "completed" and generation_run.audio_version_json is None:
                 raise ValueError(
                     "Only a completed generation run can be exported."
                 )
@@ -423,6 +423,7 @@ def resolve_workflow_stage_in_session(
                     session_id=session_id,
                     run=generation_run,
                     resolved_settings_snapshot=resolved,
+                    audio_version_side=str(flattened.get("audio_version_side") or "after"),
                 )
             )
             source = (

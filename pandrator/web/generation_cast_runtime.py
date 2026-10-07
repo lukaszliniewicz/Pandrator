@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from copy import deepcopy
 from typing import Any, cast
 
@@ -109,8 +109,14 @@ def resolve_binding(session, binding: dict, settings: dict, _service_config_cach
         )
     voice_name = binding.get("voice") or ""
     managed_id = binding.get("voice_id")
-    if service == "audio_cpp" and capability.get("voice_mode") in {"prebuilt", "design"} and managed_id:
-        raise ValueError("This model cannot use a cloned cast reference. Choose its built-in speakers or a cloning-capable model.")
+    if (
+        service == "audio_cpp"
+        and capability.get("voice_mode") in {"prebuilt", "design"}
+        and managed_id
+    ):
+        raise ValueError(
+            "This model cannot use a cloned cast reference. Choose its built-in speakers or a cloning-capable model."
+        )
     if service == "audio_cpp" and capability.get("voice_mode") == "prebuilt" and voice_name:
         from pandrator.logic.tts_handler import get_service_config
         config = get_service_config(settings, service, _service_config_cache) or {}
@@ -168,6 +174,7 @@ def apply_resolved_binding(
         )
     # Do not reuse a narrator reference waveform for a newly selected character.
     for key in (
+        "_cast_voice_id",
         "audio_cpp_voice_ref",
         "audio_cpp_voice_ref_hash",
         "audio_cpp_reference_text",
@@ -238,8 +245,12 @@ def apply_segment_voice(settings: dict, snapshot: dict, segment_id: str) -> dict
 def freeze_cast_snapshot(
     session, revision_id: str, snapshot: dict, settings: dict,
     _service_config_cache=None,
-    *, _settings_copy=None,
+    *,
+    _settings_copy=None,
+    controls_by_segment: Mapping[str, dict] | None = None,
+    validate_segment_ids: Collection[str] | None = None,
 ) -> None:
+    """Freeze all entries, resolving voices only for requested validation IDs."""
     from .generation_rendering import build_render_parts
 
     if _service_config_cache is None:
@@ -251,13 +262,33 @@ def freeze_cast_snapshot(
     controls = get_generation_controls(session, plan.session_id)
     entries, resolutions = {}, {}
     performance = (snapshot.get("performance_snapshot") or {}).get("annotations") or {}
+    reference_index = None
+    validate_ids = set(validate_segment_ids) if validate_segment_ids is not None else None
 
     def apply(binding, base):
+        nonlocal reference_index
         if binding:
             key = _binding_key(binding)
             if key not in resolutions:
-                resolutions[key] = resolve_binding(
-                    session, binding, base, _service_config_cache
+                resolutions[key] = resolve_binding(session, binding, base, _service_config_cache)
+                # Persist material reference evidence, independent of profile
+                # names/revisions, for future per-speaker impact inspection.
+                if reference_index is None:
+                    from .generation_voice_references import voice_reference_index
+
+                    reference_index = voice_reference_index(session)
+                resolved = resolutions[key]
+                names = [resolved.get("voice"), resolved.get("voice_id")]
+                references = [
+                    reference
+                    for name in names
+                    if name
+                    for reference in reference_index.get(
+                        str(name).strip().casefold().removesuffix(".wav"), []
+                    )
+                ]
+                resolved["_recast_reference_fingerprint"] = sorted(
+                    {content_hash(reference) for reference in references}
                 )
         return apply_resolved_binding(binding, base, resolutions)
 
@@ -267,13 +298,14 @@ def freeze_cast_snapshot(
             m.GenerationSegment.removed.is_(False),
         )
     ):
+        scoped_controls = (controls_by_segment or {}).get(segment.id, controls)
         text = segment.optimized_text or segment.text
         record = (performance.get(segment.id) or {}).get("annotation") or {}
         xml = record.get("_speech_xml") or (segment.speech_plan_json or {}).get(
             "speech_xml"
         )
         if xml:
-            xml = remap_markup(xml, segment.id, text, controls["characters"])
+            xml = remap_markup(xml, segment.id, text, scoped_controls["characters"])
         entry = {
             "text_hash": content_hash(text),
             "speech_xml": xml,
@@ -282,7 +314,12 @@ def freeze_cast_snapshot(
             "voice_binding": segment_voice_binding(segment, snapshot),
         }
         entries[segment.id] = entry
+        if controls_by_segment is not None and segment.id in controls_by_segment:
+            entry["controls"] = deepcopy(scoped_controls)
+        if validate_ids is not None and segment.id not in validate_ids:
+            continue
         base = dict(settings)
+        base.update(deepcopy(scoped_controls.get("_base_voice_settings") or {}))
         if segment.voice:
             base["voice"] = base["speaker"] = segment.voice
         if segment.language:
@@ -292,7 +329,7 @@ def freeze_cast_snapshot(
             base,
             speech_xml=xml,
             segment_id=segment.id,
-            controls=controls,
+            controls=scoped_controls,
             source_speaker=segment.speaker,
             voice_binding=entry["voice_binding"],
             apply_binding=apply,
@@ -328,6 +365,14 @@ def segment_render_parts(
             "Spoken text changed after the cast was frozen. Review a new speech plan."
         )
     settings = dict(settings)
+    controls = entry.get("controls", frozen["controls"])
+    # A scoped recast retains recorded narrator fallback identity while using
+    # the current run's provider, model, language and delivery settings.
+    for key, value in (controls.get("_base_voice_settings") or {}).items():
+        if value is None:
+            settings.pop(key, None)
+        else:
+            settings[key] = deepcopy(value)
     audio = snapshot.get("audio") or {}
     settings["in_segment_voice_change_silence_ms"] = int(
         audio.get("in_segment_voice_change_silence_ms", audio.get("voice_change_silence_ms", 0)) or 0
@@ -338,7 +383,7 @@ def segment_render_parts(
         settings,
         speech_xml=entry.get("speech_xml"),
         segment_id=segment_id,
-        controls=frozen["controls"],
+        controls=controls,
         source_speaker=entry.get("source_speaker"),
         voice_binding=entry.get("voice_binding"),
         apply_binding=lambda binding, base: apply_resolved_binding(

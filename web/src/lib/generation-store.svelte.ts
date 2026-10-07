@@ -59,6 +59,7 @@ export type GenerationLoadOptions = {
   filter: SegmentFilter;
   selectedRunId: string;
   selectedRunVersionId?: string;
+  audioVersionSide?: 'before' | 'after';
   reset?: boolean;
   preserveLoaded?: boolean;
   search?: URLSearchParams;
@@ -134,7 +135,7 @@ export class GenerationStore {
           ? Math.min(250, Math.max(100, this.loadedThroughOrdinal + 1))
           : 100;
       const query = new URLSearchParams({ limit: String(requestedLimit) });
-      const searchScope = options.search?.toString() ?? '';
+      const searchScope = `${options.audioVersionSide ?? 'after'}|${options.search?.toString() ?? ''}`;
       options.search?.forEach((value, key) => query.set(key, value));
       const startOrdinal =
         options.startOrdinal ??
@@ -187,7 +188,11 @@ export class GenerationStore {
         selectedRunId,
         options.selectedRunVersionId
       );
-      if (selectedVersion) query.set('generation_run_id', selectedVersion.id);
+      if (selectedVersion) {
+        query.set('generation_run_id', selectedVersion.id);
+        if (selectedVersion.audio_version)
+          query.set('audio_version_side', options.audioVersionSide ?? 'after');
+      }
       const next =
         activeSegments ??
         (await generationApi.segments(

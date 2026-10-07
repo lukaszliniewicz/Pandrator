@@ -101,6 +101,7 @@ def register_generation_plan_tools(
         around_ordinal: int | None = None,
         source_cue_id: NativeNullableString = None,
         radius: Annotated[int, Field(ge=0, le=25)] = 2,
+        audio_version_side: Literal["before", "after"] = "after",
     ) -> dict[str, Any]:
         """List generation segments, assigned voices, takes, and text."""
 
@@ -119,6 +120,7 @@ def register_generation_plan_tools(
                 around_ordinal=around_ordinal,
                 source_cue_id=source_cue_id,
                 radius=radius,
+                audio_version_side=audio_version_side,
             ),
         )
 
@@ -444,6 +446,7 @@ def register_generation_execution_tools(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
         generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
+        audio_version_side: Literal["before", "after"] = "after",
     ) -> dict[str, Any]:
         """Assemble the whole session, using the selected/current takes at that run. For a single review clip, download the generation take artifact exposed by pandrator_list_generation_segments instead."""
 
@@ -454,5 +457,6 @@ def register_generation_execution_tools(
                 session_id=session_id,
                 generation_run_id=generation_run_id,
                 idempotency_key=idempotency_key,
+                audio_version_side=audio_version_side,
             ),
         )

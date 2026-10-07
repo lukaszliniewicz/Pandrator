@@ -256,6 +256,26 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_preview_recast", "Preview voice recasting", "PreviewRecastInput",
+            RiskClass.READ, "app.read", "previewGenerationRecast", "POST",
+            "/api/v1/sessions/{sessionId}/generation-recast/preview", True, requires_idempotency=False,
+        ),
+        ActionSpec(
+            "pandrator_recast_voices", "Recast previewed voices", "RecastVoicesInput",
+            RiskClass.WRITE, "app.write", "startGenerationRecast", "POST",
+            "/api/v1/sessions/{sessionId}/generation-recast", True, requires_idempotency=True,
+        ),
+        ActionSpec(
+            "pandrator_preview_undo_recast", "Preview recast undo", "PreviewUndoRecastInput",
+            RiskClass.READ, "app.read", "previewGenerationRecastUndo", "POST",
+            "/api/v1/generation-runs/{runId}/audio-version/undo-preview", True, requires_idempotency=False,
+        ),
+        ActionSpec(
+            "pandrator_undo_recast", "Undo previewed recast audio", "UndoRecastInput",
+            RiskClass.WRITE, "app.write", "undoGenerationRecast", "POST",
+            "/api/v1/generation-runs/{runId}/audio-version/undo", True, requires_idempotency=True,
+        ),
+        ActionSpec(
             "pandrator_get_workflow",
             "Inspect a session workflow",
             "GetWorkflowInput",

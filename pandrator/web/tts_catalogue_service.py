@@ -50,6 +50,7 @@ from .tts_catalogue_projection import (
     MAX_TTS_DETAIL_MODEL_IDS,
     MAX_TTS_SERVICE_FILTER_IDS,
     TTS_CATALOGUE_VIEWS,
+    TtsCatalogueModelNotFoundError,
     TtsCatalogueServiceNotFoundError,
     _audio_cpp_static_model_catalog,
     _decorate_model_language_support,
@@ -562,9 +563,29 @@ class TtsCatalogueService:
             raise TtsCatalogueServiceNotFoundError([service_id])
         service = services[0]
         if selected_models is not None:
-            service = _filter_service_models(
-                service, selected_models, service_id=normalized
-            )
+            try:
+                service = _filter_service_models(
+                    service, selected_models, service_id=normalized
+                )
+            except TtsCatalogueModelNotFoundError:
+                if normalized != "audio_cpp" or refresh:
+                    raise
+                # Saved native inventories can predate a model selected by a run.
+                # Discover once, retaining the normal strict model validation.
+                (
+                    services,
+                    _manager,
+                    _connection_value,
+                    revision,
+                    default_value,
+                    default_revision,
+                    _resolved_credentials,
+                ) = self._build_services(
+                    refresh=True, selected=[normalized], compact=False
+                )
+                service = _filter_service_models(
+                    services[0], selected_models, service_id=normalized
+                )
         payload: dict[str, Any] = {
             "view": "detail",
             "revision": revision,

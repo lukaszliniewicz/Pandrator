@@ -210,6 +210,7 @@ class ListGenerationRunsInput(ToolInput):
 class PlanExportVariantInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     generation_run_id: str | None = Field(default=None, max_length=80)
+    audio_version_side: Literal["before", "after"] = "after"
     export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media"
     audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed"
     subtitle_mode: Literal["none", "soft", "burned"] = "none"

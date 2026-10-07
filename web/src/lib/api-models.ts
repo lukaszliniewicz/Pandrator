@@ -1364,6 +1364,13 @@ export type AudioTake = {
   llm_optimized?: boolean;
   llm_model?: string | null;
   audio_verification?: AudioVerification | null;
+  rendered_voices?: {
+    voice: string | null;
+    speaker_ids: string[];
+    speaker_labels?: string[];
+    source: string | null;
+  }[];
+  is_reused?: boolean;
 };
 
 type SpeechBlockSourceCue = {
@@ -1397,6 +1404,7 @@ type SpeechBlockProvenance = {
 };
 
 export type GenerationSegment = {
+  history_take_id?: string | null;
   passage_structure?: PassageStructure;
   search_matches?: { start: number; end: number }[];
   audio_reuse_reason?: string;
@@ -1456,6 +1464,7 @@ export type OutputAssembly = {
   id: string;
   session_id: string;
   generation_run_id?: string | null;
+  audio_version_side?: 'before' | 'after' | null;
   job_id?: string | null;
   artifact_id?: string | null;
   status: string;
@@ -1491,6 +1500,19 @@ export type UsageSummary = {
 };
 
 export type GenerationRun = {
+  audio_version_assemblies?: Partial<
+    Record<'before' | 'after', OutputAssembly>
+  >;
+  audio_version?: {
+    kind: 'recast';
+    selectors: { key: string; label: string }[];
+    target_count: number;
+    generated_count: number;
+    applied_count: number;
+    remaining_count: number;
+    before_available: boolean;
+    undone: boolean;
+  };
   queued_segment_ids?: string[];
   waiting_for_job?: {
     id: string;

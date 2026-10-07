@@ -662,6 +662,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/generation-runs/{runId}/audio-version/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** undoGenerationRecast */
+        post: operations["undoGenerationRecast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/generation-runs/{runId}/audio-version/undo-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** previewGenerationRecastUndo */
+        post: operations["previewGenerationRecastUndo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/generation-runs/{runId}/cancel": {
         parameters: {
             query?: never;
@@ -1912,6 +1946,40 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["reviseGenerationPlanTopologyBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-recast": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** startGenerationRecast */
+        post: operations["startGenerationRecast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-recast/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** previewGenerationRecast */
+        post: operations["previewGenerationRecast"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4272,6 +4340,11 @@ export interface components {
              */
             service?: string;
         };
+        /** AudioVersionUndoRequest */
+        AudioVersionUndoRequest: {
+            /** Expected Selection Hash */
+            expected_selection_hash: string;
+        };
         /**
          * AudiobookSetupConfigureRequest
          * @description Revision-checked audiobook voice-mode configuration.
@@ -5184,6 +5257,54 @@ export interface components {
              */
             text_layer?: ("display" | "speech") | null;
         };
+        /** GenerationRecastPreviewRequest */
+        GenerationRecastPreviewRequest: {
+            /**
+             * Force
+             * @default false
+             */
+            force?: boolean;
+            /**
+             * Include Missing
+             * @default false
+             */
+            include_missing?: boolean;
+            /**
+             * Selector Keys
+             * @default null
+             */
+            selector_keys?: string[] | null;
+            /**
+             * Speech Plan Revision Id
+             * @default null
+             */
+            speech_plan_revision_id?: string | null;
+        };
+        /** GenerationRecastStartRequest */
+        GenerationRecastStartRequest: {
+            /** Expected Selection Hash */
+            expected_selection_hash: string;
+            /**
+             * Force
+             * @default false
+             */
+            force?: boolean;
+            /**
+             * Include Missing
+             * @default false
+             */
+            include_missing?: boolean;
+            /**
+             * Selector Keys
+             * @default null
+             */
+            selector_keys?: string[] | null;
+            /**
+             * Speech Plan Revision Id
+             * @default null
+             */
+            speech_plan_revision_id?: string | null;
+        };
         /** GenerationSegmentBatchUpdate */
         GenerationSegmentBatchUpdate: {
             /** Updates */
@@ -6082,6 +6203,12 @@ export interface components {
         /** OutputAssemblyCreateRequest */
         OutputAssemblyCreateRequest: {
             /**
+             * Audio Version Side
+             * @default after
+             * @enum {string}
+             */
+            audio_version_side?: "before" | "after";
+            /**
              * Generation Run Id
              * @default null
              */
@@ -6093,6 +6220,12 @@ export interface components {
         };
         /** OutputMixPreviewRequest */
         OutputMixPreviewRequest: {
+            /**
+             * Audio Version Side
+             * @default after
+             * @enum {string}
+             */
+            audio_version_side?: "before" | "after";
             /**
              * Duration Seconds
              * @default 12
@@ -9910,6 +10043,102 @@ export interface operations {
             };
         };
     };
+    undoGenerationRecast: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AudioVersionUndoRequest"];
+            };
+        };
+        responses: {
+            /** @description Compact cast impact or audio version receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Project or audio version not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cast, plan, audio selection or request changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable recast */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewGenerationRecastUndo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Compact cast impact or audio version receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Project or audio version not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cast, plan, audio selection or request changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable recast */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     cancelGenerationRun: {
         parameters: {
             query?: never;
@@ -12601,6 +12830,106 @@ export interface operations {
             };
         };
     };
+    startGenerationRecast: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationRecastStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Compact cast impact or audio version receipt */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Project or audio version not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cast, plan, audio selection or request changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable recast */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewGenerationRecast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationRecastPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Compact cast impact or audio version receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Project or audio version not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cast, plan, audio selection or request changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable recast */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listGenerationRuns: {
         parameters: {
             query?: {
@@ -12701,6 +13030,8 @@ export interface operations {
             query?: {
                 /** @description Return the plan revision bound to this generation run. */
                 generation_run_id?: string;
+                /** @description Choose the exact before or after take map of a recast run. */
+                audio_version_side?: "before" | "after";
                 /** @description Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets. */
                 q?: string;
                 match_case?: boolean;

@@ -10,6 +10,8 @@ from typing import Any, Callable
 from sqlalchemy import and_, func, select
 
 from .artifacts import ArtifactService
+from .generation_audio_version_assembly import revalidate_audio_version_assembly
+from .generation_audio_versions import audio_version_take_ids
 from .models import (
     Artifact,
     AudioTake,
@@ -22,6 +24,7 @@ from .models import (
     utcnow,
 )
 from .output_settings_snapshot import build_output_settings_snapshot
+from .settings_policy import RevisionConflict
 from .workflow_output_context import OutputWorkflowContext
 
 # Preserve the historical logger name for existing log filters and dashboards.
@@ -127,110 +130,122 @@ def assemble_generation_output(
                         .order_by(Segment.ordinal)
                     ).all()
                 ]
-            if selected_run_sequence is not None:
-                ranked_takes = (
-                    select(
-                        AudioTake.id.label("take_id"),
-                        AudioTake.generation_segment_id.label("segment_id"),
-                        func.row_number()
-                        .over(
-                            partition_by=AudioTake.generation_segment_id,
-                            order_by=(
-                                GenerationRun.sequence_number.desc(),
-                                AudioTake.created_at.desc(),
-                                AudioTake.id.desc(),
-                            ),
-                        )
-                        .label("take_rank"),
-                    )
-                    .join(
-                        GenerationRun,
-                        AudioTake.generation_run_id == GenerationRun.id,
-                    )
-                    .where(
-                        AudioTake.status.in_(("completed", "stale")),
-                        GenerationRun.session_id == session_id,
-                        GenerationRun.plan_revision_id == plan_revision_id,
-                        GenerationRun.sequence_number <= selected_run_sequence,
-                    )
-                    .subquery()
+            frozen_selection = {
+                key: settings_container.get(key)
+                for key in ("generation_run_id", "plan_revision_id", "audio_version_side",
+                            "audio_version_take_ids", "audio_version_selection_hash")
+            }
+            is_recast = selected_run is not None and audio_version_take_ids(selected_run) is not None
+            if is_recast or settings_container.get("audio_version_take_ids") is not None:
+                selected = revalidate_audio_version_assembly(
+                    session, session_id,
+                    session.get(GenerationRun, assembly.generation_run_id), frozen_selection,
                 )
             else:
-                ranked_takes = (
-                    select(
-                        AudioTake.id.label("take_id"),
-                        AudioTake.generation_segment_id.label("segment_id"),
-                        func.row_number()
-                        .over(
-                            partition_by=AudioTake.generation_segment_id,
-                            order_by=(
-                                AudioTake.created_at.desc(),
-                                AudioTake.id.desc(),
+                if selected_run_sequence is not None:
+                    ranked_takes = (
+                        select(
+                            AudioTake.id.label("take_id"),
+                            AudioTake.generation_segment_id.label("segment_id"),
+                            func.row_number()
+                            .over(
+                                partition_by=AudioTake.generation_segment_id,
+                                order_by=(
+                                    GenerationRun.sequence_number.desc(),
+                                    AudioTake.created_at.desc(),
+                                    AudioTake.id.desc(),
+                                ),
+                            )
+                            .label("take_rank"),
+                        )
+                        .join(
+                            GenerationRun,
+                            AudioTake.generation_run_id == GenerationRun.id,
+                        )
+                        .where(
+                            AudioTake.status.in_(("completed", "stale")),
+                            GenerationRun.session_id == session_id,
+                            GenerationRun.plan_revision_id == plan_revision_id,
+                            GenerationRun.sequence_number <= selected_run_sequence,
+                        )
+                        .subquery()
+                    )
+                else:
+                    ranked_takes = (
+                        select(
+                            AudioTake.id.label("take_id"),
+                            AudioTake.generation_segment_id.label("segment_id"),
+                            func.row_number()
+                            .over(
+                                partition_by=AudioTake.generation_segment_id,
+                                order_by=(
+                                    AudioTake.created_at.desc(),
+                                    AudioTake.id.desc(),
+                                ),
+                            )
+                            .label("take_rank"),
+                        )
+                        .join(
+                            GenerationSegment,
+                            AudioTake.generation_segment_id == GenerationSegment.id,
+                        )
+                        .where(
+                            AudioTake.is_active.is_(True),
+                            AudioTake.status == "completed",
+                            GenerationSegment.plan_revision_id == plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                        )
+                        .subquery()
+                    )
+                selected_rows = list(
+                    session.execute(
+                        select(GenerationSegment, AudioTake, Artifact)
+                        .outerjoin(
+                            ranked_takes,
+                            and_(
+                                ranked_takes.c.segment_id == GenerationSegment.id,
+                                ranked_takes.c.take_rank == 1,
                             ),
                         )
-                        .label("take_rank"),
-                    )
-                    .join(
-                        GenerationSegment,
-                        AudioTake.generation_segment_id == GenerationSegment.id,
-                    )
-                    .where(
-                        AudioTake.is_active.is_(True),
-                        AudioTake.status == "completed",
-                        GenerationSegment.plan_revision_id == plan_revision_id,
-                        GenerationSegment.removed.is_(False),
-                    )
-                    .subquery()
-                )
-            selected_rows = list(
-                session.execute(
-                    select(GenerationSegment, AudioTake, Artifact)
-                    .outerjoin(
-                        ranked_takes,
-                        and_(
-                            ranked_takes.c.segment_id == GenerationSegment.id,
-                            ranked_takes.c.take_rank == 1,
-                        ),
-                    )
-                    .outerjoin(
-                        AudioTake,
-                        AudioTake.id == ranked_takes.c.take_id,
-                    )
-                    .outerjoin(
-                        Artifact,
-                        Artifact.id == AudioTake.artifact_id,
-                    )
-                    .where(
-                        GenerationSegment.plan_revision_id == plan_revision_id,
-                        GenerationSegment.removed.is_(False),
-                    )
-                    .order_by(GenerationSegment.ordinal)
-                ).all()
-            )
-            selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
-            for segment, take, artifact in selected_rows:
-                allowed_statuses = (
-                    {"completed", "stale"}
-                    if selected_run is not None
-                    else {"completed"}
-                )
-                if (
-                    take is None
-                    or take.status not in allowed_statuses
-                    or not take.artifact_id
-                ):
-                    if selected_run is None:
-                        raise ValueError(
-                            f"Segment {segment.ordinal + 1} has no current completed audio take."
+                        .outerjoin(
+                            AudioTake,
+                            AudioTake.id == ranked_takes.c.take_id,
                         )
-                    raise ValueError(
-                        f"Segment {segment.ordinal + 1} has no available audio take in Run {selected_run.sequence_number}."
+                        .outerjoin(
+                            Artifact,
+                            Artifact.id == AudioTake.artifact_id,
+                        )
+                        .where(
+                            GenerationSegment.plan_revision_id == plan_revision_id,
+                            GenerationSegment.removed.is_(False),
+                        )
+                        .order_by(GenerationSegment.ordinal)
+                    ).all()
+                )
+                selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
+                for segment, take, artifact in selected_rows:
+                    allowed_statuses = (
+                        {"completed", "stale"}
+                        if selected_run is not None
+                        else {"completed"}
                     )
-                if artifact is None or artifact.state != "current":
-                    raise ValueError(
-                        f"Segment {segment.ordinal + 1} references an unavailable audio artifact."
-                    )
-                selected.append((segment, take, artifact))
+                    if (
+                        take is None
+                        or take.status not in allowed_statuses
+                        or not take.artifact_id
+                    ):
+                        if selected_run is None:
+                            raise ValueError(
+                                f"Segment {segment.ordinal + 1} has no current completed audio take."
+                            )
+                        raise ValueError(
+                            f"Segment {segment.ordinal + 1} has no available audio take in Run {selected_run.sequence_number}."
+                        )
+                    if artifact is None or artifact.state != "current":
+                        raise ValueError(
+                            f"Segment {segment.ordinal + 1} references an unavailable audio artifact."
+                        )
+                    selected.append((segment, take, artifact))
         if not selected:
             raise ValueError(
                 "No active generation segments are available for assembly."
@@ -694,6 +709,9 @@ def assemble_generation_output(
             },
             metadata={
                 "output_assembly_id": assembly_id,
+                **({key: frozen_selection[key] for key in (
+                    "audio_version_side", "audio_version_take_ids", "audio_version_selection_hash",
+                )} if is_recast else {}),
                 "duration_ms": assembly_result.duration_ms,
                 "segment_count": len(selected),
                 "format": output_format,
@@ -713,6 +731,7 @@ def assemble_generation_output(
         )
         output_registered = True
         invalidated = False
+        pin_error = None
         with context.database.immediate_session() as session:
             assembly = session.get(OutputAssembly, assembly_id)
             if assembly is None:
@@ -738,6 +757,19 @@ def assemble_generation_output(
                     )
                 )
             )
+            if is_recast:
+                try:
+                    current_selection = dict(assembly.settings_json or {})
+                    for key, value in frozen_selection.items():
+                        if current_selection.get(key) != value:
+                            raise RevisionConflict("The queued recast assembly pin changed during rendering.")
+                    revalidate_audio_version_assembly(
+                        session, session_id,
+                        session.get(GenerationRun, assembly.generation_run_id), frozen_selection,
+                    )
+                except RevisionConflict as error:
+                    pin_error = error
+                    invalidated = True
             assembly.artifact_id = artifact.id
             if invalidated:
                 stored_artifact = session.get(Artifact, artifact.id)
@@ -746,8 +778,8 @@ def assemble_generation_output(
                     ArtifactService._mark_descendants_stale(
                         session, stored_artifact.id
                     )
-                assembly.status = "canceled"
-                assembly.error_message = None
+                assembly.status = "failed" if pin_error else "canceled"
+                assembly.error_message = str(pin_error) if pin_error else None
             else:
                 assembly.status = "completed"
                 assembly.error_message = None
@@ -760,6 +792,8 @@ def assemble_generation_output(
                     "synchronization": alignment_diagnostics,
                 }
             assembly.updated_at = utcnow()
+        if pin_error:
+            raise pin_error
         if invalidated:
             return {}
         progress(1.0, "Output assembly ready")

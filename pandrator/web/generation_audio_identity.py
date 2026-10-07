@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Collection
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,8 @@ from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
 
-from .models import Artifact, AudioTake, GenerationSegment, Voice, VoiceSample
+from .generation_voice_references import voice_reference_index
+from .models import Artifact, AudioTake, GenerationSegment
 
 IDENTITY_KEY = "generation_audio_identity"
 IDENTITY_VERSION = 1
@@ -185,11 +187,10 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
 class AudioIdentityContext:
     """Resolve one settings snapshot and managed voice inventory per inspection."""
 
-    def __init__(self, session: Session, snapshot: dict[str, Any]):
+    def __init__(self, session: Session, snapshot: dict[str, Any], *, _service_config_cache=None):
         from .generation_cast_runtime import filter_segment_tts_override
         from .settings_policy import adapt_runtime_settings
         from .tts_providers import TtsProviderRegistry
-        from .voice_library import sample_file_status
 
         self.session = session
         self.snapshot = snapshot
@@ -197,7 +198,7 @@ class AudioIdentityContext:
         # inspection call, so entries can never leak across requests. Every key
         # hashes the complete input settings, never a subset, so a settings,
         # voice, or casting change always misses and recomputes.
-        self._service_config_cache: dict = {}
+        self._service_config_cache: dict = _service_config_cache if _service_config_cache is not None else {}
         self._material_settings_cache: dict[str, dict[str, Any]] = {}
         self._voice_reference_cache: dict[str, Any] = {}
         self._service_id_cache: dict[str, str] = {}
@@ -217,66 +218,7 @@ class AudioIdentityContext:
             snapshot.get("tts") or {}, selected.get("tts") or {}
         )
         self.selected_rvc = dict(selected.get("rvc") or {})
-        self.voices: dict[str, list[dict[str, Any]]] = {}
-        samples: dict[str, list[dict[str, Any]]] = {}
-        for sample, artifact in session.execute(
-            select(VoiceSample, Artifact)
-            .join(Artifact, Artifact.id == VoiceSample.artifact_id)
-            .order_by(VoiceSample.created_at.desc(), VoiceSample.id)
-        ):
-            if (
-                sample.voice_id in samples
-                or sample_file_status(session, self.paths, sample)[0] != "ready"
-            ):
-                continue
-            samples.setdefault(sample.voice_id, []).append(
-                {
-                    "id": sample.id,
-                    "artifact_id": artifact.id,
-                    "content_hash": artifact.content_hash,
-                    "state": artifact.state,
-                    "transcript_hash": _hash(
-                        sample.transcript if sample.transcript_reviewed else ""
-                    ),
-                }
-            )
-        for voice in session.scalars(select(Voice)):
-            providers = dict((voice.metadata_json or {}).get("providers") or {})
-            # Voice.revision also changes for descriptions and publication
-            # status. Reference samples and provider content hashes carry the
-            # audio version without invalidating a harmless rename/republish.
-            reference_providers = {
-                provider_id: {
-                    key: value
-                    for key, value in registration.items()
-                    if key
-                    in {
-                        "voice_id",
-                        "provider_voice_id",
-                        "sample_hash",
-                        "source_audio_hash",
-                        "reference_text_hash",
-                        "model",
-                    }
-                }
-                for provider_id, registration in providers.items()
-                if isinstance(registration, dict)
-            }
-            identity = {
-                "id": voice.id,
-                "samples": samples.get(voice.id, []),
-                "providers": reference_providers,
-            }
-            names = {voice.id, voice.name}
-            for registration in providers.values():
-                if isinstance(registration, dict):
-                    names.update(
-                        str(registration.get(key) or "")
-                        for key in ("voice_id", "provider_voice_id")
-                    )
-            for name in names:
-                if name.strip():
-                    self.voices.setdefault(_voice_key(name), []).append(identity)
+        self.voices = voice_reference_index(session, self.paths)
         self.cache: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def _memoized_material_settings(
@@ -540,15 +482,16 @@ def take_reuse_reason(
 
 
 def plan_audio_identities(
-    session: Session, revision_id: str, snapshot: dict[str, Any]
+    session: Session, revision_id: str, snapshot: dict[str, Any], *, segment_ids: Collection[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    query = select(GenerationSegment).where(
+        GenerationSegment.plan_revision_id == revision_id,
+        GenerationSegment.removed.is_(False),
+    )
+    if segment_ids is not None:
+        query = query.where(GenerationSegment.id.in_(segment_ids))
     context = AudioIdentityContext(session, snapshot)
     return {
         segment.id: context.for_segment(segment)
-        for segment in session.scalars(
-            select(GenerationSegment).where(
-                GenerationSegment.plan_revision_id == revision_id,
-                GenerationSegment.removed.is_(False),
-            )
-        )
+        for segment in session.scalars(query)
     }

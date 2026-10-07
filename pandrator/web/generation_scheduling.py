@@ -42,7 +42,7 @@ def canonical_regeneration_root(
     """
     current = source_run
     visited: set[str] = set()
-    while current.operation == "regenerate":
+    while current.operation == "regenerate" and current.audio_version_json is None:
         if current.id in visited:
             raise ValueError("The generation regeneration lineage contains a cycle.")
         visited.add(current.id)

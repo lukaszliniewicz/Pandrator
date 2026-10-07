@@ -38,6 +38,32 @@ assignments. Preview lists the resolved voices and fallbacks. All parts in a
 run use the selected service and model; a binding qualified for a different
 service/model fails validation rather than changing the run's provider.
 
+## Recasting recorded voices
+
+After changing the saved cast, use **Regenerate changed voices…** or the
+regenerate action beside an individual speaker. The preview shows the affected
+recordings, shared segments, and the project's current speech service and model.
+Unchanged and missing recordings are excluded unless explicitly requested.
+Explicit block or phrase voice overrides continue to take precedence.
+
+A shared segment is generated as a whole, preserving the recorded assignments
+of unselected speakers. If an earlier reference cannot be preserved, the preview
+asks you to include that speaker or restore its reference. Existing audio remains
+selected until its replacement succeeds; a newer manual take choice wins.
+
+Each recast has **Before** and **After** audio versions in generation history and
+Output. These preserve exact take choices for playback, assembly and export.
+Failed replacements retain their earlier audio. **Undo this recast…** restores
+the prior audio choices when its guard still matches, keeping the saved cast and
+project settings. It does not delete either historical version.
+
+MCP follows the same contract: use `pandrator_preview_recast`, then
+`pandrator_recast_voices` with the preview's selection hash and an idempotency key.
+Null selectors choose changed voices; an empty list chooses none. Preview and
+apply undo through `pandrator_preview_undo_recast` and `pandrator_undo_recast`.
+Historical segment reads, assembly and export accept `audio_version_side`
+(`before` or `after`, default `after`).
+
 ## Review and edit in the Generation drawer
 
 Enable **Voices & directions** in Display options. Underlines distinguish

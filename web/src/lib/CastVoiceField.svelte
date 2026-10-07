@@ -4,6 +4,7 @@
   import type VoiceLibraryModalType from './VoiceLibraryModal.svelte';
   import { voiceLibraryApi, type CatalogVoice } from './voice-library-api';
   import { readinessLabel, bestBinding, setupHref } from './voice-presentation';
+  import { getTtsServiceDetail } from './tts-catalogue-cache';
   import AudioPlayer from './AudioPlayer.svelte';
   let VoiceLibraryModal = $state<typeof VoiceLibraryModalType | null>(null);
   let libraryOpen = $state(false);
@@ -93,27 +94,35 @@
     }
     let stale = false;
     checking = true;
-    const lookup = reference.voice_id
-      ? voiceLibraryApi.managedVoice(reference.voice_id)
-      : voiceLibraryApi
-          .query({
-            query: reference.voice!,
-            kind: 'provider',
-            service_id: targetService,
-            model: targetModel,
-            limit: 200
-          })
-          .then(
-            (result) =>
-              result.items.find(
-                (item) =>
-                  item.reference.kind === 'provider' &&
-                  item.reference.voice === reference.voice &&
-                  (!targetService ||
-                    item.reference.service_id === targetService) &&
-                  (!targetModel || item.reference.model === targetModel)
-              ) ?? null
-          );
+    const prepareCatalogue =
+      targetService === 'audio_cpp' && targetModel
+        ? getTtsServiceDetail(targetService, { models: targetModel }).catch(
+            () => null
+          )
+        : Promise.resolve(null);
+    const lookup = prepareCatalogue.then(() =>
+      reference.voice_id
+        ? voiceLibraryApi.managedVoice(reference.voice_id)
+        : voiceLibraryApi
+            .query({
+              query: reference.voice!,
+              kind: 'provider',
+              service_id: targetService,
+              model: targetModel,
+              limit: 200
+            })
+            .then(
+              (result) =>
+                result.items.find(
+                  (item) =>
+                    item.reference.kind === 'provider' &&
+                    item.reference.voice === reference.voice &&
+                    (!targetService ||
+                      item.reference.service_id === targetService) &&
+                    (!targetModel || item.reference.model === targetModel)
+                ) ?? null
+            )
+    );
     void lookup
       .then((voice) => {
         if (!stale) catalogVoice = voice;

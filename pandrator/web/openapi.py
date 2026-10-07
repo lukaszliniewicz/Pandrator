@@ -9,6 +9,7 @@ from .generation_control_openapi import (
     GENERATION_CONTROL_SCHEMAS,
     generation_control_paths,
 )
+from .generation_recast_openapi import GENERATION_RECAST_SCHEMAS, generation_recast_paths
 from .generation_summary import GenerationSummary
 from .identity import ApplicationIdentityDocument
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
@@ -48,6 +49,7 @@ def build_openapi_document() -> dict:
         **PROJECT_EXPORT_BUNDLE_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
+        **GENERATION_RECAST_SCHEMAS,
         "GenerationSummary": GenerationSummary,
         **AUDIOBOOK_SCHEMAS,
         **VOICE_SETUP_SCHEMAS,
@@ -3690,6 +3692,7 @@ def build_openapi_document() -> dict:
     paths.update(performance_paths())
     paths.update(session_purge_paths())
     paths.update(generation_control_paths())
+    paths.update(generation_recast_paths())
     paths.update(audiobook_paths())
     paths.update(speech_selection_paths())
     paths.update(voice_catalog_paths())
@@ -3765,6 +3768,7 @@ def build_openapi_document() -> dict:
     )
     inspection = paths["/api/v1/sessions/{sessionId}/generation-segments"]["get"]
     inspection["parameters"].extend([
+        {"name": "audio_version_side", "in": "query", "description": "Choose the exact before or after take map of a recast run.", "schema": {"type": "string", "enum": ["before", "after"], "default": "after"}},
         {"name": "q", "in": "query", "description": "Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets.", "schema": {"type": "string", "maxLength": 4000}},
         {"name": "match_case", "in": "query", "schema": {"type": "boolean", "default": False}},
         {"name": "whole_word", "in": "query", "schema": {"type": "boolean", "default": False}},

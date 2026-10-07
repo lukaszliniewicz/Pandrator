@@ -975,6 +975,7 @@ def plan_export_variant(
     arguments: PlanExportVariantInput,
 ) -> dict[str, Any]:
     output: dict[str, Any] = {
+        "audio_version_side": arguments.audio_version_side,
         "export_mode": arguments.export_mode,
         "audio_mode": arguments.audio_mode,
         "subtitle_mode": arguments.subtitle_mode,

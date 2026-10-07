@@ -209,9 +209,13 @@ def find_matching_output_assembly(
     run: GenerationRun,
     resolved_settings_snapshot: dict[str, Any],
     artifact_id: str | None = None,
+    audio_version_side: str = "after",
 ) -> tuple[OutputAssembly | None, dict[str, Any], str]:
     """Find the current assembly that exactly matches one selected generation run."""
 
+    from .generation_audio_version_assembly import audio_version_assembly_selection
+
+    selection, _rows = audio_version_assembly_selection(session, session_id, run, audio_version_side)
     expected_snapshot = expected_output_assembly_snapshot(
         session,
         run,
@@ -243,7 +247,8 @@ def find_matching_output_assembly(
         (
             candidate
             for candidate in candidates
-            if output_assembly_matches(
+            if (selection is None or all((candidate.settings_json or {}).get(key) == value for key, value in selection.items()))
+            and output_assembly_matches(
                 candidate,
                 expected_snapshot=expected_snapshot,
                 expected_settings_hash=expected_settings_hash,
@@ -375,6 +380,7 @@ class GenerationService(GenerationHistoryReader):
         marked: bool | None = None,
         verification: str | None = None,
         generation_run_id: str | None = None,
+        audio_version_side: str = "after",
         plan_revision_id: str | None = None,
         view: str = "full",
         fields: list[str] | None = None,
@@ -396,6 +402,7 @@ class GenerationService(GenerationHistoryReader):
             marked=marked,
             verification=verification,
             generation_run_id=generation_run_id,
+            audio_version_side=audio_version_side,
             plan_revision_id=plan_revision_id,
             view=view,
             fields=fields,
@@ -843,16 +850,16 @@ class GenerationService(GenerationHistoryReader):
             )
 
     def select_take_in_session(
-        self, session: Session, segment_id: str, take_id: str, expected_revision: int
+        self, session: Session, segment_id: str, take_id: str | None, expected_revision: int
     ) -> dict[str, Any]:
         """Select a take without committing a caller-owned transaction."""
         segment = session.get(GenerationSegment, segment_id)
-        take = session.get(AudioTake, take_id)
-        if segment is None or take is None or take.generation_segment_id != segment_id:
+        take = session.get(AudioTake, take_id) if take_id else None
+        if segment is None or (take_id is not None and (take is None or take.generation_segment_id != segment_id)):
             raise KeyError(take_id)
         if segment.revision != expected_revision:
             raise RevisionConflict("The generation segment changed in another client.")
-        if take.status not in {"completed", "stale"} or not take.artifact_id:
+        if take is not None and (take.status not in {"completed", "stale"} or not take.artifact_id):
             raise ValueError("Only an available audio take can be selected.")
         session.add(
             GenerationSegmentRevision(
@@ -886,6 +893,7 @@ class GenerationService(GenerationHistoryReader):
             item.is_active = item.id == take_id
             item.revision += 1
         segment.revision += 1
+        segment.status = "completed" if take is not None else "ready"
         segment.updated_at = utcnow()
         plan_revision = session.get(GenerationPlanRevision, segment.plan_revision_id)
         plan = (
@@ -897,7 +905,7 @@ class GenerationService(GenerationHistoryReader):
             mark_output_assemblies_stale(session, plan.session_id)
         return {
             "id": segment.id,
-            "active_take_id": take.id,
+            "active_take_id": take.id if take else None,
             "revision": segment.revision,
         }
 
@@ -1505,6 +1513,7 @@ class GenerationService(GenerationHistoryReader):
                 if operation == "regenerate"
                 and requested_segment_ids
                 and source_run is not None
+                and source_run.audio_version_json is None
                 else None
             ),
             sequence_number=sequence_number,
@@ -1797,8 +1806,24 @@ class GenerationService(GenerationHistoryReader):
         session_id: str,
         *,
         generation_run_id: str | None = None,
+        audio_version_side: str = "after",
         run_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from .generation_audio_version_assembly import audio_version_assembly_selection
+
+        with self.database.snapshot_session() as session:
+            if session.get(SessionRecord, session_id) is None:
+                raise KeyError(session_id)
+            run = session.get(GenerationRun, generation_run_id) if generation_run_id else None
+            if generation_run_id and (run is None or run.session_id != session_id):
+                raise KeyError(generation_run_id)
+            selection, rows = audio_version_assembly_selection(session, session_id, run, audio_version_side)
+        if selection is not None:
+            from pandrator.runtime import DataPaths
+            paths = self.artifacts.paths if self.artifacts else DataPaths(self.database.path.parent)
+            for segment, _take, artifact in rows:
+                if not paths.managed_path(artifact.relative_path).is_file():
+                    raise ValueError(f"Audio take file is missing for segment {segment.ordinal + 1}.")
         snapshot, _settings_hash = self.settings.resolve(
             session_id,
             sections=["audio", "output"],
@@ -1813,17 +1838,22 @@ class GenerationService(GenerationHistoryReader):
 
         if output_format not in OUTPUT_FORMATS:
             raise ValueError(f"Unsupported audio output format: {output_format}")
-        return {"snapshot": snapshot, "settings_hash": settings_hash}
+        return {"snapshot": snapshot, "settings_hash": settings_hash,
+                "audio_version_side": audio_version_side, "audio_version_selection": selection}
 
     def create_assembly(
         self,
         session_id: str,
         *,
         generation_run_id: str | None = None,
+        audio_version_side: str = "after",
         run_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        prepared = self.prepare_assembly(session_id, run_override=run_override)
-        with self.database.session() as session:
+        prepared = self.prepare_assembly(
+            session_id, generation_run_id=generation_run_id,
+            audio_version_side=audio_version_side, run_override=run_override,
+        )
+        with self.database.immediate_session() as session:
             return self.create_assembly_in_session(
                 session,
                 session_id,
@@ -1849,8 +1879,22 @@ class GenerationService(GenerationHistoryReader):
         )
         if generation_run_id and (run is None or run.session_id != session_id):
             raise KeyError(generation_run_id)
-        if run is not None and run.status != "completed":
-            raise ValueError("Only a completed generation run can be assembled.")
+        from .generation_audio_version_assembly import (
+            audio_version_assembly_selection,
+            revalidate_audio_version_assembly,
+        )
+        side = prepared.get("audio_version_side", "after")
+        frozen_selection = prepared.get("audio_version_selection")
+        if frozen_selection is not None:
+            revalidate_audio_version_assembly(session, session_id, run, frozen_selection)
+            if side != frozen_selection.get("audio_version_side"):
+                raise RevisionConflict("The requested audio version side changed after preparation.")
+        else:
+            selection, _rows = audio_version_assembly_selection(session, session_id, run, side)
+            if selection is not None:
+                raise RevisionConflict("Prepare the selected recast audio version before assembling it.")
+            if run is not None and run.status != "completed":
+                raise ValueError("Only a completed generation run can be assembled.")
         plan = session.scalar(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
@@ -1875,7 +1919,10 @@ class GenerationService(GenerationHistoryReader):
             session_id=session_id,
             generation_run_id=run.id if run else None,
             status="queued",
-            settings_json={"resolved": snapshot, "plan_revision_id": plan_revision_id},
+            settings_json={
+                "resolved": snapshot, "plan_revision_id": plan_revision_id,
+                **(frozen_selection or {}),
+            },
             settings_hash=settings_hash,
         )
         session.add(record)

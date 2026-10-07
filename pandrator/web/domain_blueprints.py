@@ -82,6 +82,7 @@ def route_domain(rule: str) -> str:
             "/generation-plan",
             "/performance-plans",
             "/generation-controls",
+            "/generation-recast",
             "/generation-runs",
             "/generation-segments",
             "/output-assemblies",

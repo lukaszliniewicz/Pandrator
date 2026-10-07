@@ -110,6 +110,7 @@ def _copy_take(
     session: Any, source: GenerationSegment, target: GenerationSegment,
     take: AudioTake, artifact: Artifact, existing: list[AudioTake],
     expected_selection: dict[str, Any] | None = None,
+    *, allow_activation: bool = True,
 ) -> bool:
     if target.removed or source.source_segment_ids_json != target.source_segment_ids_json:
         return False
@@ -128,7 +129,7 @@ def _copy_take(
         if expected_selection is not None
         else current is not None and current.status != "completed"
     )
-    activate = current is None or (matches and replace_current)
+    activate = allow_activation and (current is None or (matches and replace_current))
     if activate:
         for item in existing:
             item.is_active = False
@@ -194,6 +195,7 @@ def inherit_edit_copy_audio(session: Any, revision_id: str) -> int:
 def publish_to_edit_copy(
     session: Any, source: GenerationSegment, take: AudioTake, artifact: Artifact,
     expected_selection: dict[str, Any] | None = None,
+    *, allow_activation: bool = True,
 ) -> bool:
     """Expose one successfully committed take to the active editorial descendant."""
     revision = session.get(GenerationPlanRevision, source.plan_revision_id)
@@ -212,4 +214,5 @@ def publish_to_edit_copy(
     existing = list(session.scalars(select(AudioTake).where(
         AudioTake.generation_segment_id == target.id
     )))
-    return _copy_take(session, source, target, take, artifact, existing, expected_selection)
+    return _copy_take(session, source, target, take, artifact, existing, expected_selection,
+                      allow_activation=allow_activation)

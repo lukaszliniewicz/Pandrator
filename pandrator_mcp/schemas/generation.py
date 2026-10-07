@@ -21,6 +21,7 @@ class ListGenerationSegmentsInput(ToolInput):
     around_ordinal: int | None = Field(default=None, ge=0)
     source_cue_id: str | None = Field(default=None, min_length=1, max_length=80)
     radius: int = Field(default=2, ge=0, le=25)
+    audio_version_side: Literal["before", "after"] = "after"
 
 
 class GenerationSegmentChangesInput(ToolInput):
@@ -129,6 +130,7 @@ class AssembleGenerationRunInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     generation_run_id: str | None = Field(default=None, max_length=80)
     idempotency_key: str = Field(min_length=1, max_length=120)
+    audio_version_side: Literal["before", "after"] = "after"
 
 
 class ReviseSpeechBlockPlanInput(ToolInput):

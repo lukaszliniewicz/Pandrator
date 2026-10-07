@@ -62,6 +62,7 @@ CASES = [
             "cursor": 0,
             "limit": 50,
             "generation_run_id": None,
+            "audio_version_side": "after",
             "view": "compact",
             "around_ordinal": 2,
             "radius": 2,
@@ -209,7 +210,7 @@ CASES = [
         GUARD,
         "create_output_assembly",
         (SESSION,),
-        {"generation_run_id": None, "idempotency_key": KEY},
+        {"generation_run_id": None, "idempotency_key": KEY, "audio_version_side": "after"},
     ),
 ]
 

@@ -77,6 +77,7 @@ class RunHistoryContext(RepairHistoryContext):
     jobs_by_id: dict[str, Job]
     blocking_jobs: list[Job]
     assemblies_by_run_id: dict[str, OutputAssembly]
+    assembly_versions_by_run_id: dict[str, dict[str, OutputAssembly]]
     take_counts: dict[str, int]
     visible_sequences: dict[str, int]
 
@@ -207,7 +208,7 @@ class GenerationHistoryReader:
                 select(
                     OutputAssembly.id,
                     func.row_number().over(
-                        partition_by=OutputAssembly.generation_run_id,
+                        partition_by=(OutputAssembly.generation_run_id, func.coalesce(OutputAssembly.settings_json["audio_version_side"].as_string(), "after")),
                         order_by=OutputAssembly.created_at.desc(),
                     ).label("position"),
                 )
@@ -223,13 +224,15 @@ class GenerationHistoryReader:
                 .order_by(OutputAssembly.created_at.desc())
             ).all())
         assembly_by_run_id: dict[str, OutputAssembly] = {}
+        assembly_versions_by_run_id: dict[str, dict[str, OutputAssembly]] = {}
         for assembly in assemblies:
             if assembly.generation_run_id is not None:
                 assembly_by_run_id.setdefault(assembly.generation_run_id, assembly)
+                assembly_versions_by_run_id.setdefault(assembly.generation_run_id, {})[(assembly.settings_json or {}).get("audio_version_side", "after")] = assembly
 
         assembly_job_ids = {
             assembly.job_id
-            for assembly in assembly_by_run_id.values()
+            for assembly in assemblies
             if assembly.job_id and assembly.job_id not in job_by_id
         }
         if assembly_job_ids:
@@ -271,6 +274,7 @@ class GenerationHistoryReader:
             "jobs_by_id": job_by_id,
             "blocking_jobs": blocking_jobs,
             "assemblies_by_run_id": assembly_by_run_id,
+            "assembly_versions_by_run_id": assembly_versions_by_run_id,
             "take_counts": take_counts,
             "usage_by_run_id": usage_by_run_id,
             "visible_sequences": visible_sequences,
@@ -352,6 +356,8 @@ class GenerationHistoryReader:
         runs: list[_RunHistoryIndex] = []
         revisions: dict[str, _RevisionHistoryIndex] = {}
         for row in rows:
+            early_value: object = row[9]
+            regroup_value: object = row[10]
             run = _RunHistoryIndex(
                 id=row[0],
                 session_id=row[1],
@@ -363,8 +369,8 @@ class GenerationHistoryReader:
                 status=row[7],
                 created_at=row[8],
                 settings_snapshot_json={
-                    EARLY_REPAIR_MARKER_KEY: row[9] if isinstance(row[9], str) else None,
-                    REGROUP_MARKER_KEY: row[10] if isinstance(row[10], str) else None,
+                    EARLY_REPAIR_MARKER_KEY: early_value if isinstance(early_value, str) else None,
+                    REGROUP_MARKER_KEY: regroup_value if isinstance(regroup_value, str) else None,
                 },
             )
             operation: object = row[11]
@@ -721,6 +727,25 @@ class GenerationHistoryReader:
             "created_at": run.created_at.isoformat(),
             "updated_at": run.updated_at.isoformat(),
         }
+        from .generation_audio_versions import audio_version_summary
+
+        version = audio_version_summary(run)
+        if version is not None:
+            payload["audio_version"] = version
+            payload["audio_version_assemblies"] = {
+                side: {key: value for key, value in self._assembly_payload(
+                    record, context["jobs_by_id"].get(record.job_id) if record.job_id else None
+                ).items() if key != "settings"}
+                for side, record in context["assembly_versions_by_run_id"].get(run.id, {}).items()
+            }
+            if payload["assembly"]:
+                payload["assembly"] = {key: value for key, value in payload["assembly"].items() if key != "settings"}
+            names = ", ".join(item["label"] for item in version["selectors"])
+            service = str((snapshot.get("tts") or {}).get("model") or (snapshot.get("tts") or {}).get("service") or "")
+            count = version["target_count"]
+            unit = "segment" if count == 1 else "segments"
+            payload["label"] = f"Recast {names} · {count} {unit}" + (f" · {service}" if service else "")
+            payload["take_count"] = version["generated_count"]
 
         # A stale recording may be waiting for its replacement, rather than
         # being stuck in synthesis. Expose queue state without changing takes.
@@ -748,7 +773,7 @@ class GenerationHistoryReader:
         repair_active = False
         from pandrator.logic.dubbing.passage_regroup import select_second_pass
 
-        second_pass = select_second_pass(
+        second_pass = None if version is not None else select_second_pass(
             snapshot,
             operation=str(run.operation or ""),
             has_selected_ids=False,
@@ -824,6 +849,7 @@ class GenerationHistoryReader:
             "id": record.id,
             "session_id": record.session_id,
             "generation_run_id": record.generation_run_id,
+            "audio_version_side": (record.settings_json or {}).get("audio_version_side"),
             "job_id": record.job_id,
             "artifact_id": record.artifact_id,
             "status": record.status,

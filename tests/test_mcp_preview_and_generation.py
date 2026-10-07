@@ -195,7 +195,7 @@ class _FakeApplication:
         }
 
     def list_generation_segments(
-        self, session_id, *, cursor=0, limit=50, generation_run_id=None
+        self, session_id, *, cursor=0, limit=50, generation_run_id=None, audio_version_side="after"
     ):
         self.calls.append(
             (
@@ -451,7 +451,7 @@ class _FakeApplication:
         }
 
     def create_output_assembly(
-        self, session_id, *, generation_run_id=None, idempotency_key=""
+        self, session_id, *, generation_run_id=None, idempotency_key="", audio_version_side="after"
     ):
         self.calls.append(
             (

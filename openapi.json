@@ -112,6 +112,22 @@
         "title": "ApplicationIdentityDocument",
         "type": "object"
       },
+      "AudioVersionUndoRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_selection_hash": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Selection Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_selection_hash"
+        ],
+        "title": "AudioVersionUndoRequest",
+        "type": "object"
+      },
       "AudiobookSetupConfigureRequest": {
         "additionalProperties": false,
         "description": "Revision-checked audiobook voice-mode configuration.",
@@ -2396,6 +2412,109 @@
         "title": "GenerationPlanTopologyRequest",
         "type": "object"
       },
+      "GenerationRecastPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "include_missing": {
+            "default": false,
+            "title": "Include Missing",
+            "type": "boolean"
+          },
+          "selector_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Selector Keys"
+          },
+          "speech_plan_revision_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Plan Revision Id"
+          }
+        },
+        "title": "GenerationRecastPreviewRequest",
+        "type": "object"
+      },
+      "GenerationRecastStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_selection_hash": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Expected Selection Hash",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "include_missing": {
+            "default": false,
+            "title": "Include Missing",
+            "type": "boolean"
+          },
+          "selector_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Selector Keys"
+          },
+          "speech_plan_revision_id": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Plan Revision Id"
+          }
+        },
+        "required": [
+          "expected_selection_hash"
+        ],
+        "title": "GenerationRecastStartRequest",
+        "type": "object"
+      },
       "GenerationSegmentBatchUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -4673,6 +4792,15 @@
       "OutputAssemblyCreateRequest": {
         "additionalProperties": false,
         "properties": {
+          "audio_version_side": {
+            "default": "after",
+            "enum": [
+              "before",
+              "after"
+            ],
+            "title": "Audio Version Side",
+            "type": "string"
+          },
           "generation_run_id": {
             "anyOf": [
               {
@@ -4697,6 +4825,15 @@
       "OutputMixPreviewRequest": {
         "additionalProperties": false,
         "properties": {
+          "audio_version_side": {
+            "default": "after",
+            "enum": [
+              "before",
+              "after"
+            ],
+            "title": "Audio Version Side",
+            "type": "string"
+          },
           "duration_seconds": {
             "default": 12.0,
             "maximum": 30.0,
@@ -12820,6 +12957,128 @@
         }
       }
     },
+    "/api/v1/generation-runs/{runId}/audio-version/undo": {
+      "post": {
+        "operationId": "undoGenerationRecast",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioVersionUndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compact cast impact or audio version receipt"
+          },
+          "404": {
+            "description": "Project or audio version not found"
+          },
+          "409": {
+            "description": "Cast, plan, audio selection or request changed"
+          },
+          "422": {
+            "description": "Invalid request or unavailable recast"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "undoGenerationRecast"
+      }
+    },
+    "/api/v1/generation-runs/{runId}/audio-version/undo-preview": {
+      "post": {
+        "operationId": "previewGenerationRecastUndo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compact cast impact or audio version receipt"
+          },
+          "404": {
+            "description": "Project or audio version not found"
+          },
+          "409": {
+            "description": "Cast, plan, audio selection or request changed"
+          },
+          "422": {
+            "description": "Invalid request or unavailable recast"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "previewGenerationRecastUndo"
+      }
+    },
     "/api/v1/generation-runs/{runId}/cancel": {
       "post": {
         "operationId": "cancelGenerationRun",
@@ -16597,6 +16856,138 @@
         ]
       }
     },
+    "/api/v1/sessions/{sessionId}/generation-recast": {
+      "post": {
+        "operationId": "startGenerationRecast",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationRecastStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compact cast impact or audio version receipt"
+          },
+          "404": {
+            "description": "Project or audio version not found"
+          },
+          "409": {
+            "description": "Cast, plan, audio selection or request changed"
+          },
+          "422": {
+            "description": "Invalid request or unavailable recast"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "startGenerationRecast"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-recast/preview": {
+      "post": {
+        "operationId": "previewGenerationRecast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationRecastPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compact cast impact or audio version receipt"
+          },
+          "404": {
+            "description": "Project or audio version not found"
+          },
+          "409": {
+            "description": "Cast, plan, audio selection or request changed"
+          },
+          "422": {
+            "description": "Invalid request or unavailable recast"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "previewGenerationRecast"
+      }
+    },
     "/api/v1/sessions/{sessionId}/generation-runs": {
       "get": {
         "operationId": "listGenerationRuns",
@@ -16754,6 +17145,19 @@
             "required": false,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Choose the exact before or after take map of a recast run.",
+            "in": "query",
+            "name": "audio_version_side",
+            "schema": {
+              "default": "after",
+              "enum": [
+                "before",
+                "after"
+              ],
               "type": "string"
             }
           },

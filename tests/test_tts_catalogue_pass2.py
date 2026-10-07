@@ -7,8 +7,9 @@ from unittest import mock
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.models import AppSetting
 from pandrator.web.openapi import build_openapi_document
-from pandrator.web.tts_providers import TtsHealth
+from pandrator.web.tts_providers import TtsCatalogueModelNotFoundError, TtsHealth
 from pandrator.web.voice_catalog import VoiceCatalogQuery, catalog_entries, query_catalog
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -391,6 +392,102 @@ class TtsCataloguePass2Tests(unittest.TestCase):
             {"qwen3_tts_1_7b_base_q8_0", "fish_audio_s2_pro_q8_0"},
             {item["id"] for item in multi["service"]["model_catalog"]},
         )
+
+    def _configure_old_native_inventory(self):
+        services = self.app.extensions["pandrator"]
+        with services["database"].session() as session:
+            row = session.get(AppSetting, "services.tts")
+            value = {"provider_configs": [{
+                "id": "audio_cpp",
+                "adapter": "audio_cpp",
+                "connection_mode": "external",
+                "api_base": "http://native.invalid:8060",
+                "models": ["old_model"],
+                "model_catalog": [{"id": "old_model"}],
+                "model_voice_modes": {},
+                "voice_catalogues": {},
+                "voice_metadata": {},
+                "default_voices": {},
+                "default_model": "old_model",
+            }]}
+            if row is None:
+                session.add(AppSetting(key="services.tts", value_json=value, revision=1))
+            else:
+                row.value_json = value
+        return services["tts_catalogue"]
+
+    def test_missing_native_selected_model_refreshes_once_and_retains_discovery(self):
+        catalogue = self._configure_old_native_inventory()
+        breeze = "breeze_tts_2_q8_0"
+        with (
+            mock.patch.object(catalogue.manager_bridge, "inventory", return_value={}),
+            mock.patch.object(catalogue.providers, "health", return_value=TtsHealth(True, True)),
+            mock.patch(
+                "pandrator.logic.tts_handler.get_audio_cpp_model_catalog",
+                return_value=[{"id": breeze, "task": "tts", "loaded": True}],
+            ) as discover,
+            mock.patch(
+                "pandrator.logic.tts_handler.get_audio_cpp_voice_catalog", return_value=[]
+            ),
+            mock.patch.object(catalogue, "_build_services", wraps=catalogue._build_services) as build,
+        ):
+            detail, revision = catalogue.service_detail("AUDIO_CPP", models=[breeze])
+            self.assertEqual([False, True], [call.kwargs["refresh"] for call in build.call_args_list])
+            self.assertEqual(breeze, detail["service"]["model_catalog"][0]["id"])
+            self.assertTrue(detail["service"]["model_catalog"][0]["loaded"])
+            self.assertEqual(revision, detail["revision"])
+            cached, _ = catalogue.service_detail("audio_cpp", models=[breeze])
+            self.assertEqual([breeze], cached["selected_models"])
+            discover.assert_called_once()
+            self.assertFalse(build.call_args_list[-1].kwargs["refresh"])
+            capabilities = self._payload(self.client.get(
+                f"/api/v1/voice-catalog/capabilities?service_id=audio_cpp&model={breeze}"
+            ))
+            self.assertEqual([breeze], [item["model"] for item in capabilities["models"]])
+            discover.assert_called_once()
+
+    def test_missing_native_selected_model_stays_strict_after_one_retry(self):
+        catalogue = self._configure_old_native_inventory()
+        with (
+            mock.patch.object(catalogue.manager_bridge, "inventory", return_value={}),
+            mock.patch.object(catalogue.providers, "health", return_value=TtsHealth(True, True)),
+            mock.patch.object(catalogue.providers, "enrich_catalog", return_value={
+                "models": ["other_model"], "model_catalog": [{"id": "other_model"}],
+            }) as discover,
+            mock.patch.object(catalogue, "_build_services", wraps=catalogue._build_services) as build,
+        ):
+            with self.assertRaises(TtsCatalogueModelNotFoundError):
+                catalogue.service_detail("audio_cpp", models=["missing_model"])
+            self.assertEqual([False, True], [call.kwargs["refresh"] for call in build.call_args_list])
+            discover.assert_called_once()
+
+    def test_native_detail_retry_exclusions_and_offline_failure(self):
+        catalogue = self._configure_old_native_inventory()
+        with (
+            mock.patch.object(catalogue.manager_bridge, "inventory", return_value={}),
+            mock.patch.object(catalogue.providers, "health", return_value=TtsHealth(False, False)),
+            mock.patch.object(catalogue.providers, "enrich_catalog") as discover,
+            mock.patch.object(catalogue, "_build_services", wraps=catalogue._build_services) as build,
+        ):
+            for service_id, models, refresh, missing in (
+                ("audio_cpp", ["old_model"], False, False),
+                ("audio_cpp", None, False, False),
+                ("xtts", ["missing_model"], False, True),
+                ("audio_cpp", ["missing_model"], True, True),
+            ):
+                with self.subTest(service_id=service_id, models=models, refresh=refresh):
+                    build.reset_mock()
+                    if missing:
+                        with self.assertRaises(TtsCatalogueModelNotFoundError):
+                            catalogue.service_detail(service_id, models=models, refresh=refresh)
+                    else:
+                        catalogue.service_detail(service_id, models=models, refresh=refresh)
+                    build.assert_called_once_with(refresh=refresh, selected=[service_id], compact=False)
+            build.reset_mock()
+            with self.assertRaises(TtsCatalogueModelNotFoundError):
+                catalogue.service_detail("audio_cpp", models=["missing_model"])
+            self.assertEqual([False, True], [call.kwargs["refresh"] for call in build.call_args_list])
+            discover.assert_not_called()
 
     def test_catalogue_requires_auth(self):
         anonymous = self.app.test_client()

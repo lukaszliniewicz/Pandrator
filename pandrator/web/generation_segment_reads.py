@@ -24,6 +24,13 @@ from .workspace_settings import WorkspaceSettingsService
 
 def _take_payload(take: AudioTake, artifact: Artifact | None) -> dict[str, Any]:
     metadata = (artifact.metadata_json or {}) if artifact is not None else {}
+    rendered_voices = []
+    seen = set()
+    for part in metadata.get("render_parts") or []:
+        key = (part.get("voice"), tuple(part.get("speaker_ids") or []), part.get("source"))
+        if key not in seen:
+            seen.add(key)
+            rendered_voices.append({"voice": key[0], "speaker_ids": list(key[1]), "speaker_labels": list(part.get("speaker_labels") or []), "source": key[2]})
     return {
         "id": take.id,
         "generation_run_id": take.generation_run_id,
@@ -41,6 +48,8 @@ def _take_payload(take: AudioTake, artifact: Artifact | None) -> dict[str, Any]:
         "llm_optimized": bool(metadata.get("llm_optimized")),
         "llm_model": metadata.get("llm_model"),
         "audio_verification": metadata.get("audio_verification"),
+        "rendered_voices": rendered_voices,
+        "is_reused": bool(metadata.get("generation_run_id") and metadata["generation_run_id"] != take.generation_run_id),
     }
 
 
@@ -61,6 +70,7 @@ class GenerationSegmentReader:
         marked: bool | None = None,
         verification: str | None = None,
         generation_run_id: str | None = None,
+        audio_version_side: str = "after",
         plan_revision_id: str | None = None,
         view: str = "full",
         fields: list[str] | None = None,
@@ -99,6 +109,13 @@ class GenerationSegmentReader:
                 selected_run = session.get(GenerationRun, generation_run_id)
                 if selected_run is None or selected_run.session_id != session_id:
                     raise KeyError(generation_run_id)
+            from .generation_audio_versions import audio_version_take_ids
+
+            if audio_version_side not in {"before", "after"}:
+                raise ValueError("Audio version side must be before or after.")
+            pinned = audio_version_take_ids(selected_run, audio_version_side) if selected_run else None
+            if audio_version_side == "before" and pinned is None:
+                raise ValueError("A before view requires a recast audio version.")
             plan = session.scalar(
                 select(GenerationPlan).where(GenerationPlan.session_id == session_id)
             )
@@ -296,6 +313,7 @@ class GenerationSegmentReader:
                     "removed": item.removed,
                     "status": item.status,
                     "revision": item.revision,
+                    **({"history_take_id": pinned.get(item.id)} if pinned is not None else {}),
                     "takes": [
                         _take_payload(
                             take,
@@ -317,7 +335,10 @@ class GenerationSegmentReader:
 
             audio_identity = AudioIdentityContext(session, selected_run.settings_snapshot_json if selected_run else audio_snapshot)
             for row, item in zip(rows, items, strict=True):
-                active_take = next((take for take in takes_by_segment.get(row.id, []) if take.is_active), None)
+                active_take = next((take for take in takes_by_segment.get(row.id, [])
+                                    if take.id == pinned.get(row.id)), None) if pinned is not None else next(
+                    (take for take in takes_by_segment.get(row.id, []) if take.is_active), None
+                )
                 artifact = artifacts_by_id.get(active_take.artifact_id) if active_take and active_take.artifact_id else None
                 reason = take_reuse_reason(row, active_take, artifact, audio_identity.for_segment(row))
                 item["audio_reuse_reason"] = reason

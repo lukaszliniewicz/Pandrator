@@ -119,7 +119,12 @@ def run_generation(
         from .speech_plan_workspace import plan_signature
 
         plan_changed = bool(settings_snapshot.get("speech_plan_signature") and settings_snapshot["speech_plan_signature"] != plan_signature(session, run.plan_revision_id))
-        audio_identities = plan_audio_identities(session, run.plan_revision_id, settings_snapshot)
+        audio_version = run.audio_version_json
+        is_audio_version = audio_version is not None
+        audio_identities = plan_audio_identities(
+            session, run.plan_revision_id, settings_snapshot,
+            segment_ids=audio_version["target_segment_ids"] if audio_version is not None else None,
+        )
         audio_identity_changed = bool(settings_snapshot.get("generation_audio_identities") and settings_snapshot["generation_audio_identities"] != audio_identities)
         if plan_changed or audio_identity_changed:
             run.status = "failed"
@@ -133,7 +138,7 @@ def run_generation(
     if audio_identity_changed:
         raise ValueError("A voice reference changed after generation was queued. Start a new run to use the current voice consistently.")
     completion_progress = progress
-    second_pass = context._voiceover_second_pass(
+    second_pass = None if is_audio_version else context._voiceover_second_pass(
         settings_snapshot,
         operation=operation,
         has_selected_ids=bool(selected_ids),
@@ -181,15 +186,20 @@ def run_generation(
         from .generation_audio_identity import take_reuse_reason
 
         selected_by_id = {segment.id: segment for segment in selected_segments}
+        completed_takes_query = select(AudioTake, Artifact).join(
+            Artifact, Artifact.id == AudioTake.artifact_id,
+        ).where(
+            AudioTake.generation_run_id == output_run_id,
+            AudioTake.status == "completed",
+            AudioTake.artifact_id.is_not(None),
+        )
+        if audio_version is not None:
+            completed_takes_query = completed_takes_query.where(
+                AudioTake.id.in_(list(audio_version["generated_take_ids"].values()))
+            )
         completed_take_ids = {
             take.generation_segment_id
-            for take, artifact in session.execute(
-                select(AudioTake, Artifact).join(Artifact, Artifact.id == AudioTake.artifact_id).where(
-                    AudioTake.generation_run_id == output_run_id,
-                    AudioTake.status == "completed",
-                    AudioTake.artifact_id.is_not(None),
-                )
-            )
+            for take, artifact in session.execute(completed_takes_query)
             if take.generation_segment_id in selected_by_id
             and take_reuse_reason(selected_by_id[take.generation_segment_id], take, artifact,
                                   audio_identities[take.generation_segment_id]) == "reusable"

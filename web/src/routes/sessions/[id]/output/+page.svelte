@@ -59,6 +59,7 @@
   let outputProfile = $state<SettingsPayload | null>(null);
   let selectedRunId = $state('');
   let selectedRunVersionId = $state('');
+  let audioVersionSide = $state<'before' | 'after'>('after');
   const historyRuns = $derived(visibleGenerationRuns(runs));
   const selectedHistoryRun = $derived(
     historyRuns.find((item) => item.id === selectedRunId)
@@ -181,7 +182,9 @@
       !historyRuns.some((item) => item.id === selectedRunId)
     ) {
       selectedRunId =
-        historyRuns.find((item) => item.status === 'completed')?.id ?? '';
+        historyRuns.find(
+          (item) => item.status === 'completed' || item.audio_version
+        )?.id ?? '';
       selectedRunVersionId = '';
     }
   }
@@ -196,6 +199,7 @@
     try {
       const selected = selectedRun;
       const exportRunId = selected?.id ?? '';
+      const exportSide = selected?.audio_version ? audioVersionSide : 'after';
       const savedProfile = await saveProfile();
       const effective = savedProfile.output ?? {};
       // The API can omit inherited defaults from `effective`; resolve the same
@@ -238,7 +242,9 @@
       const label = selected?.label ?? 'the selected version';
       const job = await sessionApi.runStage(sessionId, 'export', {
         ...runOverride,
-        ...(needsAssembly ? { generation_run_id: exportRunId } : {})
+        ...(needsAssembly
+          ? { generation_run_id: exportRunId, audio_version_side: exportSide }
+          : {})
       });
       exportJobs = [
         job,
@@ -519,17 +525,42 @@
           >Audio version<select
             bind:value={selectedRunId}
             disabled={busy}
-            onchange={() => (selectedRunVersionId = '')}
+            onchange={() => {
+              selectedRunVersionId = '';
+              audioVersionSide = 'after';
+            }}
             class="mt-1 block max-w-sm rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3 py-2 text-sm font-normal"
             ><option value="">Do not select generated audio</option
-            >{#each historyRuns.filter((item) => item.status === 'completed') as item}<option
+            >{#each historyRuns.filter((item) => item.status === 'completed' || item.audio_version) as item}<option
                 value={item.id}
                 >{item.label}{item.timing_repair
                   ? ` · ${generationHistoryStatus(item)}`
                   : ''}</option
               >{/each}</select
           ></label
-        >{/if}<button
+        >{/if}
+      {#if selectedRun?.audio_version}
+        <div
+          role="group"
+          aria-label="Recast export version"
+          class="flex rounded-xl border border-[var(--line)] p-1"
+        >
+          <button
+            class="btn"
+            class:btn-primary={audioVersionSide === 'before'}
+            aria-pressed={audioVersionSide === 'before'}
+            disabled={busy}
+            onclick={() => (audioVersionSide = 'before')}>Before recast</button
+          >
+          <button
+            class="btn"
+            class:btn-primary={audioVersionSide === 'after'}
+            aria-pressed={audioVersionSide === 'after'}
+            disabled={busy}
+            onclick={() => (audioVersionSide = 'after')}>After recast</button
+          >
+        </div>
+      {/if}<button
         onclick={assemble}
         disabled={busy || !saveOutputProfile}
         class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
@@ -641,6 +672,7 @@
   <OutputSettingsPanel
     {sessionId}
     generationRunId={selectedRun?.id ?? ''}
+    {audioVersionSide}
     onSaveForExportReady={(save) => {
       saveOutputProfile = save;
     }}

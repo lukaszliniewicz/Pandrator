@@ -36,6 +36,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
             "duration_ms": t.get("duration_ms"),
             "artifact_id": t.get("artifact_id"),
             "created_at": t.get("created_at"),
+            **({"rendered_voices": t["rendered_voices"]} if "rendered_voices" in t else {}),
         }
         for t in takes
         if isinstance(t, dict)
@@ -65,6 +66,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "voice": segment.get("voice"),
         "language": segment.get("language"),
         "selected_take_id": segment.get("selected_take_id"),
+        **({"history_take_id": segment["history_take_id"]} if "history_take_id" in segment else {}),
         "takes": safe_takes,
     }
 
@@ -107,6 +109,7 @@ def list_generation_segments(
         cursor=arguments.cursor,
         limit=arguments.limit,
         generation_run_id=arguments.generation_run_id,
+        audio_version_side=arguments.audio_version_side,
         **options,
     )
     items = payload.get("items") or []
@@ -115,6 +118,7 @@ def list_generation_segments(
         "session_id": arguments.session_id,
         "items": [(_segment_projection(item) if arguments.view == "full" and arguments.fields is None else item) for item in items if isinstance(item, dict)],
         "view": arguments.view,
+        "audio_version_side": arguments.audio_version_side,
         "fields": payload.get("fields"),
         "active_plan_revision_id": payload.get("active_plan_revision_id"),
         "is_active_revision": payload.get("is_active_revision"),
@@ -404,6 +408,7 @@ def assemble_generation_run(
         arguments.session_id,
         generation_run_id=arguments.generation_run_id,
         idempotency_key=arguments.idempotency_key,
+        audio_version_side=arguments.audio_version_side,
     )
     work = (
         application_work_reference(result)
@@ -415,6 +420,7 @@ def assemble_generation_run(
             "schema_version": "1",
             "session_id": arguments.session_id,
             "assembly_id": result.get("id") if isinstance(result, dict) else None,
+            "audio_version_side": arguments.audio_version_side,
             "status": "queued",
         },
         work=work,

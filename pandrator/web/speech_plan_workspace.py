@@ -44,18 +44,20 @@ def freeze_speech_snapshot(
     *,
     explicit: bool = False,
     segment_ids: Collection[str] | None = None,
+    cast_segment_ids: Collection[str] | None = None,
 ) -> None:
     """Freeze plan metadata and language bindings for all or selected segments.
 
     ``segment_ids=None`` validates every active segment; an explicit collection
     restricts only the language-binding records to those requested for synthesis.
+    ``cast_segment_ids`` restricts cast resolution while retaining whole-plan metadata.
     """
     revision = session.get(m.GenerationPlanRevision, revision_id)
     if revision is not None and (revision.operation_json or {}).get("draft"):
         raise RevisionConflict("Adopt this resegmentation draft with a topology restore before generation.")
     performance_frozen = bool(
         revision is not None
-        and freeze_generation_performance_snapshot(session, revision_id, snapshot)
+        and freeze_generation_performance_snapshot(session, revision_id, snapshot, cast_segment_ids=cast_segment_ids)
     )
     from .speech_boundaries import freeze_boundaries
     freeze_boundaries(session, revision_id, snapshot)

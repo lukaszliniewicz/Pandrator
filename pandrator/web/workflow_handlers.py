@@ -3274,6 +3274,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         session_id: str,
         generation_run_id: str,
         resolved_settings_snapshot: dict[str, Any],
+        audio_version_side: str = "after",
         progress,
         cancel_event: threading.Event,
     ) -> str | None:
@@ -3287,7 +3288,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 raise ValueError(
                     "The selected generation run does not belong to this session."
                 )
-            if run.status != "completed":
+            if run.status != "completed" and run.audio_version_json is None:
                 raise ValueError("Only a completed generation run can be exported.")
             existing, assembly_snapshot, settings_hash = (
                 find_matching_output_assembly(
@@ -3295,6 +3296,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                     session_id=session_id,
                     run=run,
                     resolved_settings_snapshot=resolved_settings_snapshot,
+                    audio_version_side=audio_version_side,
                 )
             )
             if existing is not None and existing.artifact_id:
@@ -3305,6 +3307,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 if not book_timing or (artifact is not None and (artifact.metadata_json or {}).get("audio_timeline")):
                     progress(0.68, "Using the selected generation run assembly")
                     return existing.artifact_id
+            from .generation_audio_version_assembly import audio_version_assembly_selection
+
+            selection, _rows = audio_version_assembly_selection(session, session_id, run, audio_version_side)
             assembly = OutputAssembly(
                 session_id=session_id,
                 generation_run_id=generation_run_id,
@@ -3312,6 +3317,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 settings_json={
                     "resolved": assembly_snapshot,
                     "plan_revision_id": run.plan_revision_id,
+                    **(selection or {}),
                 },
                 settings_hash=settings_hash,
             )
@@ -3353,6 +3359,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 session_id=record.id,
                 generation_run_id=generation_run_id,
                 resolved_settings_snapshot=resolved_snapshot,
+                audio_version_side=str(settings.get("audio_version_side") or "after"),
                 progress=progress,
                 cancel_event=cancel_event,
             )

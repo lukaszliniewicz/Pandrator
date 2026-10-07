@@ -12,7 +12,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0052_translation_project_operations"
+SCHEMA_HEAD = "0053_generation_audio_versions"
 
 
 def sqlite_url(path: Path) -> str:

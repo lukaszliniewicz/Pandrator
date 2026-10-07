@@ -17,11 +17,13 @@
   let {
     sessionId,
     generationRunId,
+    audioVersionSide = 'after',
     settings,
     onChange
   }: {
     sessionId: string;
     generationRunId: string;
+    audioVersionSide?: 'before' | 'after';
     settings: Record<string, unknown>;
     onChange: (key: string, value: unknown) => void;
   } = $props();
@@ -67,7 +69,7 @@
   let preview = $state<ArtifactRecord | null>(null);
   let previewSignature = $state('');
   const controlsSignature = $derived(
-    JSON.stringify([settings, startSeconds, generationRunId])
+    JSON.stringify([settings, startSeconds, generationRunId, audioVersionSide])
   );
   let disposed = false;
   let attempt = 0;
@@ -102,6 +104,7 @@
     try {
       let job = await sessionApi.runStage(sessionId, 'export', {
         generation_run_id: generationRunId,
+        audio_version_side: audioVersionSide,
         output: { ...settings, export_mode: 'video_book' },
         book_preview: true,
         book_preview_start_seconds: Number(startSeconds) || 0,

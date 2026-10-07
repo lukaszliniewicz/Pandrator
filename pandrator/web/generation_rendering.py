@@ -428,6 +428,11 @@ def build_render_parts(
     if not isinstance(settings, dict):
         raise TypeError("settings must be a dictionary")
     control_values = _control_values(settings, controls)
+    character_labels = {
+        item["id"]: item.get("display_name") or item["id"]
+        for item in control_values.get("characters") or []
+        if item.get("id")
+    }
     xml_present = speech_xml is not None
     if xml_present:
         parsed = parse_speech_markup(
@@ -522,6 +527,7 @@ def build_render_parts(
                 "voice_source": anchor.voice_source,
                 "fallback": all(item.fallback for item in group.items),
                 "speaker_ids": speaker_ids,
+                "speaker_labels": [character_labels.get(key, key) for key in speaker_ids],
                 "index": index,
                 "voice_key": group.voice_key,
                 "silence_before_ms": (
@@ -594,6 +600,7 @@ def execute_render_parts(
                 "source": part.get("voice_source", "base"),
                 "fallback": bool(part.get("fallback")),
                 "speaker_ids": list(part.get("speaker_ids") or []),
+                **({"speaker_labels": list(part["speaker_labels"])} if part.get("speaker_labels") else {}),
                 "duration_ms": duration_ms,
                 "silence_before_ms": silence_before_ms,
                 "start_frame": start_frame,
