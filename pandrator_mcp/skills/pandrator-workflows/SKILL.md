@@ -19,6 +19,8 @@ tool arguments, roots, providers, model IDs, voices, or revisions.
   selected artifacts, or create a session if needed. Use
   `pandrator_plan_orchestrated_workflow` when passive language stages precede
   generation or export. Read [MCP operations](references/mcp-operations.md).
+  For multiple voices, use the speaker-first procedure there: reuse accepted
+  attribution, read the derived dictionary, then design and assign the cast.
 - **PDF/EPUB cleanup:** use the source-cleaning dispatcher before narration
   preparation. Read [semantic dispatch](references/semantic-dispatch.md).
 - **Recording edits:** use `pandrator_plan_media_edit_workflow` and the

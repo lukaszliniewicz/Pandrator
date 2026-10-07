@@ -520,6 +520,7 @@
     </div>
     <div class="flex flex-wrap gap-2">
       <button
+        title="Replace this project’s output profile with the application defaults."
         onclick={() => {
           draft = {};
           audioDraft = {};
@@ -529,11 +530,16 @@
           (!Object.keys(draft).length && !Object.keys(audioDraft).length)}
         class="tool"><RotateCcw size={15} /> Revert to defaults</button
       ><button
+        title="Use these settings as defaults for compatible projects."
         onclick={saveAsDefaults}
         disabled={busy ||
           (!Object.keys(draft).length && !Object.keys(audioDraft).length)}
         class="tool"><Save size={15} /> Save as defaults</button
-      ><button onclick={() => save()} disabled={busy} class="tool primary"
+      ><button
+        onclick={() => save()}
+        disabled={busy}
+        class="tool primary"
+        title="Save these output settings for this project. Create export then renders the selected audio version."
         ><Save size={15} /> {busy ? 'Saving…' : 'Save output profile'}</button
       >
     </div>
@@ -1169,6 +1175,15 @@
     background: var(--paper);
     padding: 0.65rem 0.75rem;
     font-weight: 400;
+    min-height: 2.75rem;
+    font-size: 0.9375rem;
+    line-height: 1.4;
+  }
+  .field:hover {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  }
+  select.field {
+    cursor: pointer;
   }
   .tool {
     display: flex;
@@ -1177,7 +1192,8 @@
     border: 1px solid var(--line);
     border-radius: 0.65rem;
     padding: 0.55rem 0.75rem;
-    font-size: 0.75rem;
+    min-height: 2.75rem;
+    font-size: 0.8125rem;
     font-weight: 700;
   }
   .tool.primary {
@@ -1191,7 +1207,7 @@
     opacity: 0.4;
   }
   label {
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     font-weight: 650;
   }
 </style>

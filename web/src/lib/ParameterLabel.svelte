@@ -12,16 +12,19 @@
     name,
     label,
     controlId,
+    description,
     compact = false
   }: {
     section: string;
     name: string;
     label: string;
     controlId?: string;
+    description?: string;
     compact?: boolean;
   } = $props();
   const tooltipId = $props.id();
   let definition = $state<ParameterDefinition | null>(null);
+  const helpText = $derived(description ?? definition?.description);
   let trigger = $state<HTMLSpanElement>();
   let tooltip = $state<HTMLSpanElement>();
   const { show, hide, leave, escape } = helpPopover(
@@ -48,11 +51,12 @@
   });
 
   onMount(() => {
-    parameterDefinition(section, name).then((value) => (definition = value));
+    if (!description)
+      parameterDefinition(section, name).then((value) => (definition = value));
   });
 </script>
 
-{#if definition?.description}
+{#if helpText}
   <span class="parameter-label-row">
     {#if controlId}<label for={controlId}>{label}</label>{:else}<span
         >{label}</span
@@ -91,12 +95,12 @@
         popover="manual"
         class="parameter-tooltip"
       >
-        <span>{definition.description}</span>
-        {#if definition.applicability}<span class="tooltip-detail"
+        <span>{helpText}</span>
+        {#if definition?.applicability}<span class="tooltip-detail"
             >{definition.applicability}</span
           >{/if}
         {#if constraint}<span class="tooltip-detail">{constraint}</span>{/if}
-        {#if definition.caveat}<span class="tooltip-caveat"
+        {#if definition?.caveat}<span class="tooltip-caveat"
             >Note: {definition.caveat}</span
           >{/if}
       </span>
@@ -123,13 +127,20 @@
     outline: none;
     border: 0;
     background: transparent;
-    padding: 0;
+    min-width: 1.5rem;
+    min-height: 1.5rem;
+    padding: 0.15rem;
     color: inherit;
     font: inherit;
   }
   .parameter-help :global(svg) {
     flex: none;
     color: var(--muted);
+  }
+  .parameter-help:hover,
+  .parameter-help:focus-visible {
+    background: var(--accent-soft);
+    color: var(--accent);
   }
   .parameter-help:focus-visible {
     box-shadow: 0 0 0 2px var(--accent-soft);
@@ -147,9 +158,9 @@
     background: #242126;
     padding: 0.65rem 0.75rem;
     color: #fff;
-    font-size: 0.72rem;
+    font-size: 0.8125rem;
     font-weight: 500;
-    line-height: 1.45;
+    line-height: 1.5;
     text-align: left;
     pointer-events: auto;
     box-shadow: 0 0.7rem 1.8rem rgb(0 0 0 / 24%);
@@ -166,6 +177,10 @@
     color: #f1d9ff;
   }
   .compact .parameter-tooltip {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
+  }
+  .parameter-help.compact {
+    min-width: 1.25rem;
+    min-height: 1.25rem;
   }
 </style>

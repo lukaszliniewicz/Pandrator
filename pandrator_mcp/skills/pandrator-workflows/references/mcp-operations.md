@@ -66,6 +66,25 @@ providers, locks, and confirmations, and execute the unchanged plan/digest
 through `pandrator_execute_workflow_plan` with an idempotency key. Re-plan on
 revision conflicts, expiry, or a stale digest.
 
+## Multiple-voice narration
+
+Use the packaged `multivoice-audiobooks` guide for the complete tool sequence.
+Reuse accepted speaker attribution. When attribution is needed, annotate the
+prepared structured text before designing voices, submitting `character_proposals`
+alongside annotation results. Read `pandrator_get_generation_controls` once after
+the run completes; its `characters` are the derived cast list with stable IDs and
+notes. Keep a few representative lines from the annotation for auditions when
+useful; the dictionary itself has no usage counts or sample passages.
+
+Choose/design voices for those roles. Design may use a different model from
+generation. Follow `pandrator_setup_designed_voice` through promotion and renderer
+publication, retaining each ready receipt and its role association. Then save one
+complete cast update, preserving existing mappings. A supplied `cast` replaces
+that section. The update returns current controls/revision, so an immediate read
+is unnecessary. Check all intended roles and compile a mixed-speaker preview:
+an unassigned known character can fall back to the narrator or default voice.
+Delivery analysis and pronunciation optimization remain independent.
+
 ## Durable work and cancellation
 
 A returned `work` handle is not a finished artifact. Poll `pandrator_get_work`

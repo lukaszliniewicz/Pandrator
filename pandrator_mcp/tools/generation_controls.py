@@ -6,7 +6,6 @@ import inspect
 from typing import Annotated, Any
 
 from ..context import McpRuntime
-from ..errors import NextAction
 from ..results import ToolOutcome
 from ..schemas.generation_controls import (
     GetGenerationControlsInput,
@@ -50,16 +49,8 @@ def generation_controls_action(
     payload = runtime.require_application().generation_controls_request(
         action, _portable_arguments(arguments)
     )
-    next_actions: list[NextAction] = []
-    if action == "update":
-        next_actions.append(
-            NextAction(
-                tool="pandrator_get_generation_controls",
-                arguments={"session_id": arguments.session_id},
-                reason="Inspect the current revisioned character dictionary and voice cast after the update.",
-            )
-        )
-    return ToolOutcome(result=payload, next_actions=next_actions)
+    # Both reads and updates return the complete controls and current revision.
+    return ToolOutcome(result=payload)
 
 
 def register_generation_controls_tools(

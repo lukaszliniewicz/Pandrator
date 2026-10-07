@@ -163,6 +163,12 @@ end position. Compute offsets from the exact source rather than counting a long
 passage by eye. Omit `text` and `speech_xml` in this variant. Use the XML variant
 for units with authored markup or delivery controls, preserving those controls.
 
+For speaker discovery, retain the claimed character dictionary and stable IDs
+across batches. Submit new `character_proposals` beside `result`, with concise
+text-grounded notes useful for later casting. Accepted proposals merge atomically
+with the annotation. After finalization, read the resulting dictionary once;
+voice design and cast assignment are later steps, not annotation side effects.
+
 ## Before submission
 
 Check run/batch identity, required item coverage, unique IDs, ordering where

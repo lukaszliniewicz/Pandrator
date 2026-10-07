@@ -39,6 +39,18 @@ several collections. Membership never duplicates the voice or changes its sound.
 
 ## Create a reusable voice
 
+For multivoice narration, identify speakers first and read the resulting
+`characters` from `pandrator_get_generation_controls`. Keep each character ID
+associated with its audition, managed voice, and ready reference receipt.
+Audition/design tools create reusable global voices; they do not bind a project
+role. The `multivoice-audiobooks` guide covers that complete sequence.
+
+After audition and transcript review, prefer `pandrator_setup_designed_voice`
+when advertised. It combines the promotion and renderer publication/link steps
+below and can reuse an already ready reference. Poll and follow its resume
+action until `stage="ready"`, then retain that receipt for the cast update.
+Use the individual tools for separate operations and recovery.
+
 1. Audition with `pandrator_audition_voice`: exact service_id/model, text,
    language, optional voice, generation_prompt, seed, and idempotency_key.
    For supported design models, omit voice and supply a voice description.
@@ -59,7 +71,8 @@ several collections. Membership never duplicates the voice or changes its sound.
    `pandrator_review_voice_transcript`. ASR alone does not mark text reviewed.
 6. Inspect `pandrator_get_voice_samples`; publish/link the reference with
    `pandrator_publish_voice` for the selected service and current voice revision.
-   Poll, then re-query the catalog to confirm compatibility/readiness.
+   Poll to readiness. Use the returned reference receipt; re-query the catalogue
+   only if it lacks the renderer/readiness information needed for casting.
 
 Reuse the same idempotency key and identical request after an uncertain response.
 A changed request needs a new key. Never create a replacement voice just because

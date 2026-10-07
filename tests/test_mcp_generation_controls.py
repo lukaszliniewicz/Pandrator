@@ -95,7 +95,7 @@ def test_client_routes_only_generation_controls_and_preserves_nested_nulls():
         client.generation_controls_request("get", {"session_id": "session", "extra": 1})
 
 
-def test_tool_forwards_portable_data_and_inspection_next_action():
+def test_tool_returns_updated_controls_without_a_redundant_read():
     application = Mock()
     application.generation_controls_request.return_value = _response()
     runtime = SimpleNamespace(require_application=lambda: application)
@@ -108,8 +108,8 @@ def test_tool_forwards_portable_data_and_inspection_next_action():
     outcome = generation_controls_action(runtime, "update", arguments)
     forwarded = application.generation_controls_request.call_args.args[1]
     assert forwarded["cast"]["narrator"] is None
-    assert outcome.next_actions[0].tool == "pandrator_get_generation_controls"
-    assert outcome.next_actions[0].arguments == {"session_id": "session-1"}
+    assert outcome.result == _response()
+    assert not outcome.next_actions
 
 
 def test_registered_signatures_are_flat_and_match_input_models():

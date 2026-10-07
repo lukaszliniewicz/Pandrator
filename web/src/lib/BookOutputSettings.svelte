@@ -1,7 +1,15 @@
 <script lang="ts">
-  import { LoaderCircle, Play, Square } from '@lucide/svelte';
+  import {
+    AudioLines,
+    Captions,
+    LoaderCircle,
+    Play,
+    Square,
+    Video
+  } from '@lucide/svelte';
   import { onDestroy } from 'svelte';
   import ArtifactPreview from './ArtifactPreview.svelte';
+  import ParameterLabel from './ParameterLabel.svelte';
   import { artifactApi, jobApi, sessionApi } from './domain-api';
   import { errorMessage } from './errors';
   import type { ArtifactRecord } from './api-models';
@@ -19,6 +27,28 @@
   } = $props();
 
   const value = (key: string, fallback: unknown) => settings[key] ?? fallback;
+  const componentId = $props.id();
+  const fieldId = (key: string) => `${componentId}-${key}`;
+  const outputChoices = [
+    {
+      value: 'media',
+      label: 'Narration audio',
+      detail: 'An audiobook or audio file',
+      icon: AudioLines
+    },
+    {
+      value: 'video_book',
+      label: 'Video book',
+      detail: 'Narration with text on screen',
+      icon: Video
+    },
+    {
+      value: 'subtitles',
+      label: 'Timed subtitles',
+      detail: 'An SRT or WebVTT text file',
+      icon: Captions
+    }
+  ];
   const mode = $derived(
     value('export_mode', 'media') === 'audio'
       ? 'media'
@@ -158,63 +188,93 @@
   });
 </script>
 
-<div class="book-output mt-5 space-y-4">
-  <label class="block max-w-sm text-sm font-medium"
-    >Export target
-    <select
-      class="field mt-1"
-      value={mode}
-      onchange={(event) => onChange('export_mode', event.currentTarget.value)}
-    >
-      <option value="media">Narration audio</option>
-      <option value="video_book">Video book · audio and reading text</option>
-      <option value="subtitles">Timed subtitles · SRT or WebVTT</option>
-    </select>
-  </label>
+{#snippet fieldLabel(name: string, label: string, description?: string)}
+  <ParameterLabel
+    section="output"
+    {name}
+    {label}
+    {description}
+    controlId={fieldId(name)}
+  />
+{/snippet}
+
+<div class="book-output">
+  <fieldset class="output-targets">
+    <legend>Export target</legend>
+    <div class="output-choices">
+      {#each outputChoices as choice}
+        <label class="output-choice" class:selected={mode === choice.value}>
+          <input
+            type="radio"
+            name={`${componentId}-export-mode`}
+            value={choice.value}
+            checked={mode === choice.value}
+            aria-label={choice.label}
+            aria-describedby={fieldId(`${choice.value}-description`)}
+            onchange={() => onChange('export_mode', choice.value)}
+          />
+          <choice.icon size={20} aria-hidden="true" />
+          <span class="choice-copy">
+            <strong>{choice.label}</strong>
+            <span id={fieldId(`${choice.value}-description`)}
+              >{choice.detail}</span
+            >
+          </span>
+        </label>
+      {/each}
+    </div>
+  </fieldset>
   {#if timed}
-    <div
-      class="rounded-2xl border border-[var(--line)] bg-[var(--paper-strong)] p-4 sm:p-5"
-    >
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <label
-          >Presentation<select
+    <div class="presentation-panel">
+      <div class="book-fields">
+        <div class="book-control">
+          {@render fieldLabel('book_style', 'Presentation')}
+          <select
+            id={fieldId('book_style')}
             class="field"
             value={String(value('book_style', 'reading'))}
             onchange={(event) =>
               onChange('book_style', event.currentTarget.value)}
           >
-            <option value="reading">Reading passages</option><option
-              value="captions">Plain captions</option
-            >
-          </select></label
-        >
-        <label
-          >Text changes<select
+            <option value="reading">Reading passages</option>
+            <option value="captions">Plain captions</option>
+          </select>
+        </div>
+        <div class="book-control">
+          {@render fieldLabel('book_cue_mode', 'Text grouping')}
+          <select
+            id={fieldId('book_cue_mode')}
             class="field"
             value={String(value('book_cue_mode', 'passages'))}
             onchange={(event) =>
               onChange('book_cue_mode', event.currentTarget.value)}
           >
-            <option value="passages">Fitted passages · word timing</option
-            ><option value="segments">Whole segments · faster</option>
-          </select></label
-        >
-        <label
-          >Displayed wording<select
+            <option value="passages">Fitted passages · word timing</option>
+            <option value="segments">Whole segments · faster</option>
+          </select>
+        </div>
+        <div class="book-control">
+          {@render fieldLabel('book_text_mode', 'Displayed wording')}
+          <select
+            id={fieldId('book_text_mode')}
             class="field"
             value={String(value('book_text_mode', 'auto'))}
             onchange={(event) =>
               onChange('book_text_mode', event.currentTarget.value)}
           >
-            <option value="auto">Original when timing can be mapped</option
-            ><option value="original">Require original wording</option><option
-              value="spoken">Use spoken wording</option
-            >
-          </select></label
-        >
+            <option value="auto">Original when timing can be mapped</option>
+            <option value="original">Require original wording</option>
+            <option value="spoken">Use spoken wording</option>
+          </select>
+        </div>
         {#if !segments && reading}
-          <label
-            >Passage target (seconds)<input
+          <div class="book-control">
+            {@render fieldLabel(
+              'book_target_seconds',
+              'Passage target (seconds)'
+            )}
+            <input
+              id={fieldId('book_target_seconds')}
               class="field"
               type="number"
               min="2"
@@ -225,22 +285,26 @@
                   'book_target_seconds',
                   Number(event.currentTarget.value)
                 )}
-            /></label
-          >
+            />
+          </div>
         {/if}
-        <label
-          >Subtitle file<select
+        <div class="book-control">
+          {@render fieldLabel('subtitle_format', 'Subtitle file')}
+          <select
+            id={fieldId('subtitle_format')}
             class="field"
             value={String(value('subtitle_format', 'srt'))}
             onchange={(event) =>
               onChange('subtitle_format', event.currentTarget.value)}
-            ><option value="srt">SRT</option><option value="vtt">WebVTT</option
-            ></select
-          ></label
-        >
+          >
+            <option value="srt">SRT</option><option value="vtt">WebVTT</option>
+          </select>
+        </div>
         {#if video}
-          <label
-            >Text size<input
+          <div class="book-control">
+            {@render fieldLabel('book_font_size', 'Text size')}
+            <input
+              id={fieldId('book_font_size')}
               class="field"
               type="number"
               min="28"
@@ -248,62 +312,68 @@
               value={Number(value('book_font_size', 64))}
               oninput={(event) =>
                 onChange('book_font_size', Number(event.currentTarget.value))}
-            /></label
-          >
-          <label
-            >Background<input
+            />
+          </div>
+          <div class="book-control">
+            {@render fieldLabel('book_background', 'Background')}
+            <input
+              id={fieldId('book_background')}
               class="field"
               type="color"
               value={String(value('book_background', '#202427'))}
               oninput={(event) =>
                 onChange('book_background', event.currentTarget.value)}
-            /></label
-          >
-          <label
-            >Text colour<input
+            />
+          </div>
+          <div class="book-control">
+            {@render fieldLabel('book_foreground', 'Text colour')}
+            <input
+              id={fieldId('book_foreground')}
               class="field"
               type="color"
               value={String(value('book_foreground', '#f0eade'))}
               oninput={(event) =>
                 onChange('book_foreground', event.currentTarget.value)}
-            /></label
-          >
-          <label
-            >Alignment<select
+            />
+          </div>
+          <div class="book-control">
+            {@render fieldLabel('book_alignment', 'Alignment')}
+            <select
+              id={fieldId('book_alignment')}
               class="field"
               value={String(value('book_alignment', 'center'))}
               onchange={(event) =>
                 onChange('book_alignment', event.currentTarget.value)}
-              ><option value="center">Centred</option><option value="left"
+            >
+              <option value="center">Centred</option><option value="left"
                 >Left aligned</option
-              ></select
-            ></label
-          >
+              >
+            </select>
+          </div>
         {/if}
       </div>
-      <p class="muted mt-3 text-sm leading-relaxed">
+      <p class="layout-note">
         {segments
-          ? 'Each complete segment uses its saved audio boundaries. Subtitle-only export skips alignment; a video still needs the text to fit.'
+          ? video
+            ? 'Each complete segment stays on screen. Choose fitted passages if a segment is too long to fit.'
+            : 'Each complete segment becomes one cue. This export skips word alignment.'
           : reading
-            ? 'Passages follow sentence and paragraph boundaries and hold through pauses. Changing presentation reuses saved timing.'
-            : 'Captions use the project’s language-aware subtitle limits and saved word timing.'}
-        {#if video}The MP4 includes burned-in text; the subtitle file is
-          retained separately.{/if}
+            ? 'Passages follow sentence and paragraph boundaries and remain visible through pauses.'
+            : 'Captions follow the project’s language-aware subtitle limits.'}
+        {#if video}The MP4 includes narration and text; a matching subtitle file
+          is also saved.{/if}
       </p>
-      {#if !segments}
-        <p class="muted mt-2 text-sm">
-          Original names can retain their spelling even when speech uses a
-          phonetic version. Other wording changes may need review; any fallback
-          is reported with the export.
-        </p>
-      {/if}
-      <details class="mt-4 border-t border-[var(--line)] pt-3">
-        <summary class="cursor-pointer text-sm font-semibold"
-          >More controls</summary
-        >
-        <div class="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {#if !segments && reading}<label
-              >Passage maximum (seconds)<input
+      <details class="more-controls">
+        <summary>More controls</summary>
+        <div class="book-fields advanced-fields">
+          {#if !segments && reading}
+            <div class="book-control">
+              {@render fieldLabel(
+                'book_max_seconds',
+                'Passage maximum (seconds)'
+              )}
+              <input
+                id={fieldId('book_max_seconds')}
                 class="field"
                 type="number"
                 min="3"
@@ -314,10 +384,14 @@
                     'book_max_seconds',
                     Number(event.currentTarget.value)
                   )}
-              /></label
-            >{/if}
-          {#if reading && (!segments || video)}<label
-              >Maximum lines<input
+              />
+            </div>
+          {/if}
+          {#if reading && (!segments || video)}
+            <div class="book-control">
+              {@render fieldLabel('book_max_lines', 'Maximum lines')}
+              <input
+                id={fieldId('book_max_lines')}
                 class="field"
                 type="number"
                 min="1"
@@ -325,55 +399,73 @@
                 value={Number(value('book_max_lines', 4))}
                 oninput={(event) =>
                   onChange('book_max_lines', Number(event.currentTarget.value))}
-              /></label
-            >{/if}
+              />
+            </div>
+          {/if}
           {#if video}
-            <label
-              >Resolution<select
+            <div class="book-control">
+              {@render fieldLabel('book_resolution', 'Resolution')}
+              <select
+                id={fieldId('book_resolution')}
                 class="field"
                 value={String(value('book_resolution', '1080p'))}
                 onchange={(event) =>
                   onChange('book_resolution', event.currentTarget.value)}
-                ><option value="1080p">1080p</option><option value="720p"
+              >
+                <option value="1080p">1080p</option><option value="720p"
                   >720p</option
-                ></select
-              ></label
-            >
-            <label
-              >Font file (optional)<input
+                >
+              </select>
+            </div>
+            <div class="book-control">
+              {@render fieldLabel('book_font_path', 'Custom font (optional)')}
+              <input
+                id={fieldId('book_font_path')}
                 class="field"
                 value={String(value('book_font_path', ''))}
-                placeholder="Use a font for the book language"
+                placeholder="Font file path"
                 oninput={(event) =>
                   onChange('book_font_path', event.currentTarget.value)}
-              /></label
-            >
-            {#if reading}<label class="flex items-center gap-2 self-end pb-2"
-                ><input
+              />
+            </div>
+            {#if reading}
+              <div class="book-control book-toggle">
+                <input
+                  id={fieldId('book_show_heading')}
                   type="checkbox"
                   checked={Boolean(value('book_show_heading', true))}
                   onchange={(event) =>
                     onChange('book_show_heading', event.currentTarget.checked)}
-                /> Show chapter or book heading</label
-              >{/if}
+                />
+                {@render fieldLabel(
+                  'book_show_heading',
+                  'Show chapter or book heading'
+                )}
+              </div>
+            {/if}
           {/if}
           {#if !segments}
-            <label
-              >Aligner<select
+            <div class="book-control">
+              {@render fieldLabel('book_alignment_engine', 'Aligner')}
+              <select
+                id={fieldId('book_alignment_engine')}
                 class="field"
                 value={String(value('book_alignment_engine', 'auto'))}
                 onchange={(event) =>
                   onChange('book_alignment_engine', event.currentTarget.value)}
-                ><option value="auto">Automatic for the language</option><option
-                  value="crispasr"
+              >
+                <option value="auto">Automatic for the language</option>
+                <option value="crispasr"
                   >CrispASR · supported European languages</option
-                ><option value="qwen"
+                >
+                <option value="qwen"
                   >Qwen · supported languages, including CJK</option
-                ></select
-              ></label
-            >
-            <label class="flex items-center gap-2 self-end pb-2"
-              ><input
+                >
+              </select>
+            </div>
+            <div class="book-control book-toggle">
+              <input
+                id={fieldId('book_use_native_timings')}
                 type="checkbox"
                 checked={Boolean(value('book_use_native_timings', true))}
                 onchange={(event) =>
@@ -381,53 +473,68 @@
                     'book_use_native_timings',
                     event.currentTarget.checked
                   )}
-              /> Use native timing when available</label
-            >
+              />
+              {@render fieldLabel(
+                'book_use_native_timings',
+                'Use native timing when available'
+              )}
+            </div>
           {/if}
         </div>
       </details>
       {#if video}
-        <div
-          class="mt-4 flex flex-wrap items-end gap-3 border-t border-[var(--line)] pt-4"
-        >
-          <label class="w-40"
-            >Preview from (seconds)<input
+        <div class="preview-controls">
+          <div class="book-control preview-start">
+            {@render fieldLabel(
+              'book_preview_start_seconds',
+              'Preview from (seconds)',
+              'Choose where the 25-second preview begins in the selected audio version. The preview uses your current controls without saving the output profile.'
+            )}
+            <input
+              id={fieldId('book_preview_start_seconds')}
               class="field"
               type="number"
               min="0"
               step="0.1"
               bind:value={startSeconds}
-            /></label
-          >
+            />
+          </div>
           <button
-            class="tool"
+            type="button"
+            class="btn btn-secondary"
+            title="Render up to 25 seconds using these settings, without saving them."
             disabled={!generationRunId || busy || Boolean(jobId)}
             onclick={renderPreview}
-            >{#if busy}<LoaderCircle
-                size={15}
-                class="animate-spin"
-              />{:else}<Play size={15} />{/if}Preview 25 seconds</button
           >
-          {#if busy || jobId}<button class="tool" onclick={stopPreview}
-              ><Square size={14} /> Stop preview</button
-            >{/if}
-          {#if !generationRunId}<span class="muted text-sm"
-              >Select a completed audio version to preview.</span
-            >{/if}
+            {#if busy}<LoaderCircle
+                size={16}
+                class="animate-spin"
+              />{:else}<Play size={16} />{/if}
+            Preview 25 seconds
+          </button>
+          {#if busy || jobId}
+            <button
+              type="button"
+              class="btn btn-secondary"
+              onclick={stopPreview}><Square size={14} /> Stop preview</button
+            >
+          {/if}
         </div>
-        <p class="muted mt-2 text-xs">
-          The preview uses the full export renderer and these unsaved controls.
+        <p class="preview-note">
+          {generationRunId
+            ? 'Try these settings before saving or exporting the full book.'
+            : 'Select a completed audio version above to preview.'}
         </p>
       {/if}
-      {#if video && detail}<p class="muted mt-3 text-sm" role="status">
+      {#if video && detail}<p class="layout-note" role="status">
           {detail}
         </p>{/if}
-      {#if video && !busy && previewSignature && previewSignature !== controlsSignature}<p
-          class="muted mt-2 text-sm"
-        >
+      {#if video && !busy && previewSignature && previewSignature !== controlsSignature}
+        <p class="layout-note">
           The controls have changed since the last preview. Render again to see
           these changes.
-        </p>{/if}
+        </p>
+      {/if}
       {#if video && warning}<p
           class="mt-3 text-sm text-[var(--warning)]"
           role="status"
@@ -447,17 +554,210 @@
   />{/if}
 
 <style>
-  .book-output label {
-    font-size: 0.875rem;
-    font-weight: 500;
+  .book-output {
+    margin-top: 1.5rem;
   }
-  .book-output .field {
+  .output-targets {
+    min-width: 0;
+    border: 0;
+    padding: 0;
+  }
+  .output-targets legend {
+    margin-bottom: 0.65rem;
+    padding: 0;
+    font-size: 0.9375rem;
+    font-weight: 650;
+  }
+  .output-choices {
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .output-choice {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.65rem;
+    border: 1px solid var(--line);
+    border-radius: 0.85rem;
+    background: var(--paper);
+    padding: 0.95rem;
+    cursor: pointer;
+  }
+  .output-choice:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-soft) 35%, var(--paper));
+  }
+  .output-choice.selected {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-soft) 65%, var(--paper-strong));
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .output-choice:focus-within {
+    outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+    outline-offset: 2px;
+  }
+  .output-choice input {
+    width: 1rem;
+    height: 1rem;
+    flex: none;
+    margin: 0;
+    accent-color: var(--accent);
+  }
+  .output-choice input:focus-visible {
+    outline: none;
+  }
+  .output-choice :global(svg) {
+    flex: none;
+    color: var(--accent);
+  }
+  .choice-copy {
+    display: grid;
+    min-width: 0;
+    gap: 0.25rem;
+    line-height: 1.4;
+  }
+  .choice-copy strong {
+    font-size: 0.9375rem;
+    font-weight: 650;
+  }
+  .choice-copy > span {
+    color: var(--muted);
+    font-size: 0.8125rem;
+    font-weight: 400;
+  }
+  .presentation-panel {
+    margin-top: 1.25rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    background: var(--paper-strong);
+    padding: 1.25rem;
+  }
+  .book-fields {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.15rem 1rem;
+  }
+  .book-control {
+    min-width: 0;
+  }
+  .book-control :global(label) {
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  .book-control :global(.parameter-label-row) {
+    min-height: 1.5rem;
+  }
+  .field {
     display: block;
     width: 100%;
-    margin-top: 0.3rem;
+    min-width: 0;
+    min-height: 2.75rem;
+    margin-top: 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 0.65rem;
+    background-color: var(--paper);
+    padding: 0.65rem 0.75rem;
+    color: var(--ink);
+    font-size: 0.9375rem;
+    font-weight: 400;
+    line-height: 1.4;
   }
-  .book-output input[type='color'] {
-    min-height: 2.6rem;
-    padding: 0.25rem;
+  .field:hover {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  }
+  select.field {
+    appearance: none;
+    cursor: pointer;
+    padding-right: 2rem;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 1.05rem) 50%,
+      calc(100% - 0.75rem) 50%;
+    background-size: 0.3rem 0.3rem;
+    background-repeat: no-repeat;
+  }
+  input[type='color'] {
+    padding: 0.35rem;
+    cursor: pointer;
+  }
+  .layout-note {
+    margin-top: 1rem;
+    color: var(--muted);
+    font-size: 0.875rem;
+    line-height: 1.65;
+  }
+  .more-controls {
+    margin-top: 1rem;
+    border-top: 1px solid var(--line);
+    padding-top: 0.65rem;
+  }
+  .more-controls summary {
+    width: fit-content;
+    border-radius: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .more-controls summary:hover {
+    background: var(--accent-soft);
+  }
+  .more-controls summary:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--accent) 38%, transparent);
+    outline-offset: 2px;
+  }
+  .advanced-fields {
+    margin-top: 1rem;
+  }
+  .book-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .book-toggle > input {
+    width: 1rem;
+    height: 1rem;
+    flex: none;
+    accent-color: var(--accent);
+  }
+  .preview-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+    border-top: 1px solid var(--line);
+    padding-top: 1rem;
+  }
+  .preview-start {
+    width: 12rem;
+  }
+  .preview-controls .btn {
+    min-height: 2.75rem;
+  }
+  .preview-note {
+    margin-top: 0.65rem;
+    color: var(--muted);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+  @media (width < 70rem) {
+    .book-fields {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (width < 48rem) {
+    .output-choices,
+    .book-fields {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .presentation-panel {
+      padding: 1rem;
+    }
   }
 </style>
