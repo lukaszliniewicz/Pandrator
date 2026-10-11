@@ -1,9 +1,9 @@
 # Speech directions, dialogue, and character voices
 
-Audiobooks expose **One narrator** and **Multiple voices** in a dedicated
-**Audiobook voices** card, with a character dictionary and casting controls.
-The **Speech direction** panel on the speech plan holds generation defaults
-and block-level direction review. Other workflows retain casting in that panel.
+The project overview exposes **One narrator** and **Multiple voices** in
+**Voices**, with a shared speaker dictionary and cast. **Generation** combines
+speech editing with recordings, takes and history in one workspace.
+Project generation settings hold the delivery and vocalization switches.
 Dialogue recognition lives in **Optimize text for speech → Timing & settings**.
 It can annotate the document without rewriting any spoken words. Emotional
 directions and multiple voices are independent options.
@@ -18,7 +18,7 @@ resolved explicitly. Dictionaries belong to a session rather than a global
 list of same-named people.
 
 Casting assigns provider voices or published managed references separately
-from those identities. Stable voice descriptions are available for models
+from those identities. Voice descriptions are available for models
 whose capabilities support voice design. Voice categories can also be edited
 in the Voice Library. A category is metadata, not a provider voice ID.
 
@@ -64,20 +64,78 @@ apply undo through `pandrator_preview_undo_recast` and `pandrator_undo_recast`.
 Historical segment reads, assembly and export accept `audio_version_side`
 (`before` or `after`, default `after`).
 
-## Review and edit in the Generation drawer
+## Review and edit in the Generation tab
 
-Enable **Voices & directions** in Display options. Underlines distinguish
-narration, characters, and directed phrases; the speech symbol opens an
-inspector. Hover, focus, or click to see the actual compiler's voices and
-instruction support. Historical runs show their frozen settings.
+Generation opens the effective TTS wording, including optimized text, and marks
+optimized blocks. Double-click a segment, press F2 in its text, or use its pencil
+to open the wording editor. Display options can hide the audio columns, show
+direction details, switch to script/subtitle wording, and filter segments.
+Hiding audio columns preserves the selected run and take choices. **Speech plans** contains the current
+plan's review state, Mark reviewed, and details/version history. The help button
+explains blocks, phrases, XML and keyboard controls without a permanent help bar.
 
-Select text in the annotated view or the text editor (Shift-selection works
-with the keyboard) to open **Edit selected speech**. Choose a narrator or
-character, a published compatible voice, and optional delivery controls.
-Preview first, review the whole block's resulting voice sequence, then apply.
-A protected annotation requires an explicit unlock; stale previews cannot be
-applied. The spoken text and other phrases remain unchanged. Changes create a
+Use a block number or its delivery button for whole-block actions. Select words
+for phrase actions, or place the caret between words for a vocal cue. The compact
+toolbar offers **Instruction**, **Emotion**, **Vocal cue** and further delivery
+controls. Alt+Enter or Tab from the text focuses it; arrows choose an action and
+Enter opens it. Preview text remains read-only; double-click, F2 or the
+pencil button opens the wording editor for the selected text layer.
+A **Whole-segment instruction** field beneath an
+open segment editor edits only its root instruction. Display options can also
+show these fields for all visible blocks. Use **Save instruction** or
+Ctrl/Cmd+Enter. Phrase directions use colored double underlines and details on
+hover, keyboard focus or touch. Optional direction notes appear below the text,
+never inside the spoken sentence. Speaker assignments use single underlines;
+vocal events remain at their positions. Historical runs show frozen settings.
+
+**Speaker & voice** appears only when **Multiple voices** is enabled in the
+project overview, for either a whole block or selected words. Settings refresh
+after project changes without repeating catalogue downloads or discovery.
+First identify the speaker: narrator, unnamed dialogue or a named person. The
+autocomplete also creates new speakers. Voice presentation is optional; it does
+not identify a person's sex. Names, aliases, notes and accepted/proposed status
+can be corrected without replacing the stable ID used by AI annotations.
+
+The speaker's shared cast voice is used by default. Open **Override voice** to
+choose a voice only for the segment or selected words.
+The cast/defaults section edits the project-wide identity, voice and delivery;
+a selected-word voice override changes only those words. Saved and designed
+voice identities are assigned through casting.
+Provider voices remain selectable when their connection is unverified or
+unavailable; the picker shows that state separately.
+**Save** validates and compiles the draft before applying it. **Preview** is
+optional when you want to review the whole block's resulting voice sequence first.
+Saving a manual edit authorizes replacing its protected directions without a
+separate unlock step. Stale previews cannot be applied. Automated edits still
+require explicit authorization to replace protected annotations. The spoken
+text and other phrases remain unchanged. Changes create a
 new adopted manual direction plan, preserving previous plans and audio.
+
+Each toolbar action opens a focused editor. A block's **XML** button opens the
+XML editor in place. Fields have per-control model feedback:
+**sent**, **hint**, **unsupported**, **unverified**, or **off**. A phrase hint
+means scope is interpreted by the model; a separate resolved voice part can
+receive its own request-wide instruction. Emotion choices show the model's
+native values for a fixed enum, or suggestions for a model that accepts
+descriptions. Custom values remain authorable. Unsupported choices stay saved
+and are omitted from generation; feedback distinguishes this from delivery being
+disabled in the project. Preview supplies the exact route's
+final compilation report. “Sent” describes transport, not audible adherence.
+
+For Gemini 3.8, whole-request style travels in `speech_metadata.style` through
+Google AI Studio and `speechMetadata.style` through Vertex. A direction on
+`stopped` compiles into a request-wide hint such as
+`For occurrence 1 of 'stopped': emphasize this. Then resume the general delivery.`
+This is an approximation: Google does not define a strict word-scoped style
+boundary within the same text part. Whole-segment directions remain the general
+style. Phrase hints contain only local differences and restore that general
+style afterwards; inherited directions are not repeated as hints for surrounding
+words. Explicit local resets use natural or neutral delivery hints. A voice
+change can create a separate request, with uniform delivery applied directly to
+that request. The focused editor
+explains this distinction and can show the actual compiled style without
+generating audio. See Google's [speech generation guide](https://ai.google.dev/gemini-api/docs/speech-generation)
+and [Vertex migration guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/migration-guide).
 
 Casting and delivery are independent switches. Stored markings remain visible
 when disabled. Qwen Base cloning can switch voices but does not support acting
@@ -91,6 +149,12 @@ When displayed text differs from optimized speech, select the speech layer;
 unsaved text edits must be saved before adding annotations.
 
 ## Compact speech XML
+
+Use a block's **XML** button to edit the markup directly in place.
+**Allowed XML actions** lists the parser's vocabulary, attributes, enum values,
+known speaker references, and limits. Preview and apply use the same protection
+and revision checks as field edits. Changing mode, scope, or target requires
+keeping or explicitly discarding an unsaved draft.
 
 For the spoken text `He said, “Bah!” Then left.`, an annotation might be:
 
@@ -115,15 +179,24 @@ same accepted speech-optimization response.
 | `<span voice="PROVIDER_VOICE">…</span>` | An explicit voice for a phrase. `speaker` and `narrator` also accept `voice`. |
 | `<ins>Read gently.</ins>` | Nonspoken instruction for its containing scope. |
 | `<em>happy</em>` | Nonspoken emotion for its containing scope. |
+| `<em intensity="0.75">happy</em>` | Optional native whole-request emotion strength; actual bounds and support depend on the model/voice. |
 | `<pace>slower</pace>` | `natural`, `slower`, or `brisk`. |
 | `<cadence>questioning</cadence>` | `continuing`, `concluding`, `questioning`, or `contrast`. |
 | `<emphasis>moderate</emphasis>` | `light`, `moderate`, or `strong`. |
 | `<event kind="pause" duration_ms="200"/>` | Nonspoken event at that position. |
+| `<sound cue="UUID" variant="UUID" placement="after"/>` | Derived independent project sound cue, stripped before TTS. See [sound placement](sounds-and-mixing.md). |
 
 Other event kinds are `laugh`, `chuckle`, `sigh`, `inhale`, `exhale`, `cough`,
 `gasp`, and `clear_throat`. Vocalizations require the corresponding generation
 option and model support. Boundaries are `continuation`, `dialogue_turn`,
 `paragraph`, `scene`, or `chapter`.
+
+**Vocal cue** inserts an event at the caret, or before/after selected text.
+At a cast boundary, an after cue belongs to the preceding voice;
+a before cue belongs to the following voice. XML stores this as
+`affinity="previous|following"`, defaulting to following except at block end.
+A pause duration is a model hint, not inserted silence or an attached sound file.
+See [model capabilities](model-capabilities.md) for the mapping distinctions.
 
 Controls apply to the whole containing scope, wherever the metadata element
 appears in that scope. Put a control inside `<span>` to target a phrase.
@@ -131,6 +204,15 @@ Instructions inherit; more specific structured delivery values override their
 enclosing values. `ref` and `n` are mutually exclusive. A category-only speaker
 needs a category other than `unspecified`; unknown identity can simply use
 `<dialogue>`.
+
+Range edits preserve direct root controls. The UI edits a phrase's local
+contribution: clearing it restores the whole-segment direction. The MCP range
+API retains its effective-value semantics: replacing or clearing a delivery
+field can mask the root for the selected range. Rebuilt XML represents these
+masks explicitly. To change only a whole-segment instruction, read the selection
+context for the complete block, change its direct root `<ins>` in `speech_xml`,
+and preview/apply the complete XML. Nested scopes, events and cue provenance
+remain intact.
 
 The extracted transcript must exactly match accepted speech text, including
 spaces and quotation marks. Do not pretty-print mixed-content XML: indentation
@@ -143,6 +225,36 @@ The provider receives a compiled request, never this XML verbatim. **Preview
 model request** shows supported, approximated, and unsupported directions and
 the exact compiled input. A successful compilation does not guarantee that a
 speech model will obey every direction.
+
+Inspect `phrase_instruction_transport` and `phrase_instruction_reliability` in
+the capability profile. Fish and Eleven inline cues have best-effort scope; a
+reset is another hint, not a closing tag. Whole-segment Fish cues are recommended.
+Gemini 3.8 quotes selected phrases in whole-request style metadata and cannot
+enforce phrase boundaries. Request-only models retain unsupported phrase controls
+for another model and omit them from synthesis.
+
+## Ways to influence generation
+
+Pandrator separates authoring from the selected model's transport:
+
+| Mechanism | Where it belongs | How support is determined |
+| --- | --- | --- |
+| Natural-language delivery | Book, character, block or phrase direction | A separate instruction field, prompt text or inline cue on the selected route. |
+| Emotion, pace, cadence and emphasis | Structured delivery metadata | A native emotion enum where supported, otherwise a model-specific direction; semantic pace is distinct from numeric speed. |
+| Vocalizations and model-interpreted pauses | Positioned XML events or anchored pSSML events | Exact route-specific tag mapping, plus the vocalization and delivery switches. Pause duration is a hint. |
+| Narrator, dialogue, characters and voices | XML speaker scopes and project casting | Resolved provider voice or prepared managed reference; voice changes may split synthesis into parts. |
+| Previous/following text | Generation context settings | Unspoken API fields or a prompt/metadata hint where implemented; text context does not establish audio continuity. |
+| Voice description or reference audio/text | Voice design, cloning and casting | Checkpoint and serving-route support; a cloning transcript or identity description is not automatically a delivery instruction. |
+| Numeric model settings | Model-specific generation settings | The selected adapter's accepted fields; for example sampling, speed or exaggeration. |
+| Pronunciation and speech wording | Pronunciations and accepted TTS text | Applied before request compilation; directions never rewrite the accepted transcript. |
+| Conversion, gain and assembly pauses | Audio conversion, processing and output settings | Applied outside the delivery compiler. These are distinct from model-generated vocal effects. |
+
+Compact XML and legacy pSSML are Pandrator authoring formats, not arbitrary
+provider SSML. There is no generic `<audio>` or `<prosody>` pass-
+through. Valid unsupported metadata stays saved and visible while compilation
+omits it. Literal transcript text is preserved, including text that resembles
+provider tags. See [model identities and speech controls](model-capabilities.md)
+for the differences between models and serving routes.
 
 ## Long-form and timed generation
 
@@ -177,7 +289,10 @@ renaming a character or editing notes does not require new audio.
 For a direct edit, use `pandrator_preview_speech_selection` with the current
 `revision_id`, `segment_id`, `expected_segment_revision`, and half-open `start`
 and `end` offsets in Unicode codepoints. Select `0` through the codepoint length
-for a whole segment, or a smaller range for a phrase. Pass a partial `delivery`
+for a whole segment, or a smaller range for a phrase. For a cursor, use equal
+`start` and `end` and a `vocal_event`; omit speaker, character, voice, delivery
+and XML fields entirely. Cursor context resolves the following span, or the
+preceding span at block end. Pass a partial `delivery`
 object (`instruction`, `emotion`, `pace`, `cadence`, `emphasis`) and optional
 speaker/voice changes. Omitted fields stay unchanged; explicit `null` clears a
 voice or delivery field. Inspect the preview, then send the same edit through
@@ -261,3 +376,23 @@ artifacts and historical plans stay unchanged.
 A queued replacement is shown separately from the older recording's stale state.
 If an export holds the session, the drawer explains that generation is waiting
 for it; queuing a replacement does not interrupt the export.
+
+
+## Simple and Advanced interface
+
+Every new project offers Simple (the default) or Advanced. The project header
+lets you switch later and saves the preference. Existing projects retain
+Advanced. Language workspaces use their shared project's preference; forks
+inherit the source preference. MCP creation accepts `interface_mode`, and all
+MCP operations remain available in either mode.
+
+Simple keeps compact progress/result cards and read-only Generation previews,
+playback, search and output access. Advanced adds wording, cast/delivery and XML
+editing, take selection and topology controls. A switch waits for wording saves
+and refuses to hide an unfinished direction editor. Neither choice starts work
+nor changes the workflow's Review each stage / Automatic execution choice.
+
+Advanced previews are also read-only until double-click, F2 or the pencil opens
+the wording editor. Phrase selection still offers speech actions; a caret and
+cursor insertion actions belong to the explicit editor. Hover details read
+existing annotations without another API call.

@@ -34,6 +34,11 @@ from .pronunciations import PronunciationLibrary
 from .quick_transcription import QuickTranscriptionService
 from .session_forks import SessionForkService
 from .sessions import SessionService
+from .sound_mix_service import SoundMixService
+from .sound_project_service import ProjectSoundService
+from .sound_registration import register_sound_jobs
+from .sound_resolution_service import SoundResolutionService
+from .sound_service import SoundService
 from .source_cleaning_dispatch import SourceCleaningDispatchRunService
 from .source_library import SourceLibraryService
 from .speech_optimization_dispatch import SpeechOptimizationDispatchRunService
@@ -75,6 +80,10 @@ class ApplicationServices:
     session_forks: SessionForkService
     artifacts: ArtifactService
     training: TrainingService
+    sounds: SoundService
+    project_sounds: ProjectSoundService
+    sound_mixes: SoundMixService
+    sound_resolution: SoundResolutionService
     global_settings: GlobalSettingsService
     agent_runs: AgentRunCommands
     subtitle_mutations: SubtitleReviewMutationService
@@ -155,9 +164,15 @@ class ApplicationServices:
             sessions = SessionService(database)
             artifacts = ArtifactService(database, paths)
             training = TrainingService(database, paths, jobs)
+            sounds = SoundService(database, paths, artifacts, jobs)
+            project_sounds = ProjectSoundService(database, artifacts)
             session_forks = SessionForkService(database, paths, artifacts)
             workflows = WorkflowService(database, jobs)
             workspace_settings = WorkspaceSettingsService(database)
+            sound_mixes = SoundMixService(database, paths, artifacts, jobs, project_sounds)
+            sound_resolution = SoundResolutionService(
+                database, paths, artifacts, jobs, workspace_settings, project_sounds
+            )
 
             def session_directory(session_id: str) -> Path:
                 with database.session() as db_session:
@@ -188,6 +203,10 @@ class ApplicationServices:
                 manager_bridge=manager_bridge,
                 jobs=jobs,
                 subtitle_evidence=subtitle_evidence,
+                sound_mixes=sound_mixes,
+            )
+            register_sound_jobs(
+                workflow_handlers.handler_registry, sounds, sound_mixes, sound_resolution
             )
             workflow_plans = WorkflowExecutionPlanService(
                 database,
@@ -267,6 +286,10 @@ class ApplicationServices:
                 session_forks=session_forks,
                 artifacts=artifacts,
                 training=training,
+                sounds=sounds,
+                project_sounds=project_sounds,
+                sound_mixes=sound_mixes,
+                sound_resolution=sound_resolution,
                 global_settings=GlobalSettingsService(database, paths),
                 agent_runs=AgentRunCommands(database, jobs, artifacts),
                 subtitle_mutations=SubtitleReviewMutationService(database, idempotency, subtitle_review),
@@ -340,6 +363,10 @@ class ApplicationServices:
             "session_forks": self.session_forks,
             "artifacts": self.artifacts,
             "training": self.training,
+            "sounds": self.sounds,
+            "project_sounds": self.project_sounds,
+            "sound_mixes": self.sound_mixes,
+            "sound_resolution": self.sound_resolution,
             "workflows": self.workflows,
             "workflow_plans": self.workflow_plans,
             "workflow_handlers": self.workflow_handlers,

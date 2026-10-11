@@ -28,7 +28,12 @@ class SessionBundleTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_round_trip_assigns_new_ids_and_preserves_files_and_dependencies(self):
-        source_session = self.sessions.create("Portable", workflow_kind="voiceover", included_stages=["correct", "generate_audio"])
+        source_session = self.sessions.create(
+            "Portable",
+            workflow_kind="voiceover",
+            interface_mode="simple",
+            included_stages=["correct", "generate_audio"],
+        )
         directory = self.paths.sessions / source_session.storage_key
         directory.mkdir()
         source_path = directory / "source.srt"
@@ -46,6 +51,9 @@ class SessionBundleTests(unittest.TestCase):
             bundle_path,
             progress_callback=lambda value, detail=None: export_updates.append((value, detail)),
         )
+        with zipfile.ZipFile(bundle_path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+        self.assertEqual("simple", manifest["session"]["interface_mode"])
         imported = self.bundles.import_bundle(
             bundle_path,
             name="Portable copy",
@@ -73,6 +81,7 @@ class SessionBundleTests(unittest.TestCase):
         with self.database.session() as session:
             record = session.get(SessionRecord, imported["session_id"])
             self.assertEqual(record.name, "Portable copy")
+            self.assertEqual(record.interface_mode, "simple")
             self.assertEqual(record.included_stages_json, ["correct", "generate_audio"])
             imported_artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == imported["session_id"])).all())
             self.assertEqual(len(imported_artifacts), 2)
@@ -82,6 +91,23 @@ class SessionBundleTests(unittest.TestCase):
             self.assertIn(edge.child_artifact_id, imported_ids)
         for artifact in imported_artifacts:
             self.assertTrue(self.paths.managed_path(artifact.relative_path).is_file())
+
+    def test_legacy_bundle_without_interface_mode_imports_as_advanced(self):
+        legacy = self.paths.root / "legacy.pandrator-session"
+        manifest = {
+            "format": "pandrator-session",
+            "version": 1,
+            "session": {"name": "Legacy", "workflow_kind": "audiobook"},
+            "artifacts": [],
+            "artifact_edges": [],
+        }
+        with zipfile.ZipFile(legacy, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+
+        imported = self.bundles.import_bundle(legacy)
+        with self.database.session() as session:
+            record = session.get(SessionRecord, imported["session_id"])
+            self.assertEqual(record.interface_mode, "advanced")
 
     def test_checksum_failure_does_not_create_a_session(self):
         malicious = self.paths.root / "bad.pandrator-session"

@@ -38,7 +38,15 @@ def test_catalogue_has_local_cloud_and_static_azure_models():
     audio_model_id = inventory()["packages"][0]["id"]
     audio_item = _item("audio_cpp", audio_model_id)
     source_metadata = package_metadata(audio_model_id)
-    assert all(audio_item[key] == value for key, value in source_metadata.items())
+    assert all(
+        audio_item[key] == value
+        for key, value in source_metadata.items()
+        if key != "capabilities"
+    )
+    assert audio_item["capabilities"] == sorted(
+        set(source_metadata["capabilities"])
+        - {"streaming", "multi_speaker", "speech_editing", "voice_conversion", "sound_generation", "music_generation"}
+    )
     assert audio_item["catalogue_id"] == f"audio_cpp:{audio_model_id}"
 
     azure = _item("azure", "MAI-Voice-2")
@@ -87,18 +95,18 @@ def test_cloud_capabilities_are_model_and_provider_specific():
         "emotion_control",
         "instructions",
         "prebuilt_voices",
-        "vocal_events",
+        "semantic_context",
     ]
     assert gemini["capabilities"] == expected
-    assert vertex["capabilities"] == expected
+    assert vertex["capabilities"] == [*expected, "vocal_events"]
     assert gemini["catalogue_id"] == "gemini:gemini-2.5-flash-preview-tts"
     assert vertex["catalogue_id"] == "vertex_ai:gemini-2.5-flash-tts"
     for item, backend in ((gemini, "gemini"), (vertex, "vertex_ai")):
         profile = capabilities_for_model(
             item["id"], backend=backend, family=item["family"], voice_mode=item["voice_mode"]
         )
-        assert item["pandrator_features"]["vocal_events"] == ", ".join(
-            profile["event_tags"]
+        assert item["pandrator_features"]["vocal_events"] == (
+            ", ".join(profile["event_tags"]) or "none"
         )
         assert item["pandrator_features"]["instruction_scope"] == ", ".join(
             profile["instruction_scope"]
@@ -107,8 +115,8 @@ def test_cloud_capabilities_are_model_and_provider_specific():
             "semantic_context"
         ]
         assert item["pandrator_features"]["capability_notes"] == profile["notes"]
-    assert "laugh" in gemini["pandrator_features"]["vocal_events"]
-    assert "gasp" in vertex["pandrator_features"]["vocal_events"]
+    assert gemini["pandrator_features"]["vocal_events"] == "none"
+    assert vertex["pandrator_features"]["vocal_events"] == "sigh"
     assert gemini["catalogue_id"] != vertex["catalogue_id"]
 
     rows = catalogue_page(provider="gemini", limit=100)["items"]
@@ -132,6 +140,7 @@ def test_elevenlabs_models_distinguish_v3_directions_from_v2_and_setup_state():
     } <= set(provider_rows)
 
     v3 = provider_rows["eleven_v3"]
+    assert v3["label"] == "Eleven v3"
     v3_profile = capabilities_for_model(
         "eleven_v3", backend="elevenlabs_native", voice_mode="prebuilt"
     )

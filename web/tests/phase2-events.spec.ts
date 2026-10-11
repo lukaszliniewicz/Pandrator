@@ -173,7 +173,7 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
     exactPath(`/api/v1/sessions/${session.id}/outcome-plan`)
   ).toBeLessThanOrEqual(1);
   expect(
-    exactPath(`/api/v1/sessions/${session.id}/generation-runs`)
+    exactPath(`/api/v1/sessions/${session.id}/generation-runs*`)
   ).toBeLessThanOrEqual(1);
   expect(
     exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)
@@ -199,7 +199,7 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
   }, session.id);
   await page.waitForTimeout(1100);
 
-  expect(exactPath(`/api/v1/sessions/${session.id}/generation-runs`)).toBe(1);
+  expect(exactPath(`/api/v1/sessions/${session.id}/generation-runs*`)).toBe(1);
   expect(
     exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)
   ).toBe(1);

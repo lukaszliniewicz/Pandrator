@@ -705,7 +705,11 @@ class SettingsApiTests(unittest.TestCase):
             event.remove(database.engine, "before_cursor_execute", count_selects)
 
         self.assertEqual(14, len(payload["services"]))
-        self.assertLessEqual(len(statements), 4)
+        # Remembered native Google voices add one catalogue-wide read.
+        self.assertLessEqual(len(statements), 5)
+        self.assertEqual(
+            1, sum("from voices" in statement.lower() for statement in statements)
+        )
         self.assertEqual(
             1, sum("stored_credentials" in statement for statement in statements)
         )

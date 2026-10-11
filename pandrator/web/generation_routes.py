@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from flask import jsonify, request
+import re
+
+from flask import g, jsonify, request
 from sqlalchemy import func, select
 
 from .domain_blueprints import DomainBlueprints
+from .generation_admission import (
+    GenerationAdmissionStaleInputs,
+    admit_generation_in_session,
+)
 from .generation_history_reads import project_generation_run
 from .generation_summary import get_generation_summary
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
-from .models import Artifact, OutputAssembly, SessionRecord
+from .models import Artifact, GenerationRun, OutputAssembly, SessionRecord
 from .route_context import RouteContext
 from .schemas import (
     GenerationPlanCreate,
@@ -271,9 +277,11 @@ def register_generation_routes(
                 verification=request.args.get("verification"),
                 generation_run_id=request.args.get("generation_run_id"),
                 audio_version_side=request.args.get("audio_version_side", "after"),
+                take_history=request.args.get("take_history", "full"),
                 plan_revision_id=request.args.get("plan_revision_id"),
                 view=request.args.get("view", "full"),
                 fields=request.args["fields"].split(",") if "fields" in request.args else None,
+                segment_ids=request.args["segment_ids"].split(",") if "segment_ids" in request.args else None,
                 end_ordinal=int(request.args["end_ordinal"])
                 if "end_ordinal" in request.args
                 else None,
@@ -295,7 +303,7 @@ def register_generation_routes(
                 404,
             )
         except ValueError as error:
-            return error_response("validation_error", str(error), 422)
+            return error_response("validation_error", str(error), 422, getattr(error, "details", None))
         return jsonify(result)
 
     @app.patch("/api/v1/sessions/<session_id>/generation-segments")
@@ -517,6 +525,14 @@ def register_generation_routes(
             sessions.get(session_id)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
+        requested_run_id = request.args.get("generation_run_id")
+        if requested_run_id is not None:
+            with database.snapshot_session() as db_session:
+                run = db_session.get(GenerationRun, requested_run_id)
+                if run is None or run.session_id != session_id:
+                    return error_response("not_found", "Generation run not found in this session.", 404)
+                result = generation._run_payload(db_session, run)
+            return jsonify({"items": [services.redactor.redact_value(project_generation_run(result, view=view))]})
         raw_limit = request.args.get("limit")
         try:
             limit = int(raw_limit) if raw_limit is not None else None
@@ -539,6 +555,21 @@ def register_generation_routes(
                 ]
             }
         )
+
+    @app.get("/api/v1/generation-runs/<run_id>")
+    @require_auth
+    def generation_run_detail(run_id: str):
+        view = request.args.get("view", "full")
+        try:
+            project_generation_run({}, view=view)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+        with database.snapshot_session() as db_session:
+            run = db_session.get(GenerationRun, run_id)
+            if run is None:
+                return error_response("not_found", "Generation run not found.", 404)
+            result = generation._run_payload(db_session, run)
+        return jsonify(services.redactor.redact_value(project_generation_run(result, view=view)))
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs")
     @require_auth
@@ -604,6 +635,7 @@ def register_generation_routes(
                     selected_segment_override=payload.selected_segment_override,
                     segment_ids=payload.segment_ids,
                     generation_run_id=payload.generation_run_id,
+                    settings_source=payload.settings_source,
                     settings_source_run_id=payload.settings_source_run_id,
                     operation=payload.operation,
                     speech_plan_revision_id=payload.speech_plan_revision_id,
@@ -654,6 +686,7 @@ def register_generation_routes(
                 selected_segment_override=payload.selected_segment_override,
                 segment_ids=payload.segment_ids,
                 generation_run_id=payload.generation_run_id,
+                settings_source=payload.settings_source,
                 settings_source_run_id=payload.settings_source_run_id,
                 operation=payload.operation,
                 speech_plan_revision_id=payload.speech_plan_revision_id,
@@ -666,6 +699,70 @@ def register_generation_routes(
         except ValueError as error:
             return error_response("generation_unavailable", str(error), 409)
         return jsonify(project_generation_run(result, view=view)), 202
+
+    @app.post("/api/v1/sessions/<session_id>/generation-admissions")
+    @require_auth
+    def generation_admission_create(session_id: str):
+        payload = GenerationStartRequest.model_validate(request.get_json(silent=True) or {})
+        if rejected := inline_credential_error(payload.run_override):
+            return rejected
+        if rejected := inline_credential_error(payload.selected_segment_override):
+            return rejected
+        key = str(request.headers.get("Idempotency-Key") or "").strip()
+        if not key:
+            return error_response(
+                "idempotency_key_required", "Generation admission requires Idempotency-Key.", 400
+            )
+        request_fields = payload.model_dump(mode="json")
+        traceparent = str(request.headers.get("traceparent") or "").strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{2}-[0-9a-fA-F]{32}-[0-9a-fA-F]{16}-[0-9a-fA-F]{2}", traceparent):
+            traceparent = ""
+        try:
+            with database.immediate_session() as db_session:
+                reservation = services.idempotency.begin(
+                    db_session,
+                    principal=idempotency.principal(),
+                    operation_id="admitGenerationRun",
+                    idempotency_key=key,
+                    payload={"session_id": session_id, **request_fields},
+                )
+                if reservation.response is not None:
+                    result, status_code = reservation.response
+                    replayed = True
+                else:
+                    result = admit_generation_in_session(
+                        db_session,
+                        jobs,
+                        generation,
+                        session_id,
+                        request_fields,
+                        request_id=str(getattr(g, "request_id", "")),
+                        traceparent=traceparent or None,
+                    )
+                    services.idempotency.complete(
+                        db_session,
+                        reservation,
+                        response=result,
+                        status_code=202,
+                        resource_kind="job",
+                        resource_id=result["job_id"],
+                    )
+                    status_code = 202
+                    replayed = False
+        except (IdempotencyConflict, IdempotencyInProgress) as error:
+            return idempotency_failure(error)
+        except KeyError:
+            return error_response("not_found", "Session not found.", 404)
+        except GenerationAdmissionStaleInputs as error:
+            return error_response("generation_admission_stale_inputs", str(error), 409)
+        except ValueError as error:
+            return error_response("generation_unavailable", str(error), 409)
+        g.audit_resource_kind = "job"
+        g.audit_resource_id = result["job_id"]
+        response = jsonify(result)
+        response.status_code = status_code
+        response.headers["Idempotency-Replayed"] = "true" if replayed else "false"
+        return response
 
     @app.post("/api/v1/sessions/<session_id>/generation-runs/preview")
     @require_auth
@@ -682,6 +779,7 @@ def register_generation_routes(
                 selected_segment_override=payload.selected_segment_override,
                 segment_ids=payload.segment_ids,
                 generation_run_id=payload.generation_run_id,
+                settings_source=payload.settings_source,
                 settings_source_run_id=payload.settings_source_run_id,
                 operation=payload.operation,
                 speech_plan_revision_id=payload.speech_plan_revision_id,

@@ -1840,9 +1840,25 @@ def create_api(
         payload = RuntimeRequest.model_validate(
             request.get_json(silent=True) or {}
         )
+        snapshot = supervisor.snapshot()
+        known_service_ids = {service.id for service in snapshot}
         selected = payload.service_ids or tuple(
-            service.id for service in supervisor.snapshot()
+            service.id for service in snapshot
         )
+        unknown_service_ids = tuple(
+            service_id
+            for service_id in payload.service_ids
+            if service_id not in known_service_ids
+        )
+        if unknown_service_ids:
+            raise NotFoundError(
+                "Unknown managed service IDs. Use IDs returned by "
+                "GET /v1/services.",
+                {
+                    "unknown_service_ids": list(unknown_service_ids),
+                    "known_service_ids": sorted(known_service_ids),
+                },
+            )
         if (
             action in {"start", "restart"}
             and {

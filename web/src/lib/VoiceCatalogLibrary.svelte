@@ -507,7 +507,7 @@
       (c) =>
         (!service || c.service_id === service) &&
         (!model || c.model === model) &&
-        c.ready
+        (c.prepared ?? c.ready)
     );
     if (registration?.voice) onvoicepublished?.(registration.voice);
     else
@@ -539,8 +539,15 @@
     model = initialModel;
   }
   function rendererLabel(voice: CatalogVoice) {
-    if (voice.reference.kind !== 'provider')
+    if (voice.reference.kind !== 'provider') {
+      const registration = Object.entries(
+        voices.find((item) => item.id === voice.id)?.metadata_json?.providers ??
+          {}
+      ).find(([, item]) => item.resource_kind === 'designed_voice');
+      if (registration)
+        return `${services.find((item) => item.id === registration[0])?.name ?? registration[0]} designed voice`;
       return `${voice.sample_count ?? 0} reference samples`;
+    }
     const ref = voice.reference;
     return `${services.find((s) => s.id === ref.service_id)?.name || ref.service_id} · ${ref.model}`;
   }
@@ -779,6 +786,13 @@
                       ? ' · clone + direction'
                       : ''}
                   </p>
+                  {#if binding.health_checked_at}<p class="muted mt-1 text-xs">
+                      Availability checked {new Date(
+                        binding.health_checked_at
+                      ).toLocaleTimeString()}{binding.availability_reason
+                        ? ` · ${binding.availability_reason}`
+                        : ''}
+                    </p>{/if}
                 </div>
                 {#if binding.status === 'needs_reference' || binding.status === 'needs_link'}<button
                     class="btn btn-sm"
@@ -824,6 +838,32 @@
           }}
         />
       </div>{/if}
+    {#if !samplesOpen && detail.kind === 'managed'}
+      {#each Object.entries(voices.find((item) => item.id === detail?.id)?.metadata_json?.providers ?? {}).filter(([, registration]) => registration.resource_kind === 'designed_voice') as [serviceId, registration]}
+        <section
+          class="mt-5 rounded-xl border border-[var(--line)] p-4 text-sm"
+        >
+          <h3 class="font-semibold">Google designed voice</h3>
+          <p class="muted mt-2">
+            {services.find((item) => item.id === serviceId)?.name ?? serviceId}
+            {#if registration.project}
+              · Project: {String(registration.project)}{:else}
+              · Linked to the Gemini credential used for creation{/if}
+          </p>
+          <p class="mt-2 break-all font-mono text-xs">
+            {registration.voice_id}
+          </p>
+          {#if registration.expire_time}<p class="muted mt-2 text-xs">
+              Google reported expiry: {String(registration.expire_time)}. Using
+              the voice renews its lifetime.
+            </p>{/if}
+          <p class="muted mt-2 text-xs">
+            The audition uses Google's own text. You can use this voice with
+            either Gemini 3.8 TTS model in the original Google scope.
+          </p>
+        </section>
+      {/each}
+    {/if}
   {:else if samplesOpen}
     <h2 class="mb-2 text-2xl font-semibold">Add a reference voice</h2>
     <p class="muted mb-5 text-sm">

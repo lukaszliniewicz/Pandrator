@@ -12,6 +12,7 @@ from sqlalchemy import and_, func, select
 from .artifacts import ArtifactService
 from .generation_audio_version_assembly import revalidate_audio_version_assembly
 from .generation_audio_versions import audio_version_take_ids
+from .generation_run_selection import resolve_generation_run_take_ids
 from .models import (
     Artifact,
     AudioTake,
@@ -107,9 +108,6 @@ def assemble_generation_output(
             if assembly.generation_run_id
             else None
         )
-        selected_run_sequence = (
-            selected_run.sequence_number if selected_run else None
-        )
         plan_revision = session.get(
             GenerationPlanRevision,
             plan_revision_id,
@@ -142,34 +140,49 @@ def assemble_generation_output(
                     session.get(GenerationRun, assembly.generation_run_id), frozen_selection,
                 )
             else:
-                if selected_run_sequence is not None:
-                    ranked_takes = (
-                        select(
-                            AudioTake.id.label("take_id"),
-                            AudioTake.generation_segment_id.label("segment_id"),
-                            func.row_number()
-                            .over(
-                                partition_by=AudioTake.generation_segment_id,
-                                order_by=(
-                                    GenerationRun.sequence_number.desc(),
-                                    AudioTake.created_at.desc(),
-                                    AudioTake.id.desc(),
-                                ),
-                            )
-                            .label("take_rank"),
-                        )
-                        .join(
-                            GenerationRun,
-                            AudioTake.generation_run_id == GenerationRun.id,
-                        )
-                        .where(
-                            AudioTake.status.in_(("completed", "stale")),
-                            GenerationRun.session_id == session_id,
-                            GenerationRun.plan_revision_id == plan_revision_id,
-                            GenerationRun.sequence_number <= selected_run_sequence,
-                        )
-                        .subquery()
+                if selected_run is not None:
+                    selected_take_ids = resolve_generation_run_take_ids(
+                        session, selected_run
                     )
+                    segments = list(
+                        session.scalars(
+                            select(GenerationSegment)
+                            .where(
+                                GenerationSegment.plan_revision_id == plan_revision_id,
+                                GenerationSegment.removed.is_(False),
+                            )
+                            .order_by(GenerationSegment.ordinal)
+                        ).all()
+                    )
+                    selected_takes = {
+                        take.id: take
+                        for take in session.scalars(
+                            select(AudioTake).where(
+                                AudioTake.id.in_(list(selected_take_ids.values()))
+                            )
+                        ).all()
+                    } if selected_take_ids else {}
+                    artifact_ids = {
+                        take.artifact_id
+                        for take in selected_takes.values()
+                        if take.artifact_id
+                    }
+                    selected_artifacts = {
+                        artifact.id: artifact
+                        for artifact in session.scalars(
+                            select(Artifact).where(Artifact.id.in_(artifact_ids))
+                        ).all()
+                    } if artifact_ids else {}
+                    selected_rows = []
+                    for segment in segments:
+                        take_id = selected_take_ids.get(segment.id)
+                        take = selected_takes.get(take_id) if take_id else None
+                        artifact = (
+                            selected_artifacts.get(take.artifact_id)
+                            if take is not None and take.artifact_id
+                            else None
+                        )
+                        selected_rows.append((segment, take, artifact))
                 else:
                     ranked_takes = (
                         select(
@@ -197,31 +210,31 @@ def assemble_generation_output(
                         )
                         .subquery()
                     )
-                selected_rows = list(
-                    session.execute(
-                        select(GenerationSegment, AudioTake, Artifact)
-                        .outerjoin(
-                            ranked_takes,
-                            and_(
-                                ranked_takes.c.segment_id == GenerationSegment.id,
-                                ranked_takes.c.take_rank == 1,
-                            ),
-                        )
-                        .outerjoin(
-                            AudioTake,
-                            AudioTake.id == ranked_takes.c.take_id,
-                        )
-                        .outerjoin(
-                            Artifact,
-                            Artifact.id == AudioTake.artifact_id,
-                        )
-                        .where(
-                            GenerationSegment.plan_revision_id == plan_revision_id,
-                            GenerationSegment.removed.is_(False),
-                        )
-                        .order_by(GenerationSegment.ordinal)
-                    ).all()
-                )
+                    selected_rows = list(
+                        session.execute(
+                            select(GenerationSegment, AudioTake, Artifact)
+                            .outerjoin(
+                                ranked_takes,
+                                and_(
+                                    ranked_takes.c.segment_id == GenerationSegment.id,
+                                    ranked_takes.c.take_rank == 1,
+                                ),
+                            )
+                            .outerjoin(
+                                AudioTake,
+                                AudioTake.id == ranked_takes.c.take_id,
+                            )
+                            .outerjoin(
+                                Artifact,
+                                Artifact.id == AudioTake.artifact_id,
+                            )
+                            .where(
+                                GenerationSegment.plan_revision_id == plan_revision_id,
+                                GenerationSegment.removed.is_(False),
+                            )
+                            .order_by(GenerationSegment.ordinal)
+                        ).all()
+                    )
                 selected: list[tuple[GenerationSegment, AudioTake, Artifact]] = []
                 for segment, take, artifact in selected_rows:
                     allowed_statuses = (

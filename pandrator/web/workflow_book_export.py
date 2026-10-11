@@ -32,6 +32,7 @@ from .models import (
     GenerationSegment,
     new_id,
 )
+from .sound_book_timing import rebase_book_words, take_base_bounds
 from .workflow_output_context import OutputWorkflowContext
 
 CACHE_VERSION = 1
@@ -183,13 +184,14 @@ def _load(
         if start < previous_end or end <= start or end > frames:
             raise ValueError("Book take frame ranges overlap or exceed assembly audio.")
         previous_end = end
+        base_start, base_end = take_base_bounds(metadata, row)
         if preview_window is not None:
             preview_start, preview_end = preview_window
             if start * 1000 >= preview_end * rate or end * 1000 <= preview_start * rate:
                 continue
         path = _verified_path(context, artifact)
         take_frames, take_rate = _pcm(path)
-        if abs((end - start) * 1000 / rate - take_frames * 1000 / take_rate) > 1:
+        if abs((base_end - base_start) * 1000 / rate - take_frames * 1000 / take_rate) > 1:
             raise ValueError("Book take PCM duration does not match its assembled frame bounds.")
         original = (artifact.metadata_json or {}).get("source_text")
         spoken = (artifact.metadata_json or {}).get("synthesized_text")
@@ -509,19 +511,11 @@ def export_book(
                         aligned = mapped
             offset = take.manifest["start_frame"] * 1000 / rate
             bound = take.manifest["end_frame"] * 1000 / rate
-            words = (
-                (BookWord(aligned.text, round(offset), round(bound), 0, len(aligned.text)),)
-                if cue_mode == "segments"
-                else tuple(
-                    BookWord(
-                        word.text,
-                        round(offset + word.start_ms),
-                        round(offset + word.end_ms),
-                        word.start_char,
-                        word.end_char,
-                    )
-                    for word in aligned.words
-                )
+            words = rebase_book_words(
+                aligned,
+                take.manifest,
+                audio.metadata_json or {},
+                cue_mode=cue_mode,
             )
             if any(word.end_ms > bound + 1 or word.end_ms > total_ms + 1 for word in words):
                 raise ValueError("Rebased book timing exceeds assembled audio.")

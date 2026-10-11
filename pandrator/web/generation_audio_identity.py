@@ -281,6 +281,7 @@ class AudioIdentityContext:
                     freeze_generation_performance_snapshot(
                         self.session, revision_id, pinned, self._service_config_cache,
                         _settings_copy=self._copy_inspection_settings,
+                        _voice_reference_index=self.voices,
                     )
                 self.performance_states[revision_id] = (pinned, frozen_semantic_contexts(pinned))
             pinned, contexts = self.performance_states[revision_id]

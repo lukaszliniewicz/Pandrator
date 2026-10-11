@@ -63,6 +63,7 @@ def test_package_record_leaf_preserves_import_order_and_legacy_pickle(tmp_path, 
         old = pickle.loads(base64.b64decode(sys.argv[3]))
         assert type(old) is legacy
         assert old.id == 'old-pickle' and old.mode == 'offline'
+        assert old.role == 'model'
         assert old.repository == 'audio-cpp/audio.cpp-gguf'
         assert old.config_path == 'models/Pocket/english'
         assert old.required_paths(Path('models')) == (Path('models/Pocket/english/model.gguf'),)
@@ -145,6 +146,22 @@ def _write_inventory(tmp_path: Path, payload: dict[str, object]) -> Path:
     path = tmp_path / "audio_cpp_inventory.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_lfm_layout_accepts_only_matching_backbone_and_three_auxiliary_files(tmp_path, broken):
+    backbone = "LFM2.5-Audio-1.5B-Q8_0.gguf"
+    files = [backbone, *(prefix + backbone for prefix in ("mmproj-", "vocoder-", "tokenizer-"))]
+    if broken:
+        files[-1] = "tokenizer-LFM2.5-Audio-1.5B-F16.gguf"
+    package = _package("lfm_fixture", "lfm2_audio", files=files)
+    package["manifest"] = [_manifest(path, path) for path in files]
+    data = _inventory(package)
+    data["families"].append({"id": "lfm2_audio", "category": "speech", "tasks": ["tts"]})
+    projected = load_audio_cpp_packages(_write_inventory(tmp_path, data))
+    assert bool(projected) is not broken
+    if projected:
+        assert projected[0].config_path.endswith("/" + backbone)
 
 
 def test_available_digest_verified_speech_packages_project_and_infer_tasks(tmp_path):

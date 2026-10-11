@@ -21,13 +21,16 @@ from .models import (
     SessionSetting,
     SessionStageSelection,
 )
-from .outcome_plans import derive_legacy_outcome
+from .outcome_plans import (
+    WORKFLOW_INPUT_CONSUMERS,
+    derive_legacy_outcome,
+    resolve_workflow_inputs,
+)
 from .settings_policy import RevisionConflict
 from .source_management import assert_session_idle
 from .source_resolution import resolve_primary_source
 from .subtitle_media import artifact_accessible_in_session
 
-WORKFLOW_INPUT_CONSUMERS = frozenset({"translation", "generation"})
 WORKFLOW_INPUT_ROLES = frozenset({"source", "correction", "translation", "prepared_text", "tts_optimized"})
 _SUBTITLE_SUFFIXES = frozenset({".srt", ".vtt"})
 
@@ -288,23 +291,7 @@ def _workflow_inputs_manifest_in_session(
     if record is None or record.trashed_at is not None or record.status == "purging":
         raise KeyError(session_id)
     value, outcome_revision = _current_outcome(session, record, services)
-    stored_inputs = value.get("inputs")
-    stored_inputs = stored_inputs if isinstance(stored_inputs, dict) else {}
-    defaults = derive_legacy_outcome(record).get("inputs", {})
-    inputs: dict[str, str] = {}
-    for consumer in sorted(WORKFLOW_INPUT_CONSUMERS):
-        role = (
-            str(stored_inputs.get(consumer) or defaults.get(consumer) or "source").strip().lower()
-        )
-        if role not in {"source", "correction", "translation"} and not (
-            record.workflow_kind == "media_edit" and role == "media_edit"
-        ):
-            role = str(defaults.get(consumer) or "source").strip().lower()
-        if record.workflow_kind == "media_edit" and role == "source":
-            role = "media_edit"
-        if consumer == "translation" and role == "translation":
-            role = str(defaults.get(consumer) or "correction").strip().lower()
-        inputs[consumer] = role
+    inputs = resolve_workflow_inputs(record, value)
     configured_transformations = value.get("transformations")
     configured_transformations = (
         configured_transformations

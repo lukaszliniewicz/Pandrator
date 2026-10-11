@@ -41,6 +41,7 @@
   let kind = $state<'audiobook' | 'subtitles' | 'voiceover' | 'media_edit'>(
     untrack(() => initialKind)
   );
+  let interfaceMode = $state<'simple' | 'advanced'>('simple');
   let custom = $state(false);
   let sourceMode = $state<'upload' | 'paste' | 'url' | 'reuse' | 'later'>(
     'upload'
@@ -202,6 +203,7 @@
     )
       sourceAssetId = reusableSources.find(isReusableMedia)?.id ?? '';
     custom = full;
+    if (full) interfaceMode = 'advanced';
     step = 2;
   }
   function inferName() {
@@ -255,6 +257,7 @@
           ];
       const createBody: Parameters<typeof sessionApi.create>[0] = {
         name: unique,
+        interface_mode: interfaceMode,
         workflow_kind: kind,
         source_language: sourceLanguage,
         target_language: translate ? targetLanguage : null,
@@ -503,6 +506,36 @@
         ><X size={20} /></button
       >
     </header>
+    <fieldset
+      disabled={creating}
+      class="mt-5 rounded-xl border border-[var(--line)] p-3"
+    >
+      <legend class="px-1 text-sm font-semibold">Project interface</legend>
+      <div class="grid gap-2 sm:grid-cols-2">
+        {#each [{ value: 'simple', label: 'Simple', description: 'Source, progress, preview and output.' }, { value: 'advanced', label: 'Advanced', description: 'Edit wording, voices, delivery and detailed settings.' }] as mode}
+          <label
+            class="flex cursor-pointer items-start gap-3 rounded-lg border p-3"
+            class:active={interfaceMode === mode.value}
+          >
+            <input
+              type="radio"
+              name="interface-mode"
+              value={mode.value}
+              bind:group={interfaceMode}
+              class="mt-1 accent-[var(--accent)]"
+            />
+            <span
+              ><strong>{mode.label}</strong><small class="muted mt-1 block"
+                >{mode.description}</small
+              ></span
+            >
+          </label>
+        {/each}
+      </div>
+      <p class="muted mt-2 text-xs">
+        You can switch later. This choice does not start any work.
+      </p>
+    </fieldset>
     {#if error}<div
         class="mt-5 rounded-xl border border-red-400/40 bg-red-500/10 p-3 text-sm"
       >
@@ -636,24 +669,24 @@
     {:else if step === 3}
       {#if kind === 'audiobook'}
         <div class="mt-7 grid gap-4 md:grid-cols-2">
-          <label class="option"
-            ><input type="checkbox" bind:checked={normalizeText} /><span
-              ><strong>Normalize text for speech</strong><small
-                >Deterministically expands and cleans text patterns that speech
-                engines commonly misread. No provider cost.</small
-              ></span
-            ></label
-          >
-          <label class="option"
-            ><input type="checkbox" bind:checked={optimizeTts} /><span
-              ><strong>Optimize each segment with an LLM</strong><small
-                >Optional pronunciation and numeral cleanup immediately before
-                synthesis. Local models can run without API charges; remote
-                providers may incur cost.</small
-              ></span
-            ></label
-          >
-          <label class="text-sm font-semibold"
+          {#if interfaceMode === 'advanced'}<label class="option"
+              ><input type="checkbox" bind:checked={normalizeText} /><span
+                ><strong>Normalize text for speech</strong><small
+                  >Deterministically expands and cleans text patterns that
+                  speech engines commonly misread. No provider cost.</small
+                ></span
+              ></label
+            >
+            <label class="option"
+              ><input type="checkbox" bind:checked={optimizeTts} /><span
+                ><strong>Optimize each segment with an LLM</strong><small
+                  >Optional pronunciation and numeral cleanup immediately before
+                  synthesis. Local models can run without API charges; remote
+                  providers may incur cost.</small
+                ></span
+              ></label
+            >
+          {/if}<label class="text-sm font-semibold"
             >Narration language<select
               bind:value={sourceLanguage}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
@@ -673,14 +706,16 @@
               ></select
             ></label
           >
-          <div class="rounded-2xl bg-[var(--accent-soft)] p-4 text-sm">
-            <strong>Document cleaning stays reviewable</strong>
-            <p class="muted mt-1 text-xs leading-relaxed">
-              Pandrator extracts and cleans the source first. Headings become
-              editable chapter starts in the generation drawer; the original
-              file is preserved.
-            </p>
-          </div>
+          {#if interfaceMode === 'advanced'}<div
+              class="rounded-2xl bg-[var(--accent-soft)] p-4 text-sm"
+            >
+              <strong>Document cleaning stays reviewable</strong>
+              <p class="muted mt-1 text-xs leading-relaxed">
+                Pandrator extracts and cleans the source first. Headings become
+                editable chapter starts in Generation; the original file is
+                preserved.
+              </p>
+            </div>{/if}
         </div>
       {:else}
         <div class="mt-7 grid gap-4 md:grid-cols-2">
@@ -702,18 +737,18 @@
                   >{item.label}</option
                 >{/each}</select
             ></label
-          ><label class="option"
-            ><input
-              type="checkbox"
-              checked={correctionEnabled}
-              onchange={(event) => (correct = event.currentTarget.checked)}
-            /><span
-              ><strong>Correct same-language subtitles</strong><small
-                >Creates a reviewed source shared by all target languages. You
-                can skip this when the source subtitles are already suitable.</small
-              ></span
-            ></label
-          ><label class="text-sm font-semibold">
+          >{#if interfaceMode === 'advanced'}<label class="option"
+              ><input
+                type="checkbox"
+                checked={correctionEnabled}
+                onchange={(event) => (correct = event.currentTarget.checked)}
+              /><span
+                ><strong>Correct same-language subtitles</strong><small
+                  >Creates a reviewed source shared by all target languages. You
+                  can skip this when the source subtitles are already suitable.</small
+                ></span
+              ></label
+            >{/if}<label class="text-sm font-semibold">
             Translation workflow<select
               bind:value={translationMode}
               class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"

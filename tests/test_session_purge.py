@@ -15,6 +15,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import event, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from pandrator.runtime import DataPaths
@@ -26,6 +27,7 @@ from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
     Job,
+    OutputAssembly,
     SessionPurge,
     SessionRecord,
     SessionSource,
@@ -34,6 +36,8 @@ from pandrator.web.models import (
     TranslationProjectBranch,
     TranslationProjectOperation,
     UploadSessionRecord,
+    Voice,
+    VoiceSample,
     utcnow,
 )
 from pandrator.web.project_operations import (
@@ -138,8 +142,46 @@ def _artifact(harness, record, path, artifact_id):
                              relative_path=path.relative_to(paths.root).as_posix()))
 
 
+def _legacy_subtitle(harness, record, artifact_id="legacy-subtitle", *, role="transcription",
+                     metadata=None, relative_path=None):
+    database, paths, _sessions, _purge = harness
+    source_hash = "a" * 64
+    relative_path = relative_path or (
+        f"sessions/{record.id}/imported-subtitles/{source_hash}.srt"
+    )
+    metadata = metadata or {
+        "text_origin": "imported_subtitles",
+        "imported_source_hash": source_hash,
+    }
+    path = paths.managed_path(relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("1\n00:00:01,000 --> 00:00:02,000\nLegacy subtitle\n")
+    with database.session() as session:
+        session.add(Artifact(
+            id=artifact_id, session_id=record.id, kind="srt", role=role,
+            relative_path=relative_path, metadata_json=metadata,
+        ))
+    return path, source_hash
+
+
 def _trashed(harness, record):
     return harness[2].trash(record.id, record.revision)
+
+
+def _preview_select_count(database, purge, session_id):
+    count = 0
+
+    def count_selects(_connection, _cursor, statement, _parameters, _context, _executemany):
+        nonlocal count
+        if statement.lstrip().upper().startswith("SELECT"):
+            count += 1
+
+    event.listen(database.engine, "before_cursor_execute", count_selects)
+    try:
+        preview = purge.preview(session_id)
+    finally:
+        event.remove(database.engine, "before_cursor_execute", count_selects)
+    return preview, count
 
 
 def _uploads(harness):
@@ -583,7 +625,7 @@ def test_committed_project_export_receipt_does_not_relax_other_job_statuses(harn
 
 @pytest.mark.parametrize("invalid", [
     "role", "state", "source_operation", "project", "source_ids", "job_status",
-    "result_id", "result_hash", "file_receipt", "missing_file", "reverse_edge",
+    "result_id", "result_hash", "file_receipt", "missing_file",
 ])
 def test_unvalidated_project_export_edge_still_blocks_branch_purge(harness, invalid):
     database, _paths, _sessions, purge = harness
@@ -615,15 +657,39 @@ def test_unvalidated_project_export_edge_still_blocks_branch_purge(harness, inva
             job.payload_json = payload
         elif invalid == "missing_file":
             outputs[output.id].unlink()
-        elif invalid == "reverse_edge":
-            db.delete(db.get(ArtifactEdge, ("deleted-language-artifact", output.id)))
-            db.flush()
-            db.add(ArtifactEdge(parent_artifact_id=output.id, child_artifact_id="deleted-language-artifact"))
         output.metadata_json = metadata
     _trashed(harness, case.selected)
     preview = purge.preview(case.selected.id)
     assert "external_reference:artifact_edges" in preview["blockers"]
     assert preview["retained_project_exports"] == {"bundle_count": 0, "manifest_count": 0, "artifact_ids": []}
+
+
+def test_incoming_project_export_edge_does_not_block_branch_purge(harness):
+    database, _paths, _sessions, purge = harness
+    case = _project_operation(harness)
+    outputs = _completed_project_bundle(harness, case, manifest=False)
+    bundle_id = "project_export_bundle-id"
+    bundle_path = outputs[bundle_id]
+    bundle_bytes = bundle_path.read_bytes()
+    with database.session() as db:
+        db.delete(db.get(ArtifactEdge, ("deleted-language-artifact", bundle_id)))
+        db.flush()
+        db.add(ArtifactEdge(parent_artifact_id=bundle_id, child_artifact_id="deleted-language-artifact"))
+    _trashed(harness, case.selected)
+    preview = purge.preview(case.selected.id)
+    assert preview["can_purge"]
+    assert preview["blockers"] == []
+    assert preview["retained_project_exports"] == {"bundle_count": 0, "manifest_count": 0, "artifact_ids": []}
+    assert purge.purge(case.selected.id, preview["revision"], preview["impact_token"])["state"] == "complete"
+    assert bundle_path.read_bytes() == bundle_bytes
+    with database.session() as db:
+        assert db.get(SessionRecord, case.selected.id) is None
+        assert db.get(SessionRecord, case.other.id) is not None
+        assert db.get(Artifact, "deleted-language-artifact") is None
+        assert db.get(ArtifactEdge, (bundle_id, "deleted-language-artifact")) is None
+        assert db.get(Artifact, bundle_id).session_id == case.source.id
+        assert db.get(Artifact, "other-language-artifact") is not None
+        assert db.get(ArtifactEdge, ("other-language-artifact", bundle_id)) is not None
 
 
 def test_completed_project_export_disclosure_is_bound_to_impact_token(harness):
@@ -655,6 +721,177 @@ def test_purge_removes_owned_file_and_session_only_after_cleanup(harness):
         assert session.get(SessionPurge, record.id).state == "complete"
 
 
+def test_reference_impact_preview_select_count_is_artifact_count_independent(harness):
+    database, paths, _sessions, purge = harness
+
+    def preview_with_artifacts(count):
+        record, folder = _session(harness, f"query budget {count}")
+        with database.session() as session:
+            session.add_all([
+                Artifact(
+                    id=f"query-budget-{count}-{index:03d}",
+                    session_id=record.id,
+                    kind="text",
+                    role="test",
+                    relative_path=(folder / f"artifact-{index:03d}.txt").relative_to(paths.root).as_posix(),
+                )
+                for index in range(count)
+            ])
+        for index in range(count):
+            (folder / f"artifact-{index:03d}.txt").write_text("x")
+        _trashed(harness, record)
+        preview, select_count = _preview_select_count(database, purge, record.id)
+        assert preview["can_purge"]
+        assert preview["owned_file_count"] == count
+        return select_count
+
+    small_count = preview_with_artifacts(8)
+    large_count = preview_with_artifacts(128)
+    assert small_count <= 70, small_count
+    assert large_count <= 70, large_count
+    assert large_count - small_count <= 3, (small_count, large_count)
+
+
+def test_registered_legacy_subtitle_purges_without_inventorying_neighbors(harness):
+    database, paths, _sessions, purge = harness
+    record, _folder = _session(harness, "legacy subtitle")
+    assert record.id != record.storage_key
+    owned_file, source_hash = _legacy_subtitle(harness, record)
+    neighbor = paths.managed_path(f"sessions/{record.id}/imported-subtitles/unregistered.srt")
+    neighbor.write_text("leave this unregistered file alone")
+    global_file = paths.managed_path("artifacts/global-subtitle-source.srt")
+    global_file.parent.mkdir(parents=True, exist_ok=True)
+    global_file.write_text("global source")
+    with database.session() as session:
+        session.add(Artifact(
+            id="global-subtitle-source", session_id=None, kind="srt", role="source",
+            relative_path="artifacts/global-subtitle-source.srt",
+        ))
+        session.flush()
+        session.add(SourceAsset(
+            id="global-subtitle-asset", artifact_id="global-subtitle-source",
+            display_name="Global subtitle source", kind="srt",
+        ))
+        session.add(ArtifactEdge(
+            parent_artifact_id="global-subtitle-source", child_artifact_id="legacy-subtitle",
+        ))
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert preview["can_purge"]
+    assert preview["owned_file_count"] == 1
+    assert purge.purge(record.id, preview["revision"], preview["impact_token"])["state"] == "complete"
+
+    assert not owned_file.exists()
+    assert neighbor.read_text() == "leave this unregistered file alone"
+    assert global_file.read_text() == "global source"
+    assert owned_file.name == f"{source_hash}.srt"
+    with database.session() as session:
+        assert session.get(SessionRecord, record.id) is None
+        assert session.get(Artifact, "legacy-subtitle") is None
+        assert session.get(ArtifactEdge, ("global-subtitle-source", "legacy-subtitle")) is None
+        assert session.get(Artifact, "global-subtitle-source").session_id is None
+        assert session.get(SourceAsset, "global-subtitle-asset").artifact_id == "global-subtitle-source"
+
+
+@pytest.mark.parametrize("invalid", ["role", "metadata", "malformed_hash", "wrong_hash_path"])
+def test_unrecognized_legacy_subtitle_path_remains_unmanaged(harness, invalid):
+    _database, _paths, _sessions, purge = harness
+    record, _folder = _session(harness, f"invalid legacy subtitle {invalid}")
+    source_hash = "a" * 64
+    relative_path = None
+    role = "transcription"
+    metadata = {"text_origin": "imported_subtitles", "imported_source_hash": source_hash}
+    if invalid == "role":
+        role = "source"
+    elif invalid == "metadata":
+        metadata["text_origin"] = "user_edited"
+    elif invalid == "malformed_hash":
+        metadata["imported_source_hash"] = "A" * 64
+    elif invalid == "wrong_hash_path":
+        relative_path = f"sessions/{record.id}/imported-subtitles/{'b' * 64}.srt"
+    path, _source_hash = _legacy_subtitle(
+        harness, record, artifact_id="invalid-legacy-subtitle", role=role,
+        metadata=metadata, relative_path=relative_path,
+    )
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert not preview["can_purge"]
+    assert "unmanaged_artifact:invalid-legacy-subtitle" in preview["blockers"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
+    assert path.is_file()
+
+
+def test_symlink_at_legacy_subtitle_path_remains_blocked(harness):
+    database, paths, _sessions, purge = harness
+    record, _folder = _session(harness, "legacy subtitle symlink")
+    relative = f"sessions/{record.id}/imported-subtitles/{'a' * 64}.srt"
+    path = paths.managed_path(relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = paths.managed_path("artifacts/legacy-subtitle-target.srt")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("preserved symlink target")
+    path.symlink_to(target)
+    with database.session() as session:
+        session.add(Artifact(
+            id="legacy-symlink", session_id=record.id, kind="srt", role="transcription",
+            relative_path=relative,
+            metadata_json={
+                "text_origin": "imported_subtitles", "imported_source_hash": "a" * 64,
+            },
+        ))
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert not preview["can_purge"]
+    assert "unsafe_artifact_path:legacy-symlink" in preview["blockers"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
+    assert path.is_symlink()
+    assert target.read_text() == "preserved symlink target"
+
+
+def test_foreign_artifact_alias_for_legacy_subtitle_blocks_purge(harness):
+    database, _paths, _sessions, purge = harness
+    record, _folder = _session(harness, "legacy subtitle foreign artifact")
+    foreign, _foreign_folder = _session(harness, "foreign subtitle owner")
+    owned_file, source_hash = _legacy_subtitle(harness, record)
+    alias = f"sessions/{record.id}//imported-subtitles/{source_hash}.srt"
+    with database.session() as session:
+        session.add(Artifact(
+            id="foreign-subtitle-artifact", session_id=foreign.id, kind="srt", role="source",
+            relative_path=alias,
+        ))
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert not preview["can_purge"]
+    assert "external_file_owner:foreign-subtitle-artifact" in preview["blockers"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
+    assert owned_file.read_text().startswith("1\n")
+
+
+def test_foreign_storage_owner_of_legacy_id_path_blocks_purge(harness):
+    database, _paths, _sessions, purge = harness
+    record, _folder = _session(harness, "legacy subtitle storage collision")
+    foreign, _foreign_folder = _session(harness, "foreign legacy storage owner")
+    owned_file, _source_hash = _legacy_subtitle(harness, record)
+    with database.session() as session:
+        foreign_record = session.get(SessionRecord, foreign.id)
+        foreign_record.storage_key = record.id
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert not preview["can_purge"]
+    assert "unmanaged_artifact:legacy-subtitle" in preview["blockers"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
+    assert owned_file.is_file()
+
+
 def test_shared_source_file_and_record_survive(harness):
     database, _paths, _sessions, purge = harness
     record, folder = _session(harness)
@@ -674,6 +911,41 @@ def test_shared_source_file_and_record_survive(harness):
     with database.session() as session:
         assert session.get(SourceAsset, "source").artifact_id == "shared-artifact"
         assert session.get(Artifact, "shared-artifact").session_id is None
+
+
+def test_shared_voice_sample_artifact_survives_session_purge(harness):
+    database, paths, _sessions, purge = harness
+    record, folder = _session(harness, "voice sample artifact")
+    file = folder / "voice-sample.wav"
+    file.write_bytes(b"voice sample bytes")
+    with database.session() as session:
+        session.add(Artifact(
+            id="voice-sample-artifact", session_id=record.id, kind="audio", role="voice_sample",
+            relative_path=file.relative_to(paths.root).as_posix(),
+        ))
+        session.flush()
+        voice = Voice(name="Purge retained voice sample")
+        session.add(voice)
+        session.flush()
+        sample = VoiceSample(voice_id=voice.id, artifact_id="voice-sample-artifact")
+        session.add(sample)
+        session.flush()
+        voice_id = voice.id
+        sample_id = sample.id
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert preview["can_purge"]
+    assert preview["retained_shared_count"] == 1
+    assert preview["owned_file_count"] == 0
+    assert purge.purge(record.id, preview["revision"], preview["impact_token"])["state"] == "complete"
+
+    assert file.read_bytes() == b"voice sample bytes"
+    with database.session() as session:
+        assert session.get(SessionRecord, record.id) is None
+        assert session.get(Artifact, "voice-sample-artifact").session_id is None
+        assert session.get(VoiceSample, sample_id) is not None
+        assert session.get(Voice, voice_id) is not None
 
 
 def test_legacy_shared_source_path_survives_without_artifact_fk(harness):
@@ -785,6 +1057,179 @@ def test_unfinished_job_and_cross_session_edge_block(harness):
     with pytest.raises(PurgeBlocked):
         purge.purge(record.id, preview["revision"], preview["impact_token"])
     assert first.exists()
+
+
+def test_incoming_foreign_provenance_does_not_block_owned_artifact_purge(harness):
+    database, paths, _sessions, purge = harness
+    record, folder = _session(harness, "derived output")
+    other, other_folder = _session(harness, "foreign input")
+    derived_file = folder / "clean.txt"
+    foreign_file = other_folder / "input.txt"
+    global_file = paths.root / "artifacts" / "global-input.txt"
+    global_file.parent.mkdir(parents=True, exist_ok=True)
+    derived_file.write_text("derived")
+    foreign_file.write_text("foreign input")
+    global_file.write_text("global input")
+    _artifact(harness, record, derived_file, "owned-derived")
+    with database.session() as session:
+        session.add_all([
+            Artifact(id="global-input", session_id=None, kind="text", role="source",
+                     relative_path=global_file.relative_to(paths.root).as_posix()),
+            Artifact(id="foreign-input", session_id=other.id, kind="text", role="source",
+                     relative_path=foreign_file.relative_to(paths.root).as_posix()),
+        ])
+        session.flush()
+        session.add(SourceAsset(
+            id="global-source", artifact_id="global-input", display_name="global input", kind="text",
+        ))
+        session.add_all([
+            ArtifactEdge(parent_artifact_id="global-input", child_artifact_id="owned-derived"),
+            ArtifactEdge(parent_artifact_id="foreign-input", child_artifact_id="owned-derived"),
+        ])
+    _trashed(harness, record)
+    preview = purge.preview(record.id)
+    assert preview["can_purge"]
+    assert preview["blockers"] == []
+    assert purge.purge(record.id, preview["revision"], preview["impact_token"])["state"] == "complete"
+    assert not derived_file.exists()
+    assert foreign_file.read_text() == "foreign input"
+    assert global_file.read_text() == "global input"
+    with database.session() as session:
+        assert session.get(SessionRecord, record.id) is None
+        assert session.get(SessionRecord, other.id) is not None
+        assert session.get(Artifact, "owned-derived") is None
+        assert session.get(Artifact, "foreign-input") is not None
+        assert session.get(Artifact, "global-input") is not None
+        assert session.get(SourceAsset, "global-source").artifact_id == "global-input"
+        assert session.get(ArtifactEdge, ("global-input", "owned-derived")) is None
+        assert session.get(ArtifactEdge, ("foreign-input", "owned-derived")) is None
+
+
+def test_owned_parent_to_foreign_child_edge_alone_blocks_purge(harness):
+    database, _paths, _sessions, purge = harness
+    record, folder = _session(harness, "owned parent")
+    other, other_folder = _session(harness, "foreign child")
+    parent_file = folder / "parent.txt"
+    child_file = other_folder / "child.txt"
+    parent_file.write_text("parent")
+    child_file.write_text("child")
+    _artifact(harness, record, parent_file, "owned-parent")
+    _artifact(harness, other, child_file, "foreign-child")
+    with database.session() as session:
+        session.add(ArtifactEdge(parent_artifact_id="owned-parent", child_artifact_id="foreign-child"))
+    _trashed(harness, record)
+    preview = purge.preview(record.id)
+    assert preview["blockers"] == ["external_reference:artifact_edges"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
+    assert parent_file.read_text() == "parent"
+    assert child_file.read_text() == "child"
+    with database.session() as session:
+        assert session.get(SessionRecord, record.id) is not None
+        assert session.get(SessionRecord, other.id) is not None
+        assert session.get(ArtifactEdge, ("owned-parent", "foreign-child")) is not None
+
+
+def test_reference_impact_batches_preserve_late_shared_and_foreign_edge_guards(harness):
+    database, paths, _sessions, purge = harness
+    record, folder = _session(harness, "reference batch boundary")
+    foreign, foreign_folder = _session(harness, "late foreign child")
+    owned_count = 502
+    with database.session() as session:
+        session.add_all([
+            Artifact(
+                id=f"batch-owned-{index:04d}",
+                session_id=record.id,
+                kind="text",
+                role="test",
+                relative_path=(folder / f"artifact-{index:04d}.txt").relative_to(paths.root).as_posix(),
+            )
+            for index in range(owned_count)
+        ])
+        session.flush()
+        ordered_ids = [
+            artifact.id
+            for artifact in session.scalars(select(Artifact).where(Artifact.session_id == record.id)).all()
+        ]
+        assert len(ordered_ids) == owned_count
+        # The helper preserves this loaded-row order; these two IDs occupy its final 2-row batch.
+        shared_id, foreign_parent_id = ordered_ids[-2:]
+        shared_path = folder / f"artifact-{int(shared_id.rsplit('-', 1)[1]):04d}.txt"
+        foreign_parent_path = folder / f"artifact-{int(foreign_parent_id.rsplit('-', 1)[1]):04d}.txt"
+        foreign_child_path = foreign_folder / "foreign-child.txt"
+        session.add(SourceAsset(
+            id="late-batch-source-asset", artifact_id=shared_id,
+            display_name="Late shared artifact", kind="text",
+        ))
+        session.add(Artifact(
+            id="late-batch-foreign-child", session_id=foreign.id, kind="text", role="test",
+            relative_path=foreign_child_path.relative_to(paths.root).as_posix(),
+        ))
+        session.flush()
+        session.add(ArtifactEdge(
+            parent_artifact_id=foreign_parent_id, child_artifact_id="late-batch-foreign-child",
+        ))
+    for index in range(owned_count):
+        (folder / f"artifact-{index:04d}.txt").write_text("owned")
+    foreign_child_path.write_text("foreign")
+    _trashed(harness, record)
+
+    preview = purge.preview(record.id)
+    assert not preview["can_purge"]
+    assert preview["retained_shared_count"] == 1
+    assert preview["owned_file_count"] == owned_count - 1
+    assert "external_reference:artifact_edges" in preview["blockers"]
+    assert shared_path.is_file()
+    assert foreign_parent_path.is_file()
+    assert foreign_child_path.read_text() == "foreign"
+
+
+def test_stale_output_assembly_does_not_block_purge(harness):
+    database, _paths, _sessions, purge = harness
+    record, _folder = _session(harness, "stale assembly")
+    with database.session() as session:
+        session.add(OutputAssembly(
+            id="stale-assembly", session_id=record.id, status="stale", settings_json={},
+        ))
+    _trashed(harness, record)
+    preview = purge.preview(record.id)
+    assert preview["can_purge"]
+    assert preview["blockers"] == []
+    assert purge.purge(record.id, preview["revision"], preview["impact_token"])["state"] == "complete"
+    with database.session() as session:
+        assert session.get(OutputAssembly, "stale-assembly") is None
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_active_output_assembly_blocks_purge(harness, status):
+    database, _paths, _sessions, purge = harness
+    record, _folder = _session(harness, f"{status} assembly")
+    with database.session() as session:
+        session.add(OutputAssembly(
+            id="active-assembly", session_id=record.id, status=status, settings_json={},
+        ))
+    _trashed(harness, record)
+    preview = purge.preview(record.id)
+    assert preview["blockers"] == [f"unfinished:output_assemblies:{status}"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_active_job_still_blocks_purge_with_stale_output_assembly(harness, status):
+    database, _paths, _sessions, purge = harness
+    record, _folder = _session(harness, f"{status} job")
+    with database.session() as session:
+        session.add(OutputAssembly(
+            id="stale-assembly-with-active-job", session_id=record.id,
+            status="stale", settings_json={},
+        ))
+        session.add(Job(id="active-job", kind="test", session_id=record.id, status=status))
+    _trashed(harness, record)
+    preview = purge.preview(record.id)
+    assert preview["blockers"] == [f"unfinished:jobs:{status}"]
+    with pytest.raises(PurgeBlocked):
+        purge.purge(record.id, preview["revision"], preview["impact_token"])
 
 
 def test_revision_impact_and_restore_fence(harness):

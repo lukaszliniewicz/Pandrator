@@ -67,6 +67,20 @@ class GenerationControlsTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 get_generation_controls(session, "missing-session")
 
+    def test_character_delivery_saves_normalized_and_old_rows_default_empty(self):
+        with self.database.session() as session:
+            delivery = save_generation_controls(
+                session, self.record.id, expected_revision=0,
+                characters=[{"id": "alice", "display_name": "Alice",
+                             "delivery": {"instruction": "  Read softly  ", "pace": "slower"}},
+                            {"id": "bob", "display_name": "Bob"}],
+            )
+            self.assertEqual("Read softly", delivery["characters"][0]["delivery"]["instruction"])
+            self.assertEqual("slower", delivery["characters"][0]["delivery"]["pace"])
+            self.assertEqual("", delivery["characters"][1]["delivery"]["instruction"])
+        with self.database.session() as session:
+            self.assertEqual("Read softly", get_generation_controls(session, self.record.id)["characters"][0]["delivery"]["instruction"])
+
     def test_rename_retains_id_and_locked_updates_need_unlock(self):
         with self.database.session() as session:
             first = save_generation_controls(

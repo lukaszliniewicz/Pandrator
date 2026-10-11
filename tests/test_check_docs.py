@@ -30,6 +30,10 @@ def documentation_repository(tmp_path: Path) -> Path:
         "review-notes/screenshot.png",
         ".local-notes/result.json",
         "release-acceptance.md",
+        "docs/development/from-source.md",
+        "docs/plans/implementation.md",
+        "docs/research/measurements.json",
+        "docs/reports/acceptance.png",
     ],
 )
 def test_force_added_internal_material_is_rejected(

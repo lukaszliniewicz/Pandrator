@@ -200,15 +200,32 @@ async function mockStart(
   }
 ) {
   const seen: Record<string, unknown>[] = [];
+  let run: unknown;
+  const jobId = `preparation-${sessionId}`;
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-admissions`,
     async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const body = route.request().postDataJSON() as Record<string, unknown>;
       seen.push(body);
       const result = impl(body, seen.length);
-      await route.fulfill({ status: result.status, json: result.json });
+      if (result.status === 202) {
+        run = result.json;
+        await route.fulfill({ status: 202, json: { job_id: jobId } });
+      } else await route.fulfill({ status: result.status, json: result.json });
     }
+  );
+  await page.route(`**/api/v1/jobs/${jobId}`, (route) =>
+    route.fulfill({
+      json: {
+        id: jobId,
+        status: 'succeeded',
+        result_json: { generation_run_id: 'run-new' }
+      }
+    })
+  );
+  await page.route('**/api/v1/generation-runs/run-new', (route) =>
+    route.fulfill({ json: run })
   );
   return seen;
 }
@@ -228,13 +245,25 @@ function startedRun(sessionId: string, revisionId: string) {
   };
 }
 
-async function openDialog(page: Page) {
+async function openDialog(
+  page: Page,
+  mode: 'continue' | 'refresh' = 'continue'
+) {
+  if (!(await page.locator('.generation-workspace').isVisible())) {
+    await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  }
   await page
-    .locator('.generation-drawer')
-    .getByRole('button', { name: 'Generate audio…', exact: true })
+    .locator('.generation-workspace')
+    .getByRole('button', { name: 'Generate', exact: true })
     .click();
   const dialog = page.getByTestId('generation-start-dialog');
   await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByTestId('generation-start-mode-refresh')
+  ).toBeChecked();
+  if (mode === 'continue') {
+    await dialog.getByTestId('generation-start-mode-continue').check();
+  }
   return dialog;
 }
 
@@ -298,7 +327,68 @@ test('continue keeps completed recordings and confirms a single block', async ({
   expect(previewed.length).toBeGreaterThanOrEqual(1);
 });
 
-test('refresh explains changed and unverified audio and needs acknowledgment', async ({
+test('durable preparation shows its work handle before the generation handoff', async ({
+  page
+}) => {
+  const { sessionId, revisionId } = await setupSession(page);
+  await mockPreview(page, sessionId, () => previewsFor(revisionId).missing);
+  await mockStart(page, sessionId, () => ({
+    status: 202,
+    json: startedRun(sessionId, revisionId)
+  }));
+  let polls = 0;
+  await page.route(`**/api/v1/jobs/preparation-${sessionId}`, (route) =>
+    route.fulfill({
+      json:
+        ++polls === 1
+          ? {
+              status: 'running',
+              progress_detail: 'Preparing generation',
+              result_json: {}
+            }
+          : {
+              status: 'succeeded',
+              result_json: { generation_run_id: 'run-new' }
+            }
+    })
+  );
+  await page.goto(`/sessions/${sessionId}`);
+  const dialog = await openDialog(page);
+  await dialog.getByTestId('generation-start-submit').click();
+  const progress = dialog.getByTestId('generation-admission-progress');
+  await expect(progress).toContainText('Preparing generation');
+  await expect(progress).toContainText(`preparation-${sessionId}`);
+  await expect(dialog).toBeHidden();
+});
+
+test('known Vertex configuration problems block confirmation and show redacted preflight', async ({
+  page
+}) => {
+  const { sessionId, revisionId } = await setupSession(page);
+  await mockPreview(page, sessionId, () => ({
+    ...previewsFor(revisionId).missing,
+    provider_preflight: {
+      route_id: 'vertex_ai',
+      model: 'gemini-3.8-flash-tts',
+      voice: 'Algenib',
+      project: 'test-project',
+      location: 'us-central1',
+      credential_origin: 'file',
+      access_checked: false,
+      configuration_warning:
+        'Gemini 3.8 TTS on Vertex requires the global location.'
+    }
+  }));
+  await page.goto(`/sessions/${sessionId}`);
+  const dialog = await openDialog(page);
+  await expect(
+    dialog.getByTestId('generation-provider-preflight')
+  ).toContainText('test-project');
+  await expect(dialog).toContainText('requires the global location');
+  await expect(dialog.getByTestId('generation-start-submit')).toBeDisabled();
+});
+
+test('Generate defaults to refresh, explains changed audio and needs acknowledgment', async ({
   page
 }) => {
   const { sessionId, revisionId } = await setupSession(page);
@@ -313,8 +403,7 @@ test('refresh explains changed and unverified audio and needs acknowledgment', a
     json: startedRun(sessionId, revisionId)
   }));
   await page.goto(`/sessions/${sessionId}`);
-  const dialog = await openDialog(page);
-  await dialog.getByTestId('generation-start-mode-refresh').check();
+  const dialog = await openDialog(page, 'refresh');
   const reasons = dialog.getByTestId('generation-start-reasons');
   await expect(reasons).toContainText('Generation settings changed: 1');
   await expect(reasons).toContainText('Voice changed: 1');
@@ -364,6 +453,9 @@ test('zero pending blocks is a noop with a disabled confirm', async ({
   const dialog = await openDialog(page);
   await expect(dialog.getByTestId('generation-start-noop')).toContainText(
     'No missing blocks. Everything is already recorded.'
+  );
+  await expect(dialog).toContainText(
+    'This choice keeps recordings made with other voices or models.'
   );
   const submit = dialog.getByTestId('generation-start-submit');
   await expect(submit).toHaveText('Nothing to generate');
@@ -462,7 +554,7 @@ test('a paused run stays distinct from starting a new run', async ({
   const canned = previewsFor(revisionId);
   await mockPreview(page, sessionId, () => canned.missing);
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() !== 'GET') return route.continue();
       await route.fulfill({
@@ -489,8 +581,9 @@ test('a paused run stays distinct from starting a new run', async ({
   // Cold Windows CI loads can still be fetching route chunks after navigation.
   // Give bootstrap its own budget before asserting the paused-run controls.
   await expect(page.locator('.app-shell')).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const resume = page
-    .locator('.generation-drawer')
+    .locator('.generation-workspace')
     .getByRole('button', { name: 'Resume previous run' });
   await expect(resume).toBeVisible();
   await expect(resume).toHaveAttribute(
@@ -512,7 +605,7 @@ test('failed generation offers the safe continuation action', async ({
   await mockPreview(page, sessionId, () => previewsFor(revisionId).missing);
   let startCount = 0;
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() === 'POST') {
         startCount += 1;
@@ -536,7 +629,7 @@ test('failed generation offers the safe continuation action', async ({
     }
   );
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const recovery = page.getByTestId('generation-recovery-continue');
   await expect(recovery).toBeVisible();
   await recovery.click();

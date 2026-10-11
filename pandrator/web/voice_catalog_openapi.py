@@ -2,7 +2,7 @@
 
 from .voice_catalog import VoiceCatalogQuery
 from .voice_catalog_routes import CatalogVoiceUpdate
-from .voice_catalog_schemas import VoiceCollectionCreate, VoiceCollectionUpdate
+from .voice_catalog_schemas import VoiceCollectionCreate, VoiceCollectionUpdate, VoiceCompatibility
 from .voice_lifecycle_schemas import (
     VoiceDesignedSamplePreparationRequest,
     VoicePublishRequest,
@@ -10,6 +10,7 @@ from .voice_lifecycle_schemas import (
 )
 
 VOICE_CATALOG_SCHEMAS = {
+    "VoiceCompatibility": VoiceCompatibility,
     "VoiceCatalogQuery": VoiceCatalogQuery,
     "VoiceReferenceImportRequest": VoiceReferenceImportRequest,
     "VoiceDesignedSamplePreparationRequest": VoiceDesignedSamplePreparationRequest,

@@ -73,6 +73,7 @@ from .schemas import (
     ListSourcesInput,
     ListWorkInput,
     ManagerDesiredComponentInput,
+    ManagerStatusInput,
     PatchSubtitleCuesInput,
     PlanComponentChangeInput,
     PlanExportVariantInput,
@@ -92,10 +93,11 @@ from .schemas import (
 )
 from .schemas.delegation import (
     DelegationContextCapsuleInput,
-    execution_policy_json_schema,
+    native_execution_policy_json_schema,
 )
 from .schemas.e2e import AudioCppCatalogueInput
 from .schemas.subtitle_evidence import GetSubtitleEvidenceRoutesInput
+from .schemas.voice_lifecycle import VoiceCatalogField
 from .schemas.workflow_inputs import (
     ConfigureSpeechOptimizationInput,
     GetWorkflowInputsInput,
@@ -313,15 +315,8 @@ def build_server(runtime: McpRuntime):
         version=__version__,
         extensions=[create_argument_validation_extension(registered_tool_schema, _tool_failure)],
         instructions=(
-            "Use only the configured target and approved roots; never pass credentials "
-            "or connection URLs. For unfamiliar work read recommend_next_steps and "
-            "the workflow guide; inspect status/capabilities and live model/voice catalogues. "
-            "Passive runs: obey serial/parallel policy, scope leases to batches, return "
-            "every required ID once, submit/release the wave, follow next_actions. "
-            "Execute exact unexpired plans with reviewed confirmations; poll work to "
-            "terminal. Prefer plan_orchestrated_workflow for known session outcomes. "
-            "Use filtered describe_parameters. patch_session_settings merges overrides; "
-            "update_session_settings replaces them."
+            "Use only the configured target and approved roots. Read recommend_next_steps "
+            "for unfamiliar workflows; follow next_actions."
         ),
     )
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -352,16 +347,30 @@ def build_server(runtime: McpRuntime):
 
     from .registrations.generation_recast import register_generation_recast_tools
     from .tools.audiobook import register_audiobook_tools
+    from .tools.comparison_exports import register_comparison_export_tools
     from .tools.generation_controls import register_generation_controls_tools
+    from .tools.generation_operations import register_generation_operation_tools
     from .tools.performance import register_performance_tools
+    from .tools.pronunciations import register_pronunciation_tools
     from .tools.session_branches import register_session_branch_tools
     from .tools.session_purge import register_session_purge_tools
+    from .tools.sounds import register_sound_tools
+    from .tools.speech_editor import register_speech_editor_tools
     from .tools.voice_lifecycle import register_voice_lifecycle_tools
     from .tools.voice_metadata import register_voice_metadata_tools
     from .tools.voice_setup import register_voice_setup_tools
 
+    register_generation_operation_tools(server, runtime, _call_with_validated_input, _response,
+                                        read_only=read_only)
+    register_pronunciation_tools(server, runtime, _call_with_validated_input, _response,
+                                 read_only=read_only, revisioned_write_action=revisioned_write_action,
+                                 destructive_action=destructive_action)
     register_performance_tools(server, runtime, _call_with_validated_input, _response,
                                read_only=read_only, write_action=write_action)
+    register_speech_editor_tools(server, runtime, _call_with_validated_input, _response,
+                                read_only=read_only, write_action=write_action)
+    register_comparison_export_tools(server, runtime, _call_with_validated_input, _response,
+                                    execute_action=execute_action)
     register_generation_controls_tools(
         server,
         runtime,
@@ -392,6 +401,7 @@ def build_server(runtime: McpRuntime):
         server,
         runtime,
         _call_with_validated_input,
+        response=_response,
         read_only=read_only,
         revisioned_write_action=revisioned_write_action,
         destructive_action=destructive_action,
@@ -409,6 +419,9 @@ def build_server(runtime: McpRuntime):
         read_only=read_only,
         write_action=write_action,
     )
+
+    register_sound_tools(server, runtime, _call_with_validated_input,
+                         read_only=read_only, write_action=write_action)
 
     @server.tool(
         name="pandrator_explain_system",
@@ -1066,8 +1079,8 @@ def build_server(runtime: McpRuntime):
 
     @server.tool(
         name="pandrator_plan_workflow",
-        title="Preview an exact Pandrator workflow plan",
-        annotations=read_only,
+        title="Create an exact Pandrator workflow plan",
+        annotations=revisioned_write_action,
     )
     def workflow_plan_tool(
         session_id: str,
@@ -1087,10 +1100,12 @@ def build_server(runtime: McpRuntime):
             int,
             Field(ge=1, le=60),
         ] = 30,
+        continuation: bool = True,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
-        """Preview stages, reuse, providers, disclosures, locks, and confirmations."""
+        """Create an immutable plan snapshot. Use continuation=false for export-only work."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             plan_workflow,
             runtime,
             lambda: PlanWorkflowInput(
@@ -1098,8 +1113,10 @@ def build_server(runtime: McpRuntime):
                 target_stage=target_stage,
                 overrides=overrides or {},
                 expires_in_minutes=expires_in_minutes,
+                continuation=continuation,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_plan_orchestrated_workflow",
@@ -1113,6 +1130,8 @@ def build_server(runtime: McpRuntime):
             Literal["correction", "translation", "speech_optimization"], ...
         ] = (),
         final_stage: Literal["generate_audio", "export"] = "export",
+        generation_run_id: Annotated[NativeNullableString, Field(min_length=1, max_length=80)] = None,
+        audio_version_side: Literal["before", "after"] = "after",
         overrides: dict[str, Any] | None = None,
         export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media",
         audio_mode: Literal["preserve", "mixed", "dubbing_only"] = "mixed",
@@ -1147,8 +1166,8 @@ def build_server(runtime: McpRuntime):
 
     @server.tool(
         name="pandrator_plan_export_variant",
-        title="Preview a typed export variant",
-        annotations=read_only,
+        title="Create an export-only Pandrator plan",
+        annotations=revisioned_write_action,
     )
     def export_variant_plan_tool(
         session_id: str,
@@ -1160,10 +1179,11 @@ def build_server(runtime: McpRuntime):
         subtitle_selection: Literal["source", "translation", "dual"] = "translation",
         subtitle_format: Literal["srt", "vtt"] = "srt",
         expires_in_minutes: Annotated[int, Field(ge=1, le=60)] = 30,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
-        """Create the ordinary immutable workflow plan for one explicit output."""
+        """Plan rendering from existing inputs/audio without upstream language or synthesis stages."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             plan_export_variant,
             runtime,
             lambda: PlanExportVariantInput(
@@ -1178,6 +1198,7 @@ def build_server(runtime: McpRuntime):
                 expires_in_minutes=expires_in_minutes,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_execute_workflow_plan",
@@ -1275,11 +1296,13 @@ def build_server(runtime: McpRuntime):
         query: Annotated[NativeNullableString, Field(max_length=160)] = None,
         available_only: bool = False,
         detail: Literal["summary", "full"] = "summary",
+        include_managed_voices: bool = True,
         refresh: bool = False,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Resolve current TTS choices without exposing credentials or endpoints."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             tts_catalog,
             runtime,
             lambda: TtsCatalogInput(
@@ -1289,9 +1312,11 @@ def build_server(runtime: McpRuntime):
                 query=query,
                 available_only=available_only,
                 detail=detail,
+                include_managed_voices=include_managed_voices,
                 refresh=refresh,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_get_audio_cpp_catalogue",
@@ -1402,7 +1427,10 @@ def build_server(runtime: McpRuntime):
         accent: Annotated[str, Field(max_length=80)] = "",
         voice_category: Literal["", "male", "female", "androgynous", "unspecified"] = "",
         pitch: Literal["", "low", "mid", "high"] = "",
+        perceived_age: Literal["", "childlike", "youthful", "adult", "older"] = "",
         texture: Annotated[str, Field(max_length=40)] = "",
+        delivery_preset: Annotated[str, Field(max_length=40)] = "",
+        tag: Annotated[str, Field(max_length=40)] = "",
         use_case: Annotated[str, Field(max_length=40)] = "",
         collection_id: Annotated[str, Field(max_length=160)] = "",
         kind: Literal["all", "managed", "provider"] = "all",
@@ -1414,10 +1442,13 @@ def build_server(runtime: McpRuntime):
         sort: Literal["relevance", "name", "recently_added", "recently_updated"] = "relevance",
         limit: Annotated[int, Field(ge=1, le=200)] = 30,
         cursor: Annotated[NativeNullableString, Field(max_length=1024)] = None,
+        view: Literal["full", "compact"] = "full",
+        fields: Annotated[list[VoiceCatalogField] | None, Field(min_length=1, max_length=20)] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Inspect the normalized voice catalog with bounded filters and cursors."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             voice_catalog,
             runtime,
             lambda: VoiceCatalogInput(
@@ -1426,7 +1457,10 @@ def build_server(runtime: McpRuntime):
                 accent=accent,
                 voice_category=voice_category,
                 pitch=pitch,
+                perceived_age=perceived_age,
                 texture=texture,
+                delivery_preset=delivery_preset,
+                tag=tag,
                 use_case=use_case,
                 collection_id=collection_id,
                 kind=kind,
@@ -1438,12 +1472,15 @@ def build_server(runtime: McpRuntime):
                 sort=sort,
                 limit=limit,
                 cursor=cursor,
+                view=view,
+                fields=fields,
             ),
         )
+        return _response(envelope, response_mode)
 
     register_generation_plan_tools(
         server, runtime, _call, _call_with_validated_input,
-        read_only=read_only, write_action=write_action,
+        read_only=read_only, write_action=write_action, response=_response,
     )
 
     @server.tool(name="pandrator_adopt_subtitle_source", title="Adopt an existing managed subtitle source", annotations=write_action)
@@ -1453,7 +1490,7 @@ def build_server(runtime: McpRuntime):
 
     register_generation_execution_tools(
         server, runtime, _call, _call_with_validated_input,
-        write_action=write_action, execute_action=execute_action,
+        write_action=write_action, execute_action=execute_action, response=_response,
     )
 
     @server.tool(
@@ -1466,10 +1503,11 @@ def build_server(runtime: McpRuntime):
         kinds: tuple[str, ...] = (),
         states: tuple[str, ...] = (),
         limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """List payload-free, redacted durable work projections."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             list_work,
             runtime,
             lambda: ListWorkInput(
@@ -1479,6 +1517,7 @@ def build_server(runtime: McpRuntime):
                 limit=limit,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_get_work",
@@ -1491,10 +1530,11 @@ def build_server(runtime: McpRuntime):
         include_events: bool = False,
         event_limit: Annotated[int, Field(ge=1, le=200)] = 50,
         wait_seconds: Annotated[int, Field(ge=0, le=3_600)] = 0,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Inspect work, optionally polling until terminal or the wait deadline."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             get_work,
             runtime,
             lambda: GetWorkInput(
@@ -1505,6 +1545,7 @@ def build_server(runtime: McpRuntime):
                 wait_seconds=wait_seconds,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_get_work_log",
@@ -1516,10 +1557,11 @@ def build_server(runtime: McpRuntime):
         work_type: Literal["job", "manager_operation"] = "job",
         after: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=200)] = 50,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Inspect bounded redacted events or Manager task summaries."""
 
-        return _call_with_input_factory(
+        envelope = _call_with_input_factory(
             get_work_log,
             runtime,
             lambda: GetWorkLogInput(
@@ -1529,6 +1571,7 @@ def build_server(runtime: McpRuntime):
                 limit=limit,
             ),
         )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_cancel_work",
@@ -1557,10 +1600,18 @@ def build_server(runtime: McpRuntime):
         title="Inspect Pandrator Manager status",
         annotations=read_only,
     )
-    def manager_status_tool() -> dict[str, Any]:
+    def manager_status_tool(
+        detail: Literal["summary", "full"] = "full",
+        response_mode: Literal["standard", "structured"] = "standard",
+    ) -> dict[str, Any]:
         """Inspect Manager state through the target's approved gateway."""
 
-        return _call(manager_status, runtime)
+        envelope = _call_with_input_factory(
+            manager_status,
+            runtime,
+            lambda: ManagerStatusInput(detail=detail),
+        )
+        return _response(envelope, response_mode)
 
     @server.tool(
         name="pandrator_manager_doctor",
@@ -1655,9 +1706,9 @@ def build_server(runtime: McpRuntime):
     register_prompts(server)
 
     # MCP 2.2.0 derives a tool's schema from its flat Python signature and has
-    # no public hook for a cross-field constraint. Keep the runtime validator
-    # in strict input models and add compact conditionals to the flat schemas so
-    # clients cannot mistake serial/2 or parallel/1 for documented-valid input.
+    # no public hook for a cross-field constraint. Document the rules without
+    # root conditionals that hosts turn into opaque intersection signatures.
+    # Strict input validators still enforce every rule at runtime.
     for tool_name in (
         "pandrator_create_dispatch_run",
         "pandrator_create_speech_optimization_dispatch_run",
@@ -1666,7 +1717,7 @@ def build_server(runtime: McpRuntime):
         registered_tool = server._tool_manager.get_tool(tool_name)
         if registered_tool is None:  # pragma: no cover - registration invariant
             raise RuntimeError(f"Missing registered MCP tool: {tool_name}")
-        execution_policy_json_schema(registered_tool.parameters)
+        native_execution_policy_json_schema(registered_tool.parameters)
 
     # The native-call extension enforces this before generated argument models
     # can discard extra keys; nested schemas keep their own existing policies.

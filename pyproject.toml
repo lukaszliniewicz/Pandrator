@@ -39,6 +39,7 @@ dependencies = [
   "requests>=2.32,<3",
   "sqlalchemy>=2.0,<3",
   "waitress>=3.0,<4",
+  "websockets>=15,<16",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +78,10 @@ exclude = [
   "/.local-notes",
   "/review-notes",
   "/reviews",
+  "/docs/development",
+  "/docs/plans",
+  "/docs/research",
+  "/docs/reports",
 ]
 
 [tool.pytest.ini_options]

@@ -114,7 +114,7 @@ test('generation search queries the complete plan only after input', async ({
       requests.push(url);
   });
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const table = page.getByTestId('generation-segment-table');
   await expect(table).toHaveAttribute('data-loaded-count', '100');
   await expect(table).toHaveAttribute('data-virtualized', 'true');
@@ -166,7 +166,7 @@ test('records generation drawer costs at representative corpus sizes', async ({
     const requestsBeforeScenario = requests().length;
     const startedAt = performance.now();
     await page.goto(`/sessions/${sessionId}`);
-    await page.getByRole('button', { name: 'Generation', exact: true }).click();
+    await page.getByRole('link', { name: 'Generation', exact: true }).click();
     const table = page.getByTestId('generation-segment-table');
     await expect(table).toHaveAttribute(
       'data-loaded-count',

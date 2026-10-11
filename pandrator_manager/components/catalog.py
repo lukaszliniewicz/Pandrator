@@ -974,6 +974,8 @@ def _audio_cpp_models() -> tuple[ComponentModel, ...]:
         raise RuntimeError("Generated audio.cpp metadata has no model projection.")
     models = []
     for model_id, package in MODEL_PACKAGES.items():
+        if package.role != "model":
+            continue
         info = projected_models.get(model_id)
         if not isinstance(info, dict) or info.get("id") != model_id:
             raise RuntimeError(

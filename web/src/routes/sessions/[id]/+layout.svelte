@@ -1,11 +1,12 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { onMount, setContext, tick, untrack } from 'svelte';
+  import { onDestroy, onMount, setContext, tick, untrack } from 'svelte';
   import type { Snippet } from 'svelte';
   import {
     Activity,
     AudioLines,
+    ListMusic,
     Check,
     FileText,
     Layers3,
@@ -20,6 +21,10 @@
   import { appState } from '$lib/app-state.svelte';
   import { languageLabel } from '$lib/language-registry';
   import { sessionApi } from '$lib/domain-api';
+  import {
+    PROJECT_INTERFACE,
+    ProjectInterface
+  } from '$lib/project-interface.svelte';
   import { errorMessage } from '$lib/errors';
   import { invalidates, invalidationBus } from '$lib/invalidation';
   import { loadLazyModule } from '$lib/lazy-module';
@@ -33,14 +38,22 @@
     ProjectWorkspace
   } from '$lib/project-workspace.svelte';
   import type WorkflowCustomizer from '$lib/WorkflowCustomizer.svelte';
-  import type GenerationDrawer from '$lib/GenerationDrawer.svelte';
+  import GenerationStatusBar from '$lib/GenerationStatusBar.svelte';
+  import {
+    GENERATION_WORKSPACES,
+    type GenerationWorkspaceState
+  } from '$lib/generation-workspace-state.svelte';
+  import { subscribeSpeechPlanEditor } from '$lib/session-flow';
   let { children }: { children: Snippet } = $props();
   let customizeOpen = $state(false);
   let WorkflowCustomizerComponent = $state<typeof WorkflowCustomizer | null>(
     null
   );
-  let GenerationDrawerComponent = $state<typeof GenerationDrawer | null>(null);
-  let drawerLoadFailed = $state(false);
+  const generationWorkspaces = new Map<string, GenerationWorkspaceState>();
+  setContext(GENERATION_WORKSPACES, generationWorkspaces);
+  onDestroy(() => {
+    for (const state of generationWorkspaces.values()) state.dispose();
+  });
   let customizerLoadFailed = $state(false);
   let loadingCustomizer = $state(false);
   let mounted = $state(false);
@@ -107,6 +120,12 @@
     customize: contextState.customize
   };
   setContext(SOURCE_SESSION_CONTEXT, sourceContext);
+  const projectInterface = new ProjectInterface(
+    () => sourceContext.session,
+    () => sourceContext.reload()
+  );
+  setContext(PROJECT_INTERFACE, projectInterface);
+  const simpleMode = $derived(projectInterface.mode === 'simple');
   setContext(PROJECT_WORKSPACE, workspace);
   // Declared before the initial reload(): loadSourceProfile() bumps this
   // counter synchronously, so a later declaration would throw (TDZ).
@@ -149,7 +168,8 @@
         ? version?.workflow_kind === 'subtitles'
           ? '/text'
           : '/voice'
-        : suffix === '/voice' && version?.workflow_kind === 'subtitles'
+        : ['/voice', '/generation'].includes(suffix) &&
+            version?.workflow_kind === 'subtitles'
           ? '/text'
           : suffix;
     void goto(`/sessions/${id}${nextSuffix}`);
@@ -157,6 +177,9 @@
   $effect(() => {
     const id = routeSessionId;
     if (id !== workspace.selectedId) {
+      for (const [sessionId, generation] of generationWorkspaces) {
+        if (sessionId !== id) generation.dispose();
+      }
       workspace.select(id);
       void untrack(() => workspace.load()).catch(() => undefined);
     }
@@ -206,19 +229,6 @@
       if (mounted) loadingCustomizer = false;
     }
   }
-  async function loadGenerationDrawer() {
-    try {
-      const { default: component } = await loadLazyModule(
-        () => import('$lib/GenerationDrawer.svelte')
-      );
-      if (mounted) {
-        GenerationDrawerComponent = component;
-        drawerLoadFailed = false;
-      }
-    } catch {
-      if (mounted) drawerLoadFailed = true;
-    }
-  }
   function reloadPage() {
     window.location.reload();
   }
@@ -255,6 +265,23 @@
   onMount(() => {
     mounted = true;
     const disconnectCache = workspace.connectCache();
+    const disconnectPlanEditor = subscribeSpeechPlanEditor((sessionId) => {
+      const target = `/sessions/${sessionId}/generation`;
+      if (page.url.pathname === target) return;
+      const state = generationWorkspaces.get(sessionId);
+      if (state?.preferences)
+        state.preferences = {
+          ...state.preferences,
+          selectedRunId: '',
+          selectedRunVersionId: '',
+          filter: 'all',
+          startOrdinal: 0,
+          anchorId: '',
+          viewMode: 'segments',
+          textMode: 'speech'
+        };
+      void goto(`${target}?mode=editing`);
+    });
     const disconnectSourceProfile = invalidationBus.subscribe((batch) => {
       if (
         invalidates(batch, 'sources', workspace.sourceId) ||
@@ -262,16 +289,17 @@
       )
         void loadSourceProfile(true);
     });
-    void loadGenerationDrawer();
     return () => {
       mounted = false;
       disconnectCache();
+      disconnectPlanEditor();
       disconnectSourceProfile();
     };
   });
   const tabs = $derived(
     [
       { href: '', label: 'Overview', icon: Sparkles },
+      { href: '/generation', label: 'Generation', icon: ListMusic },
       { href: '/sources', label: 'Sources', icon: Layers3 },
       { href: '/edit', label: 'Edit', icon: Scissors },
       { href: '/text', label: 'Text & subtitles', icon: FileText },
@@ -284,12 +312,23 @@
       (tab) =>
         (tab.href !== '/languages' ||
           contextState.session?.workflow_kind !== 'audiobook') &&
-        (tab.href !== '/voice' ||
+        (!['/voice', '/generation'].includes(tab.href) ||
           contextState.session?.workflow_kind !== 'subtitles') &&
         (tab.href !== '/edit' ||
           (sourceSession?.workflow_kind ??
             contextState.session?.workflow_kind) === 'media_edit') &&
-        (tab.href !== '/cleaning' || sourceProfile === 'document')
+        (tab.href !== '/cleaning' || sourceProfile === 'document') &&
+        (!simpleMode ||
+          [
+            '',
+            '/generation',
+            '/output',
+            '/activity',
+            '/languages',
+            '/edit'
+          ].includes(tab.href) ||
+          (tab.href === '/text' &&
+            contextState.session?.workflow_kind === 'subtitles'))
     )
   );
   const active = (suffix: string) =>
@@ -397,8 +436,9 @@
           class="muted mt-2 flex flex-wrap items-center gap-2 text-xs capitalize"
         >
           <span
-            >{contextState.session?.status ?? sourceContext.session.status} · {sourceContext
-              .outcome?.value?.focus ?? 'custom'} plan</span
+            >{contextState.session?.status ?? sourceContext.session.status} · {simpleMode
+              ? sourceContext.session.workflow_kind.replace('_', ' ')
+              : `${sourceContext.outcome?.value?.focus ?? 'custom'} plan`}</span
           ><span
             class="rounded-full bg-[var(--accent-soft)] px-2 py-1 font-semibold uppercase text-[var(--accent)]"
             >{sourceContext.session.source_language}</span
@@ -426,12 +466,28 @@
             </select>
           </label>
         {/if}
-        <button
-          onclick={openWorkflowCustomizer}
-          disabled={loadingCustomizer}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"
-          ><Settings2 size={16} /> Customize workflow</button
+        <div
+          class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
+          role="group"
+          aria-label="Project interface"
         >
+          {#each ['simple', 'advanced'] as mode}<button
+              type="button"
+              class="rounded-lg px-3 py-2 text-sm font-semibold capitalize"
+              class:interface-active={projectInterface.mode === mode}
+              aria-pressed={projectInterface.mode === mode}
+              disabled={projectInterface.pending}
+              onclick={() =>
+                projectInterface.change(mode as 'simple' | 'advanced')}
+              >{mode}</button
+            >{/each}
+        </div>
+        {#if !simpleMode}<button
+            onclick={openWorkflowCustomizer}
+            disabled={loadingCustomizer}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-2.5 text-sm font-semibold"
+            ><Settings2 size={16} /> Customize workflow</button
+          >{/if}
       </div>
     </header>
     {#if membership?.role === 'branch' && page.url.pathname !== `/sessions/${routeSessionId}`}
@@ -444,6 +500,12 @@
         >
       </p>
     {/if}
+    {#if projectInterface.error}<p
+        class="mt-3 text-sm text-red-500"
+        role="alert"
+      >
+        {projectInterface.error}
+      </p>{/if}
     {#if customizerLoadFailed}
       <div class="mt-4 flex flex-wrap items-center gap-3 text-sm" role="alert">
         <p>
@@ -455,7 +517,11 @@
         >
       </div>
     {/if}
-    <div class="session-content min-w-0 max-w-full py-7">
+    <div
+      class="session-content min-w-0 max-w-full py-7"
+      inert={projectInterface.pending}
+      aria-busy={projectInterface.pending}
+    >
       {#if page.url.pathname === `/sessions/${routeSessionId}`}
         {@render children()}
       {:else}
@@ -471,31 +537,20 @@
 {:else}<p class="text-red-500">
     {contextState.error || 'Project not found.'}
   </p>{/if}
-{#if contextState.session?.id === routeSessionId && GenerationDrawerComponent && contextState.session?.workflow_kind !== 'subtitles'}{#key routeSessionId}<GenerationDrawerComponent
-      sessionId={page.params.id ?? ''}
-      workflowKind={contextState.session?.workflow_kind ?? 'audiobook'}
-    />{/key}{/if}
-{#if contextState.session && !GenerationDrawerComponent && !drawerLoadFailed && contextState.session.workflow_kind !== 'subtitles'}
-  <div
-    class="surface fixed inset-x-3 bottom-3 z-40 rounded-2xl border border-[var(--line)] px-4 py-4 text-sm md:left-[calc(var(--sidebar-offset,5rem)+.35rem)] md:right-[.35rem]"
-    role="status"
-  >
-    Loading generation controls…
-  </div>
-{/if}
-{#if contextState.session && drawerLoadFailed && contextState.session.workflow_kind !== 'subtitles'}
-  <div
-    class="surface fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-2xl flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--line)] p-4 text-sm shadow-lg"
-    role="alert"
-  >
-    <p>
-      Audio controls couldn’t load. Save any open edits, then reload this page.
-    </p>
-    <button class="btn btn-secondary" onclick={reloadPage}>Reload page</button>
-  </div>
+{#if contextState.session?.id === routeSessionId && contextState.session.workflow_kind !== 'subtitles'}
+  {#key routeSessionId}
+    <GenerationStatusBar
+      sessionId={routeSessionId}
+      workspaceVisible={active('/generation')}
+    />
+  {/key}
 {/if}
 
 <style>
+  .interface-active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
   .session-tabs {
     display: none;
     position: sticky;

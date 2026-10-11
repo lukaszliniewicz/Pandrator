@@ -9,6 +9,7 @@ from sqlalchemy import and_, case, func, select
 
 from .database import Database
 from .models import (
+    Artifact,
     GenerationPlan,
     GenerationPlanRevision,
     GenerationRun,
@@ -29,6 +30,7 @@ class GenerationActivitySummary(BaseModel):
 class GenerationSummary(BaseModel):
     session_id: str
     plan_revision_id: str | None
+    plan_source_role: str | None = None
     total: int = Field(description="All blocks in the active plan, including excluded blocks.")
     included_total: int = Field(description="Nonexcluded blocks in the active plan.")
     active_run: GenerationActivitySummary | None
@@ -62,8 +64,11 @@ def _activity(
 def get_generation_summary(database: Database, session_id: str) -> dict[str, Any]:
     """Read one snapshot without hydrating plans, histories, takes or artifacts."""
     with database.snapshot_session() as db:
+        source_artifact_id = GenerationPlanRevision.settings_json[
+            "_source_artifact_id"
+        ].as_string()
         header = db.execute(
-            select(SessionRecord.id, GenerationPlanRevision.id)
+            select(SessionRecord.id, GenerationPlanRevision.id, Artifact.role)
             .outerjoin(GenerationPlan, GenerationPlan.session_id == SessionRecord.id)
             .outerjoin(
                 GenerationPlanRevision,
@@ -72,11 +77,23 @@ def get_generation_summary(database: Database, session_id: str) -> dict[str, Any
                     GenerationPlanRevision.plan_id == GenerationPlan.id,
                 ),
             )
+            .outerjoin(
+                Artifact,
+                and_(
+                    Artifact.id == source_artifact_id,
+                    Artifact.session_id == SessionRecord.id,
+                    func.json_type(
+                        GenerationPlanRevision.settings_json,
+                        "$._source_artifact_id",
+                    ) == "text",
+                ),
+            )
             .where(SessionRecord.id == session_id, SessionRecord.trashed_at.is_(None))
         ).one_or_none()
         if header is None:
             raise KeyError(session_id)
         plan_revision_id = header[1]
+        plan_source_role = header[2]
         total, included_total = 0, 0
         if plan_revision_id is not None:
             counts = db.execute(
@@ -122,6 +139,7 @@ def get_generation_summary(database: Database, session_id: str) -> dict[str, Any
         return GenerationSummary(
             session_id=session_id,
             plan_revision_id=plan_revision_id,
+            plan_source_role=plan_source_role,
             total=total,
             included_total=included_total,
             active_run=_activity(*run) if run is not None else None,

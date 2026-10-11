@@ -107,6 +107,11 @@ def _snapshot(
         "segmentation": audiobook_chunk_budget(
             text_effective, tts_effective, str(record.source_language or "en")
         ),
+        "model_default_segmentation": audiobook_chunk_budget(
+            {**text_effective, "audiobook_chunking": "model"},
+            tts_effective,
+            str(record.source_language or "en"),
+        ),
         "tts": {
             "service": str(
                 tts_effective.get("service")

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from .application_requests import ApplicationRequests
+
+# Large generation histories need several guarded SQLite cascade rehearsals.
+_PURGE_PREVIEW_TIMEOUT_SECONDS = 300.0
+_PURGE_TIMEOUT_SECONDS = 900.0
 
 
 class ApplicationSessionMethods(ApplicationRequests):
@@ -49,7 +53,36 @@ class ApplicationSessionMethods(ApplicationRequests):
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}")
 
     def preview_session_deletion(self, session_id: str) -> dict[str, Any]:
-        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/purge-preview")
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/purge-preview",
+            request_timeout_seconds=max(self.timeout_seconds, _PURGE_PREVIEW_TIMEOUT_SECONDS),
+            request_timeout_limit_seconds=1200.0,
+        )
+
+    def admit_session_purge_inspection(
+        self, session_id: str, *, idempotency_key: str
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/purge-inspections",
+            method="POST", body={}, idempotency_key=idempotency_key,
+        )
+
+    def get_session_purge_inspection(self, job_id: str) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/purge-inspections/{quote(job_id, safe='')}"
+        )
+
+    def admit_session_purge(
+        self, session_id: str, *, expected_revision: int,
+        impact_token: str, idempotency_key: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/purge-admissions",
+            method="POST",
+            body={"expected_revision": expected_revision,
+                  "impact_token": impact_token, "confirm": True},
+            idempotency_key=idempotency_key,
+        )
 
     def delete_session_permanently(
         self,
@@ -65,6 +98,8 @@ class ApplicationSessionMethods(ApplicationRequests):
                 "expected_revision": expected_revision,
                 "impact_token": impact_token,
             },
+            request_timeout_seconds=max(self.timeout_seconds, _PURGE_TIMEOUT_SECONDS),
+            request_timeout_limit_seconds=1200.0,
         )
 
     def get_session_trash_policy(self) -> dict[str, Any]:
@@ -193,6 +228,7 @@ class ApplicationSessionMethods(ApplicationRequests):
         workflow_preset: str,
         included_stages: tuple[str, ...],
         idempotency_key: str,
+        interface_mode: Literal["simple", "advanced"] = "simple",
         multilingual_setup: Any = None,
     ) -> dict[str, Any]:
         return self._request_json(
@@ -201,6 +237,7 @@ class ApplicationSessionMethods(ApplicationRequests):
             body={
                 "name": name,
                 "workflow_kind": workflow_kind,
+                "interface_mode": interface_mode,
                 "source_language": source_language,
                 "target_language": target_language,
                 "workflow_preset": workflow_preset,

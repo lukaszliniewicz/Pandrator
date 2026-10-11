@@ -117,6 +117,24 @@ def performance_paths() -> dict:
                             "default": 50,
                         },
                     },
+                    {
+                        "name": "view",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "enum": ["summary", "annotations", "full"],
+                            "default": "full",
+                        },
+                        "description": "summary returns plan metadata; annotations returns compact speech-text units; full preserves the legacy representation.",
+                    },
+                    {
+                        "name": "include_units",
+                        "in": "query",
+                        "schema": {
+                            "type": "boolean",
+                            "default": bool(suffix),
+                        },
+                    },
                 ]
             )
             if not suffix:
@@ -127,6 +145,54 @@ def performance_paths() -> dict:
                         "schema": {"type": "string", "maxLength": 80},
                     }
                 )
+            else:
+                parameters.extend(
+                    [
+                        {
+                            "name": "filter",
+                            "in": "query",
+                            "schema": {
+                                "type": "string",
+                                "enum": [
+                                    "all",
+                                    "directed",
+                                    "unreviewed",
+                                    "locked",
+                                    "dialogue",
+                                    "unresolved",
+                                ],
+                                "default": "all",
+                            },
+                        },
+                        {
+                            "name": "segment_ids",
+                            "in": "query",
+                            "style": "form",
+                            "explode": False,
+                            "schema": {"type": "string", "maxLength": 8099},
+                            "description": "Comma-separated, unique segment IDs from this plan; at most 100 IDs.",
+                        },
+                    ]
+                )
+        elif method == "post" and not suffix and schema:
+            parameters.extend(
+                [
+                    {
+                        "name": "view",
+                        "in": "query",
+                        "schema": {
+                            "type": "string",
+                            "enum": ["summary", "annotations", "full"],
+                            "default": "full",
+                        },
+                    },
+                    {
+                        "name": "include_units",
+                        "in": "query",
+                        "schema": {"type": "boolean", "default": True},
+                    },
+                ]
+            )
         operation = {
             "operationId": name,
             "summary": name,

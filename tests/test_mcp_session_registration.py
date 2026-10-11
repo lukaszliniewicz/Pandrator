@@ -97,6 +97,7 @@ CASES = [
         {
             "name": "Fixture",
             "workflow_kind": "audiobook",
+            "interface_mode": "simple",
             "source_language": "auto",
             "target_language": None,
             "workflow_preset": "custom",
@@ -458,6 +459,7 @@ def test_native_session_nested_setup_boundaries(
         {
             "name": "Fixture",
             "workflow_kind": "audiobook",
+            "interface_mode": "simple",
             "source_language": "auto",
             "target_language": None,
             "workflow_preset": "custom",

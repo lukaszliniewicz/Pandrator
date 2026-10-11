@@ -17,6 +17,8 @@ class ListPerformancePlansInput(PerformanceSessionInput):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=25, ge=1, le=100)
     plan_revision_id: str | None = Field(default=None, min_length=1, max_length=80)
+    view: Literal["summary", "annotations", "full"] = "summary"
+    include_units: bool = False
 
 
 class PerformancePlanInput(PerformanceSessionInput):
@@ -25,11 +27,24 @@ class PerformancePlanInput(PerformanceSessionInput):
 
 class GetPerformancePlanInput(PerformancePlanInput):
     include_units: bool = False
+    view: Literal["summary", "annotations", "full"] = "annotations"
+    segment_ids: list[str] | None = Field(default=None, max_length=100)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=25, ge=1, le=100)
     filter: Literal[
         "all", "directed", "unreviewed", "locked", "dialogue", "unresolved"
     ] = "all"
+
+    @model_validator(mode="after")
+    def unique_segment_ids(self):
+        if self.segment_ids is not None:
+            if not self.segment_ids:
+                raise ValueError("segment_ids must contain between 1 and 100 IDs.")
+            if len(set(self.segment_ids)) != len(self.segment_ids):
+                raise ValueError("segment_ids must contain unique IDs.")
+            if any(not value or len(value) > 80 for value in self.segment_ids):
+                raise ValueError("Each segment ID must contain 1–80 characters.")
+        return self
 
 
 class PerformanceWriteInput(PerformancePlanInput):

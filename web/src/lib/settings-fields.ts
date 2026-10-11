@@ -466,6 +466,7 @@ const SETTING_ORDER: Record<string, string[]> = {
   ],
   output: [
     'export_mode',
+    'include_sounds',
     'audio_match_source_duration',
     'format',
     'bitrate',
@@ -868,6 +869,10 @@ export function numberPresentation(key: string): NumberPresentation {
     speech_block_regroup_max_boundary_shift_ms: { min: 0, max: 2000, step: 10 },
     temperature: { min: 0, max: 2, step: 0.05 },
     fishs2_temperature: { min: 0, max: 2, step: 0.05 },
+    fishs2_max_new_tokens: { min: 1, max: 8192, step: 1 },
+    fishs2_top_k: { min: 0, max: 500, step: 1 },
+    fishs2_min_tokens_before_end: { min: 0, max: 8192, step: 1 },
+    fishs2_n_threads: { min: 0, max: 512, step: 1 },
     chatterbox_temperature: { min: 0, max: 2, step: 0.05 },
     azure_speech_style_degree: { min: 0.01, max: 2, step: 0.01 }
   };

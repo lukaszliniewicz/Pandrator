@@ -20,11 +20,11 @@ from ..work_mapping import application_work_reference
 
 def performance_action(runtime: McpRuntime, action: str, arguments) -> ToolOutcome:
     values = arguments.model_dump(mode="json", exclude_none=True)
-    for field in ("packet_format", "known_manifest_hash", "include_units"):
+    for field in ("packet_format", "known_manifest_hash"):
         values.pop(field, None)
     payload = runtime.require_application().performance_plan_request(action, values)
     projected = dict(payload)
-    if action in {"create", "get"} and not arguments.include_units:
+    if action == "create" and not arguments.include_units:
         for field in ("items", "offset", "limit", "filter"):
             projected.pop(field, None)
     if action == "claim" and arguments.packet_format == "compact":
@@ -56,12 +56,23 @@ def performance_action(runtime: McpRuntime, action: str, arguments) -> ToolOutco
         action in {"create", "edit", "analyse"}
         or (action == "claim" and payload.get("batch") is None and payload.get("complete") is True)
     ) and plan_id:
+        get_arguments = {
+            "session_id": arguments.session_id,
+            "plan_id": plan_id,
+            "view": "annotations",
+            "include_units": True,
+            "offset": 0,
+            "limit": 25,
+        }
+        if action == "edit":
+            affected_ids = [item.segment_id for item in arguments.items]
+            get_arguments["segment_ids"] = affected_ids
+            get_arguments["limit"] = len(affected_ids)
         next_actions.append(
             NextAction(
                 tool="pandrator_get_performance_plan",
-                arguments={"session_id": arguments.session_id, "plan_id": plan_id,
-                           "include_units": True},
-                reason="Inspect the completed annotations and current version before previewing or adopting them.",
+                arguments=get_arguments,
+                reason="Inspect the affected annotations, or one bounded page, and the current version before previewing or adopting.",
             )
         )
     work = None
@@ -86,15 +97,9 @@ def register_performance_tools(
             return performance_action(current_runtime, action, arguments)
 
         def invoke(**values) -> dict[str, Any]:
-            response_mode = (
-                values.pop("response_mode", "standard")
-                if action in {"claim", "create", "get"}
-                else "standard"
-            )
+            response_mode = values.pop("response_mode", "standard")
             envelope = validated_call(handle, runtime, model, values)
-            if action in {"claim", "create", "get"}:
-                return response(envelope, response_mode)
-            return envelope
+            return response(envelope, response_mode)
 
         parameters = []
         annotations: dict[str, object] = {"return": dict[str, Any]}
@@ -114,17 +119,16 @@ def register_performance_tools(
                     default=inspect.Parameter.empty if field.is_required() else field.default,
                 )
             )
-        if action in {"claim", "create", "get"}:
-            annotation = Literal["standard", "structured"]
-            annotations["response_mode"] = annotation
-            parameters.append(
-                inspect.Parameter(
-                    "response_mode",
-                    inspect.Parameter.KEYWORD_ONLY,
-                    annotation=annotation,
-                    default="standard",
-                )
+        annotation = Literal["standard", "structured"]
+        annotations["response_mode"] = annotation
+        parameters.append(
+            inspect.Parameter(
+                "response_mode",
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=annotation,
+                default="standard",
             )
+        )
         invoke.__name__ = name
         invoke.__doc__ = (
             title

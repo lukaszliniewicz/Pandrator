@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, StrictBool, field_validator
 
 from .common import ToolInput
 
@@ -24,13 +24,22 @@ class SessionPurgeInput(ToolInput):
 
 
 class PreviewSessionDeletionInput(SessionPurgeInput):
-    pass
+    admission: StrictBool = True
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=200,
+                                        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
 
 
 class DeleteSessionPermanentlyInput(SessionPurgeInput):
     expected_revision: int = Field(ge=0)
     impact_token: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
     confirm: Literal[True]
+    admission: StrictBool = True
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=200,
+                                        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
+
+
+class GetSessionPurgeInspectionInput(ToolInput):
+    job_id: str = Field(min_length=1, max_length=80)
 
 
 class GetSessionTrashPolicyInput(ToolInput):
@@ -45,6 +54,7 @@ class UpdateSessionTrashPolicyInput(ToolInput):
 SESSION_PURGE_INPUT_MODELS = (
     PreviewSessionDeletionInput,
     DeleteSessionPermanentlyInput,
+    GetSessionPurgeInspectionInput,
     GetSessionTrashPolicyInput,
     UpdateSessionTrashPolicyInput,
 )
@@ -52,6 +62,7 @@ SESSION_PURGE_INPUT_MODELS = (
 
 __all__ = [
     "DeleteSessionPermanentlyInput",
+    "GetSessionPurgeInspectionInput",
     "GetSessionTrashPolicyInput",
     "PreviewSessionDeletionInput",
     "SESSION_PURGE_INPUT_MODELS",

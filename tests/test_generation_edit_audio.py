@@ -1,12 +1,24 @@
 """Editing and regenerating during an immutable run must not lose audio."""
+import threading
 from unittest.mock import patch
 
 import pytest
 from pydub import AudioSegment
-from sqlalchemy import select
+from sqlalchemy import event, select
 
+from pandrator.web.generation_edit_audio import capture_selection_guards
+from pandrator.web.generation_run_selection import resolve_generation_run_take_ids
 from pandrator.web.jobs import Worker
-from pandrator.web.models import GenerationPlanRevision, GenerationRun, Job
+from pandrator.web.models import (
+    Artifact,
+    AudioTake,
+    GenerationPlanRevision,
+    GenerationRun,
+    GenerationSegment,
+    Job,
+    OutputAssembly,
+)
+from pandrator.web.workflow_generation_finalization import finalize_generation_run
 
 
 @pytest.fixture
@@ -49,6 +61,65 @@ def execute(case, run, ids=None, operation=None):
     with case.database.session() as session:
         session.get(Job, run["job_id"]).status = "succeeded"
     return result, calls
+
+
+def test_capture_selection_guards_uses_narrow_take_queries(case):
+    _foreign_session_id, foreign_ids = case._create_session_with_plan()
+    with case.database.session() as session:
+        revision_id = session.get(GenerationSegment, case.segment_ids[0]).plan_revision_id
+        session.get(GenerationSegment, case.segment_ids[2]).removed = True
+        active_artifact = Artifact(kind="audio", relative_path="guards-active.wav")
+        inactive_artifact = Artifact(kind="audio", relative_path="guards-inactive.wav")
+        session.add_all((active_artifact, inactive_artifact))
+        session.flush()
+        session.add_all((
+            AudioTake(
+                generation_segment_id=case.segment_ids[0],
+                artifact_id=active_artifact.id, is_active=True, revision=7,
+            ),
+            AudioTake(
+                generation_segment_id=case.segment_ids[0],
+                artifact_id=inactive_artifact.id, is_active=False, revision=3,
+            ),
+            AudioTake(
+                generation_segment_id=case.segment_ids[2],
+                artifact_id=inactive_artifact.id, is_active=True, revision=9,
+            ),
+            AudioTake(
+                generation_segment_id=foreign_ids[0],
+                artifact_id=inactive_artifact.id, is_active=True, revision=11,
+            ),
+        ))
+
+    statements = []
+
+    def capture_sql(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(" ".join(statement.split()))
+
+    event.listen(case.database.engine, "before_cursor_execute", capture_sql)
+    try:
+        with case.database.session() as session:
+            guards = capture_selection_guards(session, revision_id)
+    finally:
+        event.remove(case.database.engine, "before_cursor_execute", capture_sql)
+
+    assert guards == {
+        case.segment_ids[0]: {"artifact_id": active_artifact.id, "revision": 7},
+        case.segment_ids[1]: {"artifact_id": None, "revision": None},
+        case.segment_ids[2]: {"artifact_id": inactive_artifact.id, "revision": 9},
+    }
+    assert len(statements) == 2
+    segment_query, take_query = statements
+    assert segment_query.split(" FROM ", 1)[0] == "SELECT generation_segments.id"
+    assert take_query.split(" FROM ", 1)[0] == (
+        "SELECT audio_takes.generation_segment_id, audio_takes.artifact_id, "
+        "audio_takes.revision, audio_takes.is_active"
+    )
+    assert "FROM audio_takes" in take_query
+    assert "JOIN" not in take_query.upper()
+    assert "audio_takes.generation_segment_id IN" in take_query
+    assert "audio_takes.is_active" not in take_query.split(" WHERE ", 1)[1]
 
 
 def test_repeated_edits_keep_stale_take_and_late_regeneration(case):
@@ -604,3 +675,202 @@ def test_interrupting_a_targeted_output_does_not_expand_resume_to_full_plan(case
     with case._fake_tts(calls, [], batch_size=1) as handlers:
         case._run_job(handlers, resume_payload)
     assert calls == ["Two"], "The unrequested third block must not be synthesized"
+
+
+def test_standalone_partial_run_pins_guarded_audio_through_later_selection(case):
+    original = case._start()
+    execute(case, original)
+    edited = edit(case, 0, "Edited one")
+    current = page(case)
+    partial = case._start(
+        operation="regenerate",
+        segment_ids=[edited["id"]],
+        speech_plan_revision_id=current["plan_revision_id"],
+    )
+    result, calls = execute(case, partial, [edited["id"]], "regenerate")
+    assert result["generated"] == 1
+    assert calls == ["Edited one"]
+
+    generation = case.app.extensions["pandrator"]["generation"]
+    handlers = case.app.extensions["pandrator"]["workflow_handlers"]
+    with case.database.session() as session:
+        selected_run = session.get(GenerationRun, partial["id"])
+        selected_take_ids = resolve_generation_run_take_ids(session, selected_run)
+        requested_ids = selected_run.settings_snapshot_json[
+            "generation_request_segment_ids"
+        ]
+        guards = selected_run.settings_snapshot_json["generation_selection_guards"]
+        assert set(selected_take_ids) == set(current_row["id"] for current_row in current["items"])
+        assert set(requested_ids) == {edited["id"]}
+        assert session.scalar(
+            select(AudioTake.id).where(
+                AudioTake.id == selected_take_ids[edited["id"]],
+                AudioTake.generation_run_id == partial["id"],
+            )
+        )
+
+        untouched_id = next(
+            row["id"] for row in current["items"] if row["id"] != edited["id"]
+        )
+        guard_artifact_id = guards[untouched_id]["artifact_id"]
+        guarded_clone = session.scalar(
+            select(AudioTake)
+            .where(
+                AudioTake.generation_segment_id == untouched_id,
+                AudioTake.artifact_id == guard_artifact_id,
+                AudioTake.generation_run_id.is_(None),
+                AudioTake.status.in_(("completed", "stale")),
+            )
+            .order_by(AudioTake.created_at.desc(), AudioTake.id.desc())
+        )
+        assert guarded_clone is not None
+        guarded_clone.revision += 10
+        for take in session.scalars(
+            select(AudioTake).where(AudioTake.generation_segment_id == untouched_id)
+        ):
+            take.is_active = False
+
+        later_run = GenerationRun(
+            session_id=selected_run.session_id,
+            plan_revision_id=selected_run.plan_revision_id,
+            sequence_number=selected_run.sequence_number + 1,
+            status="completed",
+        )
+        later_artifact = Artifact(
+            session_id=selected_run.session_id,
+            kind="audio",
+            relative_path="later-selection.wav",
+        )
+        session.add_all((later_run, later_artifact))
+        session.flush()
+        later_take = AudioTake(
+            generation_segment_id=untouched_id,
+            generation_run_id=later_run.id,
+            artifact_id=later_artifact.id,
+            status="completed",
+            is_active=True,
+        )
+        session.add(later_take)
+        session.flush()
+        frozen_ids = dict(selected_take_ids)
+        later_take_id = later_take.id
+
+    selected_page = generation.list_segments(
+        case.session_id,
+        generation_run_id=partial["id"],
+        take_history="selected",
+    )
+    effective_ids = {
+        item["id"]: item["effective_take"]["id"]
+        for item in selected_page["items"]
+        if item["effective_take"] is not None
+    }
+    assert effective_ids == frozen_ids
+    untouched_item = next(
+        item for item in selected_page["items"] if item["id"] == untouched_id
+    )
+    assert untouched_item["active_take_id"] == later_take_id
+    assert untouched_item["history_take_id"] == frozen_ids[untouched_id]
+
+    queued = generation.create_assembly(
+        case.session_id,
+        generation_run_id=partial["id"],
+        run_override={"output": {"format": "wav"}},
+    )
+    assembled = handlers.assemble_generation_output(
+        {"output_assembly_id": queued["id"]},
+        lambda *_args: None,
+        threading.Event(),
+    )
+    assert assembled["artifact_id"]
+    with case.database.session() as session:
+        assembly = session.get(OutputAssembly, queued["id"])
+        assert assembly.status == "completed"
+        manifest_ids = {
+            entry["segment_id"]: entry["take_id"]
+            for entry in assembly.settings_json["takes"]
+        }
+    assert manifest_ids == frozen_ids
+
+
+def test_failed_requested_regeneration_is_missing_and_finalizes_partial(case):
+    original = case._start()
+    execute(case, original)
+    edited = edit(case, 0, "Edited one")
+    current = page(case)
+    partial = case._start(
+        operation="regenerate",
+        segment_ids=[edited["id"]],
+        speech_plan_revision_id=current["plan_revision_id"],
+    )
+
+    with case.database.session() as session:
+        run = session.get(GenerationRun, partial["id"])
+        requested_id = run.settings_snapshot_json["generation_request_segment_ids"][0]
+        guards = run.settings_snapshot_json["generation_selection_guards"]
+        assert guards[requested_id]["artifact_id"]
+        selected = resolve_generation_run_take_ids(session, run)
+        assert requested_id not in selected
+        assert set(selected) == {
+            row["id"] for row in current["items"] if row["id"] != requested_id
+        }
+        for segment_id in selected:
+            session.get(GenerationSegment, segment_id).status = "completed"
+        session.get(GenerationSegment, requested_id).status = "completed"
+
+    final_status, incomplete = finalize_generation_run(
+        case.database,
+        run_id=partial["id"],
+        output_run_id=partial["id"],
+        plan_revision_id=current["plan_revision_id"],
+        operation="regenerate",
+        repair_requested=False,
+    )
+    assert (final_status, incomplete) == ("partial", 1)
+
+
+def test_partial_run_ignores_cross_plan_and_unguarded_clones(case):
+    original = case._start()
+    execute(case, original)
+    edited = edit(case, 0, "Edited one")
+    current = page(case)
+    partial = case._start(
+        operation="regenerate",
+        segment_ids=[edited["id"]],
+        speech_plan_revision_id=current["plan_revision_id"],
+    )
+    foreign_session_id, foreign_segment_ids = case._create_session_with_plan()
+
+    with case.database.session() as session:
+        run = session.get(GenerationRun, partial["id"])
+        snapshot = dict(run.settings_snapshot_json)
+        guards = dict(snapshot["generation_selection_guards"])
+        requested_id = snapshot["generation_request_segment_ids"][0]
+        untouched_ids = [
+            row["id"] for row in current["items"] if row["id"] != requested_id
+        ]
+        cross_plan_target, unguarded_target = untouched_ids
+        foreign_artifact = Artifact(
+            session_id=foreign_session_id,
+            kind="audio",
+            relative_path="foreign-baseline.wav",
+        )
+        session.add(foreign_artifact)
+        session.flush()
+        session.add(
+            AudioTake(
+                generation_segment_id=foreign_segment_ids[0],
+                artifact_id=foreign_artifact.id,
+                status="completed",
+                is_active=True,
+            )
+        )
+        guards[cross_plan_target] = {"artifact_id": foreign_artifact.id, "revision": 1}
+        guards.pop(unguarded_target)
+        run.settings_snapshot_json = {
+            **snapshot,
+            "generation_selection_guards": guards,
+        }
+        selected = resolve_generation_run_take_ids(session, run)
+
+    assert selected == {}

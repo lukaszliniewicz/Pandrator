@@ -7,10 +7,12 @@ passed to a synthesis provider unchanged.
 
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 
 import regex
@@ -43,14 +45,39 @@ _ELEMENT_ATTRIBUTES = {
     "speaker": frozenset({"ref", "n", "g", "voice"}),
     "narrator": frozenset({"voice"}),
     "span": frozenset({"id", "voice"}),
-    "event": frozenset({"kind", "duration_ms"}),
+    "event": frozenset({"kind", "duration_ms", "affinity"}),
     "ins": frozenset(),
-    "em": frozenset(),
+    "em": frozenset({"intensity"}),
     "pace": frozenset(),
     "cadence": frozenset(),
     "emphasis": frozenset(),
 }
 _LEAF_TAGS = frozenset({"event", *_CONTROL_TAGS})
+
+
+def speech_markup_reference() -> dict[str, Any]:
+    """Return the current parser vocabulary and bounded authoring contract."""
+
+    return {
+        "root_tag": "segment",
+        "element_tags": sorted(_ELEMENT_TAGS),
+        "element_attributes": {
+            tag: sorted(attributes)
+            for tag, attributes in sorted(_ELEMENT_ATTRIBUTES.items())
+        },
+        "control_tags": dict(_CONTROL_FIELDS),
+        "voice_categories": list(VOICE_CATEGORIES),
+        "boundaries": sorted(_BOUNDARIES),
+        "delivery_schema": Delivery.model_json_schema(),
+        "vocal_event_schema": VocalEvent.model_json_schema(),
+        "limits": {
+            "xml_bytes": _MAX_XML_BYTES,
+            "nodes": _MAX_NODES,
+            "depth": _MAX_DEPTH,
+            "delivery_spans": 32,
+            "events": 16,
+        },
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,13 +111,31 @@ class SpeechMarkupEvent:
     offset: int
     kind: str
     duration_ms: int | None
+    affinity: str = "following"
 
     def public(self) -> dict[str, Any]:
         return {
             "offset": self.offset,
             "kind": self.kind,
             "duration_ms": self.duration_ms,
+            "affinity": self.affinity,
         }
+
+
+def event_in_range(
+    event: SpeechMarkupEvent, start: int, end: int, transcript_length: int
+) -> bool:
+    """Assign a boundary event to one adjacent nonempty text range."""
+
+    if start >= end:
+        return False
+    if event.offset == 0:
+        return start == 0
+    if event.offset == transcript_length:
+        return end == transcript_length
+    if event.affinity == "previous":
+        return start < event.offset <= end
+    return start <= event.offset < end
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +146,7 @@ class ParsedSpeechMarkup:
     events: tuple[SpeechMarkupEvent, ...]
     xml: str
     boundary_after: str | None
+    root_delivery: dict[str, Any] = dataclass_field(default_factory=dict)
 
     def public(self) -> dict[str, Any]:
         return {
@@ -349,6 +395,8 @@ def _prepare_tree(root: ET.Element, catalog: tuple[_Character, ...]) -> None:
                 raise _error("<event> cannot contain children")
             if "kind" not in element.attrib:
                 raise _error("<event> requires kind")
+            if element.attrib.get("affinity", "following") not in {"previous", "following"}:
+                raise _error("event affinity must be previous or following")
             duration = element.attrib.get("duration_ms")
             if duration is not None:
                 if not re.fullmatch(r"[0-9]+", duration):
@@ -364,6 +412,15 @@ def _prepare_tree(root: ET.Element, catalog: tuple[_Character, ...]) -> None:
                 raise _error(f"invalid event: {exc}") from exc
             if duration is not None:
                 element.attrib["duration_ms"] = str(duration_value)
+        if tag == "em" and "intensity" in element.attrib:
+            intensity = element.attrib["intensity"]
+            if not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", intensity):
+                raise _error("<em> intensity must be a finite decimal number from 0 to 2")
+            numeric_intensity = float(intensity)
+            if not math.isfinite(numeric_intensity) or not 0 <= numeric_intensity <= 2:
+                raise _error("<em> intensity must be a finite decimal number from 0 to 2")
+            if not (element.text or "").strip():
+                raise _error("<em> intensity requires a non-empty emotion")
         if tag in _CONTROL_TAGS and list(element):
             raise _error(f"<{tag}> must be a leaf control")
         if tag in _LEAF_TAGS:
@@ -383,18 +440,19 @@ def _prepare_tree(root: ET.Element, catalog: tuple[_Character, ...]) -> None:
 
 
 def _control_delivery(parent: dict[str, Any], element: ET.Element) -> dict[str, Any]:
-    controls: dict[str, str] = {}
+    controls: dict[str, ET.Element] = {}
     for child in element:
         tag = _local_tag(child.tag)
         if tag not in _CONTROL_TAGS:
             continue
         if tag in controls:
             raise _error(f"duplicate <{tag}> control in one scope")
-        controls[tag] = child.text or ""
+        controls[tag] = child
     if not controls:
         return dict(parent)
     values = dict(parent)
-    for tag, value in controls.items():
+    for tag, control in controls.items():
+        value = control.text or ""
         field = _CONTROL_FIELDS[tag]
         if field == "instruction":
             value = value.strip()
@@ -404,14 +462,27 @@ def _control_delivery(parent: dict[str, Any], element: ET.Element) -> dict[str, 
         elif field == "emotion":
             value = value.strip()
         values[field] = value
+        if tag == "em":
+            # An explicit emotion scope without an intensity resets any
+            # inherited intensity.  <em/> consequently clears both fields.
+            raw_intensity = control.attrib.get("intensity")
+            values["emotion_intensity"] = (
+                float(raw_intensity) if raw_intensity is not None else None
+            )
     try:
-        return Delivery.model_validate(values).model_dump(mode="json")
+        delivery = Delivery.model_validate(values).model_dump(mode="json")
+        # Keep the public parsed delivery map backward compatible when no
+        # intensity is authored.  Consumers can still use .get() to observe
+        # the effective None after an explicit <em> reset.
+        if delivery["emotion_intensity"] is None:
+            del delivery["emotion_intensity"]
+        return delivery
     except Exception as exc:
         raise _error(f"invalid delivery control: {exc}") from exc
 
 
 def _initial_delivery() -> dict[str, Any]:
-    return Delivery().model_dump(mode="json")
+    return Delivery().model_dump(mode="json", exclude={"emotion_intensity"})
 
 
 def _scope_for(
@@ -470,6 +541,8 @@ def _serialize(element: ET.Element) -> str:
         "n",
         "kind",
         "duration_ms",
+        "affinity",
+        "intensity",
     ):
         if key in element.attrib:
             attributes.append((key, element.attrib[key]))
@@ -574,6 +647,7 @@ def _extract(
                     offset,
                     element.attrib["kind"],
                     int(duration) if duration is not None else None,
+                    element.attrib.get("affinity", "following"),
                 )
             )
             return
@@ -640,6 +714,7 @@ def parse_speech_markup(
         events=events,
         xml=canonical,
         boundary_after=root.attrib.get("boundary_after"),
+        root_delivery=_control_delivery(_initial_delivery(), root),
     )
 
 
@@ -738,11 +813,11 @@ def assert_authored_markup_preserved(
 
     result_index = 0
     for source_event in source.events:
-        expected = (source_event.offset, source_event.kind, source_event.duration_ms)
+        expected = (source_event.offset, source_event.kind, source_event.duration_ms, source_event.affinity)
         while result_index < len(result.events):
             result_event = result.events[result_index]
             result_index += 1
-            actual = (result_event.offset, result_event.kind, result_event.duration_ms)
+            actual = (result_event.offset, result_event.kind, result_event.duration_ms, result_event.affinity)
             if actual == expected:
                 break
         else:
@@ -779,6 +854,11 @@ def _event_annotation(event: SpeechMarkupEvent, text: str) -> dict[str, Any]:
         position = "before"
     elif event.offset == len(text):
         anchor = None
+        position = "after"
+    elif event.affinity == "previous":
+        previous_matches = list(regex.finditer(r"\X", text[: event.offset]))
+        previous = previous_matches[-1]
+        anchor = _anchor(text, previous.group(0), previous.start())
         position = "after"
     else:
         next_match = regex.search(r"\X", text[event.offset :])
@@ -862,4 +942,5 @@ __all__ = [
     "markup_to_annotation",
     "parse_speech_markup",
     "plain_speech_markup",
+    "speech_markup_reference",
 ]

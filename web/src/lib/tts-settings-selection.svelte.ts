@@ -1,4 +1,5 @@
 import { type StageSettingsDraft } from './stage-settings-draft.svelte';
+import { elevenLabsVoiceSettingsError } from './elevenlabs-settings';
 import { languageSupportProblem } from './language-registry';
 import {
   hasPrebuiltVoices,
@@ -120,6 +121,64 @@ export class TtsSettingsSelection {
   supportsGenerationPrompt = $derived.by(() =>
     this.generationPromptModels.includes(this.draft.ttsModel.toLowerCase())
   );
+  selectedGoogle38Model = $derived.by(
+    () =>
+      ['gemini', 'vertex_ai'].includes(this.selectedTtsServiceId) &&
+      ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'].includes(
+        this.draft.ttsModel
+      )
+  );
+  supportsTextContext = $derived.by(
+    () =>
+      (this.selectedElevenLabs &&
+        [
+          'eleven_v4',
+          'eleven_multilingual_v2',
+          'eleven_flash_v2_5',
+          'eleven_turbo_v2_5'
+        ].includes(this.draft.ttsModel)) ||
+      (['gemini', 'vertex_ai'].includes(this.selectedTtsServiceId) &&
+        [
+          'gemini-3.8-flash-tts',
+          'gemini-3.8-flash-lite-tts',
+          'gemini-3.1-flash-tts-preview',
+          'gemini-2.5-flash-preview-tts',
+          'gemini-2.5-pro-preview-tts',
+          'gemini-2.5-flash-tts',
+          'gemini-2.5-pro-tts'
+        ].includes(this.draft.ttsModel))
+  );
+  selectedElevenLabs = $derived.by(
+    () =>
+      this.selectedTtsServiceId === 'elevenlabs' ||
+      this.selectedTtsService?.adapter === 'elevenlabs_native'
+  );
+  selectedElevenV4 = $derived.by(
+    () =>
+      this.selectedElevenLabs &&
+      ['eleven_v4', 'eleven_v4_turbo'].includes(this.draft.ttsModel)
+  );
+  elevenVoiceSettingsError = $derived.by(() =>
+    this.selectedElevenV4
+      ? elevenLabsVoiceSettingsError(
+          this.draft.ttsModel,
+          this.draft.elevenLabsVoiceSettings
+        )
+      : ''
+  );
+  invalidTextContext = $derived.by(
+    () =>
+      this.supportsTextContext &&
+      this.draft.ttsContextMode !== 'off' &&
+      [
+        [this.draft.performanceContextBefore, 20],
+        [this.draft.performanceContextAfter, 20],
+        [this.draft.performanceContextMaxChars, 16000]
+      ].some(
+        ([value, limit]) =>
+          !Number.isInteger(value) || value < 0 || value > limit
+      )
+  );
   invalidTtsConcurrency = $derived.by(
     () =>
       Boolean(this.selectedTtsService?.supports_parallel_synthesis) &&
@@ -233,6 +292,14 @@ export class TtsSettingsSelection {
     this.speechCatalogues.voices.flatMap((voice) => {
       const registration =
         voice?.metadata_json?.providers?.[this.selectedTtsServiceId];
+      if (
+        registration?.resource_kind === 'designed_voice' &&
+        (!this.selectedGoogle38Model ||
+          !this.selectedTtsService?.managed_google_voice_ids?.includes(
+            String(registration.voice_id)
+          ))
+      )
+        return [];
       return registration?.status === 'ready' && registration?.voice_id
         ? [String(registration.voice_id)]
         : [];

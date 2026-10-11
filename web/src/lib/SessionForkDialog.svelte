@@ -23,6 +23,7 @@
   );
   const defaultName = $derived(`${session.name} — ${stageLabel} fork`);
   let name = $state('');
+  let interfaceMode = $state<'simple' | 'advanced'>('advanced');
   let initialized = false;
   let submitting = $state(false);
   let carryMediaAssets = $state(true);
@@ -33,6 +34,7 @@
   $effect(() => {
     if (!initialized) {
       name = defaultName;
+      interfaceMode = session.interface_mode ?? 'advanced';
       initialized = true;
     }
   });
@@ -46,6 +48,7 @@
       const body = {
         checkpoint_artifact_id: artifactId,
         name: name.trim(),
+        interface_mode: interfaceMode,
         expected_revision: session.revision,
         carry_media_assets: carryMediaAssets
       };
@@ -121,6 +124,19 @@
         If that name already exists, Pandrator adds a number.
       </p>
 
+      <label class="mt-5 block text-sm font-semibold"
+        >Project interface
+        <select
+          bind:value={interfaceMode}
+          disabled={submitting}
+          class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5"
+        >
+          <option value="simple">Simple · progress, preview and output</option>
+          <option value="advanced"
+            >Advanced · editing and detailed controls</option
+          >
+        </select>
+      </label>
       <label class="mt-5 flex items-start gap-3 text-sm">
         <input type="checkbox" bind:checked={carryMediaAssets} class="mt-1" />
         <span>

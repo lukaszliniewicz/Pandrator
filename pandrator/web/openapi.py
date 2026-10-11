@@ -5,12 +5,15 @@ from __future__ import annotations
 import re
 
 from .audiobook_openapi import AUDIOBOOK_SCHEMAS, VOICE_SETUP_SCHEMAS, audiobook_paths
+from .comparison_export_openapi import COMPARISON_EXPORT_SCHEMAS, comparison_export_paths
 from .generation_control_openapi import (
     GENERATION_CONTROL_SCHEMAS,
     generation_control_paths,
 )
 from .generation_recast_openapi import GENERATION_RECAST_SCHEMAS, generation_recast_paths
+from .generation_review import PROJECTABLE_SEGMENT_FIELDS
 from .generation_summary import GenerationSummary
+from .google_voice_design_schemas import GoogleVoiceDesignCreate
 from .identity import ApplicationIdentityDocument
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
 from .project_export_bundle_routes import PROJECT_EXPORT_BUNDLE_SCHEMAS, project_export_bundle_paths
@@ -26,7 +29,9 @@ from .repair_batch_openapi import repair_batch_paths
 from .repair_batch_schemas import RepairBatchUndoRequest
 from .schemas import SCHEMA_MODELS
 from .session_flow_routes import FLOW_SCHEMAS, session_flow_paths
+from .session_purge_job_openapi import SESSION_PURGE_JOB_SCHEMAS, session_purge_job_paths
 from .session_purge_openapi import SESSION_PURGE_SCHEMAS, session_purge_paths
+from .sound_openapi import SOUND_SCHEMAS, sound_paths
 from .speech_selection_openapi import SPEECH_SELECTION_SCHEMAS, speech_selection_paths
 from .translation_project_routes import PROJECT_SCHEMAS, translation_project_paths
 from .voice_catalog_openapi import (
@@ -47,13 +52,17 @@ def build_openapi_document() -> dict:
         **PROJECT_SCHEMAS,
         **PROJECT_OPERATION_SCHEMAS,
         **PROJECT_EXPORT_BUNDLE_SCHEMAS,
+        **COMPARISON_EXPORT_SCHEMAS,
+        **SESSION_PURGE_JOB_SCHEMAS,
         **PERFORMANCE_SCHEMAS,
         **GENERATION_CONTROL_SCHEMAS,
         **GENERATION_RECAST_SCHEMAS,
         "GenerationSummary": GenerationSummary,
+        "GoogleVoiceDesignCreate": GoogleVoiceDesignCreate,
         **AUDIOBOOK_SCHEMAS,
         **VOICE_SETUP_SCHEMAS,
         **SPEECH_SELECTION_SCHEMAS,
+        **SOUND_SCHEMAS,
         **VOICE_CATALOG_SCHEMAS,
         "ApplicationIdentityDocument": ApplicationIdentityDocument,
         "RepairBatchUndoRequest": RepairBatchUndoRequest,
@@ -163,6 +172,17 @@ def build_openapi_document() -> dict:
                 "type": "array",
                 "items": {"type": "string"},
             },
+        },
+    }
+    schemas["GenerationAdmissionReceipt"] = {
+        "type": "object",
+        "required": ["id", "job_id", "session_id", "status", "stage", "speech_plan_revision_id", "request_id", "cancellable", "poll_after_ms"],
+        "properties": {
+            **{key: {"type": "string"} for key in ("id", "job_id", "session_id", "speech_plan_revision_id", "request_id")},
+            "status": {"type": "string", "const": "queued"},
+            "stage": {"type": "string", "const": "preparing"},
+            "cancellable": {"type": "boolean"},
+            "poll_after_ms": {"type": "integer", "minimum": 0},
         },
     }
     document = {
@@ -2988,6 +3008,12 @@ def build_openapi_document() -> dict:
                     "putCredential", "Auxiliary credential saved", "CredentialUpdate"
                 )
             },
+            "/api/v1/generation-operations/{operationId}": {
+                "get": operation("getGenerationOperation", "Stable preparation/synthesis state with optional terminal audio coverage"),
+            },
+            "/api/v1/generation-runs/{runId}/coverage": {
+                "get": operation("getGenerationRunCoverage", "Available selected audio and whole-plan readiness counts"),
+            },
             "/api/v1/pronunciations": {
                 "get": operation(
                     "listPronunciations", "Reviewable pronunciation library"
@@ -3203,6 +3229,19 @@ def build_openapi_document() -> dict:
                     },
                 },
             },
+            "/api/v1/sessions/{sessionId}/generation-admissions": {
+                "post": {
+                    **operation("admitGenerationRun", "Durable generation preparation queued", "GenerationStartRequest", "202"),
+                    "parameters": [idempotency_header(required=True)],
+                    "responses": {
+                        "202": {
+                            "description": "Stable preparation work handle; poll work and follow its child generation job.",
+                            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GenerationAdmissionReceipt"}}},
+                        },
+                        "409": {"description": "Inputs changed or retry identity conflicts."},
+                    },
+                },
+            },
             "/api/v1/sessions/{sessionId}/generation-runs": {
                 "get": {
                     **operation("listGenerationRuns", "Named generation runs"),
@@ -3230,6 +3269,10 @@ def build_openapi_document() -> dict:
                 ),
             },
             "/api/v1/generation-runs/{runId}": {
+                "get": {
+                    **operation("getGenerationRun", "Generation run by stable ID"),
+                    "parameters": [{"name": "view", "in": "query", "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"}}],
+                },
                 "delete": operation(
                     "deleteGenerationRun", "Generation run deleted", status="204"
                 )
@@ -3409,6 +3452,8 @@ def build_openapi_document() -> dict:
     paths.update(workflow_improvements_paths())
 
     mcp_scoped_operations = (
+        ("/api/v1/sessions/{sessionId}/generation-admissions", "post", "app.run"),
+        ("/api/v1/generation-runs/{runId}", "get", "app.read"),
         ("/api/v1/system/identity", "get", "app.read"),
         ("/api/v1/parameter-definitions", "get", "app.read"),
         ("/api/v1/capabilities", "get", "app.read"),
@@ -3691,12 +3736,53 @@ def build_openapi_document() -> dict:
     paths.update(project_export_bundle_paths())
     paths.update(performance_paths())
     paths.update(session_purge_paths())
+    paths.update(session_purge_job_paths())
+    paths.update(comparison_export_paths())
     paths.update(generation_control_paths())
     paths.update(generation_recast_paths())
     paths.update(audiobook_paths())
     paths.update(speech_selection_paths())
+    paths.update(sound_paths())
+    paths["/api/v1/sessions/{sessionId}/speech-plan/selection-context"] = {
+        "post": {
+            **operation(
+                "getSpeechSelectionContext",
+                "Current selected-text directions and compilation preview.",
+                "SpeechSelectionContextRequest",
+            ),
+            "security": [
+                {"cookieAuth": []},
+                {"bearerToken": []},
+                {"nativeOAuth": ["app.read"]},
+            ],
+            "parameters": [{
+                "name": "sessionId",
+                "in": "path",
+                "required": True,
+                "schema": {"type": "string", "format": "uuid"},
+            }],
+        },
+    }
     paths.update(voice_catalog_paths())
     extend_voice_lifecycle_paths(paths)
+    google_voice_design = operation(
+        "designGoogleVoice",
+        "Google voice creation queued",
+        "GoogleVoiceDesignCreate",
+        "202",
+    )
+    google_voice_design["parameters"] = [idempotency_header(required=True)]
+    google_voice_design["parameters"][0]["description"] = (
+        "Required for every caller. Reuse the same key and identical body to "
+        "receive the original job and voice."
+    )
+    google_voice_design["responses"]["409"] = {
+        "description": "Idempotency conflict or duplicate local voice name"
+    }
+    google_voice_design["responses"]["422"] = {
+        "description": "Invalid request or unavailable Google voice configuration"
+    }
+    paths["/api/v1/voices/design/google"] = {"post": google_voice_design}
     # Subtitle-first media and immutable speech-plan review operations.
     extra_operations = [
         ("/api/v1/sessions/{sessionId}/sources/subtitle-status", "get", "subtitleSourceStatus", None, "200"),
@@ -3769,11 +3855,31 @@ def build_openapi_document() -> dict:
     inspection = paths["/api/v1/sessions/{sessionId}/generation-segments"]["get"]
     inspection["parameters"].extend([
         {"name": "audio_version_side", "in": "query", "description": "Choose the exact before or after take map of a recast run.", "schema": {"type": "string", "enum": ["before", "after"], "default": "after"}},
+        {"name": "take_history", "in": "query", "description": "Return all take history or only the selected take for each segment. Default full preserves the legacy response.", "schema": {"type": "string", "enum": ["selected", "full"], "default": "full"}},
         {"name": "q", "in": "query", "description": "Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets.", "schema": {"type": "string", "maxLength": 4000}},
         {"name": "match_case", "in": "query", "schema": {"type": "boolean", "default": False}},
         {"name": "whole_word", "in": "query", "schema": {"type": "boolean", "default": False}},
         {"name": "text_field", "in": "query", "description": "Spoken text uses optimized_text when present, otherwise text.", "schema": {"type": "string", "enum": ["text", "spoken"], "default": "text"}},
         {"name": "boundary_flags", "in": "query", "description": "Filter nonremoved speech blocks by boundary-risk flags.", "schema": {"type": "boolean"}},
+    ])
+    inspection["parameters"].append({
+        "name": "segment_ids", "in": "query", "style": "form", "explode": False,
+        "schema": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": True,
+                   "items": {"type": "string"}},
+    })
+    for parameter in inspection["parameters"]:
+        if parameter["name"] == "fields":
+            parameter.update(style="form", explode=False, schema={
+                "type": "array", "minItems": 1, "maxItems": 40,
+                "items": {"type": "string", "enum": sorted(PROJECTABLE_SEGMENT_FIELDS)},
+            })
+        elif parameter["name"] == "view":
+            parameter["schema"] = {"type": "string", "enum": ["full", "compact", "provenance"], "default": "full"}
+    paths["/api/v1/sessions/{sessionId}/generation-runs"]["get"]["parameters"].extend([
+        {"name": "generation_run_id", "in": "query", "schema": {"type": "string"},
+         "description": "Look up one run owned by this session."},
+        {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100}},
+        {"name": "include_repairs", "in": "query", "schema": {"type": "boolean", "default": True}},
     ])
     inspection["parameters"].extend([
         {"name": name, "in": "query", "required": False, "schema": {"type": kind}}

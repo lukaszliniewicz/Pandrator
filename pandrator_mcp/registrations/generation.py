@@ -27,6 +27,7 @@ from ..schemas import (
     UpdateGenerationSegmentInput,
     UpdateGenerationSegmentsInput,
 )
+from ..schemas.generation_fields import GenerationSegmentField
 from ..tools import (
     assemble_generation_run,
     generate_speech_plan,
@@ -53,6 +54,7 @@ def register_generation_plan_tools(
     *,
     read_only: Any,
     write_action: Any,
+    response: Callable[..., Any] = lambda envelope, _mode: envelope,
 ) -> None:
     """Register plan inspection/preparation at its original inventory position."""
 
@@ -66,6 +68,8 @@ def register_generation_plan_tools(
         limit: Annotated[int, Field(ge=1, le=100)] = 20,
         include_repairs: bool = False,
         view: Literal["compact", "full"] = "compact",
+        generation_run_id: NativeNullableString = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """List generation runs for review or export selection.
 
@@ -73,7 +77,7 @@ def register_generation_plan_tools(
         run ID to select the original audio.
         """
 
-        return _call(
+        return response(_call(
             list_generation_runs,
             runtime,
             ListGenerationRunsInput(
@@ -81,8 +85,9 @@ def register_generation_plan_tools(
                 limit=limit,
                 include_repairs=include_repairs,
                 view=view,
+                generation_run_id=generation_run_id,
             ),
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_list_generation_segments",
@@ -96,16 +101,18 @@ def register_generation_plan_tools(
         generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
         plan_revision_id: NativeNullableString = None,
         view: Literal["full", "compact", "provenance"] = "full",
-        fields: list[str] | None = None,
+        fields: list[GenerationSegmentField] | None = None,
+        segment_ids: Annotated[list[str] | None, Field(min_length=1, max_length=100)] = None,
         end_ordinal: int | None = None,
         around_ordinal: int | None = None,
         source_cue_id: NativeNullableString = None,
         radius: Annotated[int, Field(ge=0, le=25)] = 2,
         audio_version_side: Literal["before", "after"] = "after",
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """List generation segments, assigned voices, takes, and text."""
 
-        return _call(
+        return response(_call(
             list_generation_segments,
             runtime,
             ListGenerationSegmentsInput(
@@ -116,22 +123,23 @@ def register_generation_plan_tools(
                 plan_revision_id=plan_revision_id,
                 view=view,
                 fields=fields,
+                segment_ids=segment_ids,
                 end_ordinal=end_ordinal,
                 around_ordinal=around_ordinal,
                 source_cue_id=source_cue_id,
                 radius=radius,
                 audio_version_side=audio_version_side,
             ),
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_get_speech_plan_status",
         title="Inspect speech-plan review status",
         annotations=read_only,
     )
-    def speech_plan_status_tool(session_id: str) -> dict[str, Any]:
+    def speech_plan_status_tool(session_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Inspect current text input, active plan compatibility, review state, and revision guards."""
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             speech_plan_status,
             runtime,
             SpeechPlanStatusInput,
@@ -140,7 +148,7 @@ def register_generation_plan_tools(
                 for key, value in locals().items()
                 if key in SpeechPlanStatusInput.model_fields
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_prepare_speech_plan",
@@ -153,9 +161,10 @@ def register_generation_plan_tools(
         source_artifact_id: str,
         idempotency_key: str,
         expected_plan_revision_id: NativeNullableString = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Deterministically rebuild speech blocks from the selected subtitle/text artifact without starting synthesis."""
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             prepare_speech_plan,
             runtime,
             PrepareSpeechPlanInput,
@@ -164,7 +173,7 @@ def register_generation_plan_tools(
                 for key, value in locals().items()
                 if key in PrepareSpeechPlanInput.model_fields
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_review_speech_plan",
@@ -173,9 +182,9 @@ def register_generation_plan_tools(
     )
     def review_speech_plan_tool(
         session_id: str, revision_id: str, content_signature: str, idempotency_key: str
-    ) -> dict[str, Any]:
+    , response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Record review only when the active plan still has the inspected content signature."""
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             review_speech_plan,
             runtime,
             ReviewSpeechPlanInput,
@@ -184,7 +193,7 @@ def register_generation_plan_tools(
                 for key, value in locals().items()
                 if key in ReviewSpeechPlanInput.model_fields
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_list_speech_plan_revisions",
@@ -193,9 +202,9 @@ def register_generation_plan_tools(
     )
     def speech_plan_revisions_tool(
         session_id: str, limit: int = 50, before_revision_number: int | None = None
-    ) -> dict[str, Any]:
+    , response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
         """Inspect automatic/manual revision history, ancestry and reusable/stale take counts."""
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             list_speech_plan_revisions,
             runtime,
             ListSpeechPlanRevisionsInput,
@@ -204,7 +213,7 @@ def register_generation_plan_tools(
                 for key, value in locals().items()
                 if key in ListSpeechPlanRevisionsInput.model_fields
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_revise_speech_block_plan_batch",
@@ -216,6 +225,7 @@ def register_generation_plan_tools(
         expected_revision_id: str,
         operations: list[dict[str, Any]],
         idempotency_key: str,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Apply up to 50 ordered split/merge edits atomically.
 
@@ -226,7 +236,7 @@ def register_generation_plan_tools(
         unique text, cue, sentence, or cursor. Labels expose label.left/right
         results. Ambiguity rolls back the entire batch.
         """
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             revise_speech_block_plan_batch,
             runtime,
             ReviseSpeechBlockPlanBatchInput,
@@ -235,7 +245,7 @@ def register_generation_plan_tools(
                 for key, value in locals().items()
                 if key in ReviseSpeechBlockPlanBatchInput.model_fields
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_generate_speech_plan",
@@ -247,10 +257,21 @@ def register_generation_plan_tools(
         speech_plan_revision_id: str,
         idempotency_key: str,
         stale_only: bool = False,
+        missing_only: bool = False,
         view: Literal["compact", "full"] = "compact",
+        admission: bool = True,
+        settings_source: Literal["current", "matching_run", "run"] = "current",
+        settings_source_run_id: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
-        """Generate exactly the active selected revision without rebuilding topology. A stale revision is rejected; stale_only retains unchanged completed audio."""
-        return _call_with_validated_input(
+        """Generate the selected speech-plan revision using current project settings by default.
+
+        stale_only and missing_only are mutually exclusive. Use settings_source='matching_run'
+        to evaluate the selection with the latest compatible non-RVC run's frozen settings,
+        or settings_source='run' with settings_source_run_id to replay a specific immutable
+        settings snapshot. A missing matching run fails instead of falling back to current.
+        """
+        return response(_call_with_validated_input(
             generate_speech_plan,
             runtime,
             GenerateSpeechPlanInput,
@@ -259,7 +280,7 @@ def register_generation_plan_tools(
                 for key, value in locals().items()
                 if key in GenerateSpeechPlanInput.model_fields
             },
-        )
+        ), response_mode)
 
 
 def register_generation_execution_tools(
@@ -270,6 +291,7 @@ def register_generation_execution_tools(
     *,
     write_action: Any,
     execute_action: Any,
+    response: Callable[..., Any] = lambda envelope, _mode: envelope,
 ) -> None:
     """Register segment edits/execution at its original inventory position."""
 
@@ -303,10 +325,11 @@ def register_generation_execution_tools(
         segment_ids: list[str] | None = None,
         boundaries: list[int] | None = None,
         max_chars: int | None = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Split/merge/restore a plan, or draft a bounded audiobook resegmentation. Select contiguous segment_ids and exact joined-text boundaries or max_chars. Inspect the returned preview, then restore the draft to adopt it."""
 
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             revise_speech_block_plan,
             runtime,
             ReviseSpeechBlockPlanInput,
@@ -325,7 +348,7 @@ def register_generation_execution_tools(
                 "boundaries": boundaries,
                 "max_chars": max_chars,
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_update_generation_segment",
@@ -345,10 +368,11 @@ def register_generation_execution_tools(
         voice_id: Annotated[NativeNullableString, Field(max_length=100)] = None,
         voice: Annotated[NativeNullableString, Field(max_length=100)] = None,
         language: Annotated[NativeNullableString, Field(max_length=20)] = None,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Update a generation segment's text or voice override with revision guard."""
 
-        return _call(
+        return response(_call(
             update_generation_segment,
             runtime,
             UpdateGenerationSegmentInput(
@@ -363,7 +387,7 @@ def register_generation_execution_tools(
                 voice=voice,
                 language=language,
             ),
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_update_generation_segments",
@@ -377,10 +401,11 @@ def register_generation_execution_tools(
             list[UpdateGenerationSegmentBatchItem],
             Field(min_length=1, max_length=100),
         ],
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Atomically update reviewed speech text or exclude/restore blocks. All supplied segment revisions must match; retained source subtitles and audio history are unchanged."""
 
-        return _call_with_validated_input(
+        return response(_call_with_validated_input(
             update_generation_segments,
             runtime,
             UpdateGenerationSegmentsInput,
@@ -389,7 +414,7 @@ def register_generation_execution_tools(
                 for key, value in locals().items()
                 if key in UpdateGenerationSegmentsInput.model_fields
             },
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_select_take",
@@ -401,10 +426,11 @@ def register_generation_execution_tools(
         take_id: Annotated[str, Field(min_length=1, max_length=80)],
         expected_revision: Annotated[int, Field(ge=0)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Select an alternative synthesized take for a segment."""
 
-        return _call(
+        return response(_call(
             select_take,
             runtime,
             SelectTakeInput(
@@ -413,7 +439,7 @@ def register_generation_execution_tools(
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
             ),
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_regenerate_segments",
@@ -424,18 +450,32 @@ def register_generation_execution_tools(
         session_id: Annotated[str, Field(min_length=1, max_length=80)],
         segment_ids: Annotated[list[str], Field(min_length=1, max_length=100)],
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
+        generation_run_id: Annotated[str | None, Field(max_length=80)] = None,
+        settings_source: Literal["current", "matching_run", "run"] = "current",
+        settings_source_run_id: Annotated[str | None, Field(max_length=80)] = None,
+        admission: bool = True,
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
-        """Trigger targeted synthesis for a specific list of segment IDs."""
+        """Regenerate selected segments with current project settings by default.
 
-        return _call(
+        Use settings_source='matching_run' to repeat the latest compatible run's frozen settings,
+        or settings_source='run' with settings_source_run_id to replay a specific historical
+        settings snapshot. generation_run_id independently selects the audio/run lineage origin.
+        """
+
+        return response(_call(
             regenerate_segments,
             runtime,
             RegenerateSegmentsInput(
                 session_id=session_id,
                 segment_ids=segment_ids,
                 idempotency_key=idempotency_key,
+                generation_run_id=generation_run_id,
+                settings_source=settings_source,
+                settings_source_run_id=settings_source_run_id,
+                admission=admission,
             ),
-        )
+        ), response_mode)
 
     @server.tool(
         name="pandrator_assemble_generation_run",
@@ -447,10 +487,11 @@ def register_generation_execution_tools(
         idempotency_key: Annotated[str, Field(min_length=1, max_length=120)],
         generation_run_id: Annotated[NativeNullableString, Field(max_length=80)] = None,
         audio_version_side: Literal["before", "after"] = "after",
+        response_mode: Literal["standard", "structured"] = "standard",
     ) -> dict[str, Any]:
         """Assemble the whole session, using the selected/current takes at that run. For a single review clip, download the generation take artifact exposed by pandrator_list_generation_segments instead."""
 
-        return _call(
+        return response(_call(
             assemble_generation_run,
             runtime,
             AssembleGenerationRunInput(
@@ -459,4 +500,4 @@ def register_generation_execution_tools(
                 idempotency_key=idempotency_key,
                 audio_version_side=audio_version_side,
             ),
-        )
+        ), response_mode)

@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import MCP_CONTRACT_REVISION
 from .schemas.guidance import GUIDE_TOPICS
 
 _TOPIC_ALIASES = {
@@ -95,6 +96,7 @@ class GuideRegistry:
     def index(self) -> dict[str, Any]:
         return {
             "schema_version": "1",
+            "contract_revision": MCP_CONTRACT_REVISION,
             "items": [entry.model_dump(mode="json") for entry in self.list()],
         }
 
@@ -112,6 +114,7 @@ class GuideRegistry:
     def _metadata(entry: GuideEntry) -> dict[str, Any]:
         return {
             "schema_version": "1",
+            "contract_revision": MCP_CONTRACT_REVISION,
             "topic": entry.topic,
             "title": entry.title,
             "summary": entry.summary,

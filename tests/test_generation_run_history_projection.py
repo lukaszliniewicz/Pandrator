@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from pandrator.web.generation_history_reads import project_generation_run
 from pandrator.web.generation_run_history import (
     GenerationRunHistory,
     build_generation_run_history,
@@ -53,6 +55,25 @@ def _revision(run, *, repair_status: str = "applied", source: str | None = None)
 
 
 class GenerationRunHistoryProjectionTests(unittest.TestCase):
+    def test_compact_run_omits_nested_manifests_without_changing_full_history(self):
+        assembly = {
+            "id": "assembly", "artifact_id": "audio", "status": "completed",
+            "settings_hash": "hash", "settings": {"takes": [{"id": "take"}]},
+        }
+        original = {
+            "id": "run", "settings_snapshot": {"tts": {"voice": "Narrator"}},
+            "assembly": assembly,
+            "audio_version_assemblies": {"before": deepcopy(assembly)},
+        }
+        saved = deepcopy(original)
+        compact = project_generation_run(original, view="compact")
+        self.assertNotIn("settings_snapshot", compact)
+        self.assertNotIn("settings", compact["assembly"])
+        self.assertNotIn("settings", compact["audio_version_assemblies"]["before"])
+        self.assertEqual("audio", compact["assembly"]["artifact_id"])
+        self.assertEqual(saved, original)
+        self.assertIs(original, project_generation_run(original, view="full"))
+
     def test_repair_membership_work_is_linear_in_group_size(self):
         reads = 0
 

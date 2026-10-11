@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from pandrator.logic.speech_performance import StrictModel
+from pandrator.logic.speech_performance import Delivery, StrictModel
 
 VoiceCategory = Literal["male", "female", "androgynous", "unspecified"]
 CharacterStatus = Literal["proposed", "accepted"]
@@ -23,6 +23,7 @@ class CharacterEntry(StrictModel):
     display_name: str = Field(min_length=1, max_length=255)
     aliases: list[str] = Field(default_factory=list, max_length=64)
     voice_category: VoiceCategory = "unspecified"
+    delivery: Delivery = Field(default_factory=Delivery)
     notes: str = Field(default="", max_length=2000)
     locked: bool = False
     status: CharacterStatus = "accepted"

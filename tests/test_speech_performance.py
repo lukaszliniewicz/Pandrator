@@ -53,7 +53,7 @@ def test_elevenlabs_profiles_are_exact_model_and_route_intersections():
     assert v3["instruction_scope"] == ["request", "span"]
     assert v3["emotion"]["mode"] == "open_description"
     assert v3["event_tags"] == {
-        "laugh": "laughs", "sigh": "sighs", "clear_throat": "clears throat"
+        "laugh": "laughs", "sigh": "sighs", "clear_throat": "clears throat", "exhale": "exhales"
     }
     assert v3["voice_design"] is False
     assert v3["semantic_context"] == "none"
@@ -272,6 +272,43 @@ def test_unsupported_instructions_never_become_spoken_text():
     assert {
         item["control"] for item in compiled.report if item["status"] == "unsupported"
     } == {"direction", "semantic_context"}
+
+
+def test_unknown_gemini_does_not_inherit_known_tts_controls():
+    compiled = compile_performance(
+        "Current text.",
+        settings(
+            "gemini-future-tts", service="vertex_ai",
+            generation_prompt="Do not read this direction.",
+            _performance=steer(events=[{"kind": "laugh", "position": "before"}]),
+            performance_allow_vocalizations=True,
+            tts_context_mode="both", _semantic_context={"before": "Do not read context."},
+        ),
+    )
+    assert compiled.input == compiled.transcript == "Current text."
+    assert compiled.instructions == ""
+    assert compiled.capabilities["status"] == "unknown"
+
+
+def test_omitting_metadata_preserves_literal_transcript_tokens():
+    text = "She wrote [quietly] and <sigh> on the card."
+    compiled = compile_performance(
+        text,
+        settings(
+            "qwen3_tts_1_7b_base_q8_0",
+            _performance=steer(events=[{"kind": "laugh", "position": "before"}]),
+            performance_allow_vocalizations=True,
+        ),
+    )
+    assert compiled.input == compiled.transcript == text
+    assert compiled.instructions == ""
+    assert all(item["status"] == "unsupported" for item in compiled.report)
+
+
+def test_legacy_gemini_events_are_limited_to_route_verified_spellings():
+    assert capabilities_for_model("gemini-2.5-flash-preview-tts", backend="gemini")["event_tags"] == {}
+    vertex = capabilities_for_model("gemini-3.1-flash-tts-preview", backend="vertex_ai")
+    assert vertex["event_tags"] == {"sigh": "sigh", "laugh": "laughs"}
 
 
 @pytest.mark.parametrize(

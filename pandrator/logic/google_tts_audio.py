@@ -8,7 +8,9 @@ from typing import Any
 
 import requests
 
-STRUCTURED_TTS_MODELS = frozenset({"gemini-3.8-flash-tts"})
+STRUCTURED_TTS_MODELS = frozenset(
+    {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
+)
 
 
 def is_structured_tts_model(model: str) -> bool:

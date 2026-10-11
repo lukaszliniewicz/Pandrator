@@ -13,6 +13,9 @@ _CAP_KEYS = {"input_characters", "input_tokens", "output_tokens", "output_second
         ("openai", "gpt-4o-mini-tts-2025-12-15", "", "", {"input_characters": 4096, "input_tokens": 2000}),
         ("openai", "tts-1", "", "", {"input_characters": 4096}),
         ("gemini", "gemini-3.8-flash-tts", "", "", {"input_tokens": 8192, "output_tokens": 16384}),
+        ("gemini", "gemini-3.8-flash-lite-tts", "", "", {"input_tokens": 8192, "output_tokens": 16384}),
+        ("vertex_ai", "gemini-3.8-flash-tts", "", "", {"input_tokens": 8192, "output_tokens": 16384}),
+        ("vertex_ai", "gemini-3.8-flash-lite-tts", "", "", {"input_tokens": 8192, "output_tokens": 16384}),
         ("vertex_ai", "gemini-2.5-flash-tts", "", "", {"input_tokens": 8192, "output_tokens": 16384}),
         ("azure", "MAI-Voice-2", "", "azure_speech", {"output_seconds": 600}),
         ("audio_cpp", "qwen3_tts_1_7b_base_q8_0", "qwen3_tts", "audio_cpp", {}),
@@ -27,7 +30,7 @@ def test_metadata_has_only_evidenced_caps_and_shared_default_policy(service, mod
     policy = audiobook_chunk_budget({}, {"service": service, "model": model, "adapter": adapter})
     assert metadata["default_segment_characters"] == policy["target_chars"]
     assert metadata["policy_max_segment_characters"] == 8192
-    assert metadata["checked_at"] == "2026-10-07"
+    assert metadata["checked_at"] == "2026-10-09"
     if caps:
         assert metadata["source_urls"]
 
@@ -35,9 +38,9 @@ def test_metadata_has_only_evidenced_caps_and_shared_default_policy(service, mod
 @pytest.mark.parametrize(
     ("model", "family", "chunk", "output"),
     [
-        ("qwen3_tts_1_7b_base_q8_0", "qwen3_tts", 8192, {"value": 2048, "unit": "codec_frames"}),
+        ("qwen3_tts_1_7b_base_q8_0", "qwen3_tts", 8192, {"fallback_value": 2048, "unit": "codec_frames", "source": "checkpoint_generation_config"}),
         ("breeze_tts_2_q8_0", "breeze_tts", 600, {"value": 1500, "unit": "acoustic_frames"}),
-        ("voxcpm2_q8_0", "voxcpm2", 2048, None),
+        ("voxcpm2_q8_0", "voxcpm2", 2048, {"value": 4096, "unit": "audio_tokens"}),
     ],
 )
 def test_runtime_defaults_are_separate_from_model_caps(model, family, chunk, output):
@@ -45,7 +48,7 @@ def test_runtime_defaults_are_separate_from_model_caps(model, family, chunk, out
     assert metadata["runtime_chunk_characters"] == chunk
     assert metadata.get("runtime_output_budget") == output
     assert not (_CAP_KEYS & metadata.keys())
-    assert "/v0.9.0/" in metadata["source_urls"][0]
+    assert "/v0.9.1/" in metadata["source_urls"][0]
 
 
 def test_explicit_family_selects_shared_policy_for_unfamiliar_package_id():

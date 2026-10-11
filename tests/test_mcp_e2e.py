@@ -1,13 +1,16 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from pydantic import ValidationError
 
+from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.network_policy import TargetMode
 from pandrator_mcp.schemas import (
@@ -487,11 +490,71 @@ class McpEndToEndToolTests(unittest.TestCase):
             self.assertNotIn("credential", str(catalog))
             self.assertEqual(1, catalog["services"][0]["voice_count"])
             self.assertNotIn("voices", catalog["services"][0])
+            self.assertEqual(1, len(catalog["managed_voices"]))
             filtered = tts_catalog(
                 runtime,
                 TtsCatalogInput(model="MODEL-A", available_only=True, detail="full"),
             )
             self.assertEqual(["native-a"], filtered["services"][0]["voices"])
+
+            vertex_services = [{
+                    "id": "google_vertex",
+                    "name": "Vertex AI",
+                    "adapter": "vertex",
+                    "available": True,
+                    "models": ["gemini-2.5-pro-preview-tts"],
+                    "voices": ["Kore"],
+                    "default_model": "gemini-2.5-pro-preview-tts",
+                    "default_voice": "Kore",
+                }]
+
+            async def verify_registered_catalogue():
+                from mcp import Client
+                from mcp.types import TextContent
+
+                from pandrator_mcp.server import build_server
+
+                async with Client(
+                    build_server(cast(McpRuntime, runtime)), mode="auto", raise_exceptions=True
+                ) as client:
+                    tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+                    schema = tools["pandrator_get_tts_catalog"].input_schema
+                    self.assertTrue(
+                        schema["properties"]["include_managed_voices"]["default"]
+                    )
+                    with mock.patch.object(
+                        application, "list_voices", wraps=application.list_voices
+                    ) as list_voices:
+                        structured = await client.call_tool(
+                            "pandrator_get_tts_catalog",
+                            {
+                                "service_id": "google_vertex",
+                                "model": "gemini-2.5-pro-preview-tts",
+                                "include_managed_voices": False,
+                                "response_mode": "structured",
+                            },
+                        )
+                        list_voices.assert_not_called()
+
+                result = structured.structured_content["result"]
+                self.assertEqual([], result["managed_voices"])
+                self.assertEqual(["google_vertex"], [item["id"] for item in result["services"]])
+                self.assertEqual(
+                    ["gemini-2.5-pro-preview-tts"], result["services"][0]["models"]
+                )
+                self.assertLess(len(json.dumps(result).encode("utf-8")), 4 * 1024)
+                content = structured.content[0]
+                self.assertIsInstance(content, TextContent)
+                assert isinstance(content, TextContent)
+                marker = content.text
+                self.assertEqual("structuredContent", json.loads(marker)["data"])
+                self.assertLess(len(marker), 500)
+                self.assertNotIn("gemini-2.5-pro-preview-tts", marker)
+
+            with mock.patch.object(
+                application, "services", vertex_services, create=True
+            ):
+                asyncio.run(verify_registered_catalogue())
 
             configured = configure_tts(
                 runtime,
@@ -534,6 +597,7 @@ class McpEndToEndToolTests(unittest.TestCase):
                     subtitle_selection="translation",
                 ),
             )
+            plan = plan.result
             self.assertEqual("export", plan["target_stage"])
             self.assertFalse(plan["continuation"])
             self.assertEqual("run-1", plan["overrides"]["output"]["generation_run_id"])

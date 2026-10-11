@@ -1,5 +1,9 @@
 import { apiJson } from './api';
 import type { GenerationRun } from './api-models';
+import {
+  admitGeneration,
+  type AdmissionProgress
+} from './generation-admission';
 
 /** Explicit full-run generation choice shown in GenerationStartDialog. */
 export type GenerationStartMode = 'continue' | 'refresh' | 'all';
@@ -30,6 +34,18 @@ export type GenerationPreview = {
   reasons: GenerationPreviewReasons;
   first_generate_ordinal: number | null;
   blocked_reason?: string | null;
+  provider_preflight?: {
+    route_id: string;
+    model: string;
+    voice: string;
+    project?: string;
+    project_resolution?: string;
+    location?: string;
+    credential_origin?: string;
+    credential_configured?: boolean | null;
+    access_checked: boolean;
+    configuration_warning?: string;
+  };
   settings_summary?: {
     service: string;
     model: string;
@@ -97,15 +113,14 @@ export function previewGenerationStart(
  */
 export function confirmGenerationStart(
   sessionId: string,
-  body: GenerationConfirmRequest
+  body: GenerationConfirmRequest,
+  progress?: (value: AdmissionProgress) => void,
+  signal?: AbortSignal
 ): Promise<GenerationRun> {
-  return apiJson<GenerationRun>(
-    `/api/v1/sessions/${encodeURIComponent(sessionId)}/generation-runs`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operation: 'generate', ...body })
-    }
+  return admitGeneration(
+    sessionId,
+    { operation: 'generate', ...body },
+    { progress, signal }
   );
 }
 

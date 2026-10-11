@@ -150,7 +150,7 @@ def test_openapi_templates_declare_path_parameters_without_nested_defs():
 def test_core_workflows_have_no_any_escape_hatches():
     core = (
         "lib/AddSourceDialog.svelte",
-        "lib/GenerationDrawer.svelte",
+        "lib/GenerationWorkspace.svelte",
         "lib/GlobalSettingsPanel.svelte",
         "lib/NewSessionWizard.svelte",
         "lib/OutputSettingsPanel.svelte",
@@ -183,7 +183,7 @@ def test_core_workflows_have_no_any_escape_hatches():
 
 def test_large_coordinators_delegate_presentation_and_avoid_transport():
     session_workspace = source(WEB_SOURCE / "lib" / "SessionWorkspace.svelte")
-    generation_drawer = source(WEB_SOURCE / "lib" / "GenerationDrawer.svelte")
+    generation_workspace = source(WEB_SOURCE / "lib" / "GenerationWorkspace.svelte")
     for component in ("WorkflowStageCard", "WorkflowRunDialogs"):
         assert component in session_workspace
     for component in (
@@ -191,10 +191,10 @@ def test_large_coordinators_delegate_presentation_and_avoid_transport():
         "GenerationReadingView",
         "SpeechPlanReviewDialog",
     ):
-        assert component in generation_drawer
+        assert component in generation_workspace
     transport_import = re.compile(r"from\s+['\"](?:\$lib/|\./)api['\"]")
     assert not transport_import.search(session_workspace)
-    assert not transport_import.search(generation_drawer)
+    assert not transport_import.search(generation_workspace)
 
 
 def test_xtts_model_upload_is_exposed_by_source_and_compiled_shell():

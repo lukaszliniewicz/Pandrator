@@ -8,6 +8,7 @@ import {
   type UploadTransferCompleteCallback
 } from './api';
 import type { SpeechPreview } from './speech-annotations';
+import { admitGeneration } from './generation-admission';
 import type {
   AgentRun,
   AgentStep,
@@ -1244,15 +1245,28 @@ export const generationApi = {
         body: JSON.stringify({ revision_id: revisionId, segment_id: segmentId })
       }
     ),
-  runs: (sessionId: string, signal?: AbortSignal) =>
+  runs: (
+    sessionId: string,
+    signal?: AbortSignal,
+    options: { limit?: number; view?: 'full' | 'compact' } = {}
+  ) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-runs',
       'get',
       ItemPage<GenerationRun>
     >('/api/v1/sessions/{sessionId}/generation-runs', 'get', {
       path: { sessionId },
+      query: new URLSearchParams(
+        Object.entries(options).map(([key, value]) => [key, String(value)])
+      ),
       signal
     }),
+  run: (runId: string, signal?: AbortSignal) =>
+    typedApiJson<'/api/v1/generation-runs/{runId}', 'get', GenerationRun>(
+      '/api/v1/generation-runs/{runId}',
+      'get',
+      { path: { runId }, signal }
+    ),
   segments: (sessionId: string, query: URLSearchParams, signal?: AbortSignal) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation-segments',
@@ -1354,18 +1368,7 @@ export const generationApi = {
       stale_only: staleOnly,
       settings_source_run_id: settingsSourceRunId
     };
-    return typedApiJson<
-      '/api/v1/sessions/{sessionId}/generation-runs',
-      'post',
-      GenerationRun
-    >('/api/v1/sessions/{sessionId}/generation-runs', 'post', {
-      path: { sessionId },
-      headers: attempt?.headersFor(
-        `/sessions/${sessionId}/generation-runs`,
-        body
-      ),
-      body
-    });
+    return admitGeneration(sessionId, body, { attempt });
   },
   rvcModels: () =>
     typedApiJson<'/api/v1/rvc/models', 'get', RvcModelCatalogue>(

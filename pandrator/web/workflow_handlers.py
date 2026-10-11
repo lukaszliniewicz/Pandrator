@@ -42,6 +42,7 @@ from .database import Database
 from .export_contract import export_requires_generation_assembly
 from .generation_plan_store import GenerationPlanStoreContext
 from .generation_plan_store import store_generation_plan as _store_generation_plan_impl
+from .google_voice_design import design_google_voice as _design_google_voice_impl
 from .jobs import JobQueue
 from .logical_passages import (
     attach_passages,
@@ -74,6 +75,7 @@ from .models import (
     new_id,
     utcnow,
 )
+from .outcome_plans import resolve_workflow_inputs
 from .workflow_audio_preview import AudioPreviewContext
 from .workflow_audio_preview import generate_audio_preview as _generate_audio_preview_impl
 from .workflow_audio_preview import preview_output_mix as _preview_output_mix_impl
@@ -157,6 +159,7 @@ from .workflow_web_research import run_stage_web_research as _run_stage_web_rese
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
+    from .sound_mix_service import SoundMixService
     from .subtitle_evidence import SubtitleEvidenceService
     from .tts_providers import TtsProviderRegistry
 
@@ -509,6 +512,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         manager_bridge: LocalManagerProxy | None = None,
         jobs: JobQueue | None = None,
         subtitle_evidence: SubtitleEvidenceService | None = None,
+        sound_mixes: SoundMixService | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -523,6 +527,11 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         self.tts_providers = tts_providers
         self.manager_bridge = manager_bridge
         self.jobs = jobs or JobQueue(database)
+        from .sound_mix_service import SoundMixService
+
+        self.sound_mixes = sound_mixes or SoundMixService(
+            database, paths, self.artifacts, self.jobs
+        )
         from .quick_transcription import QuickTranscriptionService
 
         self.quick_transcriptions = QuickTranscriptionService(database, paths, self.jobs)
@@ -878,8 +887,7 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
                 and isinstance(translation_setting.value_json, dict)
                 else {}
             )
-        raw_input_choices = outcome_value.get("inputs")
-        input_choices = raw_input_choices if isinstance(raw_input_choices, dict) else {}
+        input_choices = resolve_workflow_inputs(record, outcome_value)
         stage_settings = (
             payload.get("stage_settings")
             if isinstance(payload.get("stage_settings"), dict)
@@ -2601,6 +2609,11 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
     def transcribe_voice(self, payload, progress, cancel_event):
         return _voice_transcribe_voice(self._voice_workflow_context(), payload, progress, cancel_event)
 
+    def design_google_voice(self, payload, progress, cancel_event):
+        return _design_google_voice_impl(
+            self._voice_workflow_context(), payload, progress, cancel_event
+        )
+
     def normalize_voice_recording(self, payload, progress, cancel_event):
         return _voice_normalize_voice_recording(self._voice_workflow_context(), payload, progress, cancel_event)
 
@@ -3082,6 +3095,13 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             except Exception:
                 logger.exception("Could not release the temporary regeneration pause.")
 
+    def run_generation_admission(self, payload, progress, cancel_event):
+        from .generation_admission import run_generation_admission
+
+        return run_generation_admission(
+            self.database, self.jobs, self.artifacts, payload, progress, cancel_event
+        )
+
     def _generation_execution_context(self) -> GenerationExecutionContext:
         return GenerationExecutionContext(
             database=self.database,
@@ -3141,13 +3161,16 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
             _session_dir=self._session_dir,
             _session_record=self._session_record,
             _operation_dir=self._operation_dir,
+            _render_sound_mix=self.sound_mixes.render_for_artifact,
         )
 
     def assemble_generation_output(self, payload, progress, cancel_event):
         """Assemble the current selected takes in plan order into an immutable artifact."""
-        return _assemble_generation_output(
-            self._output_workflow_context(), payload, progress, cancel_event
-        )
+        from .sound_workflow_outputs import finish_sound_assembly
+
+        context = self._output_workflow_context()
+        result = _assemble_generation_output(context, payload, progress, cancel_event)
+        return finish_sound_assembly(context, result, payload, progress, cancel_event)
 
     def generate_waveform(self, payload, progress, cancel_event):
         """Create a compact, reusable peak artifact for browser review."""

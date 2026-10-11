@@ -12,13 +12,15 @@ from contextlib import nullcontext
 from dataclasses import replace
 from threading import Lock, RLock
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 from pydub import AudioSegment
 from sqlalchemy import select as select
 
 from pandrator.logic import tts_handler
+from pandrator.logic.google_tts_audio import is_structured_tts_model
+from pandrator.logic.google_tts_catalogue_http import get_google_voice_catalog
 from pandrator.logic.tts_endpoint_transport import EndpointSessionPool
 from pandrator.logic.tts_language_support import tts_language_support as tts_language_support
 from pandrator.logic.tts_provider_policy import (
@@ -348,6 +350,77 @@ class LegacyTtsAdapter:
         )
 
 
+class GoogleTtsAdapter(LegacyTtsAdapter):
+    """Discover existing Google voices without changing the synthesis route."""
+
+    def _native_endpoint(self, service: dict[str, Any]) -> bool:
+        expected = (
+            tts_handler.GEMINI_AUDIO_BASE_URL
+            if self.service_id == "gemini"
+            else "https://aiplatform.googleapis.com"
+        )
+        return str(service.get("api_base") or "").rstrip("/") == expected
+
+    def capabilities(self, service: dict[str, Any]) -> TtsCapabilities:
+        return replace(
+            super().capabilities(service),
+            dynamic_catalog=self._native_endpoint(service),
+        )
+
+    def enrich_catalog(
+        self, service: dict[str, Any], *, api_key: str = "",
+    ) -> dict[str, Any]:
+        if not self._native_endpoint(service):
+            return {}
+        structured_models = [
+            str(model) for model in service.get("models", [])
+            if is_structured_tts_model(str(model))
+        ]
+        if not structured_models:
+            return {}
+        vertex = self.service_id == "vertex_ai"
+        if not vertex and not api_key:
+            return {}
+        try:
+            if vertex:
+                token, project = tts_handler._vertex_access_token({**service, "api_key": api_key})
+                endpoint = (
+                    "https://aiplatform.googleapis.com/v1beta1/projects/"
+                    f"{quote(project, safe='')}/locations/global/voices"
+                )
+                headers = {"Authorization": f"Bearer {token}"}
+            else:
+                endpoint = "https://generativelanguage.googleapis.com/v1beta/voices"
+                headers = {"x-goog-api-key": api_key}
+            voices = get_google_voice_catalog(endpoint, headers=headers, vertex=vertex)
+        except Exception:  # noqa: BLE001 - discovery must not disable synthesis or expose credentials
+            return {
+                "voice_catalogue_warning": "Google voice discovery failed. The saved and prebuilt voices remain available; check credentials and refresh to load additional voices.",
+            }
+
+        from copy import deepcopy
+
+        base_voices = list(service.get("voices") or [])
+        catalogues = deepcopy(service.get("voice_catalogues") or {})
+        metadata = deepcopy(service.get("voice_metadata") or {})
+        live_ids = [str(voice["id"]) for voice in voices]
+        for model in service.get("models", []):
+            existing = catalogues.get(model, base_voices)
+            catalogues[model] = list(dict.fromkeys([
+                *existing, *(live_ids if model in structured_models else []),
+            ]))
+            if model in structured_models:
+                for voice in voices:
+                    identifier = str(voice["id"])
+                    metadata[f"{model}:{identifier}"] = {**voice, "model": model}
+        return {
+            "live_voices": live_ids,
+            "voice_catalogues": catalogues,
+            "voice_metadata": metadata,
+            "voice_catalogue_warning": "",
+        }
+
+
 class XttsAdapter(LegacyTtsAdapter):
     """Expose XTTS' server-side model and voice catalogues to the UI."""
 
@@ -562,17 +635,17 @@ class AudioCppAdapter(LegacyTtsAdapter):
             catalog_by_id[model_id] = enriched
         model_catalog = list(catalog_by_id.values())
         models = list(catalog_by_id)
-        configured_voices = _dedupe_catalogue_values(list(service.get("voices") or []))
         raw_catalogues = service.get("voice_catalogues")
         configured_catalogues: dict[str, Any] = (
             raw_catalogues if isinstance(raw_catalogues, dict) else {}
         )
+        raw_default_voices = service.get("default_voices")
+        configured_default_voices: dict[str, Any] = (
+            raw_default_voices if isinstance(raw_default_voices, dict) else {}
+        )
         voice_catalogues: dict[str, list[str]] = {}
         for model in models:
-            values = [
-                *list(configured_catalogues.get(model) or []),
-                *configured_voices,
-            ]
+            values = list(configured_catalogues.get(model) or [])
             if model in live_model_ids:
                 values.extend(
                     tts_handler.get_audio_cpp_voice_catalog(
@@ -585,6 +658,11 @@ class AudioCppAdapter(LegacyTtsAdapter):
                         request_session=request_session,
                     )
                 )
+            model_default_voice = str(
+                configured_default_voices.get(model) or ""
+            ).strip()
+            if model_default_voice:
+                values.insert(0, model_default_voice)
             voice_catalogues[model] = _dedupe_catalogue_values(values)
         configured_default = str(service.get("default_model") or "").strip()
         default_model = (
@@ -593,10 +671,18 @@ class AudioCppAdapter(LegacyTtsAdapter):
             else (models[0] if models else "")
         )
         configured_voice = str(service.get("default_voice") or "").strip()
-        if default_model and configured_voice:
-            voice_catalogues[default_model] = _dedupe_catalogue_values(
-                [configured_voice, *voice_catalogues.get(default_model, [])]
-            )
+        default_model_catalogue = voice_catalogues.get(default_model, [])
+        model_default_voice = str(
+            configured_default_voices.get(default_model) or ""
+        ).strip()
+        if model_default_voice and model_default_voice in default_model_catalogue:
+            selected_default_voice = model_default_voice
+        elif configured_voice and configured_voice in default_model_catalogue:
+            selected_default_voice = configured_voice
+        elif default_model_catalogue:
+            selected_default_voice = default_model_catalogue[0]
+        else:
+            selected_default_voice = ""
         voices = _dedupe_catalogue_values(
             [voice for model in models for voice in voice_catalogues[model]]
         )
@@ -630,8 +716,8 @@ class AudioCppAdapter(LegacyTtsAdapter):
         }
         if default_model:
             result["default_model"] = default_model
-        if configured_voice:
-            result["default_voice"] = configured_voice
+        if selected_default_voice:
+            result["default_voice"] = selected_default_voice
         return result
 
     @staticmethod
@@ -1052,6 +1138,8 @@ class TtsProviderRegistry:
         self.replace(XttsAdapter("xtts"))
         self.replace(SileroAdapter("silero"))
         self.replace(KoboldQwenAdapter("kobold_qwen"))
+        self.replace(GoogleTtsAdapter("gemini"))
+        self.replace(GoogleTtsAdapter("vertex_ai"))
         self.replace(ElevenLabsAdapter(tts_handler.ELEVENLABS_PROVIDER))
         self.replace(AudioCppAdapter(tts_handler.AUDIO_CPP_ADAPTER))
 

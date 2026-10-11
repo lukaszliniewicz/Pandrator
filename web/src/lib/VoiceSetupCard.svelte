@@ -1,11 +1,5 @@
 <script lang="ts">
-  import {
-    BookOpen,
-    Check,
-    LoaderCircle,
-    Settings2,
-    Users
-  } from '@lucide/svelte';
+  import { BookOpen, Check, LoaderCircle, Users } from '@lucide/svelte';
   import { onMount } from 'svelte';
   import { apiJson } from './api';
   import { errorMessage } from './errors';
@@ -31,7 +25,7 @@
     initialCastOpen = false,
     castPanel = $bindable<CastDraftController | undefined>(),
     onchanged,
-    onsettings
+    onmode
   }: {
     sessionId: string;
     plan?: SpeechPlanState | null;
@@ -40,7 +34,7 @@
     initialCastOpen?: boolean;
     castPanel?: CastDraftController;
     onchanged: () => void | Promise<void>;
-    onsettings?: () => void;
+    onmode?: (mode: 'single_voice' | 'multi_voice') => void;
   } = $props();
   let setup = $state<Setup | null>(null);
   let pending = $state(false);
@@ -60,6 +54,7 @@
       const value = await apiJson<Setup>(path);
       if (request === serial) {
         setup = value;
+        onmode?.(value.mode);
         error = '';
       }
     } catch (caught) {
@@ -79,6 +74,7 @@
           expected_revision: setup.configuration_revision
         })
       });
+      onmode?.(setup.mode);
       notifySessionFlowChange(sessionId);
       await onchanged();
     } catch (caught) {
@@ -189,8 +185,20 @@
           <li>
             <span>3</span>
             <div>
-              <strong>Cast &amp; review</strong>
-              <p>Assign voices, check the plan, then generate.</p>
+              <strong>Assign voices</strong>
+              <p>
+                Choose the narrator, character voices and dialogue fallbacks.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>4</span>
+            <div>
+              <strong>Review delivery</strong>
+              <p>
+                Add optional character defaults and text directions, review the
+                plan, then generate.
+              </p>
             </div>
           </li>
         </ol>
@@ -200,8 +208,13 @@
         </p>
       </details>
       <p class="muted my-4 text-sm">
-        Review speakers and assign their voices below. Optional speaker analysis
-        is available in the prepared speech plan.
+        Identify speakers on whole segments or selected words in
+        <a
+          class="underline"
+          href={`/sessions/${encodeURIComponent(sessionId)}/generation?mode=editing`}
+          >Editing</a
+        >. Their cast voices are shared across this project. Speaker analysis
+        can also propose the roster below.
       </p>
       <div id="characters-cast">
         <GenerationCastPanel
@@ -211,7 +224,7 @@
           model={setup.tts.model}
           sessionVoice={setup.tts.voice}
           standalone={true}
-          initialOpen={initialCastOpen}
+          initialOpen={initialCastOpen || setup.mode === 'multi_voice'}
           {navigationManaged}
           busy={busy || pending}
           onchanged={() => void onchanged()}
@@ -223,7 +236,11 @@
             />{/if}{selected.segment_count} speech blocks · {selected.reviewed
             ? 'Plan reviewed'
             : 'Plan needs review'}. Inspect voices and delivery in the
-          generation drawer.
+          <a
+            class="underline"
+            href={`/sessions/${encodeURIComponent(sessionId)}/generation?inspect=speech`}
+            >Generation tab</a
+          >.
         </p>{/if}
     {:else}<p class="muted mt-4 text-sm">
         {setup.tts.voice
@@ -245,31 +262,15 @@
         onclick={() => setMode('single_voice')}>Use one voice throughout</button
       >
     {/if}
-    {#if setup.workflow_kind === 'audiobook' && onsettings}<div
-        class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4"
-      >
-        <p class="muted min-w-0 flex-1 text-xs leading-relaxed">
-          {#if setup.segmentation}Narration groups complete sentences, up to
-            <strong
-              >{setup.segmentation.target_chars.toLocaleString()} characters</strong
-            >.{:else}Narration groups complete sentences within the model’s
-            budget.{/if} Paragraphs and chapters keep natural breaks. Reviewed plans
-          stay unchanged.
-        </p>
-        <button
-          class="btn btn-secondary"
-          disabled={busy || pending}
-          onclick={onsettings}
-          ><Settings2 size={15} /> Narration settings</button
-        >
-      </div>{:else if setup.workflow_kind === 'voiceover'}<p
-        class="muted mt-4 text-xs"
-      >
+    {#if setup.workflow_kind === 'voiceover'}<p class="muted mt-4 text-xs">
         Speaker turns keep their original timing windows. Speech optimization
         and delivery directions are optional.
       </p>{/if}
   {:else if !error}<p class="muted mt-4 text-sm" role="status">
       Loading voice setup…
+    </p>{:else}<p class="muted mt-4 text-xs">
+      Voice assignment in Editing follows this choice. Narration length and
+      delivery are prepared in Speech plan below.
     </p>{/if}
 </section>
 

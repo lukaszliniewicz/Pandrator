@@ -325,6 +325,17 @@ export function describeVoice(
       gender
     };
   }
+  if (['gemini', 'vertex_ai'].includes(service)) {
+    return {
+      id: voiceId,
+      name: String(metadata?.display_name ?? metadata?.name ?? voiceId),
+      languageCode: '',
+      language: metadata?.accent
+        ? `Multilingual · ${metadata.accent}`
+        : 'Multilingual',
+      gender: String(metadata?.gender ?? '')
+    };
+  }
   const locale = String(metadata?.locale ?? '').trim();
   if (locale) {
     const rawName = voiceId.split(':')[0];

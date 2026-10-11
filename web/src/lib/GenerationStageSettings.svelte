@@ -8,6 +8,7 @@
     RefreshCw
   } from '@lucide/svelte';
   import LocalModelPicker from './LocalModelPicker.svelte';
+  import ElevenLabsModelSettings from './ElevenLabsModelSettings.svelte';
   import LanguageSelect from './LanguageSelect.svelte';
   import ParameterLabel from './ParameterLabel.svelte';
   import {
@@ -140,6 +141,11 @@
     available without a local process.</span
   >
 </div>
+{#if ttsSelection.selectedTtsService?.voice_catalogue_warning}
+  <p class="muted text-xs" role="status">
+    {ttsSelection.selectedTtsService.voice_catalogue_warning}
+  </p>
+{/if}
 {#if ttsSelection.selectedTtsServiceId === 'audio_cpp'}
   <p class="muted text-xs">
     audio.cpp runs several local speech models through one provider. Choose the
@@ -602,11 +608,93 @@
       transcript and should not be spoken aloud.</span
     ></label
   >
+  {#if ttsSelection.selectedGoogle38Model}
+    <p class="muted text-xs">
+      Gemini 3.8 sends directions and enabled before/after text context as
+      unspoken speech metadata. Use concise delivery instructions; create a
+      lasting voice in Voice Library → Design voice with Gemini or Vertex.
+    </p>
+  {/if}
 {:else if ttsSelection.generationPromptModels.length}
   <p class="muted rounded-xl bg-[var(--accent-soft)] p-3 text-xs">
     {draft.ttsModel || 'This model'} does not accept speech-direction prompts. Choose
     an instruction-capable model to add one.
   </p>
+{/if}
+{#if ttsSelection.selectedElevenV4}
+  <ElevenLabsModelSettings
+    model={draft.ttsModel}
+    value={draft.elevenLabsVoiceSettings}
+    onchange={(value) => (draft.elevenLabsVoiceSettings = value)}
+  />
+{/if}
+{#if ttsSelection.supportsTextContext}
+  <div class="rounded-xl border border-[var(--line)] p-4">
+    <label class="block text-sm font-semibold">
+      Text context
+      <select
+        bind:value={draft.ttsContextMode}
+        class="mt-2 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+      >
+        <option value="off">Off</option>
+        <option value="before">Preceding text</option>
+        <option value="both">Preceding and following text</option>
+      </select>
+    </label>
+    <p class="muted mt-2 text-xs">
+      Use accepted neighbouring speech blocks to guide delivery. Context is
+      text, not previous audio, and should not be spoken.
+      {ttsSelection.selectedElevenLabs
+        ? draft.ttsModel === 'eleven_v4'
+          ? 'Eleven v4 receives up to 100 characters on each side.'
+          : 'Sent as native stitching fields.'
+        : 'It adds input tokens.'}
+    </p>
+    {#if draft.ttsContextMode !== 'off'}
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        <label class="text-xs font-semibold">
+          Preceding context blocks
+          <input
+            type="number"
+            min="0"
+            max="20"
+            step="1"
+            bind:value={draft.performanceContextBefore}
+            class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+          />
+        </label>
+        {#if draft.ttsContextMode === 'both'}
+          <label class="text-xs font-semibold">
+            Following context blocks
+            <input
+              type="number"
+              min="0"
+              max="20"
+              step="1"
+              bind:value={draft.performanceContextAfter}
+              class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+            />
+          </label>
+        {/if}
+        <label class="text-xs font-semibold sm:col-span-2">
+          Context character budget
+          <input
+            type="number"
+            min="0"
+            max="16000"
+            step="1"
+            bind:value={draft.performanceContextMaxChars}
+            class="mt-1 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-normal"
+          />
+        </label>
+      </div>
+    {/if}
+    {#if ttsSelection.invalidTextContext}
+      <p class="mt-2 text-xs text-red-500" role="status">
+        Use 0–20 context blocks and a budget of 0–16,000 characters.
+      </p>
+    {/if}
+  </div>
 {/if}
 {#if ttsSelection.selectedTtsService?.supports_parallel_synthesis}
   <label class="text-sm font-semibold">

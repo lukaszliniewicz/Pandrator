@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from functools import wraps
+from typing import TYPE_CHECKING, Protocol
 
 from .job_registry import JobHandlerRegistry, JobPayloadContract
 from .jobs import JobHandler
+
+if TYPE_CHECKING:
+    from pandrator.runtime import DataPaths
+
+    from .artifacts import ArtifactService
+    from .database import Database
+
+
+class _WorkflowInfrastructure(Protocol):
+    database: Database
+    paths: DataPaths
+    artifacts: ArtifactService
 
 
 def _late_bound(
@@ -90,6 +103,7 @@ def register_generation_handlers(
                 "dubbing.generate_audio": "generate_dubbing_audio",
                 "audiobook.generate_audio": "generate_audiobook_audio",
                 "generation.run": "run_generation",
+                "generation.admit": "run_generation_admission",
                 "generation.assemble": "assemble_generation_output",
                 "audio.waveform": "generate_waveform",
                 "audio.preview": "generate_audio_preview",
@@ -108,6 +122,7 @@ def register_generation_handlers(
                     "source_artifact_id",
                 ),
                 "generation.run": ("generation_run_id",),
+                "generation.admit": ("admission_id", "session_id", "speech_plan_revision_id", "active_revision_id_at_admission", "snapshot_guard", "settings_revision_guard", "request"),
                 "generation.assemble": ("output_assembly_id",),
                 "audio.waveform": ("source_artifact_id",),
                 "audio.preview": ("source_artifact_id",),
@@ -128,6 +143,7 @@ def register_voice_handlers(
             handlers,
             {
                 "voice.transcribe": "transcribe_voice",
+                "voice.google_design": "design_google_voice",
                 "voice.normalize_recording": "normalize_voice_recording",
                 "voice.publish": "publish_voice",
                 "voice.unpublish": "unpublish_voice",
@@ -139,6 +155,16 @@ def register_voice_handlers(
         payload_contracts=_contracts(
             {
                 "voice.transcribe": ("voice_id", "sample_artifact_id"),
+                "voice.google_design": (
+                    "voice_id",
+                    "service_id",
+                    "model",
+                    "name",
+                    "prompt",
+                    "language",
+                    "scope_fingerprint",
+                    "job_id",
+                ),
                 "voice.normalize_recording": (
                     "voice_id",
                     "source_artifact_id",
@@ -255,7 +281,7 @@ def register_workflow_handlers(
 
 
 def build_workflow_handler_registry(
-    handlers: object,
+    handlers: _WorkflowInfrastructure,
 ) -> JobHandlerRegistry:
     registry = JobHandlerRegistry()
     register_text_handlers(registry, handlers)
@@ -265,4 +291,32 @@ def build_workflow_handler_registry(
     register_delivery_handlers(registry, handlers)
     register_media_edit_handlers(registry, handlers)
     register_workflow_handlers(registry, handlers)
+    from .comparison_export_render import ComparisonExportContext, render_comparison_export
+    from .comparison_exports import COMPARISON_EXPORT_JOB_KIND
+    from .session_purge_jobs import purge_job_handlers
+
+    database = handlers.database
+    paths = handlers.paths
+    comparison_context = ComparisonExportContext(
+        database, paths, handlers.artifacts
+    )
+    registry.register(
+        COMPARISON_EXPORT_JOB_KIND,
+        lambda payload, progress, cancel_event: render_comparison_export(
+            comparison_context, payload, progress, cancel_event
+        ),
+        domain="delivery",
+        payload_contract=JobPayloadContract(
+            required_fields=("session_id", "clips", "selection_hash")
+        ),
+    )
+    registry.register_many(
+        "maintenance", purge_job_handlers(database, paths),
+        payload_contracts=_contracts({
+            "maintenance.session_purge_preview": ("target_session_id",),
+            "maintenance.session_purge": (
+                "target_session_id", "expected_revision", "impact_fingerprint"
+            ),
+        }),
+    )
     return registry

@@ -1,4 +1,5 @@
 import type { GenerationSegment } from './api-models';
+import type { SpeechCapabilities } from './speech-support';
 import {
   controlFields,
   directionTags,
@@ -17,35 +18,20 @@ export type SpeechSpan = {
   fallback?: boolean;
 };
 
-export function speakerColorKey(span: SpeechSpan): string {
+function speakerColorKey(span: SpeechSpan): string {
   return span.role === 'narrator'
     ? '__narrator'
     : span.speaker_id || span.speaker_name || span.role;
 }
 
-/** Allocate distinct colours across the session, not independently in each row. */
-export function speakerColors(
-  items: GenerationSegment[],
-  previews: Record<string, SpeechPreview>
-): Record<string, string> {
-  const keys = [
-    ...new Set(
-      items.flatMap((item) =>
-        (previews[item.id]?.spans ?? annotationSpans(item)).map(speakerColorKey)
-      )
-    )
-  ]
-    .filter((key) => key !== '__narrator')
-    .sort();
-  return Object.fromEntries([
-    ['__narrator', 'var(--speaker-narrator)'],
-    ...keys.map((key, index) => [
-      key,
-      index < 8
-        ? `var(--speaker-${index + 1})`
-        : `hsl(${(index * 137.508) % 360} 60% var(--speaker-lightness))`
-    ])
-  ]);
+/** Stable across paging; off-screen markup never needs parsing for a palette. */
+export function speakerColor(span: SpeechSpan): string {
+  const key = speakerColorKey(span);
+  if (key === '__narrator') return 'var(--speaker-narrator)';
+  let hash = 2166136261;
+  for (const char of key)
+    hash = Math.imul(hash ^ char.codePointAt(0)!, 16777619);
+  return `hsl(${(hash >>> 0) % 360} 60% var(--speaker-lightness))`;
 }
 
 export type SpeechSelection = {
@@ -54,18 +40,20 @@ export type SpeechSelection = {
   end: number;
   anchor: HTMLElement;
   rect: { left: number; top: number; bottom: number };
+  kind?: 'segment' | 'phrase' | 'cursor';
 };
 
 export function selectedSpeechRange(
   root: HTMLElement,
   item: GenerationSegment,
-  layer: 'display' | 'speech'
+  layer: 'display' | 'speech',
+  allowCaret = false
 ): SpeechSelection | null {
   const selection = window.getSelection();
   const spoken = item.optimized_text ?? item.text;
   if (
     !selection ||
-    selection.isCollapsed ||
+    (!allowCaret && selection.isCollapsed) ||
     !selection.rangeCount ||
     (layer === 'display' && spoken !== item.text)
   )
@@ -79,41 +67,60 @@ export function selectedSpeechRange(
   const prefix = range.cloneRange();
   prefix.selectNodeContents(root);
   prefix.setEnd(range.startContainer, range.startOffset);
-  const start = Array.from(prefix.cloneContents().textContent ?? '').length;
-  const selected = range.cloneContents().textContent ?? '';
+  const start = Array.from(spokenContents(prefix)).length;
+  const selected = spokenContents(range);
   const end = start + Array.from(selected).length;
   if (
-    !selected.trim() ||
+    (!selection.isCollapsed && !selected.trim()) ||
     Array.from(spoken).slice(start, end).join('') !== selected
   )
     return null;
-  const bounds = range.getBoundingClientRect();
+  const caretBounds = range.getBoundingClientRect();
+  const bounds = caretBounds.height
+    ? caretBounds
+    : root.getBoundingClientRect();
   return {
     item,
     start,
     end,
     anchor: root,
+    kind: selection.isCollapsed ? 'cursor' : 'phrase',
     rect: { left: bounds.left, top: bounds.top, bottom: bounds.bottom }
   };
+}
+
+function spokenContents(range: Range) {
+  const fragment = range.cloneContents();
+  for (const decoration of fragment.querySelectorAll(
+    '[data-speech-decoration]'
+  ))
+    decoration.remove();
+  return fragment.textContent ?? '';
 }
 
 export function textareaSpeechRange(
   node: HTMLTextAreaElement,
   item: GenerationSegment,
-  layer: 'display' | 'speech'
+  layer: 'display' | 'speech',
+  allowCaret = false
 ): SpeechSelection | null {
   const spoken = item.optimized_text ?? item.text;
   if ((layer === 'display' && spoken !== item.text) || node.value !== spoken)
     return null;
   const start = Array.from(node.value.slice(0, node.selectionStart)).length;
   const end = Array.from(node.value.slice(0, node.selectionEnd)).length;
-  if (!Array.from(spoken).slice(start, end).join('').trim()) return null;
+  if (
+    !(allowCaret && start === end) &&
+    !Array.from(spoken).slice(start, end).join('').trim()
+  )
+    return null;
   const rect = node.getBoundingClientRect();
   return {
     item,
     start,
     end,
     anchor: node,
+    kind: start === end ? 'cursor' : 'phrase',
     rect: { left: rect.left, top: rect.top, bottom: rect.bottom }
   };
 }
@@ -127,6 +134,7 @@ export type SpeechPreview = {
   model: string;
   casting_enabled: boolean;
   performance_enabled: boolean;
+  capabilities?: SpeechCapabilities;
   spans: SpeechSpan[];
   parts: Array<{
     start: number;
@@ -134,10 +142,17 @@ export type SpeechPreview = {
     voice?: string | null;
     voice_source?: string | null;
     fallback?: boolean;
+    capabilities?: SpeechCapabilities;
     instructions?: string | null;
+    input?: string;
     report?: Array<{ status?: string; control?: string; message?: string }>;
   }>;
-  events: Array<{ offset: number; kind: string; duration_ms?: number }>;
+  events: Array<{
+    offset: number;
+    kind: string;
+    duration_ms?: number;
+    affinity?: 'previous' | 'following';
+  }>;
 };
 
 export function deliveryDescription(delivery: Record<string, unknown>) {
@@ -149,8 +164,24 @@ export function deliveryDescription(delivery: Record<string, unknown>) {
     .join(' · ');
 }
 
-/** Local markup is only a display hint. The compiler resolves actual voices. */
-export function annotationSpans(item: GenerationSegment): SpeechSpan[] {
+type SpeechDirectionScope = {
+  start: number;
+  end: number;
+  delivery: Record<string, unknown>;
+  tag: string;
+};
+export type SpeechPresentation = {
+  spans: SpeechSpan[];
+  delivery: Record<string, unknown>;
+  scopes: SpeechDirectionScope[];
+  events: SpeechPreview['events'];
+};
+const presentationCache = new Map<string, SpeechPresentation>();
+
+/** Parse visible markup once. This bounded display cache never resolves voices. */
+export function annotationPresentation(
+  item: GenerationSegment
+): SpeechPresentation {
   const text = item.optimized_text ?? item.text;
   const base: SpeechSpan = {
     start: 0,
@@ -160,46 +191,201 @@ export function annotationSpans(item: GenerationSegment): SpeechSpan[] {
     delivery: {}
   };
   const xml = item.speech_annotation_xml ?? item.speech_plan?.speech_xml;
-  if (typeof xml !== 'string' || !xml || typeof DOMParser === 'undefined')
-    return [base];
+  const fallback = { spans: [base], delivery: {}, scopes: [], events: [] };
+  if (typeof DOMParser === 'undefined') return fallback;
+  const key = JSON.stringify([
+    item.id,
+    text,
+    item.speaker,
+    xml,
+    item.speech_annotation
+  ]);
+  const cached = presentationCache.get(key);
+  if (cached) return cached;
+  let result: SpeechPresentation = fallback;
   try {
-    const root = readMarkup(xml).documentElement;
+    const root =
+      typeof xml === 'string' && xml ? readMarkup(xml).documentElement : null;
     let transcript = '';
+    let offset = 0;
     const spans: SpeechSpan[] = [];
+    const scopes: SpeechDirectionScope[] = [];
+    const events: SpeechPreview['events'] = [];
+    let delivery: Record<string, unknown> = {};
     function walk(node: Node, inherited: SpeechSpan) {
       if (node.nodeType === 3) {
         const value = node.textContent ?? '';
         if (!value) return;
-        const start = Array.from(transcript).length;
+        const start = offset;
         transcript += value;
-        spans.push({ ...inherited, start, end: Array.from(transcript).length });
+        offset += Array.from(value).length;
+        spans.push({ ...inherited, start, end: offset });
         return;
       }
       if (node.nodeType !== 1) return;
       const element = node as Element;
-      if ([...directionTags, 'event'].includes(element.tagName as 'ins'))
+      if (directionTags.includes(element.tagName as 'ins')) return;
+      if (element.tagName === 'event') {
+        events.push({
+          offset,
+          kind: element.getAttribute('kind') ?? '',
+          affinity:
+            element.getAttribute('affinity') === 'previous'
+              ? 'previous'
+              : 'following',
+          ...(element.hasAttribute('duration_ms')
+            ? { duration_ms: Number(element.getAttribute('duration_ms')) }
+            : {})
+        });
         return;
+      }
       const next = { ...inherited, delivery: { ...inherited.delivery } };
       if (element.tagName === 'narrator') {
         next.role = 'narrator';
         next.speaker_id = null;
+        next.speaker_name = null;
       } else if (element.tagName === 'speaker') {
-        next.role = 'speaker';
+        next.role =
+          element.hasAttribute('ref') || element.hasAttribute('n')
+            ? 'speaker'
+            : 'dialogue';
         next.speaker_id =
           element.getAttribute('ref') || element.getAttribute('n');
       } else if (element.tagName === 'dialogue') next.role = 'dialogue';
+      if (element.hasAttribute('voice'))
+        next.voice = element.getAttribute('voice');
+      const local: Record<string, unknown> = {};
       for (const child of Array.from(element.children)) {
         const index = directionTags.indexOf(child.tagName as 'ins');
-        if (index >= 0)
-          next.delivery[controlFields[index]] = child.textContent ?? '';
+        if (index >= 0) {
+          const field = controlFields[index];
+          const value = (child.textContent ?? '').trim();
+          local[field] = value;
+          next.delivery[field] =
+            field === 'instruction' && value && next.delivery[field]
+              ? `${next.delivery[field]}\n${value}`
+              : value;
+        }
       }
+      const start = offset;
       for (const child of Array.from(node.childNodes)) walk(child, next);
+      if (element === root) delivery = local;
+      else if (deliveryDescription(local))
+        scopes.push({
+          start,
+          end: offset,
+          delivery: local,
+          tag: element.tagName
+        });
     }
-    walk(root, base);
+    if (root) walk(root, base);
     // Do not apply offsets from stale markup or to differently optimized text.
-    return transcript === text && spans.length ? spans : [base];
+    if (transcript === text && spans.length)
+      result = {
+        spans,
+        delivery,
+        scopes: scopes.sort((a, b) => a.start - b.start || b.end - a.end),
+        events
+      };
   } catch {
-    return [base];
+    /* A stale/invalid annotation remains ordinary text. */
+  }
+  if (item.speech_annotation)
+    result = legacyPresentation(result, item.speech_annotation, text);
+  if (presentationCache.size >= 200)
+    presentationCache.delete(presentationCache.keys().next().value!);
+  presentationCache.set(key, result);
+  return result;
+}
+
+function mergeDelivery(
+  parent: Record<string, unknown>,
+  local: Record<string, unknown>
+) {
+  const result = { ...parent };
+  for (const [field, value] of Object.entries(local)) {
+    if (!value) continue;
+    result[field] =
+      field === 'instruction' && result[field]
+        ? `${result[field]}\n${value}`
+        : value;
+  }
+  return result;
+}
+
+function legacyPresentation(
+  base: SpeechPresentation,
+  annotation: NonNullable<GenerationSegment['speech_annotation']>,
+  text: string
+): SpeechPresentation {
+  if (annotation.decision !== 'steer') return base;
+  function anchorRange(anchor: { quote: string; occurrence?: number | null }) {
+    if (!anchor.quote) throw new Error('Empty annotation anchor');
+    const matches: number[] = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+      const position = text.indexOf(anchor.quote, cursor);
+      if (position < 0) break;
+      matches.push(position);
+      cursor = position + anchor.quote.length;
+    }
+    if (!anchor.occurrence && matches.length !== 1)
+      throw new Error('Stale annotation anchor');
+    const index = matches[(anchor.occurrence ?? 1) - 1];
+    if (index === undefined) throw new Error('Stale annotation anchor');
+    const start = Array.from(text.slice(0, index)).length;
+    return { start, end: start + Array.from(anchor.quote).length };
+  }
+  try {
+    const scopes = (annotation.spans ?? []).map((span) => ({
+      ...anchorRange(span.anchor),
+      delivery: span.delivery,
+      tag: 'span'
+    }));
+    const events = (annotation.events ?? []).map((event) => {
+      const range = event.anchor
+        ? anchorRange(event.anchor)
+        : { start: 0, end: Array.from(text).length };
+      return {
+        kind: event.kind,
+        offset: event.position === 'before' ? range.start : range.end,
+        ...(event.duration_ms ? { duration_ms: event.duration_ms } : {})
+      };
+    });
+    const boundaries = [
+      ...new Set([
+        ...scopes.flatMap((scope) => [scope.start, scope.end]),
+        ...events.map((event) => event.offset)
+      ])
+    ].sort((a, b) => a - b);
+    const spans = base.spans.flatMap((span) => {
+      const cuts = [
+        span.start,
+        ...boundaries.filter(
+          (offset) => offset > span.start && offset < span.end
+        ),
+        span.end
+      ];
+      return cuts.slice(0, -1).map((start, index) => ({
+        ...span,
+        start,
+        end: cuts[index + 1],
+        delivery: mergeDelivery(
+          mergeDelivery(span.delivery, annotation.delivery ?? {}),
+          scopes.find(
+            (scope) => scope.start <= start && scope.end >= cuts[index + 1]
+          )?.delivery ?? {}
+        )
+      }));
+    });
+    return {
+      spans,
+      delivery: mergeDelivery(base.delivery, annotation.delivery ?? {}),
+      scopes: [...base.scopes, ...scopes],
+      events: [...base.events, ...events]
+    };
+  } catch {
+    return base;
   }
 }
 

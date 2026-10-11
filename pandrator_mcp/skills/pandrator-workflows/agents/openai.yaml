@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pandrator Workflows"
+  short_description: "Create and recover Pandrator media workflows"
+  default_prompt: "Use $pandrator-workflows to run this Pandrator job and deliver its files."

@@ -6,11 +6,12 @@ from datetime import datetime
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.orm import Session
+from sqlalchemy import case, func, select
+from sqlalchemy.orm import Session, load_only
 
 from .credentials import SecretRedactor
 from .jobs import JobQueue
-from .models import Job, JobEvent
+from .models import Job, JobEvent, SessionPurge
 
 WORK_EVENT_FIELDS = frozenset(
     {
@@ -32,6 +33,7 @@ WORK_EVENT_FIELDS = frozenset(
         "retry_after_ms",
         "sample_id",
         "session_id",
+        "target_session_id",
         "source_artifact_id",
         "source_asset_id",
         "source_id",
@@ -103,6 +105,7 @@ class WorkView(BaseModel):
     id: str
     kind: str
     session_id: str | None = None
+    target_session_id: str | None = None
     workflow_run_id: str | None = None
     state: WorkState
     progress: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -153,18 +156,43 @@ class WorkService:
         self.queue = queue
         self.redactor = redactor
 
-    def _project(self, job: Job) -> WorkView:
+    def _project(self, job: Job, *, purge_claimed: bool | None = None) -> WorkView:
         state = _work_state(job.status)
         safe_detail = (
             self.redactor.redact(job.progress_detail)[:2_000]
             if job.progress_detail
             else None
         )
+        # Older succeeded jobs can retain fields from a previous failed attempt.
+        if state == "succeeded" and job.progress_detail == (
+            f"Retry scheduled after attempt {job.attempts - 1} of {job.max_attempts}"
+        ):
+            safe_detail = None
         result = None
         if isinstance(job.result_json, dict):
-            result = _bounded_json(self.redactor.redact_value(job.result_json))
+            source_result = job.result_json
+            if job.kind == "maintenance.session_purge_preview":
+                source_result = {
+                    key: source_result[key]
+                    for key in (
+                        "revision", "can_purge", "owned_file_count", "owned_bytes",
+                        "retained_shared_count", "scheduled_delete_at",
+                    )
+                    if key in source_result
+                }
+                source_result["inspection_job_id"] = job.id
+                source_result["details_available"] = True
+            result = _bounded_json(self.redactor.redact_value(source_result))
+        target_session_id = (
+            str((job.payload_json or {}).get("target_session_id") or "") or None
+            if str(job.kind).startswith("maintenance.session_purge") else None
+        )
+        if purge_claimed is None and job.kind == "maintenance.session_purge" and target_session_id:
+            with self.queue.database.session() as session:
+                journal = session.get(SessionPurge, target_session_id)
+                purge_claimed = bool(journal and journal.state in {"purging", "failed", "complete"})
         error = None
-        if job.error_code or job.error_message:
+        if state != "succeeded" and (job.error_code or job.error_message):
             error = WorkError(
                 code=(
                     self.redactor.redact(job.error_code)[:160]
@@ -179,11 +207,12 @@ class WorkService:
             id=job.id,
             kind=str(job.kind),
             session_id=job.session_id,
+            target_session_id=target_session_id,
             workflow_run_id=job.workflow_run_id,
             state=state,
             progress=max(0.0, min(float(job.progress or 0.0), 1.0)),
             detail=safe_detail,
-            cancellable=state not in TERMINAL_STATES,
+            cancellable=state not in TERMINAL_STATES and not purge_claimed,
             poll_after_ms=(
                 0 if state in TERMINAL_STATES else 750 if state == "running" else 1_500
             ),
@@ -219,19 +248,62 @@ class WorkService:
         state_filter = {
             _work_state(str(value)) for value in states if str(value).strip()
         }
-        results: list[WorkView] = []
-        for job in self.queue.list(500):
-            view = self._project(job)
-            if session_id and view.session_id != session_id:
-                continue
-            if kind_filter and view.kind not in kind_filter:
-                continue
-            if state_filter and view.state not in state_filter:
-                continue
-            results.append(view)
-            if len(results) >= bounded_limit:
-                break
-        return results
+        normalized_status = func.lower(
+            func.trim(func.coalesce(func.nullif(Job.status, ""), "queued"))
+        )
+        public_state = case(
+            (normalized_status.in_(("canceled", "cancelled")), "cancelled"),
+            (normalized_status == "cancel_requested", "running"),
+            (
+                normalized_status.in_(("queued", "running", "succeeded", "failed")),
+                normalized_status,
+            ),
+            else_="waiting",
+        )
+        statement = select(Job).options(
+            load_only(
+                Job.id,
+                Job.kind,
+                Job.session_id,
+                Job.workflow_run_id,
+                Job.status,
+                Job.progress,
+                Job.progress_detail,
+                Job.result_json,
+                Job.payload_json,
+                Job.error_code,
+                Job.error_message,
+                Job.created_at,
+                Job.started_at,
+                Job.finished_at,
+                Job.updated_at,
+                Job.attempts,
+                Job.max_attempts,
+            )
+        )
+        if session_id:
+            statement = statement.where(Job.session_id == session_id)
+        if kind_filter:
+            statement = statement.where(Job.kind.in_(kind_filter))
+        if state_filter:
+            statement = statement.where(public_state.in_(state_filter))
+        statement = statement.order_by(Job.created_at.desc()).limit(bounded_limit)
+
+        self.queue._reconcile_stale()
+        with self.queue.database.session() as session:
+            jobs = session.scalars(statement).all()
+            purge_targets = {
+                str((job.payload_json or {}).get("target_session_id"))
+                for job in jobs if job.kind == "maintenance.session_purge"
+                and (job.payload_json or {}).get("target_session_id")
+            }
+            claimed_targets = set(session.scalars(select(SessionPurge.session_id).where(
+                SessionPurge.session_id.in_(purge_targets),
+                SessionPurge.state.in_(("purging", "failed", "complete")),
+            ))) if purge_targets else set()
+            return [self._project(
+                job, purge_claimed=(job.payload_json or {}).get("target_session_id") in claimed_targets,
+            ) for job in jobs]
 
     def get(self, job_id: str) -> WorkView:
         return self._project(self.queue.get(job_id))

@@ -27,6 +27,7 @@
   let {
     stage,
     workspaceMode,
+    simpleMode = false,
     sessionId = '',
     optional = false,
     runLabel = '',
@@ -50,6 +51,7 @@
   }: {
     stage: WorkflowStage;
     workspaceMode: 'review' | 'automatic';
+    simpleMode?: boolean;
     sessionId?: string;
     optional?: boolean;
     runLabel?: string;
@@ -299,432 +301,504 @@
   };
 </script>
 
-<article
-  class:stage-locked={stage.status === 'unavailable'}
-  class:stage-disabled={Boolean(stage.toggle && !stage.enabled)}
-  class="surface rounded-[1.4rem] p-5 sm:p-6"
->
-  <div class="grid gap-5">
-    <div class="flex min-w-0 flex-1 items-start gap-4">
-      <div
-        class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]"
+{#if simpleMode}
+  <article
+    class="surface rounded-2xl border border-[var(--line)] p-4"
+    data-simple-stage={stage.key}
+  >
+    <div class="flex flex-wrap items-center gap-3">
+      <span
+        class="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--accent-soft)] text-xs font-semibold text-[var(--accent)]"
+        >{stage.number}</span
       >
-        {stage.number}
-      </div>
-      <div class="min-w-0 flex-1">
-        <div class="flex flex-wrap items-center gap-2">
-          <h2 class="text-lg font-semibold">{stage.title}</h2>
-          <span
-            class:running={stage.status === 'running'}
-            class:done={stage.status === 'completed'}
-            class:warning={stage.status === 'stale' ||
-              stage.status === 'failed'}
-            class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"
-          >
-            <StatusIcon
-              class={stage.status === 'running' ? 'animate-spin' : ''}
-              size={12}
-            />
-            {stage.toggle
-              ? stage.enabled
-                ? 'enabled'
-                : 'disabled'
-              : optional && stage.status === 'ready'
-                ? 'optional'
-                : stage.status}
-          </span>
-        </div>
-        <p class="muted mt-1.5 max-w-3xl text-sm leading-relaxed">
-          {stage.explanation}
-        </p>
-
-        {#if languageVersions}{@render languageVersions()}{/if}
-
-        {#if collapsibleNow}
-          <div
-            class="mt-3 flex max-w-3xl flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-xs"
-            data-testid="stage-disclosure-summary"
-          >
-            <span class="min-w-0 flex-1">
-              <strong>{disclosureSelectedLabel}</strong>
-              {#if !disclosureExpanded}
-                {#if elapsedSeconds != null}
-                  <span class="muted tabular-nums">
-                    · {stage.status === 'running' ? 'Elapsed' : 'Duration'}
-                    {formatDuration(elapsedSeconds)}</span
-                  >
-                {/if}
-                {#if stage.usage}
-                  <span class="muted">
-                    · Cost {formatCost(stage.usage.cost_usd ?? null)}</span
-                  >
-                {/if}
-              {/if}
-            </span>
-            {#if stage.artifact && !disclosureExpanded}
-              <button
-                onclick={onpreview}
-                class="font-semibold text-[var(--accent)]"
-                data-testid="stage-disclosure-preview"
-              >
-                Preview selected
-              </button>
-            {/if}
-            <button
-              onclick={toggleDisclosure}
-              aria-expanded={disclosureExpanded}
-              aria-controls={disclosureId}
-              data-testid="stage-disclosure-toggle"
-              class="shrink-0 rounded-lg border border-[var(--line)] px-2.5 py-1.5 font-semibold"
-            >
-              {disclosureExpanded ? 'Hide details' : 'Show details'}
-            </button>
-          </div>
-        {/if}
-
-        <div
-          id={disclosureId}
-          hidden={!disclosureExpanded}
-          class="disclosure-body"
-          data-testid="stage-disclosure-body"
+      <h2 class="min-w-0 flex-1 font-semibold">{stage.title}</h2>
+      <span class="muted text-xs capitalize"
+        >{stage.toggle && !stage.enabled ? 'Disabled' : stage.status}</span
+      >
+      {#if stage.artifact}<button
+          type="button"
+          class="btn btn-sm"
+          onclick={onpreview}><Eye size={14} /> Preview</button
+        >{/if}
+      {#if stage.status === 'running'}<button
+          type="button"
+          class="btn btn-sm"
+          onclick={oncancel}>Cancel</button
         >
-          {#if captionAlignment}
-            <details
-              class:alignment-warning={!captionAlignment.reliable}
-              class="alignment-result mt-3 max-w-3xl overflow-hidden rounded-xl border text-sm"
-            >
-              <summary
-                class="alignment-summary flex cursor-pointer list-none items-center gap-2 px-3.5 py-3"
-              >
-                {#if captionAlignment.reliable}<Check
-                    size={15}
-                  />{:else}<CircleAlert size={15} />{/if}
-                <span class="min-w-0 flex-1">
-                  <strong class="block">
-                    {captionAlignment.reliable
-                      ? 'Caption word timing is ready'
-                      : 'Caption alignment is unreliable'}
-                  </strong>
-                  <span class="muted mt-0.5 block text-xs font-normal">
-                    {captionAlignment.methodLabel} · {Math.round(
-                      captionAlignment.eligibleCoverage * 100
-                    )}% of in-media words · {Math.round(
-                      captionAlignment.quality * 100
-                    )}% {captionAlignment.qualityLabel}
-                  </span>
-                </span>
-                <span class="alignment-chevron muted shrink-0"
-                  ><ChevronDown size={16} /></span
-                >
-              </summary>
-              <div class="border-t border-[var(--line)] px-3.5 py-3">
-                <p class="text-xs font-semibold leading-relaxed">
-                  {captionAlignment.reliable
-                    ? 'No action is required. The editor uses these acoustic word times to inspect and refine cuts while preserving the caption wording and speakers.'
-                    : 'Review the diagnostics before relying on automatic cut refinement.'}
-                </p>
-                {#if captionAlignment.reliable}
-                  <p class="muted mt-2 text-xs leading-relaxed">
-                    After rendering, subtitle formatting and speech-block
-                    creation currently use the retimed SRT. The word-timing
-                    artifact stays attached for provenance, but those later
-                    stages do not consume it directly yet.
-                  </p>
-                {/if}
-                <p class="muted mt-2 text-xs leading-relaxed">
-                  {captionAlignment.methodLabel} · {Math.round(
-                    captionAlignment.coverage * 100
-                  )}% of all caption words aligned · {Math.round(
-                    captionAlignment.eligibleCoverage * 100
-                  )}% of in-media words · {Math.round(
-                    captionAlignment.quality * 100
-                  )}% {captionAlignment.qualityLabel}{captionAlignment.wordCount
-                    ? ` · ${captionAlignment.wordCount.toLocaleString()} timed words`
-                    : ''}{captionAlignment.cueCount
-                    ? ` · ${captionAlignment.acceptedCues.toLocaleString()}/${captionAlignment.cueCount.toLocaleString()} cues accepted`
-                    : ''}{captionAlignment.batchCount
-                    ? ` · ${captionAlignment.batchCount.toLocaleString()} CTC batches`
-                    : ''}{captionAlignment.retryCount
-                    ? ` · ${captionAlignment.retryCount.toLocaleString()} isolated retries`
-                    : ''}{captionAlignment.outsideMediaCount
-                    ? ` · ${captionAlignment.outsideMediaCount.toLocaleString()} cues outside the recording`
-                    : ''}{captionAlignment.oversizedCueCount
-                    ? ` · ${captionAlignment.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
-                    : ''}{captionAlignment.engine
-                    ? ` · ${captionAlignment.engine}`
-                    : ''}{captionAlignment.fallbackUsed
-                    ? ' · ASR fallback used'
-                    : ''}.
-                  {captionAlignment.reliable
-                    ? ' The timing is stored with the caption transcript; rebuild an existing edit timeline to consume it.'
-                    : ' Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
-                </p>
-              </div>
-            </details>
-          {/if}
-
-          {#if stage.key === 'generate_audio' && stage.resolved_input && !inputControls}
-            <div
-              class="mt-3 max-w-3xl rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
-              aria-label={`Generation input: ${stage.resolved_input.label}${stage.resolved_input.version ? ` v${stage.resolved_input.version}` : ''}`}
-            >
-              <strong
-                >Generate from: {stage.resolved_input.label}{stage
-                  .resolved_input.version
-                  ? ` v${stage.resolved_input.version}`
-                  : ''}</strong
-              >
-              <p class="muted mt-1 text-xs leading-relaxed">
-                Change the input role in Customize workflow. Choose the exact
-                version with that stage's Selected version control.
-              </p>
-            </div>
-          {/if}
-
-          {#if stage.status === 'running' && stage.progress != null}
-            {@const percent = progressPercent(stage.progress)}
-            <div class="mt-3 max-w-md">
-              <div class="flex items-center justify-between gap-3 text-xs">
-                <span class="muted min-w-0 truncate" title={stage.detail ?? ''}
-                  >{stage.detail ?? 'Working…'}</span
-                >
-                <span class="muted shrink-0 tabular-nums">{percent}%</span>
-              </div>
-              <div
-                class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--line)]"
-                role="progressbar"
-                aria-label={`${stage.title} progress`}
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuenow={percent}
-              >
-                <div
-                  class="h-full bg-[var(--accent)] transition-[width]"
-                  style={`width:${percent}%`}
-                ></div>
-              </div>
-            </div>
-          {/if}
-
-          {#if stage.detail && stage.status === 'failed'}
-            <p class="mt-2 text-xs text-red-500">{stage.detail}</p>
-          {/if}
-
-          {#if elapsedSeconds != null || stage.usage || (costAware && stage.run_metrics)}
-            <div
-              class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
-              aria-label={`${stage.title} run metrics`}
-            >
-              {#if elapsedSeconds != null}
-                <span
-                  class="muted inline-flex items-center gap-1.5 tabular-nums"
-                >
-                  <Clock3 size={13} aria-hidden="true" />
-                  {stage.status === 'running' ? 'Elapsed' : 'Duration'}
-                  <strong class="text-[var(--ink)]"
-                    >{formatDuration(elapsedSeconds)}</strong
-                  >
-                </span>
-              {/if}
-              {#if stage.usage || (costAware && stage.run_metrics)}
-                <span class="muted"
-                  >Cost <strong class="text-[var(--ink)]"
-                    >{formatCost(stage.usage?.cost_usd ?? null)}</strong
-                  ></span
-                >
-              {/if}
-            </div>
-            {#if stage.usage}
-              <details
-                class="muted mt-2 text-xs"
-                data-testid="stage-usage-details"
-              >
-                <summary class="cursor-pointer"
-                  >Token &amp; model details</summary
-                >
-                <dl class="mt-2 flex flex-wrap gap-x-4 gap-y-2 tabular-nums">
-                  <div>
-                    <dt>Input tokens</dt>
-                    <dd class="font-semibold text-[var(--ink)]">
-                      {stage.usage.input_tokens.toLocaleString()}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Output tokens</dt>
-                    <dd class="font-semibold text-[var(--ink)]">
-                      {stage.usage.output_tokens.toLocaleString()}
-                    </dd>
-                  </div>
-                  {#if stage.usage.cached_input_tokens}<div>
-                      <dt>Cached input tokens</dt>
-                      <dd class="font-semibold text-[var(--ink)]">
-                        {stage.usage.cached_input_tokens.toLocaleString()}
-                      </dd>
-                    </div>{/if}
-                  {#if stage.usage.model_id}<div class="min-w-0 max-w-full">
-                      <dt>Model</dt>
-                      <dd
-                        class="break-words font-semibold text-[var(--ink)]"
-                        title={stage.usage.model_id}
-                        aria-label={`Model ${modelDisplayName(stage.usage.model_id)}`}
-                      >
-                        {modelDisplayName(stage.usage.model_id)}
-                      </dd>
-                    </div>{/if}
-                </dl>
-              </details>
-            {/if}
-          {/if}
-
-          {#if inputControls}<div class="my-3">
-              {@render inputControls()}
-            </div>{/if}
-          {#if (stage.artifacts?.length ?? 0) > 0}
-            <StageArtifactHistory
-              {outputsOnly}
-              {onpreviewversion}
-              artifacts={stage.artifacts ?? []}
-              total={stage.artifact_history_total}
-              hasMore={Boolean(stage.artifact_history_has_more)}
-              loadingMore={historyLoading}
-              selectedArtifactId={stage.selected_artifact_id}
-              canPreview={Boolean(stage.artifact)}
-              {onselect}
-              {onpreview}
-              {onclear}
-              {onfork}
-              {ondelete}
-              {onloadmore}
-            />
-          {:else if stage.artifact}
-            <button
-              onclick={onpreview}
-              class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]"
-            >
-              Preview latest: {stage.artifact.role}<ChevronRight size={13} />
-            </button>
-          {/if}
-        </div>
-      </div>
-    </div>
-
-    <div
-      class="disclosure-actions flex flex-wrap items-center gap-2 sm:ml-[3.75rem]"
-      hidden={!disclosureExpanded}
-    >
-      {#if stage.toggle}
+      {:else if stage.executable && (!stage.toggle || (stage.enabled && !stage.toggle_only)) && (workspaceMode === 'review' || stage.key === 'export' || stage.status === 'failed')}
         <button
-          onclick={onsettings}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
-        >
-          <Settings2 size={16} /> Timing &amp; settings
-        </button>
-        <label
-          class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
-        >
-          <input
-            type="checkbox"
-            checked={Boolean(stage.enabled)}
-            onchange={(event) => ontoggle(event.currentTarget.checked)}
-            class="size-4 accent-[var(--accent)]"
-          />
-          {stage.enabled ? 'Enabled' : 'Disabled'}
-        </label>
-        {#if !stage.toggle_only && stage.enabled}
-          {#if stage.status === 'running'}
-            <button
-              onclick={oncancel}
-              class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500"
-              >Cancel</button
-            >
-          {:else}
-            <button
-              onclick={stage.status === 'failed' &&
-              stage.agent_run_id &&
-              stage.resumable
-                ? onresume
-                : onrun}
-              disabled={runDisabled || stage.status === 'unavailable'}
-              class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              <Play size={16} />
-              {stage.status === 'failed' &&
-              stage.agent_run_id &&
-              stage.resumable
-                ? 'Resume'
-                : stage.status === 'failed'
-                  ? 'Retry optimization'
-                  : 'Run optimization'}
-            </button>
-          {/if}
-        {/if}
-      {:else if stage.executable}
-        <button
-          onclick={onsettings}
-          class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
-        >
-          <Settings2 size={16} /> Settings
-        </button>
-        {#if stage.key === 'export' && stage.artifact}
-          <button
-            onclick={onpreview}
-            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
-          >
-            <Eye size={16} /> Preview latest
-          </button>
-        {/if}
-        {#if workspaceMode === 'review' || stage.key === 'export' || stage.status === 'failed'}
-          {#if stage.status === 'running'}
-            <button
-              onclick={oncancel}
-              class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500"
-              >Cancel</button
-            >
-          {:else}
-            <button
-              onclick={stage.status === 'failed' &&
-              stage.agent_run_id &&
-              stage.resumable
-                ? onresume
-                : onrun}
-              disabled={runDisabled || stage.status === 'unavailable'}
-              class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
-            >
-              <Play size={16} />
-              {stage.key === 'export'
-                ? 'Export now'
-                : stage.status === 'failed' &&
-                    stage.agent_run_id &&
-                    stage.resumable
-                  ? 'Resume'
-                  : stage.status === 'failed'
-                    ? 'Retry'
-                    : runLabel
-                      ? runLabel
-                      : optional && stage.key === 'transcribe'
-                        ? 'Configure transcription'
-                        : stage.artifact
-                          ? 'Run again'
-                          : 'Run now'}
-            </button>
-          {/if}
-        {/if}
-      {:else}
-        <button
-          onclick={onrun}
+          type="button"
+          class="btn btn-primary btn-sm"
           disabled={runDisabled || stage.status === 'unavailable'}
-          class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+          onclick={stage.status === 'failed' &&
+          stage.agent_run_id &&
+          stage.resumable
+            ? onresume
+            : onrun}
         >
-          {#if stage.key === 'edit_media'}
-            <Scissors size={16} /> Open editor
-          {:else}
-            <Sparkles size={16} /> Open comparison
-          {/if}
+          {stage.status === 'failed'
+            ? stage.resumable
+              ? 'Resume'
+              : 'Retry'
+            : stage.key === 'export'
+              ? 'Open output'
+              : runLabel || (stage.artifact ? 'Run again' : 'Continue')}
         </button>
       {/if}
     </div>
-  </div>
-</article>
+    {#if stage.status === 'running'}<div class="mt-3" role="status">
+        <progress
+          class="w-full accent-[var(--accent)]"
+          max="100"
+          value={progressPercent(stage.progress)}
+          aria-label={`${stage.title} progress`}
+        ></progress>
+        <p class="muted mt-1 text-xs">{stage.detail || 'Working…'}</p>
+      </div>{/if}
+    {#if stage.status === 'failed' && stage.detail}<p
+        class="mt-3 text-sm text-red-500"
+        role="alert"
+      >
+        {stage.detail}
+      </p>{/if}
+    {#if stage.artifact}<p class="muted mt-2 text-xs">
+        {disclosureSelectedLabel}
+      </p>
+    {:else if stage.status === 'unavailable'}<p class="muted mt-2 text-xs">
+        {stage.explanation}
+      </p>{/if}
+    {#if languageVersions}{@render languageVersions()}{/if}
+  </article>
+{:else}
+  <article
+    class:stage-locked={stage.status === 'unavailable'}
+    class:stage-disabled={Boolean(stage.toggle && !stage.enabled)}
+    class="surface rounded-[1.4rem] p-5 sm:p-6"
+  >
+    <div class="grid gap-5">
+      <div class="flex min-w-0 flex-1 items-start gap-4">
+        <div
+          class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-sm font-bold text-[var(--accent)]"
+        >
+          {stage.number}
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-lg font-semibold">{stage.title}</h2>
+            <span
+              class:running={stage.status === 'running'}
+              class:done={stage.status === 'completed'}
+              class:warning={stage.status === 'stale' ||
+                stage.status === 'failed'}
+              class="status-chip inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[.68rem] font-bold uppercase tracking-wider"
+            >
+              <StatusIcon
+                class={stage.status === 'running' ? 'animate-spin' : ''}
+                size={12}
+              />
+              {stage.toggle
+                ? stage.enabled
+                  ? 'enabled'
+                  : 'disabled'
+                : optional && stage.status === 'ready'
+                  ? 'optional'
+                  : stage.status}
+            </span>
+          </div>
+          <p class="muted mt-1.5 max-w-3xl text-sm leading-relaxed">
+            {stage.explanation}
+          </p>
+
+          {#if languageVersions}{@render languageVersions()}{/if}
+
+          {#if collapsibleNow}
+            <div
+              class="mt-3 flex max-w-3xl flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-xs"
+              data-testid="stage-disclosure-summary"
+            >
+              <span class="min-w-0 flex-1">
+                <strong>{disclosureSelectedLabel}</strong>
+                {#if !disclosureExpanded}
+                  {#if elapsedSeconds != null}
+                    <span class="muted tabular-nums">
+                      · {stage.status === 'running' ? 'Elapsed' : 'Duration'}
+                      {formatDuration(elapsedSeconds)}</span
+                    >
+                  {/if}
+                  {#if stage.usage}
+                    <span class="muted">
+                      · Cost {formatCost(stage.usage.cost_usd ?? null)}</span
+                    >
+                  {/if}
+                {/if}
+              </span>
+              {#if stage.artifact && !disclosureExpanded}
+                <button
+                  onclick={onpreview}
+                  class="font-semibold text-[var(--accent)]"
+                  data-testid="stage-disclosure-preview"
+                >
+                  Preview selected
+                </button>
+              {/if}
+              <button
+                onclick={toggleDisclosure}
+                aria-expanded={disclosureExpanded}
+                aria-controls={disclosureId}
+                data-testid="stage-disclosure-toggle"
+                class="shrink-0 rounded-lg border border-[var(--line)] px-2.5 py-1.5 font-semibold"
+              >
+                {disclosureExpanded ? 'Hide details' : 'Show details'}
+              </button>
+            </div>
+          {/if}
+
+          <div
+            id={disclosureId}
+            hidden={!disclosureExpanded}
+            class="disclosure-body"
+            data-testid="stage-disclosure-body"
+          >
+            {#if captionAlignment}
+              <details
+                class:alignment-warning={!captionAlignment.reliable}
+                class="alignment-result mt-3 max-w-3xl overflow-hidden rounded-xl border text-sm"
+              >
+                <summary
+                  class="alignment-summary flex cursor-pointer list-none items-center gap-2 px-3.5 py-3"
+                >
+                  {#if captionAlignment.reliable}<Check
+                      size={15}
+                    />{:else}<CircleAlert size={15} />{/if}
+                  <span class="min-w-0 flex-1">
+                    <strong class="block">
+                      {captionAlignment.reliable
+                        ? 'Caption word timing is ready'
+                        : 'Caption alignment is unreliable'}
+                    </strong>
+                    <span class="muted mt-0.5 block text-xs font-normal">
+                      {captionAlignment.methodLabel} · {Math.round(
+                        captionAlignment.eligibleCoverage * 100
+                      )}% of in-media words · {Math.round(
+                        captionAlignment.quality * 100
+                      )}% {captionAlignment.qualityLabel}
+                    </span>
+                  </span>
+                  <span class="alignment-chevron muted shrink-0"
+                    ><ChevronDown size={16} /></span
+                  >
+                </summary>
+                <div class="border-t border-[var(--line)] px-3.5 py-3">
+                  <p class="text-xs font-semibold leading-relaxed">
+                    {captionAlignment.reliable
+                      ? 'No action is required. The editor uses these acoustic word times to inspect and refine cuts while preserving the caption wording and speakers.'
+                      : 'Review the diagnostics before relying on automatic cut refinement.'}
+                  </p>
+                  {#if captionAlignment.reliable}
+                    <p class="muted mt-2 text-xs leading-relaxed">
+                      After rendering, subtitle formatting and speech-block
+                      creation currently use the retimed SRT. The word-timing
+                      artifact stays attached for provenance, but those later
+                      stages do not consume it directly yet.
+                    </p>
+                  {/if}
+                  <p class="muted mt-2 text-xs leading-relaxed">
+                    {captionAlignment.methodLabel} · {Math.round(
+                      captionAlignment.coverage * 100
+                    )}% of all caption words aligned · {Math.round(
+                      captionAlignment.eligibleCoverage * 100
+                    )}% of in-media words · {Math.round(
+                      captionAlignment.quality * 100
+                    )}% {captionAlignment.qualityLabel}{captionAlignment.wordCount
+                      ? ` · ${captionAlignment.wordCount.toLocaleString()} timed words`
+                      : ''}{captionAlignment.cueCount
+                      ? ` · ${captionAlignment.acceptedCues.toLocaleString()}/${captionAlignment.cueCount.toLocaleString()} cues accepted`
+                      : ''}{captionAlignment.batchCount
+                      ? ` · ${captionAlignment.batchCount.toLocaleString()} CTC batches`
+                      : ''}{captionAlignment.retryCount
+                      ? ` · ${captionAlignment.retryCount.toLocaleString()} isolated retries`
+                      : ''}{captionAlignment.outsideMediaCount
+                      ? ` · ${captionAlignment.outsideMediaCount.toLocaleString()} cues outside the recording`
+                      : ''}{captionAlignment.oversizedCueCount
+                      ? ` · ${captionAlignment.oversizedCueCount.toLocaleString()} oversized cues retained without CTC timing`
+                      : ''}{captionAlignment.engine
+                      ? ` · ${captionAlignment.engine}`
+                      : ''}{captionAlignment.fallbackUsed
+                      ? ' · ASR fallback used'
+                      : ''}.
+                    {captionAlignment.reliable
+                      ? ' The timing is stored with the caption transcript; rebuild an existing edit timeline to consume it.'
+                      : ' Original caption timing was retained for rejected cues; those word times are excluded from cut refinement.'}
+                  </p>
+                </div>
+              </details>
+            {/if}
+
+            {#if stage.key === 'generate_audio' && stage.resolved_input && !inputControls}
+              <div
+                class="mt-3 max-w-3xl rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-3.5 py-3 text-sm"
+                aria-label={`Generation input: ${stage.resolved_input.label}${stage.resolved_input.version ? ` v${stage.resolved_input.version}` : ''}`}
+              >
+                <strong
+                  >Generate from: {stage.resolved_input.label}{stage
+                    .resolved_input.version
+                    ? ` v${stage.resolved_input.version}`
+                    : ''}</strong
+                >
+                <p class="muted mt-1 text-xs leading-relaxed">
+                  Change the input role in Customize workflow. Choose the exact
+                  version with that stage's Selected version control.
+                </p>
+              </div>
+            {/if}
+
+            {#if stage.status === 'running' && stage.progress != null}
+              {@const percent = progressPercent(stage.progress)}
+              <div class="mt-3 max-w-md">
+                <div class="flex items-center justify-between gap-3 text-xs">
+                  <span
+                    class="muted min-w-0 truncate"
+                    title={stage.detail ?? ''}
+                    >{stage.detail ?? 'Working…'}</span
+                  >
+                  <span class="muted shrink-0 tabular-nums">{percent}%</span>
+                </div>
+                <div
+                  class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--line)]"
+                  role="progressbar"
+                  aria-label={`${stage.title} progress`}
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow={percent}
+                >
+                  <div
+                    class="h-full bg-[var(--accent)] transition-[width]"
+                    style={`width:${percent}%`}
+                  ></div>
+                </div>
+              </div>
+            {/if}
+
+            {#if stage.detail && stage.status === 'failed'}
+              <p class="mt-2 text-xs text-red-500">{stage.detail}</p>
+            {/if}
+
+            {#if elapsedSeconds != null || stage.usage || (costAware && stage.run_metrics)}
+              <div
+                class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
+                aria-label={`${stage.title} run metrics`}
+              >
+                {#if elapsedSeconds != null}
+                  <span
+                    class="muted inline-flex items-center gap-1.5 tabular-nums"
+                  >
+                    <Clock3 size={13} aria-hidden="true" />
+                    {stage.status === 'running' ? 'Elapsed' : 'Duration'}
+                    <strong class="text-[var(--ink)]"
+                      >{formatDuration(elapsedSeconds)}</strong
+                    >
+                  </span>
+                {/if}
+                {#if stage.usage || (costAware && stage.run_metrics)}
+                  <span class="muted"
+                    >Cost <strong class="text-[var(--ink)]"
+                      >{formatCost(stage.usage?.cost_usd ?? null)}</strong
+                    ></span
+                  >
+                {/if}
+              </div>
+              {#if stage.usage}
+                <details
+                  class="muted mt-2 text-xs"
+                  data-testid="stage-usage-details"
+                >
+                  <summary class="cursor-pointer"
+                    >Token &amp; model details</summary
+                  >
+                  <dl class="mt-2 flex flex-wrap gap-x-4 gap-y-2 tabular-nums">
+                    <div>
+                      <dt>Input tokens</dt>
+                      <dd class="font-semibold text-[var(--ink)]">
+                        {stage.usage.input_tokens.toLocaleString()}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Output tokens</dt>
+                      <dd class="font-semibold text-[var(--ink)]">
+                        {stage.usage.output_tokens.toLocaleString()}
+                      </dd>
+                    </div>
+                    {#if stage.usage.cached_input_tokens}<div>
+                        <dt>Cached input tokens</dt>
+                        <dd class="font-semibold text-[var(--ink)]">
+                          {stage.usage.cached_input_tokens.toLocaleString()}
+                        </dd>
+                      </div>{/if}
+                    {#if stage.usage.model_id}<div class="min-w-0 max-w-full">
+                        <dt>Model</dt>
+                        <dd
+                          class="break-words font-semibold text-[var(--ink)]"
+                          title={stage.usage.model_id}
+                          aria-label={`Model ${modelDisplayName(stage.usage.model_id)}`}
+                        >
+                          {modelDisplayName(stage.usage.model_id)}
+                        </dd>
+                      </div>{/if}
+                  </dl>
+                </details>
+              {/if}
+            {/if}
+
+            {#if inputControls}<div class="my-3">
+                {@render inputControls()}
+              </div>{/if}
+            {#if (stage.artifacts?.length ?? 0) > 0}
+              <StageArtifactHistory
+                {outputsOnly}
+                {onpreviewversion}
+                artifacts={stage.artifacts ?? []}
+                total={stage.artifact_history_total}
+                hasMore={Boolean(stage.artifact_history_has_more)}
+                loadingMore={historyLoading}
+                selectedArtifactId={stage.selected_artifact_id}
+                canPreview={Boolean(stage.artifact)}
+                {onselect}
+                {onpreview}
+                {onclear}
+                {onfork}
+                {ondelete}
+                {onloadmore}
+              />
+            {:else if stage.artifact}
+              <button
+                onclick={onpreview}
+                class="mt-2 flex items-center gap-1 text-xs font-semibold text-[var(--accent)]"
+              >
+                Preview latest: {stage.artifact.role}<ChevronRight size={13} />
+              </button>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="disclosure-actions flex flex-wrap items-center gap-2 sm:ml-[3.75rem]"
+        hidden={!disclosureExpanded}
+      >
+        {#if stage.toggle}
+          <button
+            onclick={onsettings}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+          >
+            <Settings2 size={16} /> Timing &amp; settings
+          </button>
+          <label
+            class="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+          >
+            <input
+              type="checkbox"
+              checked={Boolean(stage.enabled)}
+              onchange={(event) => ontoggle(event.currentTarget.checked)}
+              class="size-4 accent-[var(--accent)]"
+            />
+            {stage.enabled ? 'Enabled' : 'Disabled'}
+          </label>
+          {#if !stage.toggle_only && stage.enabled}
+            {#if stage.status === 'running'}
+              <button
+                onclick={oncancel}
+                class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500"
+                >Cancel</button
+              >
+            {:else}
+              <button
+                onclick={stage.status === 'failed' &&
+                stage.agent_run_id &&
+                stage.resumable
+                  ? onresume
+                  : onrun}
+                disabled={runDisabled || stage.status === 'unavailable'}
+                class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <Play size={16} />
+                {stage.status === 'failed' &&
+                stage.agent_run_id &&
+                stage.resumable
+                  ? 'Resume'
+                  : stage.status === 'failed'
+                    ? 'Retry optimization'
+                    : 'Run optimization'}
+              </button>
+            {/if}
+          {/if}
+        {:else if stage.executable}
+          <button
+            onclick={onsettings}
+            class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+          >
+            <Settings2 size={16} /> Settings
+          </button>
+          {#if stage.key === 'export' && stage.artifact}
+            <button
+              onclick={onpreview}
+              class="flex items-center gap-2 rounded-xl border border-[var(--line)] px-3.5 py-2.5 text-sm font-semibold"
+            >
+              <Eye size={16} /> Preview latest
+            </button>
+          {/if}
+          {#if workspaceMode === 'review' || stage.key === 'export' || stage.status === 'failed'}
+            {#if stage.status === 'running'}
+              <button
+                onclick={oncancel}
+                class="rounded-xl border border-red-400/50 px-4 py-2.5 text-sm font-semibold text-red-500"
+                >Cancel</button
+              >
+            {:else}
+              <button
+                onclick={stage.status === 'failed' &&
+                stage.agent_run_id &&
+                stage.resumable
+                  ? onresume
+                  : onrun}
+                disabled={runDisabled || stage.status === 'unavailable'}
+                class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                <Play size={16} />
+                {stage.key === 'export'
+                  ? 'Export now'
+                  : stage.status === 'failed' &&
+                      stage.agent_run_id &&
+                      stage.resumable
+                    ? 'Resume'
+                    : stage.status === 'failed'
+                      ? 'Retry'
+                      : runLabel
+                        ? runLabel
+                        : optional && stage.key === 'transcribe'
+                          ? 'Configure transcription'
+                          : stage.artifact
+                            ? 'Run again'
+                            : 'Run now'}
+              </button>
+            {/if}
+          {/if}
+        {:else}
+          <button
+            onclick={onrun}
+            disabled={runDisabled || stage.status === 'unavailable'}
+            class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            {#if stage.key === 'edit_media'}
+              <Scissors size={16} /> Open editor
+            {:else}
+              <Sparkles size={16} /> Open comparison
+            {/if}
+          </button>
+        {/if}
+      </div>
+    </div>
+  </article>
+{/if}
 
 <style>
   .disclosure-body {

@@ -20,6 +20,7 @@
   import SpeechPlanSettings from './SpeechPlanSettings.svelte';
   import StageSettingsDialog from './StageSettingsDialog.svelte';
   import { errorMessage } from './errors';
+  import { useProjectInterface } from './project-interface.svelte';
   import { jobApi, sessionApi } from './domain-api';
   import type {
     OutcomePlan,
@@ -72,7 +73,11 @@
     active?: boolean;
   } = $props();
 
+  const projectInterface = useProjectInterface();
+  const simpleMode = $derived(projectInterface?.mode === 'simple');
+
   let audiobookCastPanel = $state<CastDraftController>();
+  let speechMultiVoice = $state(false);
 
   type Stage = WorkflowStage;
 
@@ -866,7 +871,7 @@
           ? 'automatic'
           : 'review';
     if (scope !== 'language') await load({ initial: true });
-    if (initialSettingsStage) {
+    if (initialSettingsStage && !simpleMode) {
       const stage = workflowStore.snapshot?.stages.find(
         (item) => item.key === initialSettingsStage
       );
@@ -925,7 +930,7 @@
       <div>
         {#if session.workflow_kind !== 'subtitles'}<div
             class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
-            aria-label="Workspace mode"
+            aria-label="Workflow execution"
           >
             <button
               onclick={() => (workspaceMode = 'review')}
@@ -940,21 +945,21 @@
             >
           </div>{/if}
       </div>
-      <div class="flex flex-wrap gap-2">
-        <button
-          onclick={() => (workflowTour = true)}
-          class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-          ><Sparkles size={17} /> Tour</button
-        >{#if snapshot?.sources.find((item) => item.filename
-            .toLowerCase()
-            .endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find(
-            (item) => item.filename.toLowerCase().endsWith('.pdf')
-          )!}<button
-            onclick={() => openPdfEditor(availablePdf)}
-            class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
-            ><Crop size={18} /> Edit PDF</button
-          >{/if}
-      </div>
+      {#if !simpleMode}<div class="flex flex-wrap gap-2">
+          <button
+            onclick={() => (workflowTour = true)}
+            class="lift flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
+            ><Sparkles size={17} /> Tour</button
+          >{#if snapshot?.sources.find((item) => item.filename
+              .toLowerCase()
+              .endsWith('.pdf'))}{@const availablePdf = snapshot.sources.find(
+              (item) => item.filename.toLowerCase().endsWith('.pdf')
+            )!}<button
+              onclick={() => openPdfEditor(availablePdf)}
+              class="lift flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] px-4 py-3 text-sm font-semibold"
+              ><Crop size={18} /> Edit PDF</button
+            >{/if}
+        </div>{/if}
     </header>
   {/if}
   {#if sourceMessage}<div
@@ -990,7 +995,7 @@
       >
     </section>
   {/if}
-  {#if scope !== 'language'}
+  {#if scope !== 'language' && !simpleMode}
     <details
       class="mb-5 rounded-xl border border-[var(--line)] px-4 py-3 text-sm"
       data-testid="session-workflow-help"
@@ -1059,7 +1064,8 @@
   {/snippet}
   {#snippet sessionSource()}
     <SessionSourceCard
-      compact={Boolean(sourceCardStage)}
+      compact={simpleMode || Boolean(sourceCardStage)}
+      {simpleMode}
       sessionId={session.id}
       refreshKey={JSON.stringify([
         session.revision,
@@ -1079,7 +1085,20 @@
     </div>
   {:else if snapshot}
     <div class="space-y-4">
-      {#if scope !== 'language' && !sourceCardStage}{@render sessionSource()}{/if}
+      {#if simpleMode && (planNotice || generationNotice)}<p
+          class="muted text-sm"
+          role="status"
+        >
+          {planNotice || generationNotice}
+        </p>{/if}
+      {#if simpleMode && (speechPlan?.warning || speechPlan?.generation_blocked_reason)}<p
+          class="text-sm text-[var(--warning)]"
+          role="status"
+        >
+          {speechPlan?.warning || speechPlan?.generation_blocked_reason} Switch to
+          Advanced to review the speech plan.
+        </p>{/if}
+      {#if scope !== 'language' && (simpleMode || !sourceCardStage)}{@render sessionSource()}{/if}
       {#if scope === 'all' && session.workflow_kind !== 'audiobook' && !session.included_stages_json.includes('translate')}
         <TranslationVersions sessionId={session.id} plannedOnly />
       {/if}
@@ -1101,31 +1120,44 @@
               onupdated(record);
               await load();
             }}
-            onsettings={() => {
-              const stage = snapshot?.stages.find(
-                (item) => item.key === 'prepare_text'
-              );
-              if (stage) void openSettings(stage);
-            }}
+            onmode={(mode) => (speechMultiVoice = mode === 'multi_voice')}
           />
         {/if}
       {/snippet}
-      {#if scope === 'all' || (scope === 'language' && !visibleStages.some((stage) => stage.key === 'translate'))}{@render voiceSetup()}{/if}
+      {#if scope === 'all' || (scope === 'language' && !visibleStages.some((stage) => stage.key === 'translate'))}
+        {#if simpleMode && session.workflow_kind !== 'subtitles'}<details
+            class="rounded-2xl border border-[var(--line)] p-4"
+          >
+            <summary class="cursor-pointer text-sm font-semibold"
+              >Voice and narration</summary
+            >
+            <div class="mt-3">{@render voiceSetup()}</div>
+          </details>{:else}{@render voiceSetup()}{/if}
+      {/if}
       {#each visibleStages as stage (stage.key)}
-        {#if stage.key === 'generate_audio' && workspaceMode === 'review'}
+        {#if stage.key === 'generate_audio' && workspaceMode === 'review' && !simpleMode}
           {#if planNotice}<p class="muted text-sm" role="status">
               {planNotice}
             </p>{/if}
           <SpeechPlanCard
             externalCastPanel={audiobookCastPanel}
             showCasting={false}
+            workflowKind={session.workflow_kind}
+            multiVoice={speechMultiVoice}
             sessionId={session.id}
             plan={speechPlan}
             busy={planBusy}
             onprepare={() => planAction('prepare')}
             onselect={(id) => planAction('select', id)}
             onreview={() => planAction('review')}
-            onsettings={() => (planSettingsOpen = true)}
+            onsettings={() => {
+              if (session.workflow_kind === 'audiobook') {
+                const textStage = snapshot?.stages.find(
+                  (item) => item.key === 'prepare_text'
+                );
+                if (textStage) void openSettings(textStage);
+              } else planSettingsOpen = true;
+            }}
             onperformancechange={() => void load()}
           >
             {#snippet inputControls()}{@render stageInput(
@@ -1134,6 +1166,7 @@
           </SpeechPlanCard>
         {/if}
         <WorkflowStageCard
+          {simpleMode}
           {stage}
           sessionId={session.id}
           outputsOnly={outputHasInputPicker(stage.key)}
@@ -1141,9 +1174,11 @@
           {workspaceMode}
           runDisabled={stage.key === 'generate_audio' &&
             workspaceMode === 'review' &&
-            (planBusy || !speechPlan?.can_generate)}
+            (planBusy || (!simpleMode && !speechPlan?.can_generate))}
           runLabel={stage.key === 'generate_audio' && workspaceMode === 'review'
-            ? 'Generate audio…'
+            ? simpleMode && !speechPlan?.selected_revision_id
+              ? 'Prepare speech'
+              : 'Generate audio…'
             : session.workflow_kind === 'media_edit' &&
                 stage.key === 'transcribe'
               ? hasAttachedCaptions
@@ -1157,9 +1192,14 @@
           onsettings={() => openSettings(stage)}
           ontoggle={toggleSpeechOptimization}
           onrun={() =>
-            session.workflow_kind === 'media_edit' && stage.key === 'transcribe'
-              ? openSettings(stage)
-              : run(stage)}
+            simpleMode &&
+            stage.key === 'generate_audio' &&
+            !speechPlan?.selected_revision_id
+              ? planAction('prepare')
+              : session.workflow_kind === 'media_edit' &&
+                  stage.key === 'transcribe'
+                ? openSettings(stage)
+                : run(stage)}
           onresume={() => resume(stage)}
           oncancel={() => cancel(stage)}
           onselect={(artifactId) => chooseStageArtifact(stage, artifactId)}
@@ -1227,7 +1267,16 @@
             {/if}
           {/snippet}
         </WorkflowStageCard>
-        {#if scope === 'language' && stage.key === 'translate'}{@render voiceSetup()}{/if}
+        {#if scope === 'language' && stage.key === 'translate' && session.workflow_kind !== 'subtitles'}
+          {#if simpleMode}<details
+              class="rounded-2xl border border-[var(--line)] p-4"
+            >
+              <summary class="cursor-pointer text-sm font-semibold"
+                >Voice and narration</summary
+              >
+              <div class="mt-3">{@render voiceSetup()}</div>
+            </details>{:else}{@render voiceSetup()}{/if}
+        {/if}
       {/each}
     </div>
   {/if}

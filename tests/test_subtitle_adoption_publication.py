@@ -57,6 +57,11 @@ class SubtitleAdoptionPublicationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.session_id = response.get_json()["id"]
         paths = self.services["paths"]
+        with self.database.session() as session:
+            record = session.get(SessionRecord, self.session_id)
+            record.storage_key = "publication-storage-key"
+            self.storage_key = record.storage_key
+        self.assertNotEqual(self.storage_key, self.session_id)
         self.source = paths.managed_path("uploads/legacy-source.srt")
         self.source.parent.mkdir(parents=True, exist_ok=True)
         self.source.write_bytes(SOURCE)
@@ -68,6 +73,9 @@ class SubtitleAdoptionPublicationTests(unittest.TestCase):
         with patch.object(library, "artifacts", None):
             library.attach(self.session_id, self.asset_id)
         self.destination = paths.managed_path(
+            f"sessions/{self.storage_key}/imported-subtitles/{hashlib.sha256(SOURCE).hexdigest()}.srt"
+        )
+        self.wrong_id_destination = paths.managed_path(
             f"sessions/{self.session_id}/imported-subtitles/{hashlib.sha256(SOURCE).hexdigest()}.srt"
         )
 
@@ -199,6 +207,7 @@ class SubtitleAdoptionPublicationTests(unittest.TestCase):
 
     def test_successful_adoption_preserves_derivative_on_reuse(self):
         first = self.adopt()
+        self.assertFalse(self.wrong_id_destination.exists())
         content = self.destination.read_bytes()
         before = self.snapshot()
         second = self.adopt()

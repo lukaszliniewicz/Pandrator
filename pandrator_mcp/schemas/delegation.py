@@ -46,6 +46,30 @@ def execution_policy_json_schema(schema: dict[str, Any]) -> None:
     ]
 
 
+def native_execution_policy_json_schema(schema: dict[str, Any]) -> None:
+    """Keep host signatures flat while documenting runtime cross-field rules.
+
+    Some MCP hosts convert root conditionals into opaque intersection types.
+    Portable Pydantic schemas retain the conditionals above; native callers
+    receive ordinary properties and are checked by the same input validator.
+    """
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        raise ValueError("Delegation execution schemas require object properties.")
+    schema.pop("allOf", None)
+    schema.pop("oneOf", None)
+    rule = "Serial requires max_parallel_batches=1; parallel requires 2 through 8."
+    for name in ("execution_mode", "max_parallel_batches"):
+        field = properties.get(name)
+        if isinstance(field, dict):
+            field["description"] = rule
+    schema["x-pandrator-execution-policy"] = {
+        "serial": {"max_parallel_batches": 1},
+        "parallel": {"minimum": 2, "maximum": MAX_PARALLEL_BATCHES},
+        "enforced": "runtime",
+    }
+
+
 def _encoded_size(value: ToolInput) -> int:
     return len(
         json.dumps(
@@ -114,4 +138,5 @@ __all__ = [
     "DelegationExecutionMixin",
     "MAX_PARALLEL_BATCHES",
     "execution_policy_json_schema",
+    "native_execution_policy_json_schema",
 ]

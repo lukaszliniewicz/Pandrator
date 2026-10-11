@@ -110,6 +110,13 @@ uncertainty. Keep subtitles readable without adding explanations. A correction
 run can target an existing translation artifact; inspect the pinned artifact
 and language before treating it as original-language correction.
 
+Apply the skill's written/TTS separation rule even for timed dubbing. For example,
+the displayed translation keeps `Model 1305`, `1986` and `Wrocław`; pronunciation
+expansions or respellings belong in later speech optimization. Normalize spoken
+ASR forms to appropriate written forms rather than copying them mechanically.
+Timing constraints may justify concise natural wording, not phonetic spellings
+or number expansions added solely for synthesis.
+
 Use web research only when available, appropriate for the content's privacy,
 and useful to resolve a specific uncertainty such as a name or quotation.
 Record source and confidence. Searchable text is not proof of what the speaker
@@ -154,6 +161,10 @@ identity, meaning, and source structure; change how the text is spoken rather
 than translating, summarizing, or rewriting the document. The finalized
 `tts_optimized` artifact is separate from the source.
 
+This is the stage for necessary phonetic spellings, spoken number forms and
+pronunciation expansions. Keep the corresponding translation/display artifact
+in normal written form; do not copy optimized speech back into subtitle text.
+
 When the claim advertises the annotation span variant, prefer it for untouched
 source units without existing XML. Return `unit_id`, the supplied `source_sha256`,
 and `annotations` containing only dialogue ranges and their known `speaker_ref`
@@ -174,4 +185,6 @@ voice design and cast assignment are later steps, not annotation side effects.
 Check run/batch identity, required item coverage, unique IDs, ordering where
 required, operation shapes, deletion policy, and exclusion of context-only
 items. Mechanical acceptance is not a semantic quality review: also check
-meaning, terminology, and continuity across the batch boundaries.
+meaning, terminology, and continuity across the batch boundaries. For correction
+or translation, also check that pronunciation workarounds have stayed out of
+the display result. Schema acceptance does not enforce that semantic boundary.

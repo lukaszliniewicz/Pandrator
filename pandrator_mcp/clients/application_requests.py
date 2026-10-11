@@ -15,6 +15,7 @@ class ApplicationRequests(ABC):
         path: str,
         *,
         method: str = "GET",
+        read_only_operation: bool = False,
         authenticated: bool = True,
         parameters: dict[str, Any] | list[tuple[str, Any]] | None = None,
         body: dict[str, Any] | None = None,
@@ -22,6 +23,7 @@ class ApplicationRequests(ABC):
         if_match_revision: int | str | None = None,
         maximum_body_bytes: int = 512 * 1024,
         request_timeout_seconds: float | None = None,
+        request_timeout_limit_seconds: float = 120.0,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
         raise NotImplementedError

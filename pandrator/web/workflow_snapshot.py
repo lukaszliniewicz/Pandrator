@@ -25,6 +25,7 @@ from .models import (
     SessionSetting,
     UsageEvent,
 )
+from .outcome_plans import resolve_workflow_inputs
 from .source_resolution import PrimarySourceResolution
 from .workflow_stage_types import StageDefinition
 
@@ -407,10 +408,11 @@ def build_workflow_snapshot(
         document_optimization_enabled = bool(
             transformations.get("llm_tts_document_optimization")
         )
-        input_choices = (
-            (outcome.value_json or {}).get("inputs", {})
-            if outcome and isinstance(outcome.value_json, dict)
-            else {}
+        input_choices = resolve_workflow_inputs(
+            record,
+            outcome.value_json
+            if outcome is not None and isinstance(outcome.value_json, dict)
+            else None,
         )
         latest_roles = {
             artifact.role: artifact
@@ -559,7 +561,7 @@ def build_workflow_snapshot(
             prerequisite_roles = effective_definition.prerequisite_roles
             if (
                 definition.key == "translate"
-                and str(input_choices.get("translation") or "correction")
+                and str(input_choices.get("translation") or "source")
                 != "correction"
             ):
                 prerequisite_roles = (
@@ -585,7 +587,7 @@ def build_workflow_snapshot(
                         "media_edit": ("media_edit_subtitles",),
                         "source": ("transcription", "upload"),
                     }.get(
-                        str(input_choices.get("generation") or "translation"),
+                        str(input_choices.get("generation") or "source"),
                         effective_definition.prerequisite_roles,
                     )
             explicit_prerequisite = None

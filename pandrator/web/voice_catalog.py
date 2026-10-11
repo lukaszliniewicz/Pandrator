@@ -12,7 +12,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .voice_catalog_schemas import VoiceProfile, VoiceReference, canonical_voice_key
+from .voice_catalog_schemas import (
+    VoiceCompatibility,
+    VoiceCompatibilityStatus,
+    VoiceProfile,
+    VoiceReference,
+    canonical_voice_key,
+)
 
 
 class VoiceCatalogQuery(BaseModel):
@@ -160,9 +166,7 @@ def model_modes(service: dict[str, Any], model: dict[str, Any]) -> dict[str, Any
             else "prebuilt"
         )
     cloning = mode in {"cloning", "hybrid", "optional_cloning"}
-    design = mode in {"design", "optional_cloning"} or bool(
-        expressive.get("voice_design")
-    )
+    design = mode == "design" or bool(expressive.get("voice_design"))
     instructions = expressive.get("instructions", "none")
     known = expressive.get("status") in {"documented", "verified"}
     return {
@@ -211,6 +215,37 @@ def supported_languages(service: dict[str, Any], model: dict[str, Any]) -> list[
             if v
         )
     )
+
+
+def _compatibility_payload(
+    service: dict[str, Any],
+    *,
+    service_id: str,
+    model_id: str,
+    status: VoiceCompatibilityStatus,
+    ready: bool,
+    prepared: bool,
+    voice: str | None,
+    modes: dict[str, Any],
+    languages: list[str],
+) -> dict[str, Any]:
+    checked_at = service.get("health_checked_at")
+    has_observation = isinstance(checked_at, str) and bool(checked_at)
+    available = service.get("available")
+    reason = service.get("availability_reason")
+    return VoiceCompatibility(
+        service_id=service_id,
+        model=model_id,
+        status=status,
+        ready=ready,
+        prepared=prepared,
+        voice=voice,
+        modes=modes,
+        supported_languages=languages,
+        service_available=available if has_observation and type(available) is bool else None,
+        health_checked_at=checked_at if has_observation else None,
+        availability_reason=reason if has_observation and isinstance(reason, str) else None,
+    ).model_dump()
 
 
 def _provider_profile(
@@ -308,6 +343,33 @@ def catalog_entries(
             registration = (metadata.get("providers") or {}).get(service["id"]) or {}
             for model in catalog_models(service):
                 modes = model_modes(service, model)
+                google_design = (
+                    service["id"] in {"gemini", "vertex_ai"}
+                    and model["id"] in {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
+                    and registration.get("resource_kind") == "designed_voice"
+                )
+                if google_design:
+                    ready = registration.get("voice_id") in service.get("managed_google_voice_ids", [])
+                    status = (
+                        "scope_mismatch" if not ready
+                        else "unavailable" if service.get("available") is False
+                        else "ready" if service.get("available") is True
+                        else "unknown"
+                    )
+                    compatibility.append(
+                        _compatibility_payload(
+                            service,
+                            service_id=service["id"],
+                            model_id=model["id"],
+                            status=status,
+                            ready=status == "ready",
+                            prepared=status != "scope_mismatch",
+                            voice=registration.get("voice_id"),
+                            modes=modes,
+                            languages=supported_languages(service, model),
+                        )
+                    )
+                    continue
                 if not modes["cloning"]:
                     continue
                 status = (
@@ -324,15 +386,17 @@ def catalog_entries(
                 if status == "ready" and model["id"] not in listed_models(service):
                     status = "model_unavailable"
                 compatibility.append(
-                    {
-                        "service_id": service["id"],
-                        "model": model["id"],
-                        "status": status,
-                        "ready": status == "ready",
-                        "voice": registration.get("voice_id"),
-                        "modes": modes,
-                        "supported_languages": supported_languages(service, model),
-                    }
+                    _compatibility_payload(
+                        service,
+                        service_id=service["id"],
+                        model_id=model["id"],
+                        status=status,
+                        ready=status == "ready",
+                        prepared=status not in {"needs_reference", "needs_link"},
+                        voice=registration.get("voice_id"),
+                        modes=modes,
+                        languages=supported_languages(service, model),
+                    )
                 )
         entries.append(
             {
@@ -442,17 +506,17 @@ def catalog_entries(
                         "revision": override.get("revision", 0),
                         "collections": memberships.get(key, []),
                         "compatibility": [
-                            {
-                                "service_id": service["id"],
-                                "model": model["id"],
-                                "status": status,
-                                "ready": status == "ready",
-                                "voice": voice,
-                                "modes": modes,
-                                "supported_languages": supported_languages(
-                                    service, model
-                                ),
-                            }
+                            _compatibility_payload(
+                                service,
+                                service_id=service["id"],
+                                model_id=model["id"],
+                                status=status,
+                                ready=status == "ready",
+                                prepared=True,
+                                voice=voice,
+                                modes=modes,
+                                languages=supported_languages(service, model),
+                            )
                         ],
                         "preview_artifact_id": preview,
                         "created_at": override.get("created_at"),

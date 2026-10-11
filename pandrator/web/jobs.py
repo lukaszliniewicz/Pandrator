@@ -18,9 +18,18 @@ from sqlalchemy.orm import Session
 from pandrator.logic.tts_service_identity import normalize_service_id
 
 from .credentials import SecretRedactor
-from .database import Database
+from .database import Database, is_sqlite_busy
 from .model_maintenance import ensure_app_job_allowed
-from .models import AgentRun, GenerationRun, Job, JobEvent, ResourceClaim, SessionRecord, utcnow
+from .models import (
+    AgentRun,
+    GenerationRun,
+    Job,
+    JobEvent,
+    ResourceClaim,
+    SessionPurge,
+    SessionRecord,
+    utcnow,
+)
 from .training_state import reconcile_training_runs_in_session
 from .update_maintenance import update_maintenance_active
 
@@ -28,6 +37,9 @@ JobHandler = Callable[
     [dict[str, Any], Callable[[float, str | None], None], threading.Event],
     dict[str, Any] | None,
 ]
+WORKER_LEASE_SECONDS = 30
+WORKER_LEASE_SAFETY_SECONDS = 2
+HEARTBEAT_WRITE_TIMEOUT_MS = 250
 
 
 def _canonical_tts_resource_key(key: str) -> str:
@@ -639,7 +651,7 @@ class JobQueue:
         lease_generation: int,
         lease_seconds: int = 30,
     ) -> bool:
-        with self.database.session() as session:
+        with self.database.session(busy_timeout_ms=HEARTBEAT_WRITE_TIMEOUT_MS) as session:
             result = session.execute(
                 update(ResourceClaim)
                 .where(
@@ -821,7 +833,9 @@ class JobQueue:
         lease_seconds: int = 30,
     ) -> bool:
         now = utcnow()
-        with self.database.immediate_session() as session:
+        with self.database.immediate_session(
+            busy_timeout_ms=HEARTBEAT_WRITE_TIMEOUT_MS
+        ) as session:
             job = session.get(Job, job_id)
             if not self._owns_lease(job, worker_id, lease_generation):
                 return False
@@ -884,11 +898,16 @@ class JobQueue:
             )
 
     def request_cancel_in_session(self, session: Session, job_id: str) -> Job:
-        """Cancel one job inside the caller's existing write transaction."""
+        """Cancel a job and any safely linked generation child in one transaction."""
 
         job = session.get(Job, job_id)
         if job is None:
             raise KeyError(job_id)
+        if job.kind == "maintenance.session_purge":
+            target = (job.payload_json or {}).get("target_session_id")
+            journal = session.get(SessionPurge, target) if isinstance(target, str) else None
+            if journal is not None and journal.state in {"purging", "failed", "complete"}:
+                raise ValueError("Session purge has claimed irreversible deletion and cannot be cancelled.")
         if job.status == "queued":
             job.status = "canceled"
             job.finished_at = utcnow()
@@ -906,6 +925,25 @@ class JobQueue:
         self._reconcile_generation_run_for_job_locked(session, job)
         self._reconcile_agent_runs_for_jobs_locked(session, [job.id])
         reconcile_training_runs_in_session(session, [job_id])
+        if job.kind == "generation.admit" and isinstance(job.result_json, dict):
+            marker = job.result_json
+            run_id = str(marker.get("generation_run_id") or "")
+            child_id = str(marker.get("job_id") or "")
+            if run_id and child_id and job.session_id:
+                run = session.get(GenerationRun, run_id)
+                child = session.get(Job, child_id)
+                if (
+                    run is not None
+                    and run.job_id == child_id
+                    and run.session_id == job.session_id
+                    and child is not None
+                    and child.kind == "generation.run"
+                    and child.session_id == job.session_id
+                    and child.status in {"queued", "running", "cancel_requested"}
+                    and isinstance(child.payload_json, dict)
+                    and child.payload_json.get("generation_run_id") == run_id
+                ):
+                    self.request_cancel_in_session(session, child_id)
         session.flush()
         return job
 
@@ -930,6 +968,13 @@ class JobQueue:
             job.status = "succeeded"
             job.progress = 1.0
             job.result_json = self.redact_diagnostic(result or {})
+            job.error_code = None
+            job.error_message = None
+            retry_detail = (
+                f"Retry scheduled after attempt {job.attempts - 1} of {job.max_attempts}"
+            )
+            if job.progress_detail == retry_detail:
+                job.progress_detail = None
             job.lease_owner = None
             job.lease_expires_at = None
             finished_at = utcnow()
@@ -1200,6 +1245,44 @@ class Worker:
             root_logger.setLevel(logging.INFO)
         root_logger.addHandler(log_handler)
 
+        last_successful_heartbeat = time.monotonic()
+
+        def renew_lease(
+            *, progress_value: float | None = None, progress_detail: str | None = None
+        ) -> bool | None:
+            nonlocal last_successful_heartbeat
+            try:
+                renewed = self.queue.heartbeat(
+                    job.id,
+                    self.worker_id,
+                    lease_generation=lease_generation,
+                    progress=progress_value,
+                    detail=progress_detail,
+                    lease_seconds=WORKER_LEASE_SECONDS,
+                )
+                if not renewed:
+                    lease_lost_event.set()
+                    cancel_event.set()
+                    return False
+                last_successful_heartbeat = time.monotonic()
+                self.queue.heartbeat_resources(
+                    job.id,
+                    self.worker_id,
+                    lease_generation=lease_generation,
+                    lease_seconds=WORKER_LEASE_SECONDS,
+                )
+                return True
+            except Exception as error:
+                if is_sqlite_busy(error):
+                    if time.monotonic() - last_successful_heartbeat < (
+                        WORKER_LEASE_SECONDS - WORKER_LEASE_SAFETY_SECONDS
+                    ):
+                        return None
+                    lease_lost_event.set()
+                    cancel_event.set()
+                    return False
+                raise
+
         def monitor() -> None:
             """Keep leases alive and observe cancellation even during quiet handlers."""
             heartbeat_at = 0.0
@@ -1214,20 +1297,10 @@ class Worker:
                         return
                     now = time.monotonic()
                     if now >= heartbeat_at:
-                        if not self.queue.heartbeat(
-                            job.id,
-                            self.worker_id,
-                            lease_generation=lease_generation,
-                        ):
-                            lease_lost_event.set()
-                            cancel_event.set()
+                        renewed = renew_lease()
+                        if renewed is False:
                             return
-                        self.queue.heartbeat_resources(
-                            job.id,
-                            self.worker_id,
-                            lease_generation=lease_generation,
-                        )
-                        heartbeat_at = now + 5.0
+                        heartbeat_at = now + (0.2 if renewed is None else 5.0)
             except Exception as error:
                 self._report_exception(f"Worker monitor failed for job {job.id}", error)
                 lease_lost_event.set()
@@ -1246,21 +1319,7 @@ class Worker:
                 lease_generation=lease_generation,
             ):
                 cancel_event.set()
-            if not self.queue.heartbeat(
-                job.id,
-                self.worker_id,
-                lease_generation=lease_generation,
-                progress=value,
-                detail=detail,
-            ):
-                lease_lost_event.set()
-                cancel_event.set()
-                return
-            self.queue.heartbeat_resources(
-                job.id,
-                self.worker_id,
-                lease_generation=lease_generation,
-            )
+            renew_lease(progress_value=value, progress_detail=detail)
 
         try:
             monitor_thread.start()
@@ -1273,7 +1332,19 @@ class Worker:
             handler_payload = dict(job.payload_json)
             handler_payload["_job_id"] = job.id
             handler_payload["_lease_generation"] = lease_generation
-            result = handler(handler_payload, progress, cancel_event)
+            from .job_execution import current_job_lease
+
+            lease_token = current_job_lease.set(
+                {
+                    "job_id": job.id,
+                    "owner_id": self.worker_id,
+                    "lease_generation": lease_generation,
+                }
+            )
+            try:
+                result = handler(handler_payload, progress, cancel_event)
+            finally:
+                current_job_lease.reset(lease_token)
             canceled = self.queue.should_cancel(
                 job.id,
                 self.worker_id,

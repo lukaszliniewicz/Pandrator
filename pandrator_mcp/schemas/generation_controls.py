@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -22,6 +23,22 @@ def _trim_text(value: Any) -> Any:
     return value if value is None or not isinstance(value, str) else value.strip()
 
 
+class CharacterDelivery(_StrictModel):
+    instruction: str = Field(default="", max_length=1200)
+    emotion: str = Field(default="", max_length=80)
+    pace: Literal["", "natural", "slower", "brisk"] = ""
+    cadence: Literal["", "continuing", "concluding", "questioning", "contrast"] = ""
+    emphasis: Literal["", "light", "moderate", "strong"] = ""
+
+    @field_validator("instruction", "emotion")
+    @classmethod
+    def plain_direction(cls, value: str) -> str:
+        value = value.strip()
+        if re.search(r"[\[\]\x00]|<\||\|>", value):
+            raise ValueError("Use plain performance directions, not provider tags or control tokens.")
+        return value
+
+
 class CharacterEntry(_StrictModel):
     """One stable character identity in a session's character dictionary."""
 
@@ -30,6 +47,7 @@ class CharacterEntry(_StrictModel):
     aliases: list[str] = Field(default_factory=list, max_length=64)
     voice_category: VoiceCategory = "unspecified"
     notes: str = Field(default="", max_length=2000)
+    delivery: CharacterDelivery = Field(default_factory=CharacterDelivery)
     locked: bool = False
     status: CharacterStatus = "accepted"
     origin: str = Field(default="manual", max_length=160)
@@ -190,6 +208,7 @@ __all__ = [
     "CastSettings",
     "Character",
     "CharacterEntry",
+    "CharacterDelivery",
     "CharacterStatus",
     "GenerationControls",
     "GenerationControlsResponse",

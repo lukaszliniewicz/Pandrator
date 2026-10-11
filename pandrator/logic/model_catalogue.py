@@ -14,11 +14,13 @@ from typing import Any
 
 from .audio_cpp_catalogue import inventory as audio_cpp_inventory
 from .audio_cpp_catalogue import package_metadata
+from .speech_capabilities import capabilities_for_endpoint_model, capabilities_for_model
 from .tts_language_support import tts_language_support
 
 _OPENAI_TTS_SOURCE = "https://developers.openai.com/api/docs/guides/text-to-speech"
 _GEMINI_TTS_SOURCE = "https://ai.google.dev/gemini-api/docs/speech-generation"
 _VERTEX_TTS_SOURCE = "https://docs.cloud.google.com/text-to-speech/docs/gemini-tts"
+_VERTEX_38_TTS_SOURCE = "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview"
 _ELEVENLABS_TTS_SOURCE = "https://elevenlabs.io/docs/overview/models"
 _AZURE_TTS_SOURCE = "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices"
 
@@ -30,13 +32,23 @@ _OFFICIAL_PROVIDER_SOURCES = {
 }
 _KNOWN_GEMINI_MODELS = {
     "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
     "gemini-2.5-flash-tts",
+    "gemini-2.5-flash-lite-preview-tts",
     "gemini-2.5-pro-tts",
 }
 _KNOWN_ELEVENLABS_MODELS = {
+    "eleven_v4": {
+        "label": "Eleven v4",
+        "description": "Expressive speech with inline audio tags and short before/after text context over the dialogue API.",
+    },
+    "eleven_v4_turbo": {
+        "label": "Eleven v4 Turbo",
+        "description": "Realtime expressive speech over the dialogue WebSocket API; Pandrator saves the completed stream as an audio take.",
+    },
     "eleven_v3": {
         "label": "Eleven v3",
         "description": "Expressive speech generation with inline audio tags.",
@@ -57,6 +69,38 @@ _KNOWN_ELEVENLABS_MODELS = {
 _AZURE_SPEECH_ADAPTER = "azure_speech"
 _AUDIO_CPP_ADAPTER = "audio_cpp"
 _ELEVENLABS_ADAPTER = "elevenlabs_native"
+_IMPLEMENTED_CAPABILITIES = {
+    "prebuilt_voices", "voice_cloning", "voice_design", "instructions",
+    "emotion_control", "vocal_events", "semantic_context", "acoustic_context",
+    "multilingual",
+}
+_NON_MODEL_REQUEST_SELECTORS = {
+    ("kobold_qwen", "Prebuilt Voices"),
+    ("kobold_qwen", "Voice Cloning"),
+    ("voxtral", "auto"),
+    ("voxtral", "gguf"),
+    ("voxtral", "bf16"),
+    ("pandrator-voxtral-fastapi", "auto"),
+    ("pandrator-voxtral-fastapi", "gguf"),
+    ("pandrator-voxtral-fastapi", "bf16"),
+    ("pandrator-kobold-qwen-fastapi", "qwen3-tts"),
+    ("qwen3-second-state", "qwen3-tts"),
+    ("chatterbox-travisvn", "chatterbox-tts-1"),
+    ("cosyvoice-jianchang512", "tts-1"),
+    ("open-unified-tts", "tts-1"),
+    ("kokoro", "tts-1"),
+    ("kokoro", "tts-1-hd"),
+    ("kokoro", "gpt-4o-mini-tts"),
+}
+_REQUEST_MODEL_ALIASES: dict[tuple[str, str], tuple[str, ...]] = {
+    ("voxcpm", "openbmb/VoxCPM2"): ("voxcpm2",),
+    ("pandrator-voxcpm-fastapi", "openbmb/VoxCPM2"): ("voxcpm2",),
+    ("pandrator-fishs2-fastapi", "fishaudio/s2-pro"): (
+        "fishs2",
+        "fish-s2",
+        "s2-pro",
+    ),
+}
 
 
 def _capability_notes(*values: Any) -> list[str]:
@@ -241,20 +285,16 @@ def _feature_capabilities(
     model_metadata: Mapping[str, Any],
     config: Mapping[str, Any] | None,
     allow_provider_defaults: bool,
-) -> tuple[list[str], dict[str, Any], dict[str, Any]]:
-    from .speech_performance import capabilities_for_model
-
-    backend = adapter or provider_id
-    if config is not None:
-        backend = str(config.get("adapter") or config.get("provider") or config.get("id") or backend)
-    control_profile = capabilities_for_model(
+) -> tuple[list[str], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    control_profile = capabilities_for_endpoint_model(
         model_id,
-        backend=backend,
+        config or {"adapter": adapter, "provider": provider_id},
         family=family,
         voice_mode=voice_mode,
     )
 
-    capabilities = set(_string_list(model_metadata.get("capabilities")))
+    capabilities = set(_string_list(model_metadata.get("capabilities"))) & _IMPLEMENTED_CAPABILITIES
+    capabilities.difference_update({"prebuilt_voices", "voice_cloning", "instructions", "emotion_control", "voice_design", "vocal_events", "semantic_context", "acoustic_context"})
     if voice_mode in {"prebuilt", "hybrid"}:
         capabilities.add("prebuilt_voices")
     if voice_mode in {"cloning", "optional_cloning", "hybrid"}:
@@ -264,11 +304,13 @@ def _feature_capabilities(
     emotion = control_profile.get("emotion")
     if isinstance(emotion, Mapping) and emotion.get("mode") not in {None, "", "none"}:
         capabilities.add("emotion_control")
-    if control_profile.get("voice_design") is True or voice_mode == "design":
+    if control_profile.get("voice_design") is True:
         capabilities.add("voice_design")
 
     if control_profile.get("event_tags"):
         capabilities.add("vocal_events")
+    if control_profile.get("semantic_context") not in {None, "", "none"}:
+        capabilities.add("semantic_context")
 
     # Preserve only feature claims explicitly attached to this model or
     # backed by one of the canonical provider documentation profiles.
@@ -278,12 +320,16 @@ def _feature_capabilities(
     else:
         upstream_features = {}
         if (
-            provider_id == "openai" and model_id == "gpt-4o-mini-tts"
+            provider_id == "openai" and model_id.startswith("gpt-4o-mini-tts")
         ) or (
             provider_id in {"gemini", "vertex_ai"}
             and model_id in _KNOWN_GEMINI_MODELS
         ):
             upstream_features.update(instructions=True, emotion_control=True)
+            if provider_id in {"gemini", "vertex_ai"} and model_id in {
+                "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"
+            }:
+                upstream_features.update(voice_design=True, voice_cloning=True)
         elif provider_id == "azure" and adapter == _AZURE_SPEECH_ADAPTER:
             voice_metadata = model_metadata.get("voice_metadata")
             if isinstance(voice_metadata, dict) and any(
@@ -299,23 +345,13 @@ def _feature_capabilities(
     else:
         pandrator_features = {}
     pandrator_features.setdefault("speech_generation", "request_supported")
-    pandrator_features.setdefault(
-        "instructions", control_profile.get("instructions", "none")
-    )
-    pandrator_features.setdefault(
-        "voice_design",
-        "documented" if control_profile.get("voice_design") else "none",
-    )
-    pandrator_features.setdefault(
-        "emotion_control",
-        emotion.get("mode", "none") if isinstance(emotion, Mapping) else "none",
-    )
+    pandrator_features["instructions"] = control_profile.get("instructions", "none")
+    pandrator_features["voice_design"] = "documented" if control_profile.get("voice_design") else "none"
+    pandrator_features["emotion_control"] = emotion.get("mode", "none") if isinstance(emotion, Mapping) else "none"
     if control_profile.get("event_tags"):
-        pandrator_features.setdefault(
-            "vocal_events", ", ".join(control_profile["event_tags"].keys())
-        )
+        pandrator_features["vocal_events"] = ", ".join(control_profile["event_tags"].keys())
     else:
-        pandrator_features.setdefault("vocal_events", "none")
+        pandrator_features["vocal_events"] = "none"
 
     if provider_id == "azure" and adapter == _AZURE_SPEECH_ADAPTER:
         # MAI Voice exposes SSML expressive styles; capabilities_for_model has
@@ -345,7 +381,7 @@ def _feature_capabilities(
     # A generic profile's coarse service-level flags do not establish support
     # for its individual model. It may retain explicit model_catalog claims.
     explicit_model_mode = bool(str(model_metadata.get("voice_mode") or "").strip())
-    if not allow_provider_defaults and not model_metadata.get("capabilities"):
+    if not allow_provider_defaults and not model_metadata.get("capabilities") and not control_profile.get("upstream_model_id"):
         if not explicit_model_mode:
             capabilities.difference_update(
                 {"prebuilt_voices", "voice_cloning", "voice_design"}
@@ -356,13 +392,8 @@ def _feature_capabilities(
         if not model_metadata.get("upstream_features"):
             upstream_features = {}
         if not isinstance(model_metadata.get("pandrator_features"), dict):
-            pandrator_features = {
-                "speech_generation": "request_supported",
-                "instructions": "none",
-                "voice_design": "none",
-                "emotion_control": "none",
-                "vocal_events": "none",
-            }
+            pandrator_features.update(instructions="none", voice_design="none",
+                emotion_control="none", vocal_events="none")
 
     instruction_scope = control_profile.get("instruction_scope")
     instruction_scope_text = (
@@ -380,13 +411,23 @@ def _feature_capabilities(
             capability_notes,
             ["Upstream marks this model deprecated and recommends eleven_flash_v2_5 for new selections."],
         )
+    if control_profile.get("voice_design_workflow") == "resource_creation":
+        pandrator_features["voice_design"] = "request_supported"
+        capabilities.add("voice_design")
+        capability_notes = _capability_notes(
+            capability_notes,
+            [
+                "Create a voice from a description in Pandrator's Voice Library using Gemini or Vertex. Its Google identity and description are saved for reuse with both Gemini 3.8 TTS models. Existing replicated voices can also be used by ID.",
+                "Before/after context is sent as unspoken performance guidance; the model receives the selected transcript separately.",
+            ],
+        )
     pandrator_features.update(
         instruction_scope=instruction_scope_text or "none",
         semantic_context=str(control_profile.get("semantic_context") or "none"),
         capability_notes=capability_notes,
     )
 
-    return sorted(capabilities), pandrator_features, upstream_features
+    return sorted(capabilities), pandrator_features, upstream_features, control_profile
 
 
 def _build_item(
@@ -413,7 +454,7 @@ def _build_item(
         allow_provider_defaults=allow_provider_defaults,
     )
     effective_adapter = adapter or str((config or {}).get("adapter") or "")
-    capabilities, pandrator_features, upstream_features = _feature_capabilities(
+    capabilities, pandrator_features, upstream_features, control_profile = _feature_capabilities(
         model_id,
         provider_id=provider_id,
         adapter=effective_adapter,
@@ -452,6 +493,7 @@ def _build_item(
     )
     result: dict[str, Any] = {
         "id": model_id,
+        "entry_role": "model",
         "provider_id": provider_id,
         "provider_name": provider_name,
         "provider_kind": provider_kind,
@@ -465,6 +507,7 @@ def _build_item(
         "language_support": language_support,
         "supported_languages": copy.deepcopy(language_support["languages"]),
         "pandrator_features": copy.deepcopy(pandrator_features),
+        "expressive_capabilities": control_profile,
         "package_availability": availability,
         "commercial_use": str(
             (model_metadata.get("license") or {}).get("commercial_use", "unknown")
@@ -472,6 +515,7 @@ def _build_item(
             else model_metadata.get("commercial_use", "unknown")
         ),
         "recommended_for": str(model_metadata.get("recommended_for") or ""),
+        "request_aliases": [],
         "sources": sources,
     }
     if upstream_features:
@@ -527,10 +571,39 @@ def _catalogue_rows() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     # canonical package metadata without copying the connection profile.
     for package in audio_cpp_inventory().get("packages", []):
         model_id = str(package.get("id") or "")
-        if not model_id:
+        if not model_id or package.get("entry_role", "model") == "component":
             continue
         raw = package_metadata(model_id)
+        if raw.get("entry_role") == "component":
+            continue
         metadata = copy.deepcopy(raw)
+        control_profile = capabilities_for_model(model_id, backend="audio_cpp",
+            family=str(metadata.get("family") or ""),
+            voice_mode=str(metadata.get("voice_mode") or ""),
+            backend_version=str(audio_cpp_inventory().get("runtime_version") or ""))
+        metadata["expressive_capabilities"] = control_profile
+        capabilities = set(_string_list(metadata.get("capabilities"))) & _IMPLEMENTED_CAPABILITIES
+        capabilities.difference_update({"instructions", "emotion_control", "voice_design", "vocal_events", "semantic_context", "acoustic_context"})
+        if control_profile["instructions"] != "none":
+            capabilities.add("instructions")
+        if control_profile["emotion"]["mode"] != "none":
+            capabilities.add("emotion_control")
+        if control_profile["voice_design"]:
+            capabilities.add("voice_design")
+        if control_profile["event_tags"]:
+            capabilities.add("vocal_events")
+        if control_profile["semantic_context"] != "none":
+            capabilities.add("semantic_context")
+        metadata["capabilities"] = sorted(capabilities)
+        features = metadata.setdefault("pandrator_features", {})
+        features.update(
+            instructions=control_profile["instructions"],
+            instruction_scope=", ".join(control_profile["instruction_scope"]) or "none",
+            voice_design="documented" if control_profile["voice_design"] else "none",
+            emotion_control=control_profile["emotion"]["mode"],
+            vocal_events=", ".join(control_profile["event_tags"]) or "none",
+            semantic_context=control_profile["semantic_context"],
+        )
         provider_id = "audio_cpp"
         provider_name = "audio.cpp"
         provider_kind = "local"
@@ -574,6 +647,34 @@ def _catalogue_rows() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
         for model_id in model_ids:
             profile_meta = profile_metadata.get((provider_id, model_id), {})
             metadata = {**profile_meta, **model_catalog.get(model_id, {})}
+            if provider_id == "elevenlabs" and model_id in _KNOWN_ELEVENLABS_MODELS:
+                for field, value in _KNOWN_ELEVENLABS_MODELS[model_id].items():
+                    metadata.setdefault(field, value)
+                metadata.setdefault("family", "elevenlabs_tts")
+                metadata.setdefault("family_label", "ElevenLabs TTS")
+            if provider_id in {"gemini", "vertex_ai"} and model_id in {
+                "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"
+            }:
+                metadata.setdefault(
+                    "description",
+                    "High-throughput, lower-cost speech generation for everyday narration."
+                    if "lite" in model_id
+                    else "Expressive speech generation for audiobooks, acting and regional dialects.",
+                )
+                metadata["sources"] = [
+                    _VERTEX_38_TTS_SOURCE if provider_id == "vertex_ai" else _GEMINI_TTS_SOURCE
+                ]
+                if provider_id == "vertex_ai":
+                    metadata["upstream_status"] = "preview"
+                if "lite" in model_id:
+                    metadata.setdefault("recommended_for", "Lower-cost, high-volume narration")
+            elif provider_id == "gemini" and model_id in _KNOWN_GEMINI_MODELS:
+                metadata.setdefault("description", "Legacy TTS model; Google lists 17 November 2026 as its earliest possible shutdown date. Choose a 3.8 model for new work.")
+                metadata["upstream_status"] = "deprecated"
+            if provider_id == "openai" and model_id in {"gpt-4o-mini-tts", "gpt-4o-mini-tts-2025-12-15", "gpt-4o-mini-tts-2025-03-20", "tts-1", "tts-1-hd"}:
+                metadata["upstream_status"] = "deprecated"
+                metadata.setdefault("description", "Deprecated by OpenAI; scheduled shutdown 6 January 2027. Existing selections remain supported until the provider removes them.")
+                metadata["sources"] = ["https://developers.openai.com/api/docs/deprecations"]
             if model_id == default_model and not metadata.get("recommended_for"):
                 metadata["recommended_for"] = "Default starting model"
             if provider_id in _OFFICIAL_PROVIDER_SOURCES and not metadata.get("sources"):
@@ -658,6 +759,21 @@ def _catalogue_rows() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
             adapter=adapter,
             allow_provider_defaults=adapter == _AZURE_SPEECH_ADAPTER,
         )
+
+    for identity in _NON_MODEL_REQUEST_SELECTORS:
+        rows.pop(identity, None)
+
+    for (provider_id, model_id), aliases in _REQUEST_MODEL_ALIASES.items():
+        canonical = rows.get((provider_id, model_id))
+        if canonical is None:
+            raise RuntimeError(
+                f"Model catalogue alias target {provider_id}:{model_id} is missing."
+            )
+        canonical["request_aliases"] = sorted(
+            set([*_string_list(canonical.get("request_aliases")), *aliases])
+        )
+        for alias in aliases:
+            rows.pop((provider_id, alias), None)
 
     rows_list = list(rows.values())
     rows_list.sort(
@@ -775,6 +891,7 @@ def catalogue_page(
                 "supported_languages",
             )
         )
+        searchable += " " + " ".join(_string_list(row.get("request_aliases")))
         if query and query.casefold() not in searchable.casefold():
             continue
         selected.append(row)

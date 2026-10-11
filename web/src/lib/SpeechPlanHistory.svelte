@@ -43,6 +43,7 @@
   let {
     sessionId,
     activeRevisionId,
+    showTrigger = true,
     disabled = false,
     onrestore,
     onselect,
@@ -50,6 +51,7 @@
   }: {
     sessionId: string;
     activeRevisionId: string | null;
+    showTrigger?: boolean;
     disabled?: boolean;
     onrestore: (revisionId: string) => Promise<unknown>;
     onselect?: (revisionId: string) => Promise<unknown>;
@@ -212,6 +214,11 @@
     historyRequest += 1;
     detailLoader.invalidate();
   }
+  export function openHistory() {
+    if (!activeRevisionId) return;
+    open = true;
+    void loadHistory();
+  }
   function repairLabel(status: string) {
     return (
       (
@@ -243,15 +250,12 @@
   }
 </script>
 
-<button
-  type="button"
-  class="btn"
-  disabled={!activeRevisionId}
-  onclick={() => {
-    open = true;
-    void loadHistory();
-  }}>Speech plans</button
->
+{#if showTrigger}<button
+    type="button"
+    class="btn"
+    disabled={!activeRevisionId}
+    onclick={openHistory}>Speech plans</button
+  >{/if}
 {#if open}
   <dialog
     use:modalDialog={{

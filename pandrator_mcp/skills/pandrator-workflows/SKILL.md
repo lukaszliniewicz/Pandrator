@@ -1,6 +1,6 @@
 ---
 name: pandrator-workflows
-description: "Transcribe clips or create, review, recover, and export Pandrator audiobooks, subtitles, voiceovers, and recording edits through MCP. Use for passive in-harness document cleanup, correction, translation, and speech optimization, or for coordinating media workflows and delivering their outputs."
+description: "Transcribe clips or create, review, recover, and export Pandrator audiobooks, subtitles, voiceovers, recording edits, and reusable sounds and music through MCP. Use for passive in-harness document cleanup, correction, translation, and speech optimization, or for coordinating media workflows and delivering their outputs."
 ---
 
 # Pandrator workflows
@@ -21,10 +21,16 @@ tool arguments, roots, providers, model IDs, voices, or revisions.
   generation or export. Read [MCP operations](references/mcp-operations.md).
   For multiple voices, use the speaker-first procedure there: reuse accepted
   attribution, read the derived dictionary, then design and assign the cast.
+  For narration, cast design, provider instructions and context, read
+  [narration and providers](references/narration-and-providers.md).
 - **PDF/EPUB cleanup:** use the source-cleaning dispatcher before narration
   preparation. Read [semantic dispatch](references/semantic-dispatch.md).
 - **Recording edits:** use `pandrator_plan_media_edit_workflow` and the
   separate cut-review procedure in [MCP operations](references/mcp-operations.md).
+- **Reusable sounds, music or project effects:** read
+  [sounds and placement](references/sounds-and-placement.md). Use the separate
+  sound catalogue/library and project sound plan; environmental sounds are not
+  speech-model vocal tags.
 
 For an unfamiliar task, `pandrator_recommend_next_steps` and
 `pandrator_explain_system` provide packaged guidance. Inspect target status and
@@ -33,6 +39,38 @@ Fetch only the session, settings, and catalogues relevant to the requested job.
 Use compact status and admission responses by default; retrieve full frozen
 settings for diagnosis or an explicit review. Keep detailed receipts outside
 routine conversation payloads while retaining recovery IDs and revisions.
+Where a tool advertises `response_mode`, use `structured` and consume its
+structured envelope once; the text marker is not a second result. Cache tool
+schemas only for the current server build and `mcp_contract_revision`; reconnect
+after an update. Never invent an unsupported argument. Start with summary plan
+lists, bounded annotation reads, and explicit segment IDs. For several speech
+changes, use one batch preview/apply rather than copying a plan per phrase.
+Ordinary regeneration uses current session settings; historical settings require
+an explicit selector. Read the focused references below for these contracts.
+For Manager status, select `detail="summary"` when advertised; use the scoped
+model catalogue for descriptors rather than fetching full status repeatedly.
+For service/model discovery alone, set `include_managed_voices=false` when
+advertised; browse saved voices through the filtered voice catalogue as needed.
+
+## Keep written text separate from TTS text
+
+Corrections, translations, display text and subtitles must use normal written
+language: correct name spellings and the target language's conventions for
+numbers, dates, identifiers, abbreviations and units. A request for dubbing or
+narration does not turn the translation or subtitle layer into TTS input.
+
+If pronunciation needs phonetic respelling, syllable separators, spelling out
+numbers or expanding abbreviations, put those changes only in the TTS layer:
+pronunciation rules, a separate `tts_optimized` artifact, or an advertised
+`optimized_text` override. Ordinary prose may legitimately spell out numbers;
+the boundary is whether a change serves written language or only pronunciation.
+
+Before submitting corrections or translations, check names and numerical forms
+for speech-only substitutions, including ones already present in ASR text.
+Before subtitle export, check the selected display artifact and revision for
+the same separation. Read [semantic dispatch](references/semantic-dispatch.md)
+for submission guidance and [MCP operations](references/mcp-operations.md) for
+speech-only edits and subtitle repairs that preserve existing audio.
 
 ## Use the current harness for passive work
 
@@ -66,6 +104,12 @@ for the distinct result contracts.
 - Keep returned IDs, revisions, and work handles. Reuse retry identities after
   uncertain responses. Re-inspect and re-plan on stale plans or revision
   conflicts; do not force an earlier snapshot onto changed work.
+- Keep `generation_operation_id` from generation/regeneration receipts. When
+  advertised, use `pandrator_get_generation_operation` with waits up to 60
+  seconds: it follows preparation and synthesis under that same ID. Inspect
+  `coverage.export_ready` before dependent audio export. Older servers expose
+  `followup_work` through `get_work`; preparation success alone is insufficient.
+  Read [recovery](references/recovery.md) for uncertain responses or interruption.
 - A claimed packet is a lease. Renew it during long processing and release
   abandoned work. Only its actionable IDs may be submitted; surrounding
   context is read-only.
@@ -88,3 +132,7 @@ completeness, export format, and destination. Use the download result's size
 and checksum verification when available. Report the delivered files and any
 remaining review or incomplete work; a completed stage alone is not completion
 of the user's request.
+By default, check technical completion, the selected voice/settings and usable
+output files. Listening, voice quality and delivery judgments belong to the
+user. Run ASR, acoustic comparisons or extended audio analysis only when the
+user requests them or a concrete failure needs diagnosis.

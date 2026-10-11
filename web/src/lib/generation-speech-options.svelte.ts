@@ -11,6 +11,7 @@ export class GenerationSpeechOptionsState {
   catalogue = $state<TtsCatalogue>({ services: [] });
   voices = $state<VoiceRecord[]>([]);
   private request = 0;
+  private settingsRequest = 0;
   private disposed = false;
 
   constructor(
@@ -21,10 +22,30 @@ export class GenerationSpeechOptionsState {
   dispose() {
     this.disposed = true;
     this.request++;
+    this.settingsRequest++;
   }
 
-  async load() {
+  /** Project mode changes do not require catalogue downloads or discovery. */
+  async refreshSettings() {
+    const request = ++this.settingsRequest;
+    const scope = this.getSessionId();
+    const isCurrent = () =>
+      !this.disposed &&
+      request === this.settingsRequest &&
+      scope === this.getSessionId();
+    try {
+      const settings = await sessionApi.settings(scope, 'tts');
+      if (!isCurrent()) return;
+      this.settings = settings.effective ?? {};
+      this.error = '';
+    } catch (caught) {
+      if (isCurrent()) this.error = errorMessage(caught);
+    }
+  }
+
+  async load({ editing = true } = {}) {
     const request = ++this.request;
+    const settingsRequest = ++this.settingsRequest;
     const scope = this.getSessionId();
     const isCurrent = () =>
       !this.disposed &&
@@ -33,13 +54,15 @@ export class GenerationSpeechOptionsState {
     this.loading = true;
     try {
       const [settings, services, voices] = await Promise.all([
-        sessionApi.settings(this.getSessionId(), 'tts'),
+        sessionApi.settings(scope, 'tts'),
         getTtsCompactCatalogue(true),
-        getVoiceLibrary()
+        editing ? getVoiceLibrary() : Promise.resolve({ items: [] })
       ]);
       if (!isCurrent()) return;
-      this.error = '';
-      this.settings = settings.effective ?? {};
+      if (settingsRequest === this.settingsRequest) {
+        this.error = '';
+        this.settings = settings.effective ?? {};
+      }
       this.catalogue = services;
       this.voices = voices.items ?? [];
 
@@ -54,7 +77,7 @@ export class GenerationSpeechOptionsState {
             )
         )
       );
-      if (service?.api_base && service.online !== false) {
+      if (editing && service?.api_base && service.online !== false) {
         try {
           const discovered = await sessionApi.discoverTts(
             service.api_base,

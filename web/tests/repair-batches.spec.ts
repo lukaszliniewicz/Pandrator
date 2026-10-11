@@ -108,7 +108,7 @@ async function fixture(
       }
     })
   );
-  await page.route(`**${base}/generation-runs`, (route) =>
+  await page.route(`**${base}/generation-runs*`, (route) =>
     route.fulfill({ json: { items: [] } })
   );
   await page.route(`**${base}/generation-segments?*`, (route) => {
@@ -202,7 +202,7 @@ async function fixture(
     }
   );
   await page.goto(`/sessions/${sid}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Versioned speech plans' });
   await expect(dialog).toBeVisible();

@@ -1,368 +1,432 @@
-"""Historical generation settings can seed a new synthesis run safely."""
+"""Generation settings-source selection on disposable local fixtures."""
 
 from __future__ import annotations
 
-import copy
 import tempfile
+import threading
 import unittest
-import uuid
+from types import SimpleNamespace
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
-from pandrator.web.models import GenerationRun, GenerationSegment
-from pandrator.web.workspace import RevisionConflict, stable_hash
+from pandrator.web.job_execution import current_job_lease
+from pandrator.web.models import GenerationRun, Job
+from pandrator.web.settings_policy import stable_hash
+from pandrator_mcp.schemas.generation import (
+    GenerateSpeechPlanInput,
+    RegenerateSegmentsInput,
+)
+from pandrator_mcp.tools.generation import generate_speech_plan, regenerate_segments
+
+
+class _RegenerationApplication:
+    def __init__(self) -> None:
+        self.call: dict[str, object] | None = None
+
+    def start_generation_run(self, session_id: str, **kwargs):
+        self.call = {"session_id": session_id, **kwargs}
+        return {
+            "id": "admission-job-1",
+            "job_id": "admission-job-1",
+            "session_id": session_id,
+            "status": "queued",
+            "stage": "preparing",
+        }
 
 
 class GenerationSettingsSourceTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
         bootstrap = BootstrapTokenStore()
-        self.app = create_app(
-            data_root=self.temporary.name,
+        app = create_app(
+            data_root=temporary.name,
             testing=True,
             bootstrap_tokens=bootstrap,
         )
-        self.services = self.app.extensions["pandrator"]
+        self.services = app.extensions["pandrator"]
         self.database = self.services["database"]
         self.addCleanup(self.database.dispose)
-        self.generation = self.services["generation"]
-        self.client = self.app.test_client()
+        self.client = app.test_client()
         token = bootstrap.issue()
-        bootstrap_result = self.client.post(
-            "/api/v1/auth/bootstrap", json={"token": token}
-        )
-        self.headers = {"X-CSRF-Token": bootstrap_result.get_json()["csrf_token"]}
-        self.session_id, self.revision_id, self.segment_ids = self._create_plan()
-
-    def _create_session(self, name: str) -> str:
+        csrf = self.client.post("/api/v1/auth/bootstrap", json={"token": token})
+        self.headers = {"X-CSRF-Token": csrf.get_json()["csrf_token"]}
         response = self.client.post(
             "/api/v1/sessions",
-            json={"name": f"{name} {uuid.uuid4().hex[:8]}", "workflow_kind": "voiceover"},
+            json={"name": "Settings source test", "workflow_kind": "voiceover"},
             headers=self.headers,
         )
-        self.assertEqual(201, response.status_code, response.get_json())
-        return str(response.get_json()["id"])
-
-    def _create_plan(self, session_id: str | None = None):
-        target_session_id = session_id or self._create_session("Settings source")
-        plan = self.generation.create_plan(
-            target_session_id,
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.session_id = response.get_json()["id"]
+        plan = self.services["generation"].create_plan(
+            self.session_id,
             source_revision_id=None,
             settings={},
-            segments=[{"text": "Original spoken text."}, {"text": "Another line."}],
+            segments=[{"text": "A short sentence."}],
         )
-        with self.database.session() as session:
-            segment_ids = list(
-                session.scalars(
-                    select(GenerationSegment.id)
-                    .where(
-                        GenerationSegment.plan_revision_id
-                        == plan["active_revision_id"]
-                    )
-                    .order_by(GenerationSegment.ordinal)
-                )
-            )
-        return target_session_id, plan["active_revision_id"], segment_ids
+        self.revision_id = plan["active_revision_id"]
+        self.segment_id = self.services["generation"].list_segments(self.session_id)[
+            "items"
+        ][0]["id"]
 
-    @staticmethod
-    def _historical_snapshot(revision_id: str, segment_id: str) -> dict:
-        return {
-            "tts": {
-                "service": "openai",
-                "model": "historical-model",
-                "voice": "historical-voice",
-                "language": "en",
-                "speed": 1.37,
-                "tts_batch_size": 1,
-            },
-            "output": {"format": "flac", "bitrate": 192},
-            "speech_plan_revision_id": revision_id,
-            "speech_plan_frozen": True,
-            "speech_plan_signature": "old-plan-signature",
-            "speech_boundaries": {segment_id: {"silence_after_ms": 999}},
-            "generation_audio_identities": {segment_id: {"fingerprint": "old"}},
-            "generation_selection_guards": {segment_id: {"revision": 1}},
-            "generation_request_segment_ids": [segment_id],
-            "selected_segment_override": {"tts": {"voice": "old-selected-voice"}},
-            "interrupted_generation_run_id": "old-interrupted-run",
-            "stale_only": True,
-            "missing_only": True,
-        }
-
-    def _create_run(
+    def make_source_run(
         self,
-        session_id: str,
-        revision_id: str,
-        snapshot: dict | None = None,
+        sequence: int,
         *,
-        operation: str = "generate",
+        prompt: str,
+        performance_enabled: bool,
+        casting_enabled: bool,
+        context_mode: str,
     ) -> str:
-        value = copy.deepcopy(snapshot or self._historical_snapshot(revision_id, "old-segment"))
-        with self.database.session() as session:
-            sequence = int(
-                session.scalar(
-                    select(func.max(GenerationRun.sequence_number)).where(
-                        GenerationRun.session_id == session_id
-                    )
-                )
-                or 0
-            ) + 1
+        snapshot, _ = self.services["workspace_settings"].resolve(self.session_id)
+        tts = dict(snapshot.get("tts") or {})
+        tts.update(
+            {
+                "generation_prompt": prompt,
+                "performance_enabled": performance_enabled,
+                "casting_enabled": casting_enabled,
+                "performance_allow_vocalizations": performance_enabled,
+                "tts_context_mode": context_mode,
+            }
+        )
+        snapshot["tts"] = tts
+        with self.database.immediate_session() as session:
             run = GenerationRun(
-                session_id=session_id,
-                plan_revision_id=revision_id,
+                session_id=self.session_id,
+                plan_revision_id=self.revision_id,
                 sequence_number=sequence,
-                operation=operation,
+                operation="generate",
                 status="completed",
-                settings_snapshot_json=value,
-                settings_hash=stable_hash(value),
+                settings_snapshot_json=snapshot,
+                settings_hash=stable_hash(snapshot),
             )
             session.add(run)
             session.flush()
             return run.id
 
-    def _edit_segment(self, session_id: str, segment_id: str, text: str) -> dict:
-        current = next(
-            item
-            for item in self.generation.list_segments(session_id)["items"]
-            if item["id"] == segment_id
-        )
-        response = self.client.patch(
-            f"/api/v1/generation-segments/{segment_id}",
-            json={"text": text},
-            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
-        )
-        self.assertEqual(200, response.status_code, response.get_json())
-        return response.get_json()
-
-    def _run(self, run_id: str) -> GenerationRun:
-        with self.database.session() as session:
-            result = session.get(GenerationRun, run_id)
-            self.assertIsNotNone(result)
-            return result
-
-    def _run_snapshot(self, run_id: str) -> dict:
-        return copy.deepcopy(self._run(run_id).settings_snapshot_json)
-
-    def test_edited_descendant_uses_old_settings_without_inheriting_run_ownership(self):
-        source_snapshot = self._historical_snapshot(self.revision_id, self.segment_ids[0])
-        source_id = self._create_run(self.session_id, self.revision_id, source_snapshot)
-        source_before = self._run_snapshot(source_id)
-        edited = self._edit_segment(
-            self.session_id, self.segment_ids[0], "Edited spoken text."
-        )
-        target_revision_id = edited["plan_revision_id"]
-        self.assertNotEqual(self.revision_id, target_revision_id)
-
-        started = self.generation.start(
+    def set_current_settings(self) -> None:
+        current = self.services["workspace_settings"].get(self.session_id, "tts")
+        self.services["workspace_settings"].patch(
             self.session_id,
-            segment_ids=[edited["id"]],
-            operation="regenerate",
-            settings_source_run_id=source_id,
-        )
-        queued = self._run(started["id"])
-        snapshot = queued.settings_snapshot_json
-        self.assertEqual(target_revision_id, queued.plan_revision_id)
-        self.assertNotEqual(source_id, queued.source_generation_run_id)
-        self.assertNotEqual(source_id, queued.output_generation_run_id)
-        self.assertEqual("openai", snapshot["tts"]["service"])
-        self.assertEqual("historical-model", snapshot["tts"]["model"])
-        self.assertEqual("historical-voice", snapshot["tts"]["voice"])
-        self.assertEqual(1.37, snapshot["tts"]["speed"])
-        self.assertEqual({"format": "flac", "bitrate": 192}, snapshot["output"])
-        self.assertEqual(target_revision_id, snapshot["speech_plan_revision_id"])
-        self.assertEqual([edited["id"]], snapshot["generation_request_segment_ids"])
-        self.assertIn(edited["id"], snapshot["generation_audio_identities"])
-        self.assertNotIn(self.segment_ids[0], snapshot["generation_audio_identities"])
-        self.assertNotIn(self.segment_ids[0], snapshot["generation_selection_guards"])
-        self.assertNotIn("old-plan-signature", snapshot.get("speech_plan_signature", ""))
-        self.assertNotIn("speech_boundaries", snapshot)
-        self.assertNotIn("selected_segment_override", snapshot)
-        self.assertNotIn("interrupted_generation_run_id", snapshot)
-        self.assertNotIn("stale_only", snapshot)
-        self.assertNotIn("missing_only", snapshot)
-        self.assertEqual(source_before, self._run_snapshot(source_id))
-
-    def test_target_run_ownership_remains_independent_of_settings_source(self):
-        source_id = self._create_run(
-            self.session_id,
-            self.revision_id,
-            self._historical_snapshot(self.revision_id, self.segment_ids[0]),
-        )
-        edited = self._edit_segment(
-            self.session_id, self.segment_ids[0], "Edited spoken text."
-        )
-        owner_id = self._create_run(
-            self.session_id,
-            edited["plan_revision_id"],
-            {"tts": {"service": "openai", "model": "target-model", "voice": "target-voice"}},
+            "tts",
+            current["revision"],
+            {
+                "generation_prompt": "Speak the revised line in a quiet whisper.",
+                "performance_enabled": False,
+                "casting_enabled": True,
+                "performance_allow_vocalizations": True,
+                "tts_context_mode": "both",
+            },
         )
 
-        started = self.generation.start(
-            self.session_id,
-            segment_ids=[edited["id"]],
-            generation_run_id=owner_id,
-            settings_source_run_id=source_id,
-            operation="regenerate",
+    def admit(self, key: str, payload: dict[str, object]):
+        return self.client.post(
+            f"/api/v1/sessions/{self.session_id}/generation-admissions",
+            json=payload,
+            headers={**self.headers, "Idempotency-Key": key},
         )
-        queued = self._run(started["id"])
-        self.assertEqual(owner_id, queued.source_generation_run_id)
-        self.assertEqual(owner_id, queued.output_generation_run_id)
-        self.assertEqual("historical-model", queued.settings_snapshot_json["tts"]["model"])
 
-    def test_preview_hash_and_confirmed_snapshot_share_inherited_settings_for_each_mode(self):
-        source_snapshot = self._historical_snapshot(self.revision_id, self.segment_ids[0])
-        source_id = self._create_run(self.session_id, self.revision_id, source_snapshot)
-        source_before = self._run_snapshot(source_id)
-        run_override = {
-            "tts": {"model": "explicit-model", "voice": "explicit-voice", "speed": 1.43}
-        }
-        for mode_flags in ({}, {"missing_only": True}, {"stale_only": True}):
-            with self.subTest(mode_flags=mode_flags):
-                payload = {
-                    "settings_source_run_id": source_id,
-                    "run_override": run_override,
-                    **mode_flags,
-                }
-                preview_response = self.client.post(
-                    f"/api/v1/sessions/{self.session_id}/generation-runs/preview",
-                    json=payload,
-                    headers=self.headers,
-                )
-                self.assertEqual(200, preview_response.status_code, preview_response.get_json())
-                preview = preview_response.get_json()
-                self.assertEqual("openai", preview["settings_summary"]["service"])
-                self.assertEqual("explicit-model", preview["settings_summary"]["model"])
-                self.assertEqual("explicit-voice", preview["settings_summary"]["voice"])
-
-                start_response = self.client.post(
-                    f"/api/v1/sessions/{self.session_id}/generation-runs",
-                    json={
-                        **payload,
-                        "expected_selection_hash": preview["selection_hash"],
-                    },
-                    headers=self.headers,
-                )
-                self.assertEqual(202, start_response.status_code, start_response.get_json())
-                snapshot = self._run_snapshot(start_response.get_json()["id"])
-                self.assertEqual("openai", snapshot["tts"]["service"])
-                self.assertEqual("explicit-model", snapshot["tts"]["model"])
-                self.assertEqual("explicit-voice", snapshot["tts"]["voice"])
-                self.assertEqual(1.43, snapshot["tts"]["speed"])
-                self.assertNotIn("old-plan-signature", snapshot.get("speech_plan_signature", ""))
-                self.assertEqual(
-                    set(self.segment_ids), set(snapshot["generation_audio_identities"])
-                )
-                self.assertNotEqual(
-                    {"fingerprint": "old"},
-                    snapshot["generation_audio_identities"][self.segment_ids[0]],
-                )
-        self.assertEqual(source_before, self._run_snapshot(source_id))
-
-    def test_historical_full_plan_binding_requires_matching_settings_source(self):
-        source_id = self._create_run(
-            self.session_id,
-            self.revision_id,
-            self._historical_snapshot(self.revision_id, self.segment_ids[0]),
+    def run_admission(self, admission_id: str) -> dict[str, object]:
+        job = self.services["jobs"].claim("settings-source-test-worker")
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.id, admission_id)
+        assert job.lease_owner is not None
+        lease_token = current_job_lease.set(
+            {
+                "job_id": job.id,
+                "owner_id": job.lease_owner,
+                "lease_generation": job.lease_generation,
+            }
         )
-        first_edit = self._edit_segment(
-            self.session_id, self.segment_ids[0], "Edited descendant text."
-        )
-        active_revision_id = first_edit["plan_revision_id"]
-        self.assertNotEqual(self.revision_id, active_revision_id)
-
-        historical = self.generation.start(
-            self.session_id,
-            settings_source_run_id=source_id,
-            speech_plan_revision_id=self.revision_id,
-        )
-        self.assertEqual(self.revision_id, self._run(historical["id"]).plan_revision_id)
-        with self.assertRaises(RevisionConflict):
-            self.generation.prepare_start(
-                self.session_id,
-                settings_source_run_id=source_id,
-                speech_plan_revision_id=f"stale-{uuid.uuid4().hex}",
+        try:
+            return self.services["workflow_handlers"].run_generation_admission(
+                job.payload_json,
+                lambda _value, _detail: None,
+                threading.Event(),
             )
+        finally:
+            current_job_lease.reset(lease_token)
 
-    def test_source_must_be_same_session_non_rvc_and_present(self):
-        foreign_session_id, foreign_revision_id, foreign_segment_ids = self._create_plan()
-        foreign_id = self._create_run(
-            foreign_session_id,
-            foreign_revision_id,
-            self._historical_snapshot(foreign_revision_id, foreign_segment_ids[0]),
-        )
-        rvc_id = self._create_run(
-            self.session_id,
-            self.revision_id,
-            self._historical_snapshot(self.revision_id, self.segment_ids[0]),
-            operation="rvc",
-        )
-        for source_id in (foreign_id, rvc_id, f"missing-{uuid.uuid4().hex}"):
-            with self.subTest(source_id=source_id):
-                with self.assertRaises(ValueError):
-                    self.generation.preview_selection(
-                        self.session_id,
-                        settings_source_run_id=source_id,
-                        missing_only=True,
-                    )
-                with self.assertRaises(ValueError):
-                    self.generation.prepare_start(
-                        self.session_id, settings_source_run_id=source_id
-                    )
-
-    def test_source_snapshot_change_or_deletion_after_prepare_fails_closed(self):
-        changed_id = self._create_run(
-            self.session_id,
-            self.revision_id,
-            self._historical_snapshot(self.revision_id, self.segment_ids[0]),
-        )
-        deleted_id = self._create_run(
-            self.session_id,
-            self.revision_id,
-            self._historical_snapshot(self.revision_id, self.segment_ids[1]),
-        )
-        for source_id, action in ((changed_id, "change"), (deleted_id, "delete")):
-            with self.subTest(action=action):
-                preview = self.generation.preview_selection(
-                    self.session_id,
-                    settings_source_run_id=source_id,
-                    missing_only=True,
-                )
-                prepared = self.generation.prepare_start(
-                    self.session_id,
-                    settings_source_run_id=source_id,
-                    missing_only=True,
-                    expected_selection_hash=preview["selection_hash"],
-                )
-                before_count = self._run_count()
-                with self.database.session() as session:
-                    source = session.get(GenerationRun, source_id)
-                    if action == "change":
-                        changed = copy.deepcopy(source.settings_snapshot_json)
-                        changed["tts"]["voice"] = "changed-after-preview"
-                        source.settings_snapshot_json = changed
-                    else:
-                        session.delete(source)
-                with self.assertRaises(RevisionConflict):
-                    with self.database.immediate_session() as session:
-                        self.generation.start_in_session(
-                            session, self.session_id, prepared=prepared
-                        )
-                expected_count = before_count - 1 if action == "delete" else before_count
-                self.assertEqual(expected_count, self._run_count())
-
-    def _run_count(self) -> int:
+    def get_run(self, run_id: str) -> GenerationRun:
         with self.database.session() as session:
-            return int(
+            run = session.get(GenerationRun, run_id)
+            assert run is not None
+            session.expunge(run)
+            return run
+
+    def test_mcp_regeneration_defaults_to_current_and_keeps_take_origin(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Old plain delivery.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        audio_origin_id = self.make_source_run(
+            2,
+            prompt="Audio lineage source.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        self.set_current_settings()
+
+        arguments = RegenerateSegmentsInput(
+            session_id=self.session_id,
+            segment_ids=[self.segment_id],
+            generation_run_id=audio_origin_id,
+            idempotency_key="settings:current:mcp-001",
+        )
+        self.assertEqual(arguments.settings_source, "current")
+        fake_application = _RegenerationApplication()
+        regenerate_segments(
+            SimpleNamespace(require_application=lambda: fake_application), arguments
+        )
+        assert fake_application.call is not None
+        self.assertEqual(fake_application.call["settings_source"], "current")
+        self.assertEqual(fake_application.call["generation_run_id"], audio_origin_id)
+        self.assertNotEqual(source_id, audio_origin_id)
+
+        admitted = self.admit(
+            "settings:current:mcp-backend-001",
+            {
+                "operation": "regenerate",
+                "segment_ids": [self.segment_id],
+                "generation_run_id": audio_origin_id,
+                "settings_source": arguments.settings_source,
+            },
+        )
+        self.assertEqual(admitted.status_code, 202, admitted.get_json())
+        marker = self.run_admission(admitted.get_json()["job_id"])
+        run = self.get_run(str(marker["generation_run_id"]))
+        snapshot = run.settings_snapshot_json
+        current_tts = snapshot["tts"]
+        self.assertEqual(
+            current_tts["generation_prompt"],
+            "Speak the revised line in a quiet whisper.",
+        )
+        self.assertFalse(current_tts["performance_enabled"])
+        self.assertTrue(current_tts["casting_enabled"])
+        self.assertTrue(current_tts["performance_allow_vocalizations"])
+        self.assertEqual(current_tts["tts_context_mode"], "both")
+        self.assertEqual(run.source_generation_run_id, audio_origin_id)
+        receipt = marker["settings_source_receipt"]
+        self.assertEqual(receipt["effective"], "current")
+        self.assertIsNone(receipt["settings_source_run_id"])
+        self.assertEqual(receipt["generation_run_id"], audio_origin_id)
+        self.assertEqual(receipt["source_generation_run_id"], audio_origin_id)
+        self.assertEqual(receipt["settings_hash"], run.settings_hash)
+        self.assertEqual(
+            receipt["flags"],
+            {
+                "performance_enabled": False,
+                "casting_enabled": True,
+                "performance_allow_vocalizations": True,
+                "tts_context_mode": "both",
+            },
+        )
+
+    def test_explicit_run_replays_frozen_settings_separately_from_audio_origin(self):
+        settings_source_id = self.make_source_run(
+            1,
+            prompt="Old plain delivery.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        audio_origin_id = self.make_source_run(
+            2,
+            prompt="Different take lineage.",
+            performance_enabled=True,
+            casting_enabled=True,
+            context_mode="both",
+        )
+        self.set_current_settings()
+
+        admitted = self.admit(
+            "settings:run:replay-001",
+            {
+                "operation": "regenerate",
+                "segment_ids": [self.segment_id],
+                "generation_run_id": audio_origin_id,
+                "settings_source": "run",
+                "settings_source_run_id": settings_source_id,
+            },
+        )
+        self.assertEqual(admitted.status_code, 202, admitted.get_json())
+        marker = self.run_admission(admitted.get_json()["job_id"])
+        run = self.get_run(str(marker["generation_run_id"]))
+        tts = run.settings_snapshot_json["tts"]
+        self.assertEqual(tts["generation_prompt"], "Old plain delivery.")
+        self.assertFalse(tts["performance_enabled"])
+        self.assertFalse(tts["casting_enabled"])
+        self.assertFalse(tts["performance_allow_vocalizations"])
+        self.assertEqual(tts["tts_context_mode"], "off")
+        self.assertEqual(run.source_generation_run_id, audio_origin_id)
+        receipt = marker["settings_source_receipt"]
+        self.assertEqual(receipt["effective"], "run")
+        self.assertEqual(receipt["settings_source_run_id"], settings_source_id)
+        self.assertEqual(receipt["generation_run_id"], audio_origin_id)
+        self.assertEqual(receipt["source_generation_run_id"], audio_origin_id)
+        self.assertEqual(receipt["settings_source_settings_hash"], self.get_run(settings_source_id).settings_hash)
+
+    def test_matching_run_missing_only_uses_frozen_settings_and_missing_source_fails(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Frozen selection settings.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        self.set_current_settings()
+        generation = self.services["generation"]
+        prepared = generation.prepare_start(
+            self.session_id,
+            speech_plan_revision_id=self.revision_id,
+            settings_source="matching_run",
+            missing_only=True,
+        )
+        self.assertEqual(prepared["requested_segment_ids"], [self.segment_id])
+        with self.database.immediate_session() as session:
+            result = generation.start_in_session(
+                session, self.session_id, prepared=prepared
+            )
+        run = self.get_run(str(result["id"]))
+        tts = run.settings_snapshot_json["tts"]
+        self.assertEqual(tts["generation_prompt"], "Frozen selection settings.")
+        self.assertFalse(tts["performance_enabled"])
+        self.assertEqual(tts["tts_context_mode"], "off")
+        self.assertEqual(
+            result["settings_source_receipt"]["settings_source_run_id"], source_id
+        )
+        self.assertTrue(run.settings_snapshot_json["missing_only"])
+
+        fresh = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "No matching source", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        )
+        other_session_id = fresh.get_json()["id"]
+        other_plan = generation.create_plan(
+            other_session_id,
+            source_revision_id=None,
+            settings={},
+            segments=[{"text": "An ungenerated sentence."}],
+        )
+        other_segment_id = generation.list_segments(other_session_id)["items"][0]["id"]
+        missing = self.client.post(
+            f"/api/v1/sessions/{other_session_id}/generation-admissions",
+            json={
+                "operation": "regenerate",
+                "segment_ids": [other_segment_id],
+                "settings_source": "matching_run",
+            },
+            headers={**self.headers, "Idempotency-Key": "settings:no-match-001"},
+        )
+        self.assertEqual(missing.status_code, 409, missing.get_json())
+        self.assertIn(
+            "No compatible generation run",
+            missing.get_json()["error"]["message"],
+        )
+        self.assertIsNotNone(other_plan["active_revision_id"])
+
+    def test_same_key_changed_selector_conflicts_and_explicit_run_is_session_fenced(self):
+        source_id = self.make_source_run(
+            1,
+            prompt="Frozen source.",
+            performance_enabled=False,
+            casting_enabled=False,
+            context_mode="off",
+        )
+        first = self.admit(
+            "settings:same-key:001",
+            {
+                "operation": "regenerate",
+                "segment_ids": [self.segment_id],
+                "settings_source": "current",
+            },
+        )
+        self.assertEqual(first.status_code, 202, first.get_json())
+        conflict = self.admit(
+            "settings:same-key:001",
+            {
+                "operation": "regenerate",
+                "segment_ids": [self.segment_id],
+                "settings_source": "run",
+                "settings_source_run_id": source_id,
+            },
+        )
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        with self.database.session() as session:
+            count = int(
                 session.scalar(
-                    select(func.count()).select_from(GenerationRun).where(
-                        GenerationRun.session_id == self.session_id
+                    select(func.count()).select_from(Job).where(
+                        Job.kind == "generation.admit"
                     )
                 )
                 or 0
             )
+        self.assertEqual(count, 1)
+
+        second_session = self.client.post(
+            "/api/v1/sessions",
+            json={"name": "Foreign session", "workflow_kind": "voiceover"},
+            headers=self.headers,
+        ).get_json()["id"]
+        generation = self.services["generation"]
+        other_plan = generation.create_plan(
+            second_session,
+            source_revision_id=None,
+            settings={},
+            segments=[{"text": "A foreign sentence."}],
+        )
+        with self.assertRaisesRegex(ValueError, "not available in this session"):
+            generation.prepare_start(
+                second_session,
+                speech_plan_revision_id=other_plan["active_revision_id"],
+                settings_source="run",
+                settings_source_run_id=source_id,
+            )
+
+    def test_mcp_input_defaults_and_historical_selector_validation(self):
+        regenerate = RegenerateSegmentsInput(
+            session_id=self.session_id,
+            segment_ids=[self.segment_id],
+            idempotency_key="settings:input:regen-001",
+        )
+        self.assertEqual(regenerate.settings_source, "current")
+        with self.assertRaises(ValidationError):
+            RegenerateSegmentsInput(
+                session_id=self.session_id,
+                segment_ids=[self.segment_id],
+                idempotency_key="settings:input:bad-001",
+                settings_source="run",
+            )
+        plan_generation = GenerateSpeechPlanInput(
+            session_id=self.session_id,
+            speech_plan_revision_id=self.revision_id,
+            idempotency_key="settings:input:plan-001",
+            missing_only=True,
+            settings_source="run",
+            settings_source_run_id="source-run-1",
+        )
+        self.assertTrue(plan_generation.missing_only)
+        self.assertEqual(plan_generation.settings_source, "run")
+        fake_application = _RegenerationApplication()
+        generate_speech_plan(
+            SimpleNamespace(require_application=lambda: fake_application),
+            plan_generation,
+        )
+        assert fake_application.call is not None
+        self.assertTrue(fake_application.call["missing_only"])
+        self.assertEqual(fake_application.call["settings_source"], "run")
+        self.assertEqual(
+            fake_application.call["settings_source_run_id"], "source-run-1"
+        )
 
 
 if __name__ == "__main__":

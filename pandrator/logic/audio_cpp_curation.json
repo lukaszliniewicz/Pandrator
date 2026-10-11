@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_on": "2026-09-20",
+  "verified_on": "2026-10-09",
   "families": {
     "qwen3_tts": {
       "license": {
@@ -113,8 +113,8 @@
       },
       "voice_mode": "hybrid",
       "reference_audio": "optional",
-      "reference_text": "optional",
-      "language_note": "Language belongs to the selected package. Source weights may require accepting upstream access terms."
+      "reference_text": "not_used",
+      "language_note": "Language belongs to the selected package. audio.cpp does not consume the transcript while encoding a cloned voice; Pandrator retains it for other models. Source weights may require accepting upstream access terms."
     },
     "voxcpm2": {
       "license": {
@@ -212,11 +212,138 @@
       "voice_mode": "optional_cloning",
       "reference_audio": "optional",
       "reference_text": "not_used",
-      "language_note": "Japanese only. Native caption directions depend on checkpoint support and are not yet translated by Pandrator."
+      "language_note": "Japanese only. Supported design checkpoints receive whole-request captions; phrase delivery is not supported. The anime checkpoint remains unverified."
     },
     "cosyvoice3": {
       "reference_text": "required_for_cloning",
       "language_note": "Language is inferred from text by this audio.cpp route. Instructions select the instruct template."
+    },
+    "kugelaudio": {
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": false,
+        "voice_design": false,
+        "instructions": false
+      },
+      "language_note": "23 documented languages. Presets select German or British English voices; accent quality varies across languages."
+    },
+    "kitten_tts2": {
+      "voice_mode": "hybrid",
+      "reference_audio": "optional",
+      "reference_text": "required_for_cloning",
+      "upstream_features": {
+        "voice_cloning": true,
+        "voice_design": false,
+        "instructions": false
+      },
+      "language_note": "Ten documented languages and 48 native presets. Cloning requires a matching reference transcript."
+    },
+    "lfm2_audio": {
+      "voice_mode": "prebuilt",
+      "reference_audio": "not_used",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": false,
+        "voice_design": false,
+        "instructions": false
+      },
+      "language_note": "TTS language belongs to the selected English or Japanese checkpoint. Voice cloning is not supported."
+    },
+    "moss_tts_local": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": true
+      }
+    },
+    "moss_tts_nano": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "requires_reference_audio",
+      "upstream_features": {
+        "voice_cloning": true
+      }
+    },
+    "moss_ttsd": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "recommended_with_reference",
+      "language_note": "Pandrator renders one positional speaker per request. Native dialogue with multiple reference recordings is not integrated.",
+      "upstream_features": {
+        "voice_cloning": true,
+        "instructions": true
+      }
+    },
+    "dramabox": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "upstream_features": {
+        "voice_cloning": true
+      }
+    },
+    "outetts": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "required_with_reference",
+      "upstream_features": {
+        "voice_cloning": true
+      }
+    },
+    "auk": {
+      "voice_mode": "optional_cloning",
+      "reference_audio": "optional",
+      "reference_text": "not_used",
+      "language_note": "Voice description and positive duration are required without reference audio. Conditioning and VAE components require manual setup.",
+      "upstream_features": {
+        "voice_cloning": true,
+        "instructions": true,
+        "voice_design": true
+      }
+    },
+    "index_tts2": {
+      "voice_mode": "cloning",
+      "reference_audio": "required",
+      "reference_text": "not_used",
+      "upstream_features": {
+        "voice_cloning": true
+      }
+    },
+    "vieneu_v3_turbo": {
+      "voice_mode": "unknown",
+      "reference_audio": "unverified",
+      "reference_text": "unverified",
+      "language_note": "Requires SEA-G2P phonemes or externally configured G2P and speaker embeddings/reference codes. Managed plain-text integration is not verified."
+    },
+    "controlfoley": {
+      "license": {
+        "name": "CC-BY-NC-4.0",
+        "url": "https://huggingface.co/YJX-Xiaomi/ControlFoley",
+        "commercial_use": "noncommercial"
+      }
+    },
+    "yue2": {
+      "license": {
+        "name": "CC-BY-NC-4.0",
+        "url": "https://huggingface.co/m-a-p/YuE2-3B",
+        "commercial_use": "noncommercial"
+      }
+    },
+    "minimax_music3": {
+      "license": {
+        "name": "MiniMax-Music3 Community License",
+        "url": "https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE",
+        "commercial_use": "conditional"
+      }
+    },
+    "minimax_h3": {
+      "license": {
+        "name": "MiniMax H3 Community License (territorial restrictions)",
+        "url": "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE",
+        "commercial_use": "conditional"
+      }
     }
   },
   "models": {
@@ -269,6 +396,65 @@
     "kokoro_82m_q8_0": {
       "recommended_for": "Lightweight multilingual preset voices",
       "description": "Small preset-voice synthesis with language-specific voice choices. No cloning or natural-language voice design."
+    },
+    "lfm2_audio_1_5b_f16": {
+      "supported_languages": [
+        "en"
+      ]
+    },
+    "lfm2_audio_1_5b_jp_f16": {
+      "supported_languages": [
+        "ja"
+      ]
+    },
+    "lfm2_audio_1_5b_jp_f32": {
+      "supported_languages": [
+        "ja"
+      ]
+    },
+    "lfm2_audio_1_5b_jp_q4_0": {
+      "supported_languages": [
+        "ja"
+      ]
+    },
+    "lfm2_audio_1_5b_jp_q8_0": {
+      "supported_languages": [
+        "ja"
+      ]
+    },
+    "lfm2_audio_1_5b_q4_0": {
+      "supported_languages": [
+        "en"
+      ]
+    },
+    "lfm2_audio_1_5b_q8_0": {
+      "supported_languages": [
+        "en"
+      ]
+    },
+    "voicetut_tts_q8_0": {
+      "supported_languages": [
+        "ar",
+        "arz"
+      ],
+      "language_note": "Egyptian Arabic with Arabic/English code-switching. Arabic requests use the native arz language code. This variant does not inherit OmniVoice’s general multilingual coverage.",
+      "license": {
+        "name": "Mixed upstream licences; review the model card",
+        "url": "https://huggingface.co/mohammedaly22/VoiceTut-TTS-GGUF/raw/615457bb2e9043f468e012c159146b28fa8f5959/README.md",
+        "commercial_use": "unknown"
+      }
+    },
+    "voicetut_tts_f16": {
+      "supported_languages": [
+        "ar",
+        "arz"
+      ],
+      "language_note": "Egyptian Arabic with Arabic/English code-switching. Arabic requests use the native arz language code. This variant does not inherit OmniVoice’s general multilingual coverage.",
+      "license": {
+        "name": "Mixed upstream licences; review the model card",
+        "url": "https://huggingface.co/mohammedaly22/VoiceTut-TTS-GGUF/raw/615457bb2e9043f468e012c159146b28fa8f5959/README.md",
+        "commercial_use": "unknown"
+      }
     }
   },
   "language_support": {
@@ -800,6 +986,70 @@
         "native_language_codes": [
           "vi"
         ]
+      },
+      "lfm2_audio_1_5b_f16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "lfm2_audio_1_5b_jp_f16": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ja"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "lfm2_audio_1_5b_jp_f32": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ja"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "lfm2_audio_1_5b_jp_q4_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ja"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "lfm2_audio_1_5b_jp_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "ja"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "lfm2_audio_1_5b_q4_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "lfm2_audio_1_5b_q8_0": {
+        "operation": "tts",
+        "coverage": "exact",
+        "languages": [
+          "en"
+        ],
+        "note": "TTS language is fixed by the loaded checkpoint."
+      },
+      "voicetut_tts_q8_0": {
+        "source_key": "voicetut_tts_languages",
+        "note": "Egyptian Arabic fine-tune; native language code arz, including for Arabic/English code-switching."
+      },
+      "voicetut_tts_f16": {
+        "source_key": "voicetut_tts_languages",
+        "note": "Egyptian Arabic fine-tune; native language code arz, including for Arabic/English code-switching."
       }
     },
     "verified_on": "2026-10-02"

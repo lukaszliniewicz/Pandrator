@@ -14,6 +14,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .audio_cpp_inventory_data import family_metadata as family_metadata
+from .audio_cpp_inventory_data import inventory as inventory
 from .language_capabilities import (
     canonical_language_tag,
     language_matches,
@@ -57,19 +59,8 @@ _NON_LANGUAGE_SENTINELS = frozenset(
 
 
 @lru_cache(maxsize=1)
-def inventory() -> dict[str, Any]:
-    return json.loads(Path(__file__).with_name("audio_cpp_inventory.json").read_text(encoding="utf-8"))
-
-
-@lru_cache(maxsize=1)
 def curation() -> dict[str, Any]:
     return json.loads(Path(__file__).with_name("audio_cpp_curation.json").read_text(encoding="utf-8"))
-
-
-def family_metadata(family: str) -> dict[str, Any]:
-    family = {"fish_audio_s2": "fish_audio"}.get(family, family)
-    found = next((row for row in inventory()["families"] if row["id"] == family), {})
-    return copy.deepcopy(found)
 
 
 def _curated(package: dict[str, Any]) -> dict[str, Any]:
@@ -79,6 +70,37 @@ def _curated(package: dict[str, Any]) -> dict[str, Any]:
         **overrides.get("models", {}).get(package["id"], {}),
     }
     model = package["id"]
+    if model in {"maya1_orig", "maya1_q8_0"}:
+        result.update(voice_mode="design", reference_audio="not_used", reference_text="not_used")
+        result.setdefault("upstream_features", {}).update(
+            voice_cloning=False, voice_design=True, instructions=True, emotion_control=True
+        )
+    if model in {
+        "moss_tts_v15_bf16_codec_f16",
+        "moss_tts_v15_q4_k_codec_f16",
+        "moss_tts_v15_q8_0_codec_f16",
+    }:
+        result.update(voice_mode="optional_cloning", reference_audio="optional", reference_text="unverified")
+        result.setdefault("upstream_features", {}).update(voice_cloning=True, instructions=True)
+    if model in {
+        "irodori_tts_600m_v3_voicedesign_f16",
+        "irodori_tts_600m_v3_voicedesign_q8_0",
+        "irodori_tts_v4_small_f16",
+        "irodori_tts_v4_small_q8_0",
+    }:
+        result.update(voice_mode="optional_cloning", reference_audio="optional", reference_text="unverified")
+        result.setdefault("upstream_features", {}).update(voice_cloning=True, voice_design=True)
+    if model in {"irodori_tts_500m_v3_f16", "irodori_tts_500m_v3_q8_0"}:
+        result.update(voice_mode="optional_cloning", reference_audio="optional", reference_text="unverified")
+        result.setdefault("upstream_features", {}).update(voice_cloning=True, voice_design=False)
+    if model == "irodori_tts_v4_1_anime_q8_0":
+        result.update(voice_mode="unknown", reference_audio="unverified", reference_text="unverified")
+        result.setdefault("upstream_features", {}).update(voice_cloning=False, voice_design=False)
+    if model == "moss_voicegen_bf16_codec_f16_decode":
+        result.update(voice_mode="design", reference_audio="not_used", reference_text="not_used")
+        result.setdefault("upstream_features", {}).update(
+            voice_cloning=False, voice_design=True, instructions=True
+        )
     if package["family"] == "qwen3_tts":
         design, custom = "voicedesign" in model, "customvoice" in model
         result["upstream_features"] = {
@@ -129,10 +151,20 @@ def _package_availability(package: dict[str, Any], speech_route: bool) -> dict[s
             "status": "unavailable",
             "reason": "A complete package with verified file digests is not available in this snapshot.",
         }
+    if package.get("family") == "auk":
+        return {
+            "status": "manual_setup",
+            "reason": "Generator weights can be downloaded, but AuK also needs a Qwen2.5-Omni conditioning component and its VAE in a shared model directory. Manager does not install or bind those dependencies automatically.",
+        }
     files = package.get("weight_manifest", {}).get("files", [])
+    gguf_files = [str(item.get("path", "")) for item in files if str(item.get("path", "")).lower().endswith(".gguf")]
+    backbones = [path for path in gguf_files if not Path(path).name.startswith(("mmproj-", "vocoder-", "tokenizer-"))]
+    lfm_layout = package.get("family") == "lfm2_audio" and len(backbones) == 1 and set(gguf_files) == {
+        backbones[0], *(str(Path(backbones[0]).with_name(prefix + Path(backbones[0]).name)) for prefix in ("mmproj-", "vocoder-", "tokenizer-"))
+    }
     if (
         package.get("format") != "gguf"
-        or sum(str(item.get("path", "")).lower().endswith(".gguf") for item in files) != 1
+        or (len(gguf_files) != 1 and not lfm_layout)
     ):
         return {
             "status": "catalogued_only",
@@ -175,7 +207,9 @@ def _language_override(package_id: str, family_id: str) -> dict[str, Any]:
 
 
 def _operation_specs(package: dict[str, Any], family: dict[str, Any]) -> list[tuple[str, str]]:
-    tasks = [str(task) for task in family.get("tasks", [])]
+    tasks = [str(task) for task in package.get("tasks", family.get("tasks", []))]
+    if package.get("entry_role", "model") == "component":
+        return []
     model_id = str(package.get("id", ""))
     if model_id.startswith("dots_tts_edit_"):
         return [("audio_edit", "edit")]
@@ -289,7 +323,7 @@ def _language_record(
         coverage = str(explicit_coverage)
     elif operation == "sep" and (
         str(package["family"]) in _INDEPENDENT_SEPARATION_FAMILIES
-        or (family.get("tasks") == ["sep"] and family.get("category") == "audio_tools")
+        or (package.get("tasks", family.get("tasks")) == ["sep"] and family.get("category") == "audio_tools")
     ):
         coverage = "independent"
     elif operation in {"denoise", "enhance"} and str(package["family"]) == "builtin_audio_utils":
@@ -380,7 +414,8 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         return {}
     family = family_metadata(package["family"])
     overrides = _curated(package)
-    tasks = family.get("tasks", [])
+    tasks = package.get("tasks", family.get("tasks", []))
+    entry_role = package.get("entry_role", "model")
     capabilities = family.get("capabilities") or {}
     native_features = {feature for values in capabilities.values() for feature in values}
     speech = bool(set(tasks) & {"tts", "clone", "design", "vdes"})
@@ -402,7 +437,8 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         "label": package.get("label", model_id),
         "family": package["family"],
         "family_label": family.get("display_name", package["family"]),
-        "category": family.get("category", "unknown"),
+        "entry_role": entry_role,
+        "category": package.get("category", family.get("category", "unknown")),
         "description": family.get("description", ""),
         "upstream_status": family.get("status", "unknown"),
         "tasks": tasks,
@@ -448,8 +484,32 @@ def package_metadata(model_id: str) -> dict[str, Any]:
             result[key].update(value)
         else:
             result[key] = copy.deepcopy(value)
-    if not speech_route:
+    if result["voice_mode"] == "unknown" and speech_route:
+        speech_route = False
+        result["pandrator_features"]["speech_generation"] = "unverified"
+        result["package_availability"] = {
+            "status": "catalogued_only",
+            "reason": "The exact voice and request contract for this variant is unverified; it is excluded from speech choices.",
+        }
+    if package["family"] == "auk":
+        result["pandrator_features"]["dependency_binding"] = "manual"
+    if not speech_route and result["voice_mode"] != "unknown":
         result["voice_mode"] = "none"
+    if entry_role == "component":
+        result["voice_mode"] = "none"
+        result["reference_audio"] = "not_used"
+        result["reference_text"] = "not_used"
+        result["upstream_features"] = {key: False for key in result["upstream_features"]}
+        result["pandrator_features"].update(
+            instructions="none", instruction_scope="none", voice_design="none",
+            vocal_events="none", timing="none", emotion_control="none",
+            semantic_context="none", capability_notes=[],
+        )
+        result["capabilities"] = []
+        result["language_support"] = {"languages": []}
+        result["language_support_by_operation"] = {}
+        result["supported_languages"] = []
+        return result
     primary_language_support, operation_language_support = _language_support(
         package, family, result
     )
@@ -464,6 +524,13 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         family=package["family"],
         voice_mode=result["voice_mode"],
         backend_version=inventory()["runtime_version"],
+    )
+    result["expressive_capabilities"] = copy.deepcopy(controls)
+    from .audio_cpp_parameters import request_parameters_for_model
+
+    result["request_parameters"] = (
+        request_parameters_for_model(package["family"], model_id)
+        if result["entry_role"] == "model" and speech_route else {}
     )
     instruction_scope = controls.get("instruction_scope")
     instruction_scope_text = (
@@ -494,20 +561,27 @@ def package_metadata(model_id: str) -> dict[str, Any]:
             "capability_notes": capability_notes,
         }
     )
-    # Keep documented upstream task flags; derive runtime controls separately.
-    normalized_capabilities = {
-        feature
-        for feature, enabled in result["upstream_features"].items()
-        if enabled is True
-        and feature
-        not in {
-            "voice_cloning",
-            "voice_design",
-            "instructions",
-            "emotion_control",
-            "vocal_events",
+    # Generation has its own request/compiler registry. Keep these models out
+    # of narrator choices while advertising only the implemented audio routes.
+    from .audio_cpp_generation_models import get_model
+
+    try:
+        generation_model = get_model(model_id)
+    except ValueError:
+        generation_model = None
+    if generation_model is not None:
+        result["package_availability"] = {
+            "status": "installable",
+            "reason": "Available through Sounds & Music or Pandrator Manager; first generation installs the verified package if needed.",
         }
-    }
+        result["pandrator_features"].update(
+            speech_generation="not_applicable",
+            sound_generation="request_supported" if "sound" in generation_model.kinds else "none",
+            music_generation="request_supported" if "music" in generation_model.kinds else "none",
+        )
+    # Filters describe controls Pandrator actually sends. Unimplemented native
+    # routes stay in upstream_features rather than becoming speech controls.
+    normalized_capabilities: set[str] = set()
     if (
         result["voice_mode"] in {"cloning", "optional_cloning", "hybrid"}
         and result["upstream_features"].get("voice_cloning") is True
@@ -523,6 +597,11 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         normalized_capabilities.add("emotion_control")
     if controls["event_tags"]:
         normalized_capabilities.add("vocal_events")
+    if generation_model is not None:
+        if "sound" in generation_model.kinds:
+            normalized_capabilities.add("sound_generation")
+        if "music" in generation_model.kinds:
+            normalized_capabilities.add("music_generation")
     # Preserve the Manager's legacy tag only when multiple languages are listed.
     if len(result["supported_languages"]) > 1:
         normalized_capabilities.add("multilingual")
@@ -536,7 +615,8 @@ def speech_model_catalog() -> list[dict[str, Any]]:
     return [
         item
         for package in inventory()["packages"]
-        if (item := package_metadata(package["id"]))["voice_mode"] != "none"
+        if (item := package_metadata(package["id"]))["entry_role"] == "model"
+        and item["voice_mode"] not in {"none", "unknown"}
     ]
 
 
@@ -570,6 +650,8 @@ def catalogue_page(
     except ValueError:
         requested_language = ""
     for row in rows:
+        if row.get("entry_role", "model") == "component" and category != "component":
+            continue
         if category and row["category"] != category:
             continue
         if family and row["family"] != family:

@@ -21,8 +21,8 @@ from ..schemas import (
     PlanOrchestratedWorkflowInput,
     PlanWorkflowInput,
 )
-from ..schemas.common import WarningMessage
 from ..work_mapping import application_work_reference
+from ..workflow_results import workflow_plan_outcome
 
 _PASSIVE_STAGE_ORDER = (
     "correction",
@@ -508,6 +508,9 @@ def plan_orchestrated_workflow(
                 "subtitle_format": arguments.subtitle_format,
             }
         )
+        if arguments.generation_run_id:
+            merged_output["generation_run_id"] = arguments.generation_run_id
+            merged_output["audio_version_side"] = arguments.audio_version_side
         safe_overrides["output"] = merged_output
 
     final_plan_arguments = {
@@ -516,6 +519,8 @@ def plan_orchestrated_workflow(
         "overrides": safe_overrides,
         "expires_in_minutes": arguments.expires_in_minutes,
     }
+    if arguments.generation_run_id:
+        final_plan_arguments["continuation"] = False
     phases = [
         _passive_phase(
             arguments.session_id,
@@ -559,8 +564,8 @@ def plan_orchestrated_workflow(
         "monitor_arguments": {
             "work_type": "job",
             "work_id": "<work id returned by pandrator_execute_workflow_plan>",
-            "include_events": True,
-            "wait_seconds": arguments.wait_seconds,
+            "include_events": False,
+            "wait_seconds": min(arguments.wait_seconds, 60),
         },
         "completion_condition": (
             "The returned durable work state is succeeded; inspect its error and "
@@ -663,34 +668,9 @@ def plan_workflow(
         target_stage=arguments.target_stage,
         overrides=arguments.overrides,
         expires_in_minutes=arguments.expires_in_minutes,
+        continuation=arguments.continuation,
     )
-    plan_id = str(plan.get("plan_id") or "")
-    digest = str(plan.get("plan_digest") or "")
-    confirmations = tuple(str(value) for value in plan.get("required_confirmations", []) or [])
-    warnings = [
-        WarningMessage(code="prerequisite_rerun", message=str(value))
-        for value in (plan.get("warnings") or [])
-        if str(value).strip()
-    ]
-    return ToolOutcome(
-        result=plan,
-        warnings=warnings,
-        next_actions=[
-            NextAction(
-                tool="pandrator_execute_workflow_plan",
-                arguments={
-                    "plan_id": plan_id,
-                    "plan_digest": digest,
-                    "accepted_confirmations": list(confirmations),
-                    "idempotency_key": f"workflow-plan:{plan_id}",
-                },
-                reason=(
-                    "Execute only after the user reviews the exact stages, "
-                    "provider disclosures, data categories, and confirmations."
-                ),
-            )
-        ],
-    )
+    return workflow_plan_outcome(plan)
 
 
 def execute_workflow_plan(

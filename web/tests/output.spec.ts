@@ -336,7 +336,7 @@ test('Create export keeps the selected audio version when saved effective defaul
   expect(uploaded.ok()).toBeTruthy();
 
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -471,7 +471,7 @@ test('soundtrack mix preview uses the selected version and current unsaved contr
   expect(uploaded.ok()).toBeTruthy();
 
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -582,7 +582,7 @@ test('Create export sends an explicit voiceover-only contract when no source is 
   const { session } = await createSession(page, 'voiceover');
 
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -703,7 +703,7 @@ test('Create export submits ONE durable export request with the pinned run', asy
   let exportCalls = 0;
   let exportPayload: Record<string, unknown> | null = null;
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -799,7 +799,7 @@ test('Navigation after an accepted export job does not resubmit the export', asy
   let assemblyCalls = 0;
   let exportCalls = 0;
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -892,7 +892,7 @@ test('Create export requires a completed audio version for a mixed media export'
   let exportCalls = 0;
   let assemblyCalls = 0;
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -960,7 +960,7 @@ test('video output replaces the frozen-tail limit with a per-export choice', asy
   expect(uploaded.ok()).toBeTruthy();
 
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -1057,7 +1057,7 @@ test('Run 8 displays merged groups and preserves original/final audio choices', 
     repair_reason: index < 9 ? null : 'duration_misfit'
   }));
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     (route) =>
       route.fulfill({
         contentType: 'application/json',

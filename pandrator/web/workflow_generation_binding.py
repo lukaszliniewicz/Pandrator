@@ -25,6 +25,7 @@ from .models import (
     SessionRecord,
     SpeechPlanReview,
 )
+from .outcome_plans import resolve_workflow_inputs
 from .workflow_inputs import workflow_transformations
 
 
@@ -538,10 +539,11 @@ def generation_source_for_plan_refresh(
             else {}
         )
         inputs_raw = outcome_value.get("inputs")
-        inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
+        inputs_raw = inputs_raw if isinstance(inputs_raw, dict) else {}
+        inputs = resolve_workflow_inputs(record, outcome_value)
         transformations = workflow_transformations(session, session_id, outcome, context.database)
-        generation_input = str(inputs.get("generation") or "translation").strip().lower()
-        has_explicit_source_choice = bool(str(inputs.get("generation") or "").strip()) or bool(
+        generation_input = inputs.get("generation", "source")
+        has_explicit_source_choice = bool(str(inputs_raw.get("generation") or "").strip()) or bool(
             transformations.get("llm_tts_document_optimization")
         )
         plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))

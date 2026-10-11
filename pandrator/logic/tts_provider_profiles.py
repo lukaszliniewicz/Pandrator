@@ -1,8 +1,10 @@
 import copy
+import json
+from pathlib import Path
 
-from ..constants import magpie_voice_catalog
+from ..constants import AUDIO_CPP_KOKORO_VOICES, magpie_voice_catalog
 from .audio_cpp_catalogue import family_metadata, speech_model_catalog
-from .audio_cpp_parameters import request_parameters_for_family
+from .audio_cpp_parameters import request_parameters_for_model
 
 OPENAI_ADAPTER = "openai_compatible"
 AUDIO_CPP_ADAPTER = "audio_cpp"
@@ -120,8 +122,8 @@ for _metadata in speech_model_catalog():
         _model["family"] = "fish_audio_s2"
 
 for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
-    _audio_cpp_model["request_parameters"] = request_parameters_for_family(
-        str(_audio_cpp_model.get("family") or "")
+    _audio_cpp_model["request_parameters"] = request_parameters_for_model(
+        str(_audio_cpp_model.get("family") or ""), str(_audio_cpp_model["id"])
     )
 
 AUDIO_CPP_VOICE_DESIGN_MODELS = tuple(
@@ -146,1015 +148,112 @@ AUDIO_CPP_PREBUILT_VOICES = [
     "alba",
 ]
 
-AZURE_SPEECH_MODELS = ["MAI-Voice-2", "MAI-Voice-2-Flash"]
-AZURE_SPEECH_DEFAULT_MODEL = "MAI-Voice-2"
-AZURE_SPEECH_DEFAULT_VOICE = "en-US-Ethan:MAI-Voice-2"
-AZURE_SPEECH_DEFAULT_FLASH_VOICE = "en-US-Ethan:MAI-Voice-2-Flash"
+
+def _audio_cpp_model_preset(model: dict) -> list[str] | None:
+    model_id = str(model.get("id") or "")
+    family = str(model.get("family") or "")
+    if str(model.get("voice_mode") or "") not in {"prebuilt", "hybrid"}:
+        return None
+    if family == "kokoro_tts":
+        return list(AUDIO_CPP_KOKORO_VOICES)
+    if family == "qwen3_tts" and "customvoice" in model_id:
+        return list(AUDIO_CPP_PREBUILT_VOICES[:9])
+    if family == "magpie_tts":
+        return magpie_voice_catalog()
+    if family == "pocket_tts" and "pocket_tts_english_" in model_id:
+        return ["alba"]
+    if family == "supertonic":
+        return [f"{gender}{number}" for gender in ("F", "M") for number in range(1, 6)]
+    if family == "lfm2_audio":
+        return (
+            []
+            if "_jp_" in model_id
+            else ["us_male", "us_female", "uk_male", "uk_female"]
+        )
+    if family in {"kitten_tts2", "kugelaudio", "neutts"}:
+        options = family_metadata(family).get("options", {}).get("request", [])
+        return next(
+            (
+                list(option.get("values", []))
+                for option in options
+                if option.get("name") == "voice_id"
+            ),
+            [],
+        )
+    return None
+
+
+AUDIO_CPP_MODEL_PRESETS: dict[str, list[str]] = {}
+for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
+    _audio_cpp_presets = _audio_cpp_model_preset(_audio_cpp_model)
+    if _audio_cpp_presets is not None:
+        AUDIO_CPP_MODEL_PRESETS[str(_audio_cpp_model["id"])] = _audio_cpp_presets
+
+AUDIO_CPP_MODEL_DEFAULT_VOICES: dict[str, str] = {}
+for _audio_cpp_model in AUDIO_CPP_MODEL_CATALOG:
+    _audio_cpp_model_id = str(_audio_cpp_model["id"])
+    _audio_cpp_model_presets = AUDIO_CPP_MODEL_PRESETS.get(_audio_cpp_model_id, [])
+    if not _audio_cpp_model_presets:
+        continue
+    _audio_cpp_default_voice = _audio_cpp_model_presets[0]
+    if str(_audio_cpp_model.get("family") or "") == "kokoro_tts":
+        _audio_cpp_default_voice = "af_heart"
+    elif (
+        str(_audio_cpp_model.get("family") or "") == "qwen3_tts"
+        and "customvoice" in _audio_cpp_model_id
+    ):
+        _audio_cpp_default_voice = "Aiden"
+    AUDIO_CPP_MODEL_DEFAULT_VOICES[_audio_cpp_model_id] = _audio_cpp_default_voice
+
+
+_AZURE_MAI_VOICE_CATALOGUE_PATH = Path(__file__).with_name(
+    "azure_mai_voice_catalogue.json"
+)
+with _AZURE_MAI_VOICE_CATALOGUE_PATH.open(encoding="utf-8") as _azure_catalogue_file:
+    _AZURE_MAI_VOICE_CATALOGUE = json.load(_azure_catalogue_file)
+
+AZURE_SPEECH_MODELS = list(_AZURE_MAI_VOICE_CATALOGUE["models"])
+AZURE_SPEECH_DEFAULT_MODEL = "MAI-Voice-2.1"
+AZURE_SPEECH_DEFAULT_VOICE = "en-US-Ethan:MAI-Voice-2.1"
+AZURE_SPEECH_DEFAULT_FLASH_VOICE = "en-US-Ethan:MAI-Voice-2.1-Flash"
 AZURE_SPEECH_OUTPUT_FORMAT = "audio-24khz-160kbitrate-mono-mp3"
-AZURE_SPEECH_SOURCE_URL = (
-    "https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices"
-)
+AZURE_SPEECH_SOURCE_URL = _AZURE_MAI_VOICE_CATALOGUE["source_url"]
+AZURE_SPEECH_LEGACY_MODEL_ALIASES = {
+    "MAI-Voice-2": "MAI-Voice-2.1",
+    "MAI-Voice-2-Flash": "MAI-Voice-2.1-Flash",
+}
 
-_AZURE_EXPRESSIVE_STYLES = (
-    "angry",
-    "confused",
-    "determined",
-    "disgusted",
-    "embarrassed",
-    "excited",
-    "fearful",
-    "happy",
-    "hopeful",
-    "jealous",
-    "joyful",
-    "regretful",
-    "relieved",
-    "sad",
-    "shouting",
-    "softvoice",
-    "surprised",
-    "whispering",
-)
-_AZURE_ES_EXPRESSIVE_STYLES = (
-    "adventurous",
-    "caring",
-    "empathy",
-    "curious",
-    "encouraging",
-    "excited",
-    "friendly",
-    "cheerful",
-    "nostalgic",
-    "reflective",
-    "sad",
-    "disappointed",
-    "serious",
-)
-
-# These rows mirror Microsoft's published MAI-Voice prebuilt tables.  Keep
-# the full short names because Azure expects the model suffix in the voice ID.
-_AZURE_MAI_VOICE_ROWS = (
-    (
-        "MAI-Voice-2",
-        "de-DE-Klaus:MAI-Voice-2",
-        "de-DE",
-        "German (Germany)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "de-DE-Mia:MAI-Voice-2",
-        "de-DE",
-        "German (Germany)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "en-AU-Lisa:MAI-Voice-2",
-        "en-AU",
-        "English (Australia)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "en-US-Ethan:MAI-Voice-2",
-        "en-US",
-        "English (United States)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "en-US-Grant:MAI-Voice-2",
-        "en-US",
-        "English (United States)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "en-US-Harper:MAI-Voice-2",
-        "en-US",
-        "English (United States)",
-        "Female",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "shouting",
-            "softvoice",
-            "whispering",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "en-US-Iris:MAI-Voice-2",
-        "en-US",
-        "English (United States)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "en-US-Jasper:MAI-Voice-2",
-        "en-US",
-        "English (United States)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "en-US-Olivia:MAI-Voice-2",
-        "en-US",
-        "English (United States)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "es-ES-Marta:MAI-Voice-2",
-        "es-ES",
-        "Spanish (Spain)",
-        "Female",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "es-MX-Alejo:MAI-Voice-2",
-        "es-MX",
-        "Spanish (Mexico)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "es-MX-Valeria:MAI-Voice-2",
-        "es-MX",
-        "Spanish (Mexico)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "fr-FR-Marc:MAI-Voice-2",
-        "fr-FR",
-        "French (France)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "fr-FR-Soleil:MAI-Voice-2",
-        "fr-FR",
-        "French (France)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "hi-IN-Arjun:MAI-Voice-2",
-        "hi-IN",
-        "Hindi (India)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "disgusted",
-            "embarrassed",
-            "excited",
-            "fearful",
-            "happy",
-            "hopeful",
-            "jealous",
-            "joyful",
-            "regretful",
-            "sad",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "hi-IN-Dhruv:MAI-Voice-2",
-        "hi-IN",
-        "Hindi (India)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "hi-IN-Kavya:MAI-Voice-2",
-        "hi-IN",
-        "Hindi (India)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "hi-IN-Priya:MAI-Voice-2",
-        "hi-IN",
-        "Hindi (India)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "hu-HU-Bence:MAI-Voice-2",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "hu-HU-Levente:MAI-Voice-2",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "hu-HU-Lilla:MAI-Voice-2",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "hu-HU-Réka:MAI-Voice-2",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "it-IT-Luca:MAI-Voice-2",
-        "it-IT",
-        "Italian (Italy)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "it-IT-Rosa:MAI-Voice-2",
-        "it-IT",
-        "Italian (Italy)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "ko-KR-Hana:MAI-Voice-2",
-        "ko-KR",
-        "Korean (Korea)",
-        "Female",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "ko-KR-Junho:MAI-Voice-2",
-        "ko-KR",
-        "Korean (Korea)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "relieved",
-            "sad",
-            "softvoice",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "nl-NL-Fleur:MAI-Voice-2",
-        "nl-NL",
-        "Dutch (Netherlands)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "nl-NL-Sander:MAI-Voice-2",
-        "nl-NL",
-        "Dutch (Netherlands)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "pt-BR-Caio:MAI-Voice-2",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "pt-BR-Luana:MAI-Voice-2",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "pt-BR-Pedro:MAI-Voice-2",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Male",
-        (
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "pt-BR-Rafael:MAI-Voice-2",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "pt-PT-Rui:MAI-Voice-2",
-        "pt-PT",
-        "Portuguese (Portugal)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "ro-RO-Andrei:MAI-Voice-2",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "ro-RO-Elena:MAI-Voice-2",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "ro-RO-Ioana:MAI-Voice-2",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "ro-RO-Radu:MAI-Voice-2",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2",
-        "ru-RU-Lev:MAI-Voice-2",
-        "ru-RU",
-        "Russian (Russia)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "ru-RU-Masha:MAI-Voice-2",
-        "ru-RU",
-        "Russian (Russia)",
-        "Female",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "th-TH-Krit:MAI-Voice-2",
-        "th-TH",
-        "Thai (Thailand)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "th-TH-Nattapong:MAI-Voice-2",
-        "th-TH",
-        "Thai (Thailand)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "tr-TR-Aydin:MAI-Voice-2",
-        "tr-TR",
-        "Turkish (Turkey)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "tr-TR-Elif:MAI-Voice-2",
-        "tr-TR",
-        "Turkish (Turkey)",
-        "Female",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "zh-CN-Bo:MAI-Voice-2",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2",
-        "zh-CN-Lan:MAI-Voice-2",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Female",
-        (
-            "angry",
-            "confused",
-            "disgusted",
-            "embarrassed",
-            "excited",
-            "fearful",
-            "happy",
-            "joyful",
-            "sad",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2",
-        "zh-CN-Mei:MAI-Voice-2",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "de-DE-Klaus:MAI-Voice-2-Flash",
-        "de-DE",
-        "German (Germany)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "de-DE-Mia:MAI-Voice-2-Flash",
-        "de-DE",
-        "German (Germany)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "en-AU-Isla:MAI-Voice-2-Flash",
-        "en-AU",
-        "English (Australia)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "en-US-Ethan:MAI-Voice-2-Flash",
-        "en-US",
-        "English (United States)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "en-US-Harper:MAI-Voice-2-Flash",
-        "en-US",
-        "English (United States)",
-        "Female",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "shouting",
-            "softvoice",
-            "whispering",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "en-US-Olivia:MAI-Voice-2-Flash",
-        "en-US",
-        "English (United States)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "es-ES-Marta:MAI-Voice-2-Flash",
-        "es-ES",
-        "Spanish (Spain)",
-        "Female",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "es-MX-Alejo:MAI-Voice-2-Flash",
-        "es-MX",
-        "Spanish (Mexico)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "es-MX-Valeria:MAI-Voice-2-Flash",
-        "es-MX",
-        "Spanish (Mexico)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "fr-FR-Marc:MAI-Voice-2-Flash",
-        "fr-FR",
-        "French (France)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "fr-FR-Soleil:MAI-Voice-2-Flash",
-        "fr-FR",
-        "French (France)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hi-IN-Arjun:MAI-Voice-2-Flash",
-        "hi-IN",
-        "Hindi (India)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "disgusted",
-            "embarrassed",
-            "excited",
-            "fearful",
-            "happy",
-            "hopeful",
-            "jealous",
-            "joyful",
-            "regretful",
-            "sad",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hi-IN-Dhruv:MAI-Voice-2-Flash",
-        "hi-IN",
-        "Hindi (India)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hi-IN-Kavya:MAI-Voice-2-Flash",
-        "hi-IN",
-        "Hindi (India)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hi-IN-Priya:MAI-Voice-2-Flash",
-        "hi-IN",
-        "Hindi (India)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hu-HU-Bence:MAI-Voice-2-Flash",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hu-HU-Levente:MAI-Voice-2-Flash",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hu-HU-Lilla:MAI-Voice-2-Flash",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "hu-HU-Réka:MAI-Voice-2-Flash",
-        "hu-HU",
-        "Hungarian (Hungary)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "it-IT-Luca:MAI-Voice-2-Flash",
-        "it-IT",
-        "Italian (Italy)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "it-IT-Rosa:MAI-Voice-2-Flash",
-        "it-IT",
-        "Italian (Italy)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ko-KR-Haena:MAI-Voice-2-Flash",
-        "ko-KR",
-        "Korean (Korea)",
-        "Female",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ko-KR-Junho:MAI-Voice-2-Flash",
-        "ko-KR",
-        "Korean (Korea)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "relieved",
-            "sad",
-            "softvoice",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "nl-NL-Sander:MAI-Voice-2-Flash",
-        "nl-NL",
-        "Dutch (Netherlands)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "pt-BR-Caio:MAI-Voice-2-Flash",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "pt-BR-Luana:MAI-Voice-2-Flash",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "pt-BR-Pedro:MAI-Voice-2-Flash",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Male",
-        (
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "pt-BR-Rafael:MAI-Voice-2-Flash",
-        "pt-BR",
-        "Portuguese (Brazil)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "pt-PT-Rui:MAI-Voice-2-Flash",
-        "pt-PT",
-        "Portuguese (Portugal)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "determined",
-            "embarrassed",
-            "excited",
-            "happy",
-            "hopeful",
-            "joyful",
-            "regretful",
-            "relieved",
-            "sad",
-            "softvoice",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ro-RO-Andrei:MAI-Voice-2-Flash",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ro-RO-Elena:MAI-Voice-2-Flash",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ro-RO-Ioana:MAI-Voice-2-Flash",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Female",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ro-RO-Radu:MAI-Voice-2-Flash",
-        "ro-RO",
-        "Romanian (Romania)",
-        "Male",
-        (),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ru-RU-Lev:MAI-Voice-2-Flash",
-        "ru-RU",
-        "Russian (Russia)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "ru-RU-Masha:MAI-Voice-2-Flash",
-        "ru-RU",
-        "Russian (Russia)",
-        "Female",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "th-TH-Krit:MAI-Voice-2-Flash",
-        "th-TH",
-        "Thai (Thailand)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "th-TH-Nattapong:MAI-Voice-2-Flash",
-        "th-TH",
-        "Thai (Thailand)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "tr-TR-Aydın:MAI-Voice-2-Flash",
-        "tr-TR",
-        "Turkish (Türkiye)",
-        "Male",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "tr-TR-Elif:MAI-Voice-2-Flash",
-        "tr-TR",
-        "Turkish (Türkiye)",
-        "Female",
-        _AZURE_ES_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "zh-CN-Bo:MAI-Voice-2-Flash",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Male",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "zh-CN-Lan:MAI-Voice-2-Flash",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Female",
-        (
-            "angry",
-            "confused",
-            "disgusted",
-            "embarrassed",
-            "excited",
-            "fearful",
-            "happy",
-            "joyful",
-            "sad",
-            "surprised",
-        ),
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "zh-CN-Mei:MAI-Voice-2-Flash",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Female",
-        _AZURE_EXPRESSIVE_STYLES,
-    ),
-    (
-        "MAI-Voice-2-Flash",
-        "zh-CN-Wei:MAI-Voice-2-Flash",
-        "zh-CN",
-        "Chinese (Mandarin, Simplified)",
-        "Male",
-        (
-            "angry",
-            "confused",
-            "disgusted",
-            "embarrassed",
-            "excited",
-            "fearful",
-            "happy",
-            "hopeful",
-            "jealous",
-            "joyful",
-            "regretful",
-            "sad",
-            "surprised",
-        ),
-    ),
-)
-
+_AZURE_MAI_VOICE_ROWS = _AZURE_MAI_VOICE_CATALOGUE["rows"]
 AZURE_SPEECH_VOICE_CATALOGUES = {
-    model: [row[1] for row in _AZURE_MAI_VOICE_ROWS if row[0] == model]
+    model: [
+        f"{row['voice_id']}:{model}"
+        for row in _AZURE_MAI_VOICE_ROWS
+        if model in row["supported_models"]
+    ]
     for model in AZURE_SPEECH_MODELS
 }
-AZURE_SPEECH_VOICES = [row[1] for row in _AZURE_MAI_VOICE_ROWS]
+AZURE_SPEECH_VOICES = [
+    voice
+    for model in AZURE_SPEECH_MODELS
+    for voice in AZURE_SPEECH_VOICE_CATALOGUES[model]
+]
 AZURE_SPEECH_VOICE_METADATA = {
-    f"{model}:{voice}": {
-        "id": voice,
-        "voice_id": voice,
+    f"{model}:{voice_id}": {
+        "id": voice_id,
+        "voice_id": voice_id,
         "model": model,
-        "locale": locale,
-        "language": language,
-        "gender": gender,
-        "styles": list(styles),
+        "locale": row["locale"],
+        "language": row["language"],
+        "gender": row["gender"],
+        "styles": list(row["supported_styles"]),
         "source": AZURE_SPEECH_SOURCE_URL,
+        "checked_at": _AZURE_MAI_VOICE_CATALOGUE["checked_at"],
     }
-    for model, voice, locale, language, gender, styles in _AZURE_MAI_VOICE_ROWS
+    for model in AZURE_SPEECH_MODELS
+    for row in _AZURE_MAI_VOICE_ROWS
+    if model in row["supported_models"]
+    for voice_id in [f"{row['voice_id']}:{model}"]
 }
-
 
 def _openai_profile(
     profile_id: str,
@@ -1207,7 +306,6 @@ def _audio_cpp_profile() -> dict:
 
     model_catalog = copy.deepcopy(AUDIO_CPP_MODEL_CATALOG)
     model_ids = [str(item["id"]) for item in model_catalog]
-    prebuilt_voices = list(dict.fromkeys(AUDIO_CPP_PREBUILT_VOICES))
 
     return {
         "id": "audio-cpp-experimental",
@@ -1240,16 +338,8 @@ def _audio_cpp_profile() -> dict:
         # fallback empty so Qwen, Magpie, and Pocket presets never leak into
         # cloning-only models when the live catalogue is unavailable.
         "voices": [],
-        "voice_catalogues": {
-            **{entry["id"]: prebuilt_voices[:9] for entry in model_catalog if "customvoice" in entry["id"]},
-            **{entry["id"]: [f"{gender}{number}" for gender in ("F", "M") for number in range(1, 6)] for entry in model_catalog if entry.get("family") == "supertonic"},
-            **{entry["id"]: next((option.get("values", []) for option in family_metadata("neutts").get("options", {}).get("request", []) if option.get("name") == "voice_id"), []) for entry in model_catalog if entry.get("family") == "neutts"},
-            **{entry["id"]: ["af_heart"] for entry in model_catalog if entry.get("family") == "kokoro_tts"},
-            "qwen3_tts_1_7b_customvoice_q8_0": prebuilt_voices[:9],
-            "magpie_tts_q8_0": list(magpie_voice_catalog()),
-            "pocket_tts_english_q8_0": ["alba"],
-            "supertonic_3_q8_0": [f"{gender}{number}" for gender in ("F", "M") for number in range(1, 6)],
-        },
+        "voice_catalogues": copy.deepcopy(AUDIO_CPP_MODEL_PRESETS),
+        "default_voices": copy.deepcopy(AUDIO_CPP_MODEL_DEFAULT_VOICES),
         "supports_prebuilt_voices": True,
         "supports_voice_cloning": True,
         "supports_voice_deletion": False,
@@ -1330,26 +420,30 @@ def _elevenlabs_profile() -> dict:
             "format": "",
         },
         "request_defaults": {"output_format": "mp3_44100_128"},
-        "models": ["eleven_multilingual_v2"],
+        "models": ["eleven_v4", "eleven_v4_turbo", "eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"],
+        "generation_prompt_models": ["eleven_v4", "eleven_v4_turbo", "eleven_v3"],
         "voices": [],
         "supports_prebuilt_voices": True,
         "auth_mode": "xi-api-key",
         "direct_http": True,
         "credential_required": True,
         "notes": (
-            "The voice ID is URL-encoded in /v1/text-to-speech/{voice_id}; models and voices "
-            "are discovered from ElevenLabs' official catalogue endpoints."
+            "Eleven v4 uses the native dialogue API; v4 Turbo uses its realtime WebSocket route. "
+            "Older models use the native text-to-speech route. Refresh models and voices from "
+            "ElevenLabs' official catalogue endpoints. Voice cloning and library access depend on your account."
         ),
     }
 
 
 def _azure_speech_profile() -> dict:
+    model_labels = {
+        "MAI-Voice-2.1": "MAI Voice 2.1",
+        "MAI-Voice-2.1-Flash": "MAI Voice 2.1 Flash",
+    }
     model_catalog = [
         {
             "id": model,
-            "name": model.replace("MAI-Voice-2-Flash", "MAI Voice 2 Flash").replace(
-                "MAI-Voice-2", "MAI Voice 2"
-            ),
+            "name": model_labels[model],
             "unit": "characters",
             "source": "Azure pricing",
             "source_url": AZURE_SPEECH_SOURCE_URL,
@@ -1359,9 +453,9 @@ def _azure_speech_profile() -> dict:
     return {
         "id": "azure-speech-mai-voice-2",
         "profile_id": "azure-speech-mai-voice-2",
-        "name": "Azure Speech · MAI Voice 2",
+        "name": "Azure Speech · MAI Voice 2.1",
         "description": (
-            "Native Azure Speech SSML endpoint for the prebuilt MAI Voice 2 models."
+            "Native Azure Speech SSML endpoint for the prebuilt MAI Voice 2.1 models."
         ),
         "source_url": AZURE_SPEECH_SOURCE_URL,
         "api_base": "https://YOUR-REGION.tts.speech.microsoft.com",
@@ -1409,7 +503,9 @@ def _azure_speech_profile() -> dict:
         "api_key_env": "AZURE_SPEECH_KEY",
         "notes": (
             "Static prebuilt voice catalogue copied from Microsoft's MAI-Voice docs. "
-            "This profile intentionally excludes gated instant voice cloning."
+            "MAI-Voice-2 resolves to MAI-Voice-2.1 and MAI-Voice-2-Flash resolves "
+            "to MAI-Voice-2.1-Flash at request time. This profile intentionally "
+            "excludes gated instant voice cloning."
         ),
     }
 

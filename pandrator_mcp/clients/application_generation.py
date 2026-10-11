@@ -27,6 +27,7 @@ class ApplicationGenerationMethods(ApplicationRequests):
         # Null selectors mean changed voices only; [] means an explicit empty selection.
         return self._request_json(
             path, method="POST", body=values, idempotency_key=key,
+            read_only_operation=action in {"preview", "undo_preview"},
             maximum_body_bytes=512 * 1024,
         )
 
@@ -64,13 +65,24 @@ class ApplicationGenerationMethods(ApplicationRequests):
         elif action not in {"list", "get", "create", "edit"}:
             path += f"/{action}"
         if methods[action] == "GET":
+            if isinstance(values.get("segment_ids"), list):
+                values["segment_ids"] = ",".join(values["segment_ids"])
+            if "include_units" in values:
+                values["include_units"] = "true" if values["include_units"] else "false"
             return self._request_json(
                 path,
                 parameters={name: value for name, value in values.items() if value is not None},
             )
+        parameters = None
+        if action == "create":
+            parameters = {name: values.pop(name) for name in ("view", "include_units") if name in values}
+            if "include_units" in parameters:
+                parameters["include_units"] = "true" if parameters["include_units"] else "false"
         return self._request_json(
             path,
             method=methods[action],
+            read_only_operation=action == "preview",
+            parameters=parameters,
             body=values,
             idempotency_key=key,
             maximum_body_bytes=512 * 1024,
@@ -134,7 +146,17 @@ class ApplicationGenerationMethods(ApplicationRequests):
             f"/api/v1/sessions/{quote(session_id, safe='')}/speech-plan/selection-preview",
             method="POST",
             body=body,
-            maximum_body_bytes=16 * 1024,
+            maximum_body_bytes=512 * 1024,
+        )
+
+    def get_speech_selection_context(
+        self, session_id: str, *, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/speech-plan/selection-context",
+            method="POST",
+            body=body,
+            maximum_body_bytes=4096,
         )
 
     def apply_speech_selection(
@@ -145,14 +167,17 @@ class ApplicationGenerationMethods(ApplicationRequests):
             method="POST",
             body=body,
             idempotency_key=idempotency_key,
-            maximum_body_bytes=16 * 1024,
+            maximum_body_bytes=512 * 1024,
         )
 
     def list_generation_runs(
         self, session_id: str, *, limit: int | None = None, include_repairs: bool | None = None,
         view: str = "full",
+        generation_run_id: str | None = None,
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {}
+        if generation_run_id is not None:
+            parameters["generation_run_id"] = generation_run_id
         if view != "full":
             parameters["view"] = view
         if limit is not None:
@@ -174,6 +199,7 @@ class ApplicationGenerationMethods(ApplicationRequests):
         plan_revision_id: str | None = None,
         view: str = "full",
         fields: list[str] | None = None,
+        segment_ids: list[str] | None = None,
         end_ordinal: int | None = None,
         around_ordinal: int | None = None,
         source_cue_id: str | None = None,
@@ -197,6 +223,10 @@ class ApplicationGenerationMethods(ApplicationRequests):
             params["view"] = view
         if fields is not None:
             params["fields"] = ",".join(fields)
+        if segment_ids is not None:
+            params["segment_ids"] = ",".join(segment_ids)
+        if view != "full":
+            params["take_history"] = "selected"
         if around_ordinal is not None or source_cue_id is not None:
             params["radius"] = radius
         return self._request_json(
@@ -383,19 +413,39 @@ class ApplicationGenerationMethods(ApplicationRequests):
         session_id: str,
         *,
         segment_ids: list[str] | tuple[str, ...] | None = None,
+        generation_run_id: str | None = None,
+        settings_source: str | None = None,
+        settings_source_run_id: str | None = None,
         operation: str = "generate",
         idempotency_key: str,
         speech_plan_revision_id: str | None = None,
         stale_only: bool = False,
+        missing_only: bool = False,
         view: str = "full",
+        admission: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"operation": operation}
         if segment_ids:
             body["segment_ids"] = list(segment_ids)
+        if generation_run_id is not None:
+            body["generation_run_id"] = generation_run_id
+        if settings_source is not None:
+            body["settings_source"] = settings_source
+        if settings_source_run_id is not None:
+            body["settings_source_run_id"] = settings_source_run_id
         if speech_plan_revision_id is not None:
             body["speech_plan_revision_id"] = speech_plan_revision_id
         if stale_only:
             body["stale_only"] = True
+        if missing_only:
+            body["missing_only"] = True
+        if admission:
+            return self._request_json(
+                f"/api/v1/sessions/{quote(session_id, safe='')}/generation-admissions",
+                method="POST",
+                body=body,
+                idempotency_key=idempotency_key,
+            )
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/generation-runs",
             method="POST",

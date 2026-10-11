@@ -344,11 +344,17 @@ class SessionForkService:
         checkpoint_artifact_id: str,
         *,
         name: str = "",
+        interface_mode: str | None = None,
         carry_media_assets: bool = True,
         target_language: str | None = None,
         expected_revision: int | None = None,
         allow_source_checkpoint: bool = False,
     ) -> SessionForkResult:
+        if interface_mode is not None and interface_mode not in (
+            "simple",
+            "advanced",
+        ):
+            raise ValueError("Interface mode must be 'simple' or 'advanced'.")
         source = session.get(SessionRecord, source_session_id)
         checkpoint = session.get(Artifact, checkpoint_artifact_id)
         if source is None or source.trashed_at is not None:
@@ -387,6 +393,11 @@ class SessionForkService:
             record = SessionService(self.database).create(
                 self._unique_name(session, name, source, checkpoint.role),
                 workflow_kind=source.workflow_kind,
+                interface_mode=(
+                    interface_mode
+                    if interface_mode is not None
+                    else source.interface_mode
+                ),
                 source_language=source.source_language,
                 target_language=(
                     target_language if target_language is not None else source.target_language
@@ -1030,6 +1041,15 @@ class SessionForkService:
                             sequence=lineage.sequence,
                         )
                     )
+            from .sound_project_revisions import clone_sound_plan
+
+            clone_sound_plan(
+                session,
+                source_session_id,
+                record.id,
+                old_to_new_segments,
+                carry_media_assets,
+            )
             session.flush()
             return SessionForkResult(
                 record=record,

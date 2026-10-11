@@ -53,6 +53,7 @@ def route_domain(rule: str) -> str:
         (
             "/api/v1/pronunciations",
             "/api/v1/voices",
+            "/api/v1/sounds",
             "/api/v1/voice-catalog",
             "/api/v1/voice-collections",
             "/api/v1/rvc",
@@ -80,6 +81,7 @@ def route_domain(rule: str) -> str:
         marker in rule
         for marker in (
             "/generation-plan",
+            "/sound-plan",
             "/performance-plans",
             "/generation-controls",
             "/generation-recast",

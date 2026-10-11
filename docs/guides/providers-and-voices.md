@@ -6,6 +6,11 @@ segment target separately from provider input/output limits and configurable
 runtime text-splitting defaults. Planning targets leave headroom for output
 budgets; they are starting points for representative listening tests.
 
+Fish's application chunk default is 300 characters (native audio.cpp: 200),
+with a 270-character audiobook target. Whole-segment directions are recommended;
+phrase cues are best effort. Qwen's output budget comes from the checkpoint,
+with a 2,048-frame fallback.
+
 In **Voices**, filter by origin to find designed voices, reference recordings or
 built-in speakers. **Redesign** opens an existing designed voice with its current
 brief and save target, so you can change the prompt and audition new candidates
@@ -84,11 +89,11 @@ starting generation.
 
 ## audio.cpp runtime versions
 
-The Manager pins audio.cpp **0.8.1** for Linux CPU/Vulkan/CUDA and Windows
+The Manager pins audio.cpp **0.9.1** for Linux CPU/Vulkan/CUDA and Windows
 CPU/Vulkan/CUDA, with SHA-256-verified upstream archives. Linux CPU and Vulkan
 use the portable builds. Windows CUDA uses the 12.4 binary plus its bundled
 cudart runtime archive. Linux CUDA uses the upstream
-`audio-v0.8.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
+`audio-v0.9.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz` binary best-effort: the
 colab tag means it was built for Colab (CUDA 12.8), it ships without a bundled
 runtime. It needs a compatible NVIDIA driver and system CUDA 12 libraries
 (including cuBLAS and cuFFT), NCCL 2, and OpenSSL 3. It has not been tested on
@@ -98,13 +103,29 @@ an unexpected archive layout instead of installing a broken slot.
 Updating the runtime does not replace selected models, voices, or generation
 settings. Model package revisions and digests remain independently pinned.
 
+The 0.9.1 catalogue contains 112 families and 362 packages, including KittenTTS2,
+KugelAudio and English/Japanese LFM2.5-Audio checkpoints. Kitten offers native
+presets and optional cloning with a matching transcript and a 1–30 second
+reference. Kugel offers preset voices. LFM's language belongs to its checkpoint:
+English offers four voices; Japanese uses one built-in voice with no voice ID.
+Manager installs LFM's matching backbone, encoder, vocoder and tokenizer together.
+The VoiceTut fine-tune uses Egyptian Arabic (`arz`), including Arabic/English
+code-switching; it does not inherit OmniVoice's general language list.
+
+Model tuning follows each family's native scalar request parameters, including
+new enums, text controls and defaults. Load/session controls remain part of the
+managed package configuration. The catalogue also lists new recognition,
+restoration and other audio models; catalogue membership does not imply a
+corresponding Pandrator workflow or acoustic verification. See the
+[0.9.1 release](https://github.com/0xShug0/audio.cpp/releases/tag/v0.9.1).
+
 ## Language and capability checks
 
 Language support differs by model and sometimes by voice. Pandrator filters
 choices using capabilities reported by an installed service, but that cannot
 guarantee pronunciation quality for every language pair or cloned voice.
 
-For audio.cpp 0.7.2, Pandrator translates the project language into the model's
+Pandrator translates the project language into the model's
 request format:
 
 | Model family | Language sent to audio.cpp |
@@ -118,7 +139,7 @@ request format:
 
 An omitted hint does not add language support to a model. These contracts were
 checked against the pinned audio.cpp runtime and its
-[model specifications](https://github.com/0xShug0/audio.cpp/tree/v0.7.2/model_specs).
+[model specifications](https://github.com/0xShug0/audio.cpp/tree/v0.9.1/model_specs).
 
 Generation failures retain the provider's explanation, model, and HTTP status.
 Temporary failures still retry; known audio.cpp language, cached-voice, and
@@ -177,20 +198,136 @@ endpoints can be configured where supported. Native ElevenLabs uses its own API
 contract, not an OpenAI-compatible one. A third-party intermediary that exposes
 an OpenAI-compatible speech API should be added as a custom provider instead.
 
-`gemini-3.8-flash-tts` is available under Google Gemini and Vertex AI. Select it
-explicitly; existing saved models and defaults remain available. Gemini uses the
-Interactions API with request storage disabled. The Vertex route uses the Gemini
-Enterprise API with your configured Google Cloud project and credentials, and
-requires the `global` location. Enable that API in your project before using it.
-Both routes support existing prebuilt voice names such as Kore. Creating designed
-or replicated voices through Google's Voices API is not integrated.
+ElevenLabs offers `eleven_v4` for content generation and `eleven_v4_turbo` for
+realtime speech. Pandrator uses native Text-to-Dialogue HTTP for v4 and collects
+a complete Text-to-Dialogue WebSocket turn for Turbo, saving it as a normal take.
+Both support inline delivery directions. v4 accepts stability and similarity;
+the current Turbo WebSocket contract exposes stability. Style, speed and speaker
+boost are rejected for these routes. v4 receives up to 100 characters of
+unspoken context on either side; Turbo has no documented hidden context fields.
+Requests are limited to 2,000 characters including inline tags to follow the
+dialogue API's reliability recommendation. The v4 model itself advertises a
+10,000-character limit. Existing older models keep their native REST route.
 
-Delivery directions use structured speech metadata rather than text that might
-be read aloud. See [Google's TTS guide](https://ai.google.dev/gemini-api/docs/speech-generation)
-and [the Cloud setup guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview).
-Usage estimates reflect Developer API launch rates through December 2026 and
-the regular rates from January 2027. Cloud estimates use the regular rate before
-promotional billing credits; configured pricing overrides remain authoritative.
+ElevenLabs' API list prices are $80 per million characters for v4, v3 and
+Multilingual v2, and $40 for v4 Turbo and Flash/Turbo v2.5. Through 12 October
+2026, the advertised v4/v4 Turbo launch rates are $22/$11 per million characters.
+Pandrator's default cost estimates switch to regular prices after that date;
+explicit account pricing overrides still apply. Subscription allowances, taxes
+and Voice Library multipliers can change the actual bill. See
+[API pricing](https://elevenlabs.io/pricing/api).
+
+Use your ElevenLabs API key and a voice ID available to that account. Existing
+instant/professional clones may need retraining for v4; do not assume a voice is
+ready merely because its ID is saved. Voice Design's creation models remain
+separate from the speech-generation model. Higher MP3 bitrates and some PCM/WAV
+rates require a higher subscription tier. Native v4 alignment is not yet used;
+Pandrator's existing alignment workflow remains available. The newer
+[WebSocket guide](https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/realtime-tdd)
+documents v4 Turbo while portions of the API reference still describe v3.
+
+Google Gemini and Vertex AI both offer `gemini-3.8-flash-tts` and
+`gemini-3.8-flash-lite-tts`. Flash is the fresh-install default for expressive
+audiobook narration; Flash Lite trades some acting nuance and dialect coverage
+for lower cost and higher throughput. Explicit saved model selections remain
+selected when upgrading.
+
+| Gemini API model ID | Vertex model ID | Role |
+| --- | --- | --- |
+| `gemini-3.8-flash-tts` | `gemini-3.8-flash-tts` | Expressive narration and acting |
+| `gemini-3.8-flash-lite-tts` | `gemini-3.8-flash-lite-tts` | Lower-cost, high-volume narration |
+| `gemini-3.1-flash-tts-preview` | `gemini-3.1-flash-tts-preview` | Existing projects |
+| `gemini-2.5-flash-preview-tts` | `gemini-2.5-flash-tts` | Existing projects |
+| `gemini-2.5-pro-preview-tts` | `gemini-2.5-pro-tts` | Existing projects |
+
+Google lists **17 November 2026 as the earliest possible shutdown date** for the
+older Gemini API TTS models, rather than a guaranteed retirement date. The Vertex
+3.8 models are currently in Preview. Language evidence is model- and route-specific:
+the current Gemini API cards list Turkish and Vietnamese, while the Vertex 3.8
+table omits them. Pandrator preserves the published script variants and Flash
+Lite's narrower language list. See [model availability](https://ai.google.dev/gemini-api/docs/deprecations)
+and [Vertex language support](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview#languages).
+
+For the Gemini API, configure a Gemini API key in the credential store. Pandrator
+sends 3.8 requests to `POST /v1beta/interactions` with request storage disabled.
+Vertex uses `aiplatform.googleapis.com`, your Google Cloud project, and either
+service-account credentials or Application Default Credentials. Enable the Vertex
+API and use the **`global` location** for both 3.8 models. Their speech endpoint is
+`POST /v1/projects/{project}/locations/global/publishers/google/models/{model}:generateContent`.
+Gemini 3.8 is available through this Vertex API, separately from the Cloud
+Text-to-Speech API. See [Google's TTS guide](https://ai.google.dev/gemini-api/docs/speech-generation)
+and [the Vertex setup guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview).
+
+In **Speech services → Test & refresh**, Pandrator discovers the extended voice
+library and stored custom voices for the configured account/project. Existing
+prebuilt names such as Kore remain available if discovery fails. Library and
+stored `voice_...` IDs are available only with the 3.8 models. A voice's language
+and accent metadata describes its native delivery; model language support governs
+which text languages can be synthesized.
+
+In **Voice Library → Design a reusable voice**, select Gemini or Vertex as the
+voice-design provider. Enter a name, language and description, then choose
+**Create & save voice**. Each creation saves a new library voice immediately,
+including its description, provider ID, credential/project association and
+Google-generated audition. The audition has Google's own text; it is not a
+reviewed recording reference. A saved voice works with both 3.8 models and remains
+selectable after a restart, even when optional voice discovery is unavailable.
+Switching the Google project or Gemini API key does not move the voice into the
+new scope. Restore the original credentials to use it there.
+
+Google creates one stored voice per request; Pandrator does not blindly retry an
+uncertain creation. If a request is interrupted, inspect **Activity & logs** and
+refresh the Google voice catalogue before creating another voice. The saved local
+request retains its description and provider identity whenever Google returned it.
+Google permits 200 stored designed/replicated voices per project. Stored voices
+expire one year after their last use; using them renews that period. Removing a
+local library entry does not delete the remote Google voice; manage remote voices
+through [Google's Voices API](https://ai.google.dev/api/voices).
+
+For Gemini, creation uses `POST /v1beta/voices` with `store=true` and the chosen
+design model. Vertex creation uses `POST /v1beta1/projects/{project}/locations/global/voices`;
+the creation request omits the model as required by Vertex, and is billed at Flash
+TTS rates. Google supplies the audition rather than accepting custom preview text.
+See [Gemini voice design](https://ai.google.dev/gemini-api/docs/voice-design)
+and [Vertex voice design and billing](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/voice-design).
+
+[Voice replication](https://ai.google.dev/gemini-api/docs/voice-replication)
+requires reference speech and a separate consent recording from the same adult
+speaker. Creation from recordings is not integrated into Pandrator's designer;
+existing replicated IDs remain usable. Stateless replication keys expire after
+seven days and are not listed by voice discovery.
+
+Both 3.8 models send speech directions in unspoken structured metadata, separate
+from the transcript. Use concise delivery directions. Enable `tts_context_mode`
+as `before` or `both` (Generation settings → Text context) to include accepted neighbouring text as unspoken delivery
+context; this is text guidance, without audio continuity or dedicated previous/next
+API fields. Momentary vocal events use tags such as `<laugh>` and `<short pause>`.
+Unary output is a complete 24 kHz WAV file. Both models have an 8,192-input-token
+and 16,384-output-token limit; these are not transcript character limits.
+
+Standard unary prices in USD per million tokens are the same on the two routes:
+
+| Model | Input through 31 Dec 2026 | Audio output through 31 Dec 2026 | Input / output from 1 Jan 2027 |
+| --- | --- | --- | --- |
+| Flash 3.8 | $0.50 | $9 | $1 / $18 |
+| Flash Lite 3.8 | $0.50 | $6 | $1 / $12 |
+| Flash 2.5 | $0.50 | $10 | — |
+| Flash 3.1 Preview | $1 | $20 | — |
+| Pro 2.5 | $1 | $20 | — |
+
+At 25 audio tokens per second, output costs approximately **$0.81 per hour for
+Flash** or **$0.54 for Flash Lite** during the launch period, plus text input.
+Older Flash 2.5 output is about $0.90 per hour; Flash 3.1 and Pro 2.5 are about
+$1.80 per hour. Older-model rows show current prices; their future availability
+is subject to Google's retirement schedule. Vertex voice creation uses the Flash
+TTS input/output rates for the generated audition; Google's example (220 input
+tokens, 1,100 audio tokens) is about one cent at the promotional rate. No separate
+voice-storage fee is documented. Gemini Developer API documentation does not
+explicitly establish voice-design billing parity with Vertex.
+Pandrator estimates text tokens and output duration; this is not a billing receipt.
+Configured pricing overrides remain authoritative. Batch, Flex, Priority tiers,
+and account credits are outside this estimate. See [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing)
+and [Google Cloud TTS pricing](https://cloud.google.com/text-to-speech/pricing).
 
 Keep provider secrets in Pandrator's configured credential backend, an
 owner-restricted secret file, or the deployment secret store. Never paste a
@@ -207,10 +344,13 @@ For how voices enter an audiobook or timed voiceover, continue with
 [your first audiobook](../getting-started/first-audiobook.md) or
 [your first voiceover](../getting-started/first-voiceover.md).
 
-## MAI Voice 2 delivery
+## MAI Voice 2.1 delivery
 
-MAI Voice 2 and Flash have separate voice catalogues. The voice picker uses
-Microsoft's locale metadata to show voices for the selected language.
+MAI Voice 2.1 and 2.1 Flash use the published 97-voice matrix, with a separate
+model suffix for each voice ID. Requests validate styles against the selected
+voice's exact list. Older `MAI-Voice-2` and `MAI-Voice-2-Flash` selections resolve
+to 2.1 equivalents; saved built-in profiles refresh their old catalogue without
+changing credentials or the selected voice stem. The picker uses Microsoft's locale metadata.
 Leaving Azure Speech style empty omits the SSML emotion/style tag; style degree
 has no effect without a style. This uses the voice's natural default delivery,
 which can remain expressive or conversational. It does not request a flat

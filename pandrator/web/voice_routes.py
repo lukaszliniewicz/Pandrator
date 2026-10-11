@@ -25,6 +25,7 @@ from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .managed_services import normalize_tts_provider_id
+from .media_process import MediaProcessError
 from .models import (
     AppSetting,
     Artifact,
@@ -60,6 +61,11 @@ from .voice_lifecycle_schemas import (
 )
 from .voice_recording_uploads import queue_voice_recording
 from .voice_reference_reuse import reusable_design_reference, verified_sample_artifact
+from .voice_reference_trim import (
+    VoiceReferenceTrimError,
+    inspect_voice_reference_trim,
+    reference_trim_requested,
+)
 
 VOICE_SAMPLE_NOISE_REDUCTION_OPTIONS = ("none", "deepfilternet2")
 
@@ -659,12 +665,20 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
         payload = VoiceReferenceImportRequest.model_validate(
             request.get_json(silent=True) or {}
         )
+        trim_requested = reference_trim_requested(
+            payload.start_seconds, payload.end_seconds
+        )
         idempotency_key, idempotency_error = mutation_idempotency_key()
         if idempotency_error is not None:
             return idempotency_error
+        request_fields = payload.model_dump(mode="json")
+        if not trim_requested:
+            # Keep existing no-crop idempotency identities stable across deploys.
+            request_fields.pop("start_seconds", None)
+            request_fields.pop("end_seconds", None)
         idempotency_payload = {
             "voice_id": voice_id,
-            **payload.model_dump(mode="json"),
+            **request_fields,
         }
         replay = inspect_voice_idempotency(
             "createVoiceSampleFromArtifact",
@@ -736,20 +750,64 @@ def register_voice_routes(app: DomainBlueprints, context: RouteContext) -> None:
                     "The voice reference artifact changed after it was registered.",
                     409,
                 )
+            artifact_id = artifact.id
+            artifact_role = artifact.role
 
+        trim = None
+        ffprobe_executable = shutil.which("ffprobe") or "ffprobe"
+        if trim_requested:
+            try:
+                trim = inspect_voice_reference_trim(
+                    artifact_path,
+                    payload.start_seconds,
+                    payload.end_seconds,
+                    ffprobe_executable=ffprobe_executable,
+                )
+            except VoiceReferenceTrimError as error:
+                return error_response("validation_error", str(error), 422)
+            except MediaProcessError:
+                return error_response(
+                    "invalid_reference_artifact",
+                    "The voice reference artifact could not be inspected.",
+                    422,
+                )
+            try:
+                probed_source_hash = sha256_file(artifact_path)
+            except OSError:
+                return error_response(
+                    "invalid_reference_artifact",
+                    "The voice reference artifact could not be read.",
+                    422,
+                )
+            if probed_source_hash != artifact_hash:
+                return error_response(
+                    "reference_artifact_changed",
+                    "The voice reference artifact changed after it was registered.",
+                    409,
+                )
+
+        sample_provenance: dict[str, Any] = {
+            "source_kind": "imported_voice_reference",
+            "source_artifact_id": artifact_id,
+        }
+        if trim is not None:
+            sample_provenance["reference_trim"] = trim.provenance()
         job_payload = {
             "voice_id": voice_id,
-            "source_artifact_id": artifact.id,
+            "source_artifact_id": artifact_id,
             "source_artifact_sha256": artifact_hash,
-            "source_artifact_role": artifact.role,
+            "source_artifact_role": artifact_role,
             "expected_voice_revision": payload.expected_voice_revision,
             "transcript_language": language,
-            "sample_provenance": {
-                "source_kind": "imported_voice_reference",
-                "source_artifact_id": artifact.id,
-            },
+            "sample_provenance": sample_provenance,
             "ffmpeg_executable": shutil.which("ffmpeg") or "ffmpeg",
         }
+        if trim is not None:
+            job_payload["start_seconds"] = float(payload.start_seconds)
+            job_payload["end_seconds"] = (
+                float(payload.end_seconds) if payload.end_seconds is not None else None
+            )
+            job_payload["ffprobe_executable"] = ffprobe_executable
         if payload.transcript_reviewed:
             job_payload["reviewed_transcript"] = transcript
         elif transcript:

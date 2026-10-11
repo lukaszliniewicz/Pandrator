@@ -1,95 +1,60 @@
 # Pandrator documentation
 
-This documentation explains how to install, use, operate, and understand
-Pandrator. Choose the path that matches the result you want; you do not need to
-read it in order.
+These guides explain how to install Pandrator, create audio and subtitles,
+choose providers, and look after your projects. Start with the task you want to
+complete.
 
-## Start here
-
-Read the [Pandrator 0.11.0 release notes](release-notes-0.11.0.md) for language
-coverage, automatic transcription and multilingual exports. Previous notes:
-[0.10.1](release-notes-0.10.1.md), [0.10.0](release-notes-0.10.0.md).
+## Getting started
 
 | Goal | Guide |
 | --- | --- |
 | Install or update Pandrator | [Installation](getting-started/installation.md) |
 | Make an audiobook | [Your first audiobook](getting-started/first-audiobook.md) |
 | Transcribe, correct, or translate subtitles | [Your first subtitles](getting-started/first-subtitles.md) |
-| Transcribe a file or microphone recording without a session | [Quick transcription](reference/quick-transcription.md) |
+| Transcribe a file or microphone recording | [Quick transcription](reference/quick-transcription.md) |
 | Create a synchronized voiceover | [Your first voiceover](getting-started/first-voiceover.md) |
-| Choose a model, provider, or voice | [Providers and voices](guides/providers-and-voices.md) |
-| Decide how correction or translation should run | [Correction and translation](guides/correction-and-translation.md) |
-| Use the model already running in an MCP host | [Passive dispatch](guides/passive-dispatch.md) |
-| Take a local file through an agent-run workflow and return deliverables | [End-to-end agent workflows](guides/agent-workflows.md) |
-| Connect Codex, OpenCode, Claude Code, or Antigravity | [Agent connections](operations/agent-connections.md) |
-| Fix names or prepare text specifically for speech | [Pronunciation and speech text](guides/pronunciation-and-speech.md) |
-| Diagnose a problem | [Troubleshooting](operations/troubleshooting.md) |
+| Choose a provider, model, or voice | [Providers and voices](guides/providers-and-voices.md) |
+| Correct or translate text | [Correction and translation](guides/correction-and-translation.md) |
+| Prepare names and wording for speech | [Pronunciation and speech text](guides/pronunciation-and-speech.md) |
+| Work through an AI assistant | [Agent workflows](guides/agent-workflows.md) and [passive processing](guides/passive-dispatch.md) |
 
-## Operations
+## Running and maintaining Pandrator
 
 - [Updates, data, repair, and removal](operations/updates-data-and-repair.md)
-- [Remote and headless deployments](operations/remote-and-headless.md)
-- [Agent connections and MCP transports](operations/agent-connections.md)
+- [Remote and headless installations](operations/remote-and-headless.md)
+- [Connecting an assistant](operations/agent-connections.md)
 - [Troubleshooting](operations/troubleshooting.md)
 - [Privacy and security](security/privacy-and-security.md)
 
-Exact Manager commands, component recipes, recovery behavior, and automation
-interfaces live in the [Pandrator Manager guide](../pandrator_manager/README.md).
+The [Manager guide](../pandrator_manager/README.md) covers Manager commands,
+component installation, and recovery. The [MCP guide](../pandrator_mcp/README.md)
+covers assistant connections, access permissions, and workflow operations.
 
 ## Reference
 
 - [Supported formats and exports](reference/formats-and-exports.md)
-- [Document ingestion and narration pipeline](reference/document-ingestion.md)
+- [Importing and preparing documents](reference/document-ingestion.md)
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
 - [Speech directions, dialogue, and character voices](reference/generation-controls.md)
-- [Speech-text optimization and dispatch](reference/speech-optimization.md)
-- [Voiceover repair history and undo](guides/repair-history.md)
-- [Local model groups, Qwen transcription, and audio preprocessing](reference/local-audio-tools.md)
-- [Qwen forced alignment for multilingual captions](guides/qwen-forced-alignment.md)
-- [Contextual performance planning and provider controls](speech-performance.md)
+- [Model identities and speech controls](reference/model-capabilities.md)
+- [Sounds, music, project placement, and mixing](reference/sounds-and-mixing.md)
+- [Choosing a sound or music model](reference/sound-and-music-models.md)
+- [Sound and music generation requests](reference/audio-generation-models.md)
+- [Advanced sound and music settings](reference/audio-generation-settings.md)
+- [Speech-text optimization](reference/speech-optimization.md)
+- [Automatic repair history and undo](guides/repair-history.md)
+- [Local models, transcription, and audio preprocessing](reference/local-audio-tools.md)
+- [Qwen forced alignment](guides/qwen-forced-alignment.md)
+- [Contextual performance planning](speech-performance.md)
 
-The document reference covers upload lineage, PDF layout/OCR, EPUB structure,
-cleanup, narration preparation, and generation segments. The subtitle reference
-explains the durable distinction between timed words, display cues, LLM
-batches, speech blocks, generation takes, and alignment. The speech reference
-compares standalone, generation-time, and passive optimization and documents
-their batching and validation contracts.
+## Releases and documentation
 
-## MCP and agents
+[GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) has the
+latest downloads, checksums, and release notes. Earlier changes are described in
+the [0.11.0](release-notes-0.11.0.md), [0.10.1](release-notes-0.10.1.md), and
+[0.10.0](release-notes-0.10.0.md) notes.
 
-The [Pandrator MCP guide](../pandrator_mcp/README.md) is the canonical reference
-for installing the sidecar, enrolling targets, selecting scopes, generating
-host configuration, diagnostics, protocol compatibility, and app-down Manager
-recovery. Public workflow docs explain why and when to use MCP; the component
-guide owns exact commands and security contracts.
-
-The files under `pandrator_mcp/guides/` are packaged, versioned instructions
-served to agents by the MCP server. They are not a second public documentation
-site and should not be moved or copied into this directory.
-
-## Development
-
-- [Run Pandrator from source](development/from-source.md)
-- [Contribute code or documentation](development/contributing.md)
-- [Lint, types, and code quality policy](development/code-quality.md)
-- [CJK speech and subtitle pipeline contracts](development/cjk-pipeline.md)
-- [Frozen-tail video export paths](development/video-tail-export.md)
-
-## Documentation boundaries
-
-This directory contains durable, public product documentation. To prevent
-several almost-identical sources from drifting:
-
-- the root [README](../README.md) is the product landing page;
-- this directory owns task-oriented and conceptual product guidance;
-- component READMEs own exact Manager and MCP operational contracts;
-- [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases)
-  own downloads, checksums, versions, and release notes; and
-- experiments, acceptance reports, incident notes, review screenshots, and
-  implementation reviews stay in ignored local notes or private maintainer
-  storage. They are not published in this repository, package archives, or
-  release attachments.
-
-Documentation should prefer stable names and the latest-release page over
-hard-coded version numbers and filenames. When behavior is version-specific,
-say so in that version's release notes.
+Public documentation describes features and workflows that readers can use.
+Development plans, research logs, implementation reviews, and local acceptance
+records are kept in private maintainer storage. The workflow instructions
+packaged with the MCP server explain the same features to connected assistants.

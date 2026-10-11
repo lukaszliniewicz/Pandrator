@@ -1,3 +1,5 @@
+import type { SpeechCapabilities } from './speech-support';
+
 export type AudioCppModelInfo = {
   id: string;
   catalogue_id?: string;
@@ -5,6 +7,13 @@ export type AudioCppModelInfo = {
   provider_name?: string;
   provider_kind?: string;
   capabilities?: string[];
+  entry_role?: 'model' | 'component';
+  request_aliases?: string[];
+  expressive_capabilities?: SpeechCapabilities;
+  request_parameters?: Record<
+    string,
+    { type?: string; enum?: unknown[]; default?: unknown }
+  >;
   label: string;
   family: string;
   family_label?: string;
@@ -28,11 +37,20 @@ export type AudioCppModelInfo = {
     default_segment_characters: number;
     policy_max_segment_characters: number;
     input_characters?: number;
+    model_input_characters?: number | null;
+    input_limit_note?: string;
     input_tokens?: number;
     output_tokens?: number;
     output_seconds?: number;
     runtime_chunk_characters?: number;
-    runtime_output_budget?: { value: number; unit: string };
+    application_runtime_chunk_characters?: number;
+    runtime_chunk_note?: string;
+    runtime_output_budget?: {
+      value?: number;
+      fallback_value?: number;
+      unit: string;
+      source?: string;
+    };
     checked_at: string;
     source_urls: string[];
   };

@@ -27,3 +27,4 @@ class OutputWorkflowContext:
     _session_dir: Callable[[str], Path]
     _session_record: Callable[[str], SessionRecord]
     _operation_dir: Callable[[str, str], Path]
+    _render_sound_mix: Callable[..., Artifact] | None = None

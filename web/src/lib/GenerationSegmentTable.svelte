@@ -1,6 +1,9 @@
 <script lang="ts">
   import {
     Pencil,
+    Bell,
+    AudioLines,
+    CodeXml,
     GitMerge,
     RotateCcw,
     Scissors,
@@ -13,17 +16,23 @@
   import type { SettingOption } from './settings-fields';
   import type { VoiceDescriptor } from './voice-catalog';
   import SegmentAudioPreview from './SegmentAudioPreview.svelte';
+  import SegmentSoundMarkers from './SegmentSoundMarkers.svelte';
+  import type { ProjectSoundCue } from './project-sounds-api';
   import { tick, onMount } from 'svelte';
+  import type { Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import SpeechBoundaryMarker from './SpeechBoundaryMarker.svelte';
   import PassageText from './PassageText.svelte';
-  import SpeechAnnotationText from './SpeechAnnotationText.svelte';
+  import SpeechEditingText from './SpeechEditingText.svelte';
   import {
+    annotationPresentation,
     textareaSpeechRange,
-    speakerColors,
     type SpeechSelection,
     type SpeechPreview
   } from './speech-annotations';
+  import type { SpeechCapabilities } from './speech-support';
+  import { deliverySupport } from './speech-support';
+  import { applySpeechWordEdit, type SpeechWordEdit } from './speech-word-edit';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
   import SegmentOptionsMenu from './SegmentOptionsMenu.svelte';
@@ -53,16 +62,32 @@
     onlanguagechange,
     onactivetake,
     onselecttake,
+    ontakehistory,
     ontakelabel,
     onverificationtitle,
     onregenerate,
     onregeneratewith,
     onmerge,
     onsplit,
+    previewOnly = false,
     compactRows = false,
+    wordEditingDisabled = false,
+    showAudioColumns = true,
+    showDirectionDetails = false,
+    optimizedPlan = false,
+    multiVoice = false,
+    speakerNames = {},
+    inlineEditorId = '',
+    inlineEditor,
+    inlineInstructionEditorId = '',
+    oninstruction,
+    oneditstart,
     showPassageBoundaries = false,
     showSpeechAnnotations = false,
     speechPreviews = {},
+    speechCapabilities,
+    performanceEnabled = true,
+    vocalizationsEnabled = false,
     onspeech,
     onselection,
     onpassage,
@@ -71,12 +96,17 @@
     previewSegmentId = '',
     onpreviewrequest,
     scrollRoot = null,
-    overscan = 8,
+    overscan = 6,
     estimatedRowHeight = 280,
     boundaryRowHeight = 13,
     virtualizeThreshold = 50,
     activeSegmentId = '',
+    pinnedSegmentIds = [],
     onshowallchange,
+    soundCues = {},
+    onsound,
+    onsoundedit,
+    onvisiblesegments,
     showAll = $bindable(false)
   }: {
     items: GenerationSegment[];
@@ -101,6 +131,7 @@
     onlanguagechange: (item: GenerationSegment, language: string) => unknown;
     onactivetake: (item: GenerationSegment) => PlayableTake | undefined;
     onselecttake: (item: GenerationSegment, takeId: string) => unknown;
+    ontakehistory?: (item: GenerationSegment) => unknown;
     ontakelabel: (take: GenerationSegment['takes'][number]) => string;
     onverificationtitle: (take: GenerationSegment['takes'][number]) => string;
     onregenerate: (item: GenerationSegment) => unknown;
@@ -113,10 +144,28 @@
     ) => unknown;
     previewSegmentId?: string;
     onpreviewrequest?: (item: GenerationSegment) => void;
+    previewOnly?: boolean;
     compactRows?: boolean;
+    wordEditingDisabled?: boolean;
+    showAudioColumns?: boolean;
+    showDirectionDetails?: boolean;
+    optimizedPlan?: boolean;
+    multiVoice?: boolean;
+    speakerNames?: Record<string, string>;
+    inlineEditorId?: string;
+    inlineEditor?: Snippet<[GenerationSegment]>;
+    inlineInstructionEditorId?: string;
+    oninstruction?: (
+      item: GenerationSegment,
+      anchor: HTMLTextAreaElement
+    ) => void;
+    oneditstart?: () => void;
     showPassageBoundaries?: boolean;
     showSpeechAnnotations?: boolean;
     speechPreviews?: Record<string, SpeechPreview>;
+    speechCapabilities?: SpeechCapabilities;
+    performanceEnabled?: boolean;
+    vocalizationsEnabled?: boolean;
     onspeech?: (
       item: GenerationSegment,
       offset: number,
@@ -145,11 +194,15 @@
     virtualizeThreshold?: number;
     /** Playing row pinned alongside the preview row (playlist controller). */
     activeSegmentId?: string;
+    pinnedSegmentIds?: string[];
     onshowallchange?: (showAll: boolean) => void;
     /** Accessible non-virtualized fallback; drawer may bind to own it. */
     showAll?: boolean;
+    soundCues?: Record<string, ProjectSoundCue[]>;
+    onsound?: (item: GenerationSegment) => void;
+    onsoundedit?: (cue: ProjectSoundCue) => void;
+    onvisiblesegments?: (ids: string[]) => void;
   } = $props();
-  const annotationColors = $derived(speakerColors(items, speechPreviews));
 
   type CursorState = {
     layer: 'display' | 'speech';
@@ -159,12 +212,63 @@
 
   let cursorBySegment = $state<Record<string, CursorState>>({});
   let editingPassageId = $state('');
+  async function editWords(
+    item: GenerationSegment,
+    edit: SpeechWordEdit,
+    anchor: HTMLElement
+  ) {
+    if (previewOnly || loading || wordEditingDisabled || item.removed) return;
+    const cell = anchor.closest('td');
+    const next = applySpeechWordEdit(storedLayerText(item, textMode), edit);
+    const existing = cell?.querySelector<HTMLTextAreaElement>(
+      'textarea.segment-text'
+    );
+    if (editingPassageId === item.id && existing) {
+      // Reopening a row must never replace a live wording draft with saved text.
+      existing.focus({ preventScroll: true });
+      if (existing.value === next.value)
+        existing.setSelectionRange(next.start, next.end);
+      return;
+    }
+    oneditstart?.();
+    editingPassageId = item.id;
+    await tick();
+    const input = cell?.querySelector<HTMLTextAreaElement>(
+      'textarea.segment-text'
+    );
+    if (!input) return;
+    input.value = next.value;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(next.start, next.end);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  export async function editSegmentText(
+    segmentId: string,
+    range?: { start: number; end: number }
+  ) {
+    const item = items.find((entry) => entry.id === segmentId);
+    const cell = tbodyEl?.querySelector<HTMLElement>(
+      `tr[data-segment-id="${CSS.escape(segmentId)}"] td.narrative-cell`
+    );
+    if (!item || !cell || loading || wordEditingDisabled || item.removed)
+      return false;
+    const value = storedLayerText(item, textMode);
+    await editWords(
+      item,
+      {
+        start: range ? Array.from(value.slice(0, range.start)).length : 0,
+        end: range ? Array.from(value.slice(0, range.end)).length : 0
+      },
+      cell
+    );
+    return editingPassageId === segmentId;
+  }
   function inspectSelection(
     node: HTMLTextAreaElement,
     item: GenerationSegment,
     layer: 'display' | 'speech'
   ) {
-    const selected = textareaSpeechRange(node, item, layer);
+    const selected = textareaSpeechRange(node, item, layer, true);
     if (selected) onselection?.(selected);
   }
 
@@ -287,7 +391,8 @@
       editingPassageId,
       focusedSegmentId,
       selectedSegmentId,
-      revealId
+      revealId,
+      ...pinnedSegmentIds
     ];
     const pinned = new Set<number>();
     for (const id of ids) {
@@ -323,6 +428,9 @@
   const visibleIndexes = $derived(
     virtualEnabled ? selection.indexes : items.map((_, index) => index)
   );
+  $effect(() => {
+    onvisiblesegments?.(visibleIndexes.map((index) => items[index].id));
+  });
 
   function findScrollHost(node: HTMLElement | null): HTMLElement | null {
     let ancestor = node?.parentElement ?? null;
@@ -614,6 +722,7 @@
     : 1}
   onfocusin={handleFocusIn}
   onfocusout={handleFocusOut}
+  class:compact-table={!showAudioColumns}
   class="w-full table-fixed border-collapse text-sm"
 >
   <caption class="sr-only">
@@ -622,18 +731,22 @@
   </caption>
   <thead class="sticky top-0 z-10 bg-[var(--paper-strong)]">
     <tr aria-rowindex={1}>
-      <th class="w-12">Mark</th>
+      {#if !previewOnly}<th class="w-12">Mark</th>{/if}
       <th class="w-14">#</th>
-      <th class="text-left">Generation text and delivery</th>
-      <th class="w-52">Audio take</th>
-      <th class="w-24">Status</th>
+      <th class="narrative-heading text-left"
+        >{textMode === 'speech'
+          ? 'Speech text and delivery'
+          : 'Display / subtitle text'}</th
+      >
+      {#if showAudioColumns}<th class="w-52">Audio take</th>
+        <th class="w-24">Status</th>{/if}
     </tr>
   </thead>
   <tbody bind:this={tbodyEl}>
     {#if virtualEnabled && selection.topGap > 0}
       <tr class="virtual-spacer" aria-hidden="true">
         <td
-          colspan="5"
+          colspan={(previewOnly ? 2 : 3) + (showAudioColumns ? 2 : 0)}
           style="height: {Math.round(
             selection.topGap
           )}px; padding: 0; border: 0;"
@@ -647,7 +760,7 @@
       {#if gapHeight > 0}
         <tr class="virtual-spacer" aria-hidden="true">
           <td
-            colspan="5"
+            colspan={(previewOnly ? 2 : 3) + (showAudioColumns ? 2 : 0)}
             style="height: {Math.round(gapHeight)}px; padding: 0; border: 0;"
           ></td>
         </tr>
@@ -658,7 +771,7 @@
       )}
       {#if itemIndex > 0 && !compactRows}
         <tr class="boundary-row" aria-rowindex={itemIndex * 2 + 1}>
-          <td colspan="5">
+          <td colspan={(previewOnly ? 2 : 3) + (showAudioColumns ? 2 : 0)}>
             <SpeechBoundaryMarker
               left={items[itemIndex - 1]}
               right={item}
@@ -679,69 +792,116 @@
         data-segment-ordinal={item.ordinal}
         aria-rowindex={itemIndex * (compactRows ? 1 : 2) + 2}
       >
-        <td>
-          <input
-            type="checkbox"
-            class="mark-toggle"
-            checked={item.marked}
-            aria-label={`Mark segment ${item.ordinal + 1}`}
-            onclick={(event) => event.stopPropagation()}
-            onchange={(event) =>
-              onpatch(item, { marked: event.currentTarget.checked })}
-          />
+        {#if !previewOnly}<td class="row-control">
+            <input
+              type="checkbox"
+              class="mark-toggle"
+              checked={item.marked}
+              aria-label={`Mark segment ${item.ordinal + 1}`}
+              onclick={(event) => event.stopPropagation()}
+              onchange={(event) =>
+                onpatch(item, { marked: event.currentTarget.checked })}
+            />
+          </td>
+        {/if}<td class="row-control muted font-mono text-xs">
+          {#if onspeech && !previewOnly}<button
+              type="button"
+              class="block-number"
+              data-speech-block
+              aria-label={`Block actions for segment ${item.ordinal + 1}`}
+              onclick={(event) => {
+                event.stopPropagation();
+                onspeech?.(item, 0, event.currentTarget, true);
+              }}>{item.ordinal + 1}</button
+            >{:else}{item.ordinal + 1}{/if}
         </td>
-        <td class="muted font-mono text-xs">{item.ordinal + 1}</td>
         <td class="narrative-cell">
-          {#if item.speaker}
+          {#if item.speaker && multiVoice}
             <span
               class="mb-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[.62rem] font-semibold text-[var(--accent)]"
-              >{item.speaker}</span
+              >{speakerNames[item.speaker] ?? item.speaker}</span
             >
           {/if}
-          {#if showSpeechAnnotations && (item.speech_annotation_xml || item.speech_plan?.speech_xml || speechPreviews[item.id]) && editingPassageId !== item.id}
-            <div class="passage-row p-2 text-sm leading-relaxed">
-              <SpeechAnnotationText
-                {item}
-                colors={annotationColors}
-                layer={textMode}
-                preview={speechPreviews[item.id]}
-                oninspect={onspeech ?? (() => {})}
-                {onselection}
-              />
-              <button
-                type="button"
-                class="passage-edit"
-                aria-label={`Edit text for segment ${item.ordinal + 1}`}
-                title="Edit text"
-                onclick={async (event) => {
-                  event.stopPropagation();
-                  const cell = event.currentTarget.closest('td');
-                  editingPassageId = item.id;
-                  await tick();
-                  cell?.querySelector('textarea')?.focus();
-                }}><Pencil size={14} /></button
+          {#if textMode === 'speech' && (item.optimized_text || optimizedPlan)}<span
+              class="optimized-label"
+              title={item.optimized_text
+                ? 'This block has separate speech wording.'
+                : 'This plan uses a speech-optimized input version.'}
+              data-optimized-speech>Optimized speech</span
+            >{/if}
+          {#if item.speech_block_provenance?.source_cues?.length}<span
+              class="muted mb-1 block text-xs"
+              >Source cues: {item.speech_block_provenance.source_cues
+                .map((cue) => cue.reference)
+                .join(', ')}</span
+            >{/if}
+          {#if inlineEditor && inlineEditorId === item.id}
+            {@render inlineEditor(item)}
+          {:else if (!showPassageBoundaries || !hasPassages) && editingPassageId !== item.id}
+            <SpeechEditingText
+              {item}
+              readOnly={previewOnly}
+              layer={textMode}
+              capabilities={speechCapabilities}
+              preview={speechPreviews[item.id]}
+              {performanceEnabled}
+              {vocalizationsEnabled}
+              {multiVoice}
+              {speakerNames}
+              showAnnotations={showSpeechAnnotations}
+              detailsVisible={showDirectionDetails}
+              disabled={loading || wordEditingDisabled || item.removed}
+              oninspect={previewOnly ? undefined : onspeech}
+              onedit={previewOnly
+                ? undefined
+                : (edit, anchor) => void editWords(item, edit, anchor)}
+              onselection={previewOnly
+                ? undefined
+                : (selection) => {
+                    if (selection.start === selection.end)
+                      cursorBySegment[item.id] = {
+                        layer: textMode,
+                        offset: selection.start,
+                        value: storedLayerText(item, textMode)
+                      };
+                    onselection?.(selection);
+                  }}
+            />
+            {#if textMode === 'display' && item.optimized_text && item.optimized_text !== item.text}<p
+                class="muted text-xs"
               >
-            </div>
+                Voice and delivery actions apply to speech text. Choose TTS
+                speech to edit what will be spoken.
+              </p>{/if}
           {:else if showPassageBoundaries && hasPassages && editingPassageId !== item.id}
-            <div class="passage-row p-2 text-sm leading-relaxed">
+            <div
+              class="passage-row py-2 text-sm leading-relaxed"
+              role="textbox"
+              aria-readonly="true"
+              aria-multiline="true"
+              tabindex="0"
+              aria-label={`Text for segment ${item.ordinal + 1}`}
+              ondblclick={(event) => {
+                event.stopPropagation();
+                void editWords(item, { start: 0, end: 0 }, event.currentTarget);
+              }}
+              onkeydown={(event) => {
+                if (event.key === 'F2') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void editWords(
+                    item,
+                    { start: 0, end: 0 },
+                    event.currentTarget
+                  );
+                }
+              }}
+            >
               <PassageText
                 {item}
                 layer={textMode}
                 oninspect={onpassage ?? (() => {})}
               />
-              <button
-                type="button"
-                class="passage-edit"
-                aria-label={`Edit text for segment ${item.ordinal + 1}`}
-                title="Edit text"
-                onclick={async (event) => {
-                  event.stopPropagation();
-                  const cell = event.currentTarget.closest('td');
-                  editingPassageId = item.id;
-                  await tick();
-                  cell?.querySelector('textarea')?.focus();
-                }}><Pencil size={14} /></button
-              >
             </div>
           {:else}
             {#if textMode === 'speech'}
@@ -776,7 +936,12 @@
                   rememberCursor(item, 'speech', event.currentTarget)}
                 onkeyup={(event) => {
                   rememberCursor(item, 'speech', event.currentTarget);
-                  if (event.key === 'Shift')
+                  if (
+                    event.key === 'Shift' ||
+                    event.key.startsWith('Arrow') ||
+                    event.key === 'Home' ||
+                    event.key === 'End'
+                  )
                     inspectSelection(event.currentTarget, item, 'speech');
                 }}
                 onpointerup={(event) =>
@@ -812,7 +977,12 @@
                   rememberCursor(item, 'display', event.currentTarget)}
                 onkeyup={(event) => {
                   rememberCursor(item, 'display', event.currentTarget);
-                  if (event.key === 'Shift')
+                  if (
+                    event.key === 'Shift' ||
+                    event.key.startsWith('Arrow') ||
+                    event.key === 'Home' ||
+                    event.key === 'End'
+                  )
                     inspectSelection(event.currentTarget, item, 'display');
                 }}
                 onpointerup={(event) =>
@@ -848,242 +1018,354 @@
                 >
               {/if}
             {/if}
-            {#if (showSpeechAnnotations || (showPassageBoundaries && hasPassages)) && editingPassageId === item.id}
+            {#if editingPassageId === item.id}
               <button
                 type="button"
                 class="muted mb-2 text-xs underline underline-offset-2"
                 onclick={(event) => {
                   event.stopPropagation();
                   editingPassageId = '';
-                }}>Return to annotated text</button
+                }}>Done editing</button
               >
             {/if}
           {/if}
-          <div
-            class="segment-actions flex min-w-0 flex-wrap items-center justify-end gap-1"
-          >
-            <div
-              class="inline-flex shrink-0 items-center gap-1"
-              role="group"
-              aria-label={`Actions for segment ${item.ordinal + 1}`}
+          {#if !previewOnly && textMode === 'speech' && inlineEditorId !== item.id && oninstruction && (editingPassageId === item.id || inlineInstructionEditorId === item.id || showDirectionDetails)}
+            {#if inlineEditor && inlineInstructionEditorId === item.id}
+              {@render inlineEditor(item)}
+            {:else}
+              {@const instruction = String(
+                annotationPresentation(item).delivery.instruction ?? ''
+              )}
+              {@const support = deliverySupport(
+                speechCapabilities,
+                'instruction',
+                instruction,
+                'segment'
+              )}
+              <label class="block-instruction-field">
+                <span
+                  >Whole-segment instruction <span
+                    class="muted"
+                    title={support.description}
+                    >{!performanceEnabled
+                      ? 'Delivery off · '
+                      : ''}{support.label}</span
+                  ></span
+                >
+                <textarea
+                  rows="1"
+                  readonly
+                  value={instruction}
+                  disabled={loading || topologyDisabled || item.removed}
+                  data-block-instruction={item.id}
+                  aria-label={`Whole-segment instruction for segment ${item.ordinal + 1}`}
+                  placeholder="Add a delivery instruction for this segment…"
+                  onfocus={(event) =>
+                    oninstruction?.(item, event.currentTarget)}
+                  onclick={(event) => event.stopPropagation()}></textarea>
+              </label>
+            {/if}
+          {/if}
+          <SegmentSoundMarkers
+            cues={soundCues[item.id] ?? []}
+            {previewOnly}
+            onedit={onsoundedit}
+          />
+          {#if !previewOnly}<div
+              class="segment-actions flex min-w-0 flex-wrap items-center justify-start gap-1"
             >
-              <button
-                onmousedown={(event) => event.preventDefault()}
-                onclick={(event) => {
-                  event.stopPropagation();
-                  const cursor = cursorBySegment[item.id];
-                  if (cursor && validCursor(item))
-                    onsplit(item, cursor.layer, cursor.offset);
-                }}
-                disabled={loading || topologyDisabled || !validCursor(item)}
-                class="action icon-action"
-                title={splitTitle(item)}
-                aria-label={`Split segment ${item.ordinal + 1} at text cursor`}
+              <div
+                class="inline-flex shrink-0 items-center gap-1"
+                role="group"
+                aria-label={`Actions for segment ${item.ordinal + 1}`}
               >
-                <Scissors size={14} />
-              </button>
-              <SegmentRegenerationMenu
-                segmentNumber={item.ordinal + 1}
-                disabled={loading || item.removed}
-                onregenerate={() => onregenerate(item)}
-                onregeneratewith={() => onregeneratewith(item)}
-              />
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onpatch(item, { removed: !item.removed });
-                }}
-                class="action icon-action"
-                aria-label={item.removed ? 'Restore segment' : 'Remove segment'}
-              >
-                {#if item.removed}<RotateCcw size={14} />{:else}<Trash2
-                    size={14}
-                  />{/if}
-              </button>
-              <button
-                type="button"
-                class="action icon-action"
-                aria-label={`Merge segment ${item.ordinal + 1} with next`}
-                title="Merge with next segment"
-                disabled={loading ||
-                  topologyDisabled ||
-                  item.removed ||
-                  !items[itemIndex + 1] ||
-                  items[itemIndex + 1].removed ||
-                  items[itemIndex + 1].ordinal !== item.ordinal + 1}
-                onclick={(event) => {
-                  event.stopPropagation();
-                  const next = items[itemIndex + 1];
-                  if (next && next.ordinal === item.ordinal + 1)
-                    onmerge(item, next);
-                }}><GitMerge size={14} /></button
-              >
-              <SegmentOptionsMenu segmentNumber={item.ordinal + 1}>
-                {#if item.optimized_text || selectedTake?.llm_optimized}
-                  <button
+                {#if onsound}<button
+                    class="action icon-action"
+                    aria-label={`Add sound effect to segment ${item.ordinal + 1}`}
+                    title="Sound effect"
+                    disabled={loading || item.removed}
                     onclick={(event) => {
                       event.stopPropagation();
-                      onreview(item);
-                    }}
-                    class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"
-                  >
-                    <WandSparkles size={12} />
-                    <span class="truncate"
-                      >{item.speech_plan?.version
-                        ? 'Review speech plan'
-                        : 'Compare speech optimization'}</span
-                    >
-                    <span
-                      class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase"
-                      >{item.speech_plan?.mode_used ??
-                        item.optimization_status ??
-                        'generated'}</span
-                    >
-                    {#if item.speech_plan?.proposals?.length}
-                      <span
-                        class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700"
-                        >{item.speech_plan.proposals.length} proposed</span
-                      >
-                    {/if}
-                  </button>
-                {/if}
-
-                {#if onspeech && !showSpeechAnnotations}<button
+                      onsound?.(item);
+                    }}><Bell size={14} /></button
+                  >{/if}
+                <button
+                  type="button"
+                  class="action icon-action"
+                  title="Edit wording · double-click or F2"
+                  aria-label={`Edit words for segment ${item.ordinal + 1}`}
+                  disabled={loading || wordEditingDisabled || item.removed}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    void editWords(
+                      item,
+                      { start: 0, end: 0 },
+                      event.currentTarget
+                    );
+                  }}><Pencil size={14} /></button
+                >
+                {#if onspeech}<button
                     type="button"
-                    class="mini"
-                    aria-label={`Inspect voices and delivery for segment ${item.ordinal + 1}`}
+                    class="action icon-action"
+                    data-speech-block
+                    disabled={loading || item.removed}
+                    title={multiVoice
+                      ? 'Block voice and delivery actions'
+                      : 'Block delivery actions'}
+                    aria-label={`Block actions for segment ${item.ordinal + 1}`}
                     onclick={(event) => {
                       event.stopPropagation();
                       onspeech?.(item, 0, event.currentTarget, true);
-                    }}>Voices &amp; delivery</button
+                    }}><AudioLines size={14} /></button
+                  >
+                  <button
+                    type="button"
+                    class="action icon-action"
+                    class:active={inlineEditorId === item.id}
+                    data-speech-xml
+                    disabled={loading || item.removed}
+                    title="Text / XML"
+                    aria-label={`Edit speech XML for segment ${item.ordinal + 1}`}
+                    aria-pressed={inlineEditorId === item.id}
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onspeech?.(item, 0, event.currentTarget, true);
+                    }}><CodeXml size={14} /></button
                   >{/if}
-                <label
-                  >Role
-                  <select
-                    value={item.node_kind ?? 'paragraph'}
-                    onchange={(event) =>
-                      onpatch(item, {
-                        node_kind: event.currentTarget
-                          .value as GenerationSegment['node_kind']
-                      })}
-                    aria-label="Segment role"
-                    class="mini"
-                  >
-                    <option value="paragraph">Paragraph</option>
-                    <option value="heading">Heading</option>
-                    <option value="chapter_marker">Chapter start</option>
-                    <option value="subtitle_cue">Subtitle cue</option>
-                  </select></label
+                <button
+                  onmousedown={(event) => event.preventDefault()}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    const cursor = cursorBySegment[item.id];
+                    if (cursor && validCursor(item))
+                      onsplit(item, cursor.layer, cursor.offset);
+                  }}
+                  disabled={loading || topologyDisabled || !validCursor(item)}
+                  class="action icon-action"
+                  title={splitTitle(item)}
+                  aria-label={`Split segment ${item.ordinal + 1} at text cursor`}
                 >
-                <label
-                  >Voice
-                  <select
-                    value={item.voice ?? ''}
-                    onchange={(event) =>
-                      onpatch(item, {
-                        voice: event.currentTarget.value || null
-                      })}
-                    aria-label={`Voice for segment ${item.ordinal + 1}`}
-                    title={`${selectedTtsServiceName ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
-                    disabled={speechOptionsLoading}
-                    class="mini max-w-52"
-                  >
-                    <option value="">
-                      Inherited{inheritedVoice
-                        ? ` · ${onvoices(item).find((voice) => voice.id.toLowerCase() === inheritedVoice.toLowerCase())?.name ?? inheritedVoice}`
-                        : ' · service default'}
-                    </option>
-                    {#each onvoices(item) as voice}
-                      <option value={voice.id}>{onvoicelabel(voice)}</option>
-                    {/each}
-                  </select></label
+                  <Scissors size={14} />
+                </button>
+                <SegmentRegenerationMenu
+                  segmentNumber={item.ordinal + 1}
+                  disabled={loading || item.removed}
+                  onregenerate={() => onregenerate(item)}
+                  onregeneratewith={() => onregeneratewith(item)}
+                />
+                <button
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    onpatch(item, { removed: !item.removed });
+                  }}
+                  class="action icon-action"
+                  aria-label={item.removed
+                    ? 'Restore segment'
+                    : 'Remove segment'}
                 >
-                <label
-                  >Language
-                  <select
-                    value={item.language ?? ''}
-                    onchange={(event) =>
-                      onlanguagechange(item, event.currentTarget.value)}
-                    aria-label={`Language for segment ${item.ordinal + 1}`}
-                    disabled={speechOptionsLoading}
-                    class="mini max-w-48"
-                  >
-                    <option value=""
-                      >Inherited · {onlanguagelabel(inheritedLanguage)}</option
+                  {#if item.removed}<RotateCcw size={14} />{:else}<Trash2
+                      size={14}
+                    />{/if}
+                </button>
+                <button
+                  type="button"
+                  class="action icon-action"
+                  aria-label={`Merge segment ${item.ordinal + 1} with next`}
+                  title="Merge with next segment"
+                  disabled={loading ||
+                    topologyDisabled ||
+                    item.removed ||
+                    !items[itemIndex + 1] ||
+                    items[itemIndex + 1].removed ||
+                    items[itemIndex + 1].ordinal !== item.ordinal + 1}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    const next = items[itemIndex + 1];
+                    if (next && next.ordinal === item.ordinal + 1)
+                      onmerge(item, next);
+                  }}><GitMerge size={14} /></button
+                >
+                <SegmentOptionsMenu segmentNumber={item.ordinal + 1}>
+                  {#if item.optimized_text || selectedTake?.llm_optimized}
+                    <button
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        onreview(item);
+                      }}
+                      class="mb-2 flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--accent-soft)] px-2.5 py-1.5 text-left text-[.68rem] font-semibold text-[var(--accent)]"
                     >
-                    {#each onlanguages(item) as language}
-                      <option value={language.value}>{language.label}</option>
-                    {/each}
-                  </select></label
-                >
-              </SegmentOptionsMenu>
-            </div>
-          </div>
+                      <WandSparkles size={12} />
+                      <span class="truncate"
+                        >{item.speech_plan?.version
+                          ? 'Review speech plan'
+                          : 'Compare speech optimization'}</span
+                      >
+                      <span
+                        class="rounded-full bg-[var(--paper)] px-1.5 py-0.5 text-[.58rem] uppercase"
+                        >{item.speech_plan?.mode_used ??
+                          item.optimization_status ??
+                          'generated'}</span
+                      >
+                      {#if item.speech_plan?.proposals?.length}
+                        <span
+                          class="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[.58rem] uppercase text-amber-700"
+                          >{item.speech_plan.proposals.length} proposed</span
+                        >
+                      {/if}
+                    </button>
+                  {/if}
+
+                  {#if onspeech && !showSpeechAnnotations}<button
+                      type="button"
+                      class="mini"
+                      aria-label={`Inspect voices and delivery for segment ${item.ordinal + 1}`}
+                      onclick={(event) => {
+                        event.stopPropagation();
+                        onspeech?.(item, 0, event.currentTarget, true);
+                      }}>Voices &amp; delivery</button
+                    >{/if}
+                  <label
+                    >Role
+                    <select
+                      value={item.node_kind ?? 'paragraph'}
+                      onchange={(event) =>
+                        onpatch(item, {
+                          node_kind: event.currentTarget
+                            .value as GenerationSegment['node_kind']
+                        })}
+                      aria-label="Segment role"
+                      class="mini"
+                    >
+                      <option value="paragraph">Paragraph</option>
+                      <option value="heading">Heading</option>
+                      <option value="chapter_marker">Chapter start</option>
+                      <option value="subtitle_cue">Subtitle cue</option>
+                    </select></label
+                  >
+                  {#if multiVoice}<label
+                      >Voice
+                      <select
+                        value={item.voice ?? ''}
+                        onchange={(event) =>
+                          onpatch(item, {
+                            voice: event.currentTarget.value || null
+                          })}
+                        aria-label={`Voice for segment ${item.ordinal + 1}`}
+                        title={`${selectedTtsServiceName ?? 'TTS service'} · ${selectedTtsModel || 'default model'}`}
+                        disabled={speechOptionsLoading}
+                        class="mini max-w-52"
+                      >
+                        <option value="">
+                          Inherited{inheritedVoice
+                            ? ` · ${onvoices(item).find((voice) => voice.id.toLowerCase() === inheritedVoice.toLowerCase())?.name ?? inheritedVoice}`
+                            : ' · service default'}
+                        </option>
+                        {#each onvoices(item) as voice}
+                          <option value={voice.id}>{onvoicelabel(voice)}</option
+                          >
+                        {/each}
+                      </select></label
+                    >{/if}
+                  <label
+                    >Language
+                    <select
+                      value={item.language ?? ''}
+                      onchange={(event) =>
+                        onlanguagechange(item, event.currentTarget.value)}
+                      aria-label={`Language for segment ${item.ordinal + 1}`}
+                      disabled={speechOptionsLoading}
+                      class="mini max-w-48"
+                    >
+                      <option value=""
+                        >Inherited · {onlanguagelabel(
+                          inheritedLanguage
+                        )}</option
+                      >
+                      {#each onlanguages(item) as language}
+                        <option value={language.value}>{language.label}</option>
+                      {/each}
+                    </select></label
+                  >
+                </SegmentOptionsMenu>
+              </div>
+            </div>{/if}
         </td>
-        <td>
-          {#if selectedTake}
-            <SegmentAudioPreview
-              take={selectedTake}
-              segmentNumber={item.ordinal + 1}
-              takeLabel={ontakelabel(selectedTake)}
-              active={previewSegmentId === item.id}
-              onrequest={() => onpreviewrequest?.(item)}
-            />
-            <select
-              value={selectedTake.id}
-              onchange={(event) =>
-                onselecttake(item, event.currentTarget.value)}
-              class="mini mt-1 w-full"
-            >
-              {#each item.takes as take}
-                <option value={take.id}
-                  >{ontakelabel(take)} · {take.status}</option
+        {#if showAudioColumns}<td>
+            {#if selectedTake}
+              <SegmentAudioPreview
+                take={selectedTake}
+                segmentNumber={item.ordinal + 1}
+                takeLabel={ontakelabel(selectedTake)}
+                active={previewSegmentId === item.id}
+                onrequest={() => onpreviewrequest?.(item)}
+              />
+              {#if !previewOnly}<select
+                  value={selectedTake.id}
+                  aria-label={`Recording for segment ${item.ordinal + 1}`}
+                  onfocus={() => ontakehistory?.(item)}
+                  onpointerdown={() => ontakehistory?.(item)}
+                  onchange={(event) =>
+                    onselecttake(item, event.currentTarget.value)}
+                  class="mini mt-1 w-full"
                 >
-              {/each}
-            </select>
-            {#if selectedTake.audio_verification}
-              <span
-                class="verification-badge {selectedTake.audio_verification
-                  .status}"
-                title={onverificationtitle(selectedTake)}
-              >
-                Signal check: {selectedTake.audio_verification.status}
-              </span>
+                  {#each item.takes as take}
+                    <option value={take.id}
+                      >{ontakelabel(take)} · {take.status}</option
+                    >
+                  {/each}
+                </select>{/if}
+              {#if selectedTake.audio_verification}
+                <span
+                  class="verification-badge {selectedTake.audio_verification
+                    .status}"
+                  title={onverificationtitle(selectedTake)}
+                >
+                  Signal check: {selectedTake.audio_verification.status}
+                </span>
+              {/if}
+            {:else}
+              <span class="muted text-xs">Not generated</span>
             {/if}
-          {:else}
-            <span class="muted text-xs">Not generated</span>
-          {/if}
-        </td>
-        <td>
-          <span class="status"
-            >{pendingGeneration[item.id] ? 'Queued' : item.status}</span
-          >
-          {#if pendingGeneration[item.id]}<span
-              class="mt-1 block text-xs"
-              role="status">{pendingGeneration[item.id]}</span
-            >{/if}
-          {#if ['generation_settings_changed', 'voice_reference_changed'].includes(item.audio_reuse_reason ?? '')}
-            <span class="mt-1 block text-xs text-[var(--warning)]"
-              >Audio settings changed</span
+            {#if !previewOnly && item.take_history_loaded === false}
+              <button
+                class="mt-1 text-xs text-[var(--accent)]"
+                onclick={() => ontakehistory?.(item)}
+              >
+                Show all {item.take_count ?? 0} recordings
+              </button>
+            {/if}
+          </td>
+          <td>
+            <span class="status"
+              >{pendingGeneration[item.id] ? 'Queued' : item.status}</span
             >
-          {:else if item.audio_reuse_reason === 'performance_changed'}
-            <span class="mt-1 block text-xs text-[var(--warning)]"
-              >Speech direction or context changed</span
-            >
-          {:else if item.audio_reuse_reason === 'audio_identity_unknown'}
-            <span
-              class="mt-1 block text-xs text-[var(--warning)]"
-              title="Recording made with earlier settings, or its saved settings could not be verified. Continue unfinished audio keeps it; Refresh changed audio regenerates it with the current settings."
-              >Older audio · kept unless refreshed</span
-            >
-          {/if}
-        </td>
+            {#if pendingGeneration[item.id]}<span
+                class="mt-1 block text-xs"
+                role="status">{pendingGeneration[item.id]}</span
+              >{/if}
+            {#if ['generation_settings_changed', 'voice_reference_changed'].includes(item.audio_reuse_reason ?? '')}
+              <span class="mt-1 block text-xs text-[var(--warning)]"
+                >Audio settings changed</span
+              >
+            {:else if item.audio_reuse_reason === 'performance_changed'}
+              <span class="mt-1 block text-xs text-[var(--warning)]"
+                >Speech direction or context changed</span
+              >
+            {:else if item.audio_reuse_reason === 'audio_identity_unknown'}
+              <span
+                class="mt-1 block text-xs text-[var(--warning)]"
+                title="Recording made with earlier settings, or its saved settings could not be verified. Continue unfinished audio keeps it; Refresh changed audio regenerates it with the current settings."
+                >Older audio · kept unless refreshed</span
+              >
+            {/if}
+          </td>
+        {/if}
       </tr>
     {/each}
     {#if virtualEnabled && selection.bottomGap > 0}
       <tr class="virtual-spacer" aria-hidden="true">
         <td
-          colspan="5"
+          colspan={(previewOnly ? 2 : 3) + (showAudioColumns ? 2 : 0)}
           style="height: {Math.round(
             selection.bottomGap
           )}px; padding: 0; border: 0;"
@@ -1094,7 +1376,10 @@
   {#if items.length > virtualizeThreshold}
     <tfoot>
       <tr>
-        <td colspan="5" class="border-0 py-2 text-center">
+        <td
+          colspan={(previewOnly ? 2 : 3) + (showAudioColumns ? 2 : 0)}
+          class="border-0 py-2 text-center"
+        >
           {#if showAll}
             <button type="button" class="mini" onclick={() => setShowAll(false)}
               >Virtualize rows (faster)</button
@@ -1114,13 +1399,66 @@
 </table>
 
 <style>
+  .block-instruction-field {
+    display: block;
+    margin: 0.65rem 0.65rem 0.45rem;
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+  .block-instruction-field > span {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: space-between;
+    margin-bottom: 0.25rem;
+  }
+  .block-instruction-field textarea {
+    width: 100%;
+    min-height: 2rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+    border-radius: 0.5rem;
+    background: color-mix(in srgb, var(--paper-strong) 85%, var(--accent-soft));
+    color: var(--ink);
+    font-size: 0.8rem;
+    field-sizing: content;
+    resize: vertical;
+  }
+  .block-instruction-field textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
   table {
     min-width: 680px;
   }
+  table.compact-table {
+    min-width: 0;
+  }
+  .block-number {
+    display: grid;
+    place-items: center;
+    margin: 0 auto;
+    min-width: 2rem;
+    min-height: 2rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+  }
+  .block-number:focus-visible {
+    outline: 2px solid var(--accent);
+  }
+  .optimized-label {
+    display: inline-block;
+    margin: 0.1rem 0 0.35rem;
+    padding: 0.15rem 0.45rem;
+    border-radius: 0.35rem;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.65rem;
+  }
   .mark-toggle {
     appearance: none;
-    display: inline-grid;
+    display: grid;
     place-content: center;
+    margin: 0 auto;
     width: 1.15rem;
     height: 1.15rem;
     border: 1.5px solid var(--line);
@@ -1153,7 +1491,7 @@
     vertical-align: top;
   }
   td.narrative-cell,
-  th:nth-child(3) {
+  th.narrative-heading {
     min-width: 0;
     overflow-wrap: anywhere;
     text-align: start;
@@ -1161,13 +1499,8 @@
   td {
     overflow-wrap: anywhere;
   }
-  td:first-child,
-  td:nth-child(2) {
-    padding-top: 1rem;
-  }
-  .mark-toggle {
-    display: block;
-    margin: 0 auto;
+  td.row-control {
+    vertical-align: middle;
   }
   .segment-actions {
     margin-top: 0.2rem;
@@ -1182,24 +1515,7 @@
     flex: 1;
     min-width: 0;
   }
-  .passage-edit {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    padding: 0.35rem;
-    border-radius: 0.4rem;
-    color: var(--muted);
-  }
-  .passage-edit:hover,
-  .passage-edit:focus-visible {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .passage-edit:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
+
   tr.boundary-row td {
     height: 0.8rem;
     border-bottom: 0;

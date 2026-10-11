@@ -43,6 +43,15 @@ def test_generation_controls_models_are_strict_and_preserve_cast_clear_semantics
     character = CharacterEntry(display_name=" Alice ", aliases=[" A "])
     assert character.display_name == "Alice"
     assert character.aliases == ["A"]
+    assert character.model_dump()["delivery"] == {
+        "instruction": "", "emotion": "", "pace": "", "cadence": "", "emphasis": "",
+    }
+    directed = CharacterEntry(display_name="Alice", delivery={"instruction": "  warmly  ", "pace": "brisk"})
+    assert directed.model_dump()["delivery"]["instruction"] == "warmly"
+    with pytest.raises(ValidationError):
+        CharacterEntry(display_name="Alice", delivery={"instruction": "[laughs]"})
+    with pytest.raises(ValidationError):
+        CharacterEntry(display_name="Alice", delivery={"emotion": "x" * 81})
 
     with pytest.raises(ValidationError):
         CharacterEntry(display_name="Alice", unexpected=True)

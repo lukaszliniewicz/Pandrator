@@ -29,13 +29,15 @@ export function readMarkup(xml: string) {
   return doc;
 }
 
-export function markupControls(
-  xml: string
-): Partial<Record<ControlField, string>> {
+export function markupControls(xml: string): Partial<
+  Record<ControlField, string>
+> & {
+  emotion_intensity?: number | null;
+} {
   if (!xml) return {};
   try {
     const root = readMarkup(xml).documentElement;
-    return Object.fromEntries(
+    const result = Object.fromEntries(
       controlFields.map((field, index) => [
         field,
         Array.from(root.children).find(
@@ -43,6 +45,18 @@ export function markupControls(
         )?.textContent ?? ''
       ])
     );
+    const emotion = Array.from(root.children).find(
+      (node) => node.tagName === 'em'
+    );
+    const scalar = emotion?.getAttribute('intensity');
+    return {
+      ...result,
+      ...(scalar !== null &&
+      scalar !== undefined &&
+      Number.isFinite(Number(scalar))
+        ? { emotion_intensity: Number(scalar) }
+        : {})
+    };
   } catch {
     return {};
   }
@@ -81,7 +95,7 @@ export function markupSummary(xml: string): string[] {
     const root = readMarkup(xml).documentElement;
     return Array.from(
       root.querySelectorAll(
-        'dialogue,speaker,narrator,span,event,ins,em,pace,cadence,emphasis'
+        'dialogue,speaker,narrator,span,event,sound,ins,em,pace,cadence,emphasis'
       )
     )
       .filter(
@@ -95,6 +109,8 @@ export function markupSummary(xml: string): string[] {
           return `Speaker: ${node.getAttribute('ref') || node.getAttribute('n') || node.getAttribute('g') || 'unassigned'}${node.getAttribute('voice') ? ` · voice ${node.getAttribute('voice')}` : ''}`;
         if (node.tagName === 'event')
           return `Vocal event: ${node.getAttribute('kind')}${node.getAttribute('duration_ms') ? ` · ${node.getAttribute('duration_ms')} ms hint` : ''}`;
+        if (node.tagName === 'sound')
+          return `Sound effect: ${node.getAttribute('placement')} · variant ${node.getAttribute('variant')}`;
         if (
           directionTags.includes(node.tagName as (typeof directionTags)[number])
         )
@@ -125,9 +141,7 @@ export function markSpokenRange(
   function walk(node: Node) {
     if (
       node.nodeType === 1 &&
-      [...directionTags, 'event'].includes(
-        (node as Element).tagName as (typeof directionTags)[number]
-      )
+      [...directionTags, 'event', 'sound'].includes((node as Element).tagName)
     )
       return;
     if (node.nodeType === 3) {

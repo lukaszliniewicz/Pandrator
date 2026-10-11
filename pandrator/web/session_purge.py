@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from pandrator.runtime import DataPaths
@@ -214,8 +214,9 @@ class SessionPurgeService:
     def _busy(self, session: Session, session_id: str) -> list[str]:
         blockers: list[str] = []
         for model in _WORK:
+            terminal_statuses = _TERMINAL | ({"stale"} if model is OutputAssembly else set())
             row = session.scalar(select(model).where(model.session_id == session_id,
-                model.status.not_in(_TERMINAL)).limit(1))
+                model.status.not_in(terminal_statuses)).limit(1))
             if row is not None:
                 blockers.append(f"unfinished:{model.__tablename__}:{row.status}")
         workflow_ids = select(WorkflowRun.id).where(WorkflowRun.session_id == session_id)
@@ -397,35 +398,90 @@ class SessionPurgeService:
                     return True
         return False
 
-    def _external_artifact_refs(self, session: Session, artifact: Artifact) -> tuple[bool, list[str]]:
-        """Classify known shared references; block every other external FK."""
-        preserved = bool(session.scalar(select(SourceAsset.id).where(SourceAsset.artifact_id == artifact.id).limit(1)))
-        preserved |= bool(session.scalar(select(VoiceSample.id).where(VoiceSample.artifact_id == artifact.id).limit(1)))
-        blockers: list[str] = []
+    def _artifact_reference_impacts(
+        self,
+        session: Session,
+        artifacts: list[Artifact],
+        owner_id: str,
+    ) -> tuple[set[str], dict[str, list[str]], dict[str, set[str]]]:
+        """Batch shared refs, external FKs, and outgoing artifact provenance."""
+        retained_project_exports: dict[str, set[str]] = {
+            "project_export_bundle": set(), "project_export_manifest": set(),
+        }
+        owned_by_id = {artifact.id: artifact for artifact in artifacts}
+        owned_ids = list(owned_by_id)
+        if not owned_ids:
+            return set(), {}, retained_project_exports
+
+        batch_size = 500
+        batches = [owned_ids[start:start + batch_size]
+                   for start in range(0, len(owned_ids), batch_size)]
+        shared_ids: set[str] = set()
+        external_by_id: dict[str, list[str]] = {}
+        for batch in batches:
+            shared_ids.update(
+                artifact_id for artifact_id in session.scalars(
+                    select(SourceAsset.artifact_id).where(
+                        SourceAsset.artifact_id.in_(batch),
+                    ).distinct()
+                ).all() if artifact_id is not None
+            )
+            shared_ids.update(session.scalars(
+                select(VoiceSample.artifact_id).where(
+                    VoiceSample.artifact_id.in_(batch),
+                ).distinct()
+            ).all())
+
         for table in Base.metadata.tables.values():
             if table.name in {"source_assets", "voice_samples", "artifacts", "session_purges", "artifact_edges", "training_runs"}:
                 continue
             for column in table.columns:
                 if not any(fk.target_fullname == "artifacts.id" for fk in column.foreign_keys):
                     continue
-                query = select(func.count()).select_from(table).where(column == artifact.id)
-                if "session_id" in table.c:
-                    query = query.where(table.c.session_id != artifact.session_id)
-                else:
+                if "session_id" not in table.c:
                     # No owner identity: preserve the row only when explicitly known.
                     continue
-                if session.scalar(query):
-                    blockers.append(f"external_reference:{table.name}.{column.name}")
-        for edge in session.scalars(select(ArtifactEdge).where(
-            (ArtifactEdge.parent_artifact_id == artifact.id)
-            | (ArtifactEdge.child_artifact_id == artifact.id))).all():
-            other_id = edge.child_artifact_id if edge.parent_artifact_id == artifact.id else edge.parent_artifact_id
-            other = session.get(Artifact, other_id)
-            if other is not None and other.session_id != artifact.session_id:
-                if edge.parent_artifact_id == artifact.id and self._retained_project_export(session, other, artifact):
-                    continue
-                blockers.append("external_reference:artifact_edges")
-        return preserved, blockers
+                blocker = f"external_reference:{table.name}.{column.name}"
+                for batch in batches:
+                    referenced_ids = session.scalars(
+                        select(column).where(
+                            column.in_(batch),
+                            table.c.session_id != owner_id,
+                        ).distinct()
+                    ).all()
+                    for artifact_id in referenced_ids:
+                        external_by_id.setdefault(artifact_id, []).append(blocker)
+
+        edge_pairs: list[tuple[str, str]] = []
+        for batch in batches:
+            edge_pairs.extend(
+                (parent_id, child_id) for parent_id, child_id in session.execute(
+                    select(ArtifactEdge.parent_artifact_id, ArtifactEdge.child_artifact_id).where(
+                        ArtifactEdge.parent_artifact_id.in_(batch),
+                    )
+                )
+            )
+        child_by_id = dict(owned_by_id)
+        missing_child_ids = sorted({
+            child_id for _parent_id, child_id in edge_pairs if child_id not in child_by_id
+        })
+        for start in range(0, len(missing_child_ids), batch_size):
+            batch = missing_child_ids[start:start + batch_size]
+            child_by_id.update({
+                artifact.id: artifact
+                for artifact in session.scalars(select(Artifact).where(Artifact.id.in_(batch))).all()
+            })
+        for parent_id, child_id in edge_pairs:
+            output = child_by_id.get(child_id)
+            if output is None:
+                continue
+            source = owned_by_id[parent_id]
+            retained = self._retained_project_export(session, output, source)
+            if retained:
+                retained_project_exports[output.role].add(output.id)
+            if output.session_id != owner_id and not retained:
+                external_by_id.setdefault(parent_id, []).append("external_reference:artifact_edges")
+        return shared_ids, external_by_id, retained_project_exports
 
     def _inspect(self, session: Session, record: SessionRecord, *, activity_blockers: list[str] | None = None) -> dict[str, Any]:
         blockers = self._busy(session, record.id)
@@ -434,16 +490,9 @@ class SessionPurgeService:
             blockers.append("not_trashed")
         retained: set[str] = set()
         artifacts = list(session.scalars(select(Artifact).where(Artifact.session_id == record.id)).all())
-        retained_project_exports: dict[str, set[str]] = {
-            "project_export_bundle": set(), "project_export_manifest": set(),
-        }
-        for artifact in artifacts:
-            for edge in session.scalars(select(ArtifactEdge).where(
-                ArtifactEdge.parent_artifact_id == artifact.id,
-            )).all():
-                output = session.get(Artifact, edge.child_artifact_id)
-                if output is not None and self._retained_project_export(session, output, artifact):
-                    retained_project_exports[output.role].add(output.id)
+        shared_artifact_ids, external_artifact_refs, retained_project_exports = (
+            self._artifact_reference_impacts(session, artifacts, record.id)
+        )
         try:
             files = set(self._session_files(record.storage_key))
         except ValueError as error:
@@ -454,6 +503,12 @@ class SessionPurgeService:
         upload_directories: set[str] = set()
         upload_prefixes: list[str] = []
         upload_identity: list[dict[str, str]] = []
+        legacy_storage_token = re.fullmatch(r"[A-Za-z0-9_-]{1,80}", record.id) is not None
+        legacy_storage_owner = legacy_storage_token and session.scalar(select(SessionRecord.id).where(
+            SessionRecord.id != record.id,
+            SessionRecord.storage_key == record.id,
+        ).limit(1)) is not None
+        legacy_subtitle_files: set[str] = set()
         other_uploads = list(session.scalars(select(UploadSessionRecord).where(
             or_(UploadSessionRecord.session_id != record.id, UploadSessionRecord.session_id.is_(None)))).all())
         for upload in uploads:
@@ -483,19 +538,37 @@ class SessionPurgeService:
                 blockers.append(f"unsafe_upload_storage:{upload.id}:{error}")
         owned_artifact_ids: list[str] = []
         for artifact in artifacts:
-            shared, external = self._external_artifact_refs(session, artifact)
-            blockers.extend(external)
+            blockers.extend(external_artifact_refs.get(artifact.id, []))
             try:
                 relative = self._canonical_managed(artifact.relative_path)
             except ValueError:
                 blockers.append(f"unsafe_artifact_path:{artifact.id}")
                 continue
-            if shared:
+            if artifact.id in shared_artifact_ids:
                 retained.add(relative)
                 continue
             owned_artifact_ids.append(artifact.id)
+            metadata = artifact.metadata_json or {}
+            source_hash = metadata.get("imported_source_hash")
+            legacy_relative = (
+                f"sessions/{record.id}/imported-subtitles/{source_hash}.srt"
+                if legacy_storage_token and isinstance(source_hash, str)
+                and re.fullmatch(r"[0-9a-f]{64}", source_hash)
+                else None
+            )
+            is_legacy_subtitle = (
+                not legacy_storage_owner
+                and artifact.kind == "srt"
+                and artifact.role == "transcription"
+                and metadata.get("text_origin") == "imported_subtitles"
+                and artifact.relative_path == legacy_relative
+                and relative == legacy_relative
+            )
+            if is_legacy_subtitle:
+                legacy_subtitle_files.add(relative)
             if (relative.startswith(f"sessions/{record.storage_key}/") or relative.startswith("artifacts/")
-                    or any(relative.startswith(prefix) for prefix in upload_prefixes)):
+                    or any(relative.startswith(prefix) for prefix in upload_prefixes)
+                    or is_legacy_subtitle):
                 files.add(relative)
             else:
                 blockers.append(f"unmanaged_artifact:{artifact.id}")
@@ -526,15 +599,16 @@ class SessionPurgeService:
         # A different session may own an artifact physically stored under this
         # directory. Its row would survive deletion of the target session.
         prefix = f"sessions/{record.storage_key}/"
-        for other in session.scalars(select(Artifact).where(
-            or_(Artifact.session_id != record.id, Artifact.session_id.is_(None)))).all():
+        for other_id, other_path in session.execute(select(Artifact.id, Artifact.relative_path).where(
+            or_(Artifact.session_id != record.id, Artifact.session_id.is_(None)))):
             try:
-                relative = self._canonical_managed(other.relative_path)
+                relative = self._canonical_managed(other_path)
             except ValueError:
                 continue
-            if relative.startswith(prefix) or any(relative.startswith(root) for root in upload_prefixes):
+            if (relative.startswith(prefix) or any(relative.startswith(root) for root in upload_prefixes)
+                    or relative in legacy_subtitle_files):
                 retained.add(relative)
-                blockers.append(f"external_file_owner:{other.id}")
+                blockers.append(f"external_file_owner:{other_id}")
         files -= retained
         if any(relative.startswith(prefix) for relative in retained for prefix in upload_prefixes):
             blockers.append("shared_upload_storage")
@@ -641,27 +715,43 @@ class SessionPurgeService:
             return self._preview(session_id, blockers)
 
     def _preview(self, session_id: str, activity_blockers: list[str]) -> dict[str, Any]:
-        with self.database.immediate_session() as session:
+        with self.database.snapshot_session() as session:
             record = session.get(SessionRecord, session_id)
             if record is None:
                 raise KeyError(session_id)
+            inspected_revision = record.revision
             result = self._inspect(session, record, activity_blockers=activity_blockers)
+            retained = set(result["_retained"])
             journal = session.get(SessionPurge, session_id)
             if journal is not None and journal.state in {"purging", "failed"}:
                 result["revision"] = journal.expected_revision
                 result["impact_token"] = journal.impact_token
-            elif result["can_purge"]:
+                return {key: value for key, value in result.items() if not key.startswith("_")}
+        if result["can_purge"]:
+            with self.database.immediate_session() as session:
+                current = session.get(SessionRecord, session_id)
+                if current is None:
+                    raise KeyError(session_id)
+                journal = session.get(SessionPurge, session_id)
+                if journal is not None and journal.state in {"purging", "failed"}:
+                    result["revision"] = journal.expected_revision
+                    result["impact_token"] = journal.impact_token
+                    return {key: value for key, value in result.items() if not key.startswith("_")}
+                if current.revision != inspected_revision:
+                    raise RevisionConflict("Session changed during purge inspection; refresh the preview.")
                 try:
-                    self._preflight_delete(session, session_id, result["_retained"])
+                    self._preflight_delete(session, session_id, retained)
                 except Exception as error:
                     result["blockers"].append(f"delete_constraint:{type(error).__name__}")
                     result["can_purge"] = False
-            return {key: value for key, value in result.items() if not key.startswith("_")}
+        return {key: value for key, value in result.items() if not key.startswith("_")}
 
-    def purge(self, session_id: str, expected_revision: int, impact_token: str) -> dict[str, Any]:
+    def purge(self, session_id: str, expected_revision: int, impact_token: str,
+              *, job_id: str | None = None, lease_generation: int | None = None) -> dict[str, Any]:
         try:
             with upload_activity(self.paths, session_id=session_id):
-                return self._purge_locked(session_id, expected_revision, impact_token)
+                return self._purge_locked(session_id, expected_revision, impact_token,
+                                          job_id=job_id, lease_generation=lease_generation)
         except UploadBusy as error:
             raise PurgeBlocked(["upload_writer_active"]) from error
         except (OSError, ValueError) as error:
@@ -669,7 +759,8 @@ class SessionPurgeService:
                 raise
             raise PurgeBlocked([f"unsafe_upload_activity:{error}"]) from error
 
-    def _purge_locked(self, session_id: str, expected_revision: int, impact_token: str) -> dict[str, Any]:
+    def _purge_locked(self, session_id: str, expected_revision: int, impact_token: str,
+                      *, job_id: str | None = None, lease_generation: int | None = None) -> dict[str, Any]:
         with self.database.immediate_session() as session:
             journal = session.get(SessionPurge, session_id)
             if journal is not None:
@@ -677,7 +768,14 @@ class SessionPurgeService:
                     raise RevisionConflict("Purge request does not match the claimed revision and impact token.")
                 if journal.state == "complete":
                     return {"state": "complete"}
-            else:
+            if job_id is not None:
+                job = session.get(Job, job_id)
+                if (job is None or job.kind != "maintenance.session_purge"
+                        or (job.payload_json or {}).get("target_session_id") != session_id
+                        or job.status != "running" or lease_generation is None
+                        or job.lease_generation != lease_generation):
+                    raise PurgeBlocked(["purge_job_cancelled_or_unclaimed"])
+            if journal is None:
                 record = session.get(SessionRecord, session_id)
                 if record is None:
                     raise KeyError(session_id)

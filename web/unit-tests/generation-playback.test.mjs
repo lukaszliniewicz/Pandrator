@@ -114,3 +114,16 @@ test('ordinary completion and media errors release playback', async (t) => {
   assert.equal(controller.active, false);
   assert.equal(controller.activePlayingId, '');
 });
+
+test('prepending cached segments does not replay the current recording', async (t) => {
+  const { items, audios, controller, restore } = setup();
+  t.after(restore);
+  const playing = controller.playFrom('first');
+  items.unshift({ id: 'earlier' });
+  audios[0].onended();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(audios.length, 2);
+  assert.ok(audios[1].src.includes('/second/'));
+  controller.stop();
+  await playing;
+});

@@ -12,6 +12,7 @@ from ..results import ToolOutcome
 from ..schemas import (
     ControlRuntimeInput,
     ExecuteComponentPlanInput,
+    ManagerStatusInput,
     PlanComponentChangeInput,
 )
 from ..work_mapping import (
@@ -489,7 +490,10 @@ def _runtime_projection(
     }
 
 
-def manager_status(runtime: McpRuntime) -> dict[str, Any]:
+def manager_status(
+    runtime: McpRuntime,
+    arguments: ManagerStatusInput | None = None,
+) -> dict[str, Any]:
     status = manager_status_projection(runtime.manager.status())
     components = getattr(runtime.manager, "components", None)
     if callable(components) and status.get("available") is True:
@@ -501,6 +505,26 @@ def manager_status(runtime: McpRuntime) -> dict[str, Any]:
             # Status remains useful when an older Manager lacks the optional
             # component inventory endpoint or it is temporarily unavailable.
             pass
+    if arguments is not None and arguments.detail == "summary":
+        inventory = status.get("model_inventory")
+        if isinstance(inventory, list):
+            summary_fields = (
+                "component_id",
+                "known_model_count",
+                "known_models_truncated",
+                "catalogue_tool",
+                "installed_model_ids",
+                "desired_model_ids",
+            )
+            status["model_inventory"] = [
+                {
+                    field: item[field]
+                    for field in summary_fields
+                    if field in item
+                }
+                for item in inventory
+                if isinstance(item, dict)
+            ]
     return status
 
 

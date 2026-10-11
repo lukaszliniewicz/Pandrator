@@ -198,7 +198,7 @@ test('tts save adopts the edit-copy revision before first regenerate', async ({
   });
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Search and replace' }).click();
   await page.getByRole('radio', { name: 'TTS text' }).click();
 

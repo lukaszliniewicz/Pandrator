@@ -3,8 +3,19 @@
 import math
 from typing import Any
 
+ELEVENLABS_V4_HTTP_MODEL = "eleven_v4"
+ELEVENLABS_V4_TURBO_MODEL = "eleven_v4_turbo"
+ELEVENLABS_V4_MODELS = frozenset(
+    {ELEVENLABS_V4_HTTP_MODEL, ELEVENLABS_V4_TURBO_MODEL}
+)
+ELEVENLABS_V4_MAX_REQUEST_CHARACTERS = 2_000
 
-def _validated_elevenlabs_voice_settings(value: Any) -> dict[str, Any]:
+
+def _validated_elevenlabs_voice_settings(
+    value: Any,
+    *,
+    model_id: str | None = None,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("ElevenLabs voice settings must be a dictionary.")
     numeric_ranges = {
@@ -14,6 +25,11 @@ def _validated_elevenlabs_voice_settings(value: Any) -> dict[str, Any]:
         "speed": (0.25, 4.0),
     }
     allowed = {*numeric_ranges, "use_speaker_boost"}
+    selected_model = str(model_id or "").casefold()
+    if selected_model == ELEVENLABS_V4_HTTP_MODEL:
+        allowed = {"stability", "similarity_boost"}
+    elif selected_model == ELEVENLABS_V4_TURBO_MODEL:
+        allowed = {"stability"}
     validated: dict[str, Any] = {}
     for key, item in value.items():
         if key not in allowed:
@@ -30,3 +46,12 @@ def _validated_elevenlabs_voice_settings(value: Any) -> dict[str, Any]:
             raise ValueError(f"ElevenLabs {key} is outside its supported numeric range.")
         validated[key] = item
     return validated
+
+
+__all__ = [
+    "ELEVENLABS_V4_HTTP_MODEL",
+    "ELEVENLABS_V4_MAX_REQUEST_CHARACTERS",
+    "ELEVENLABS_V4_MODELS",
+    "ELEVENLABS_V4_TURBO_MODEL",
+    "_validated_elevenlabs_voice_settings",
+]

@@ -56,7 +56,7 @@ async function fixture(page: Page) {
     takes: []
   });
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() === 'POST') {
         started = route.request().postDataJSON();
@@ -101,7 +101,7 @@ async function fixture(page: Page) {
     await route.fulfill({ json: { ...row(), previous_segment_id: 'old-row' } });
   });
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Audio view', exact: true })
     .selectOption('history');
@@ -224,7 +224,7 @@ test('full generation preview retains historical settings and queued rows explai
   });
   expect(previewRequests).toBe(1);
   await page.route(
-    `**/api/v1/sessions/${state.sessionId}/generation-runs`,
+    `**/api/v1/sessions/${state.sessionId}/generation-runs*`,
     (route) =>
       route.fulfill({
         json: {
@@ -250,7 +250,7 @@ test('full generation preview retains historical settings and queued rows explai
       })
   );
   await page.reload();
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(
     page.getByText('Regeneration queued — waiting for export', { exact: true })
   ).toBeVisible();

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalogue_revision": "2026-10-07",
+  "catalogue_revision": "2026-10-08",
   "sources": [
     {
       "id": "dots_tts_readme",
@@ -17,6 +17,13 @@
       "sha256": "a58c95f2cca337875d7239df38ee734abc97d6d4d3410756a517e781a76316a4"
     },
     {
+      "id": "elevenlabs_v4_models",
+      "url": "https://elevenlabs.io/docs/overview/models",
+      "revision": "ElevenLabs-models@retrieved-2026-10-08",
+      "retrieved_on": "2026-10-08",
+      "sha256": "909d056512cda87bba62d6d3fcd3a31d59e13def1983d2581eaff7d62645e923"
+    },
+    {
       "id": "fish_s2_pro_readme",
       "url": "https://huggingface.co/fishaudio/s2-pro/raw/1de9996b6be38b745688de084d87a5633f714e4e/README.md",
       "revision": "1de9996b6be38b745688de084d87a5633f714e4e",
@@ -24,11 +31,18 @@
       "sha256": "3c2d78af0f3991ef6047272d4df18f204b4340e1e5fcc975d0e720d4312c4b29"
     },
     {
+      "id": "gemini38_lite_tts_languages",
+      "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-lite-tts",
+      "revision": "Gemini-3.8-lite-TTS-gemini-docs@2026-10-08",
+      "retrieved_on": "2026-10-08",
+      "sha256": "fc970d62d02f6d68c725ae5cd4f115e28a8214df451f2b9dbc621a8ad1a2cfa4"
+    },
+    {
       "id": "gemini38_tts_languages",
-      "url": "https://ai.google.dev/gemini-api/docs/speech-generation",
-      "revision": "Gemini-3.8-TTS-docs@2026-10-05",
-      "retrieved_on": "2026-10-05",
-      "sha256": "dabb5bbee6d976fb9ee3d2c3d2db561c74a9be2e2a084c32939f258c73aabd78"
+      "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash-tts",
+      "revision": "Gemini-3.8-flash-TTS-gemini-docs@2026-10-08",
+      "retrieved_on": "2026-10-08",
+      "sha256": "ee4bf5b9964af18b7850f23d89fe940c4f7262ae4ea4c2143ac19eeea4eb1f5f"
     },
     {
       "id": "gemini_legacy_tts_languages",
@@ -87,11 +101,18 @@
       "sha256": "64ccc436c72fd8c538e1a37de00301cc164a82c3d8ef0356532fe4c662ed1aa7"
     },
     {
+      "id": "vertex_gemini38_lite_tts_languages",
+      "url": "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview",
+      "revision": "Gemini-3.8-lite-TTS-vertex-docs@2026-10-08",
+      "retrieved_on": "2026-10-08",
+      "sha256": "e9eab3652c3da27b3879b705139e934f2c833fed24c3cb27eaa48465a73532bf"
+    },
+    {
       "id": "vertex_gemini38_tts_languages",
       "url": "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/text-to-speech/overview",
-      "revision": "Gemini-3.8-TTS-docs@2026-10-05",
-      "retrieved_on": "2026-10-05",
-      "sha256": "02e0947bb901db0f3db9c92b22e94cc7618576318428a52547efbab062e2d014"
+      "revision": "Gemini-3.8-flash-TTS-vertex-docs@2026-10-08",
+      "retrieved_on": "2026-10-08",
+      "sha256": "e9eab3652c3da27b3879b705139e934f2c833fed24c3cb27eaa48465a73532bf"
     },
     {
       "id": "vertex_gemini_tts",
@@ -99,6 +120,13 @@
       "revision": "last-modified: 2026-10-01T16:31:22Z",
       "retrieved_on": "2026-10-02",
       "sha256": "102023abd68c15157cd8ddaa5cac99b64995009374230c73bd190d9d90392a8c"
+    },
+    {
+      "id": "voicetut_tts_readme",
+      "url": "https://huggingface.co/mohammedaly22/VoiceTut-TTS-GGUF/raw/615457bb2e9043f468e012c159146b28fa8f5959/README.md",
+      "revision": "615457bb2e9043f468e012c159146b28fa8f5959",
+      "retrieved_on": "2026-10-08",
+      "sha256": "ac132c5ad32fdcca9cfe55f486d628a404030b18e837e4e510062fb9bafd7082"
     }
   ],
   "languages": [
@@ -174,6 +202,17 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ace-arab",
+      "label": "Acehnese (Arab script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -308,6 +347,17 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ak",
+      "label": "Akan",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -459,11 +509,33 @@
       ]
     },
     {
+      "tag": "ar-arab",
+      "label": "Standard Arabic (Arab script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "ar-eg",
       "label": "Arabic (Egypt)",
       "aliases": [],
       "source_ids": [
         "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "ar-latn",
+      "label": "Standard Arabic (Latn script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -546,6 +618,17 @@
       ]
     },
     {
+      "tag": "awa",
+      "label": "Awadhi",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "awo",
       "label": "Awak",
       "aliases": [],
@@ -593,6 +676,17 @@
       ]
     },
     {
+      "tag": "azb",
+      "label": "South Azerbaijani",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "ba",
       "label": "Bashkir",
       "aliases": [
@@ -611,6 +705,17 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ban",
+      "label": "Balinese",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -749,6 +854,15 @@
       ]
     },
     {
+      "tag": "bem",
+      "label": "Bemba",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "bew",
       "label": "Betawi",
       "aliases": [],
@@ -865,6 +979,26 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "bjn-arab",
+      "label": "Banjar (Arab script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
+      "tag": "bjn-latn",
+      "label": "Banjar (Latn script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -1336,6 +1470,15 @@
       ]
     },
     {
+      "tag": "crh",
+      "label": "Crimean Tatar",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "cs",
       "label": "Czech",
       "aliases": [
@@ -1593,6 +1736,15 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "dz",
+      "label": "Dzongkha",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -1919,6 +2071,17 @@
         "omnivoice_langmap",
         "openai_tts_guide",
         "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "fa-af",
+      "label": "Persian (Afghanistan)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -2564,6 +2727,17 @@
       ]
     },
     {
+      "tag": "hne",
+      "label": "Chhattisgarhi",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "hno",
       "label": "Northern Hindko",
       "aliases": [],
@@ -2818,6 +2992,17 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ilo",
+      "label": "Iloko",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -3159,6 +3344,17 @@
       ]
     },
     {
+      "tag": "kg",
+      "label": "Kongo",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "khg",
       "label": "Khams Tibetan",
       "aliases": [],
@@ -3172,6 +3368,17 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ki",
+      "label": "Kikuyu",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -3386,6 +3593,28 @@
       ],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "ks-arab",
+      "label": "Kashmiri (Arab script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
+      "tag": "ks-deva",
+      "label": "Kashmiri (Deva script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -3756,6 +3985,17 @@
       ]
     },
     {
+      "tag": "mag",
+      "label": "Magahi",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "mai",
       "label": "Maithili",
       "aliases": [],
@@ -3971,6 +4211,26 @@
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "min-arab",
+      "label": "Minangkabau (Arab script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
+      "tag": "min-latn",
+      "label": "Minangkabau (Latn script)",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -4680,9 +4940,13 @@
     {
       "tag": "or",
       "label": "Odia",
-      "aliases": [],
+      "aliases": [
+        "ori"
+      ],
       "source_ids": [
-        "gemini_legacy_tts_languages"
+        "elevenlabs_v4_models",
+        "gemini_legacy_tts_languages",
+        "pycountry_iso6393"
       ]
     },
     {
@@ -4746,6 +5010,15 @@
       "aliases": [],
       "source_ids": [
         "vertex_gemini_tts"
+      ]
+    },
+    {
+      "tag": "pag",
+      "label": "Pangasinan",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -5628,11 +5901,29 @@
       ]
     },
     {
+      "tag": "ss",
+      "label": "Swati",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
       "tag": "ssi",
       "label": "Sansi",
       "aliases": [],
       "source_ids": [
         "omnivoice_langmap"
+      ]
+    },
+    {
+      "tag": "st",
+      "label": "Southern Sotho",
+      "aliases": [],
+      "source_ids": [
+        "gemini38_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {
@@ -6699,6 +6990,32 @@
         "omnivoice_langmap",
         "openai_tts_guide",
         "pycountry_iso6393"
+      ]
+    },
+    {
+      "tag": "zh-hans",
+      "label": "Chinese (Hans script)",
+      "aliases": [
+        "zh-cn"
+      ],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
+      ]
+    },
+    {
+      "tag": "zh-hant",
+      "label": "Chinese (Hant script)",
+      "aliases": [
+        "zh-tw"
+      ],
+      "source_ids": [
+        "gemini38_lite_tts_languages",
+        "gemini38_tts_languages",
+        "vertex_gemini38_lite_tts_languages",
+        "vertex_gemini38_tts_languages"
       ]
     },
     {

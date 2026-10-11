@@ -16,10 +16,10 @@ from .settings_policy import BUILTIN_DEFAULTS, SETTING_SECTIONS
 
 DOCUMENTED_SECTIONS = SETTING_SECTIONS
 WORKFLOW_SECTIONS = {
-    "audiobook": frozenset(
-        {"text", "source_cleaning", "tts", "audio", "rvc", "output"}
+    "audiobook": frozenset({"text", "source_cleaning", "tts", "audio", "rvc", "output"}),
+    "subtitles": frozenset(
+        {"stt", "subtitles", "source_passages", "correction", "translation", "output"}
     ),
-    "subtitles": frozenset({"stt", "subtitles", "source_passages", "correction", "translation", "output"}),
     "voiceover": frozenset(
         {
             "stt",
@@ -293,13 +293,18 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "voxcpm_retry_badcase_ratio_threshold": "Sets the VoxCPM bad-case ratio threshold that triggers its retry path; the adapter clamps the provider value to 0.01 through 50.",
         "voxcpm_min_len": "Sets the minimum VoxCPM generated length accepted by its provider adapter; the adapter enforces at least one provider unit.",
         "voxcpm_max_len": "Sets the maximum VoxCPM generated length accepted by its provider adapter; it is kept at least as large as one provider unit and may be adjusted relative to the minimum.",
-        "fishs2_temperature": "Sets FishS2 sampling temperature; the FishS2 adapter clamps this provider-defined probability control to 0 through 1.",
+        "fishs2_temperature": "Sets FishS2 sampling temperature in the wrapper's nested options, clamped to 0 through 2.",
         "fishs2_top_p": "Sets FishS2 nucleus-sampling probability; the FishS2 adapter clamps it to 0 through 1.",
-        "fishs2_chunk_length": "Sets the FishS2 request chunk length in provider-defined units; the adapter clamps it to 100 through 300.",
-        "fishs2_latency": "Selects FishS2's normal or balanced latency mode; only FishS2 consumes this provider option.",
-        "fishs2_normalize": "Requests FishS2 provider-side audio normalization; only FishS2 consumes this switch.",
-        "fishs2_prosody_volume": "Sets FishS2 prosody volume in provider-defined units; the adapter clamps the value to -20 through 20.",
-        "fishs2_normalize_loudness": "Requests FishS2 loudness normalization within its prosody options; only FishS2 consumes this switch.",
+        "fishs2_max_new_tokens": "Limits generated FishS2 tokens. Leave blank to use the wrapper's default budget; this is not a duration in seconds.",
+        "fishs2_top_k": "Limits FishS2 sampling candidates. Leave blank to use the wrapper's default.",
+        "fishs2_min_tokens_before_end": "Sets how many tokens FishS2 generates before allowing an end token. Leave blank for the wrapper's default.",
+        "fishs2_n_threads": "Sets FishS2 worker threads; zero lets the runtime choose. Leave blank for the wrapper's default.",
+        "fishs2_verbose": "Controls FishS2 diagnostic verbosity. Leave unset to use the wrapper's default.",
+        "fishs2_chunk_length": "Legacy setting retained for compatibility. The FishS2 wrapper does not consume it and Pandrator omits it.",
+        "fishs2_latency": "Legacy setting retained for compatibility. The FishS2 wrapper does not consume it and Pandrator omits it.",
+        "fishs2_normalize": "Legacy setting retained for compatibility. The FishS2 wrapper does not consume it and Pandrator omits it.",
+        "fishs2_prosody_volume": "Legacy setting retained for compatibility. The FishS2 wrapper does not consume it and Pandrator omits it; adjust audio volume after generation.",
+        "fishs2_normalize_loudness": "Legacy setting retained for compatibility. The FishS2 wrapper does not consume it and Pandrator omits it; use audio processing for loudness normalization.",
         "kokoro_default_voices": "Stores language-to-voice defaults intended for Kokoro selection, but this setting currently has no consumer in the active TTS runtime.",
         "silero_stress_mode": "Selects the stress-handling mode sent to the Silero provider; the accepted modes are provider-defined.",
         "silero_sample_rate": "Sets the sample rate requested from Silero in hertz; only the Silero adapter consumes this value.",
@@ -409,6 +414,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "book_alignment_engine": "Auto selects the existing language-appropriate aligner. Explicit CrispASR or Qwen requires its supported language and runtime.",
         "book_use_native_timings": "Uses validated timing returned during speech generation when available; otherwise aligns the known transcript against saved audio.",
         "audio_match_source_duration": "Match the associated recording’s complete timeline, including initial and trailing silence. Speech overruns are rejected rather than silently clipped; turn off only when a longer independent audio file is intended.",
+        "include_sounds": "Include the current independent sound plan in audio and video exports. Sound effects never change speech takes. Pending word placements must be resolved before export; subtitle-only projects keep effects as preview metadata.",
         "audio_mode": "Selects the source-audio policy for voiceover media export: preserve source audio, mix source with generated speech, or export dubbing only.",
         "subtitle_mode": "Selects whether selected subtitles are omitted, muxed as soft tracks, or burned into a rendered video; burning forces video transcoding.",
         "subtitle_selection": "Selects the source subtitle track, translation track, or both when exporting or attaching subtitle tracks.",
@@ -441,7 +447,11 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
 _METADATA: dict[str, dict[str, dict[str, object]]] = {
     "text": {
         "max_sentence_length": {"minimum": 1, "unit": "characters"},
-        "audiobook_chunking": {"choices": ["model", "manual"], "label": "Audiobook segment length", "applicability": "Audiobook narration preparation only."},
+        "audiobook_chunking": {
+            "choices": ["model", "manual"],
+            "label": "Audiobook segment length",
+            "applicability": "Audiobook narration preparation only.",
+        },
         "remove_diacritics": {
             "caveat": "Transliteration is destructive and can alter proper names or intended pronunciation."
         },
@@ -681,9 +691,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "tts_batch_size": {"minimum": 1, "maximum": 32, "unit": "segments"},
         "tts_concurrent_requests": {"minimum": 1, "maximum": 8, "unit": "requests"},
         "temperature": {"applicability": "XTTS when xtts_send_temperature is enabled."},
-        "length_penalty": {
-            "applicability": "XTTS when xtts_send_length_penalty is enabled."
-        },
+        "length_penalty": {"applicability": "XTTS when xtts_send_length_penalty is enabled."},
         "repetition_penalty": {
             "applicability": "XTTS when xtts_send_repetition_penalty is enabled, with compatible adapters potentially using the common fallback."
         },
@@ -710,9 +718,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "unit": "provider-defined",
             "applicability": "XTTS when xtts_send_max_ref_len is enabled.",
         },
-        "sound_norm_refs": {
-            "applicability": "XTTS when xtts_send_sound_norm_refs is enabled."
-        },
+        "sound_norm_refs": {"applicability": "XTTS when xtts_send_sound_norm_refs is enabled."},
         "overlap_wav_len": {
             "unit": "provider-defined",
             "applicability": "XTTS when xtts_send_overlap_wav_len is enabled.",
@@ -769,10 +775,43 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         },
         "fishs2_temperature": {
             "minimum": 0,
-            "maximum": 1,
+            "maximum": 2,
             "applicability": "FishS2 only.",
         },
         "fishs2_top_p": {"minimum": 0, "maximum": 1, "applicability": "FishS2 only."},
+        "fishs2_max_new_tokens": {
+            "value_type": "integer",
+            "nullable": True,
+            "minimum": 1,
+            "maximum": 8192,
+            "unit": "tokens",
+            "applicability": "FishS2 only; unset uses the wrapper default.",
+        },
+        "fishs2_top_k": {
+            "value_type": "integer",
+            "nullable": True,
+            "minimum": 0,
+            "maximum": 500,
+            "applicability": "FishS2 only; unset uses the wrapper default.",
+        },
+        "fishs2_min_tokens_before_end": {
+            "value_type": "integer",
+            "nullable": True,
+            "minimum": 0,
+            "maximum": 8192,
+            "unit": "tokens",
+            "applicability": "FishS2 only; unset uses the wrapper default.",
+        },
+        "fishs2_n_threads": {
+            "value_type": "integer",
+            "nullable": True,
+            "minimum": 0,
+            "maximum": 512,
+            "applicability": "FishS2 only; unset uses the wrapper default.",
+        },
+        "fishs2_verbose": {
+            "value_type": "boolean",
+            "nullable": True,"applicability": "FishS2 only; unset uses the wrapper default."},
         "fishs2_chunk_length": {
             "minimum": 100,
             "maximum": 300,
@@ -861,32 +900,26 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "openai_audio_instructions": {
             "applicability": "OpenAI-compatible, Gemini-compatible, or custom audio adapters when supported."
         },
-        "generation_prompt": {
-            "applicability": "Providers whose adapter supports guided speech."
-        },
+        "generation_prompt": {"applicability": "Providers whose adapter supports guided speech."},
         "performance_enabled": {
             "applicability": "Adopted speech plans for audiobook narration and subtitle-timed voiceovers.",
-            "caveat": "Does not run an LLM automatically or alter accepted text. Adopt a performance plan first."
+            "caveat": "Does not run an LLM automatically or alter accepted text. Adopt a performance plan first.",
         },
-        "casting_enabled": {"applicability": "Named characters, source speakers and dialogue category defaults on one selected speech backend/model."},
+        "casting_enabled": {
+            "applicability": "Named characters, source speakers and dialogue category defaults on one selected speech backend/model."
+        },
         "performance_allow_vocalizations": {
             "applicability": "Explicit non-lexical performance events on supporting model variants.",
-            "caveat": "Off by default; inferred emotions never authorize invented vocalizations."
+            "caveat": "Off by default; inferred emotions never authorize invented vocalizations.",
         },
         "tts_context_mode": {
             "choices": ["off", "before", "both"],
             "applicability": "Prompt-based semantic context on supported TTS routes, including Gemini.",
-            "caveat": "Prompt-mediated context is not a guaranteed hidden input channel. Review output for leakage."
+            "caveat": "Prompt-mediated context is not a guaranteed hidden input channel. Review output for leakage.",
         },
-        "performance_context_before": {
-            "minimum": 0, "maximum": 20, "unit": "segments"
-        },
-        "performance_context_after": {
-            "minimum": 0, "maximum": 20, "unit": "segments"
-        },
-        "performance_context_max_chars": {
-            "minimum": 0, "maximum": 16000, "unit": "characters"
-        },
+        "performance_context_before": {"minimum": 0, "maximum": 20, "unit": "segments"},
+        "performance_context_after": {"minimum": 0, "maximum": 20, "unit": "segments"},
+        "performance_context_max_chars": {"minimum": 0, "maximum": 16000, "unit": "characters"},
         "speech_block_min_chars": {
             "minimum": 1,
             "unit": "characters",
@@ -912,10 +945,30 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "unit": "milliseconds",
             "applicability": "Local Pandrator speech-block segmentation only.",
         },
-        "speech_block_early_repair_min_shortfall_ms": {"minimum": 100, "maximum": 60000, "unit": "milliseconds", "applicability": "Optional voiceover timing repair only."},
-        "speech_block_early_repair_min_shortfall_percent": {"minimum": 1, "maximum": 95, "unit": "percent", "applicability": "Optional voiceover timing repair only."},
-        "speech_block_early_repair_min_advance_ms": {"minimum": 100, "maximum": 60000, "unit": "milliseconds", "applicability": "Optional voiceover timing repair only."},
-        "speech_block_early_repair_min_child_span_ms": {"minimum": 250, "maximum": 60000, "unit": "milliseconds", "applicability": "Optional voiceover timing repair only."},
+        "speech_block_early_repair_min_shortfall_ms": {
+            "minimum": 100,
+            "maximum": 60000,
+            "unit": "milliseconds",
+            "applicability": "Optional voiceover timing repair only.",
+        },
+        "speech_block_early_repair_min_shortfall_percent": {
+            "minimum": 1,
+            "maximum": 95,
+            "unit": "percent",
+            "applicability": "Optional voiceover timing repair only.",
+        },
+        "speech_block_early_repair_min_advance_ms": {
+            "minimum": 100,
+            "maximum": 60000,
+            "unit": "milliseconds",
+            "applicability": "Optional voiceover timing repair only.",
+        },
+        "speech_block_early_repair_min_child_span_ms": {
+            "minimum": 250,
+            "maximum": 60000,
+            "unit": "milliseconds",
+            "applicability": "Optional voiceover timing repair only.",
+        },
         "speech_block_early_repair_enabled": {
             "applicability": "Subtitle-timed voiceover generation only.",
             "caveat": "Optional and off by default. Repair generates additional speech takes.",
@@ -928,18 +981,48 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "applicability": "Subtitle-timed voiceover generation only.",
             "caveat": "Optional and off by default. Regeneration uses the same TTS provider and model; original takes remain the fallback.",
         },
-        "speech_block_regroup_max_mismatch_ms": {"minimum": 0, "maximum": 2000, "unit": "milliseconds", "applicability": "Optional voiceover regroup only."},
-        "speech_block_regroup_max_mismatch_percent": {"minimum": 0, "maximum": 50, "unit": "percent", "applicability": "Optional voiceover regroup only. Zero requires an exact fit."},
-        "speech_block_regroup_max_gap_ms": {"minimum": 0, "maximum": 2000, "unit": "milliseconds", "applicability": "Optional voiceover regroup only."},
-        "speech_block_regroup_max_passages": {"minimum": 2, "maximum": 8, "unit": "passages", "applicability": "Optional voiceover regroup only.", "caveat": "Selection never exceeds 8 passages per group."},
-        "speech_block_regroup_max_boundary_shift_ms": {"minimum": 0, "maximum": 2000, "unit": "milliseconds", "applicability": "Optional voiceover regroup only."},
+        "speech_block_regroup_max_mismatch_ms": {
+            "minimum": 0,
+            "maximum": 2000,
+            "unit": "milliseconds",
+            "applicability": "Optional voiceover regroup only.",
+        },
+        "speech_block_regroup_max_mismatch_percent": {
+            "minimum": 0,
+            "maximum": 50,
+            "unit": "percent",
+            "applicability": "Optional voiceover regroup only. Zero requires an exact fit.",
+        },
+        "speech_block_regroup_max_gap_ms": {
+            "minimum": 0,
+            "maximum": 2000,
+            "unit": "milliseconds",
+            "applicability": "Optional voiceover regroup only.",
+        },
+        "speech_block_regroup_max_passages": {
+            "minimum": 2,
+            "maximum": 8,
+            "unit": "passages",
+            "applicability": "Optional voiceover regroup only.",
+            "caveat": "Selection never exceeds 8 passages per group.",
+        },
+        "speech_block_regroup_max_boundary_shift_ms": {
+            "minimum": 0,
+            "maximum": 2000,
+            "unit": "milliseconds",
+            "applicability": "Optional voiceover regroup only.",
+        },
     },
     "audio": {
         "audio_verification_mode": {"choices": ["off", "signal"]},
         "sentence_silence_ms": {"minimum": 0, "maximum": 10000, "unit": "milliseconds"},
         "paragraph_silence_ms": {"minimum": 0, "maximum": 10000, "unit": "milliseconds"},
         "clause_silence_ms": {"minimum": 0, "maximum": 10000, "unit": "milliseconds"},
-        "in_segment_voice_change_silence_ms": {"minimum": 0, "maximum": 10000, "unit": "milliseconds"},
+        "in_segment_voice_change_silence_ms": {
+            "minimum": 0,
+            "maximum": 10000,
+            "unit": "milliseconds",
+        },
         "voice_change_silence_ms": {"minimum": 0, "maximum": 10000, "unit": "milliseconds"},
         "fade_in_ms": {"minimum": 0, "unit": "milliseconds"},
         "fade_out_ms": {"minimum": 0, "unit": "milliseconds"},
@@ -994,9 +1077,7 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
         "mix_source_gain_db": {"minimum": -60, "maximum": 12, "unit": "dB"},
         "mix_voice_gain_db": {"minimum": -30, "maximum": 12, "unit": "dB"},
         "mix_voice_lufs": {"minimum": -30, "maximum": -8, "unit": "LUFS"},
-        "mix_ducking": {
-            "choices": ["off", "gentle", "balanced", "strong", "very_strong"]
-        },
+        "mix_ducking": {"choices": ["off", "gentle", "balanced", "strong", "very_strong"]},
         "mix_attack_ms": {"minimum": 1, "maximum": 2000, "unit": "milliseconds"},
         "mix_release_ms": {"minimum": 10, "maximum": 5000, "unit": "milliseconds"},
     },
@@ -1058,9 +1139,7 @@ def _filter_values(value: Any) -> list[str]:
         try:
             values = list(value)
         except TypeError as error:
-            raise ValueError(
-                "Filters must be strings or iterables of strings."
-            ) from error
+            raise ValueError("Filters must be strings or iterables of strings.") from error
     result: list[str] = []
     for item in values:
         if not isinstance(item, str):
@@ -1104,9 +1183,7 @@ def describe_parameters(
         raise ValueError(f"Unsupported section: {invalid_sections[0]}")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 300:
         raise ValueError("limit must be an integer from 1 through 300")
-    if not (
-        requested_sections or requested_names or requested_workflow or requested_query
-    ):
+    if not (requested_sections or requested_names or requested_workflow or requested_query):
         raise ValueError("At least one parameter filter is required")
 
     section_filter: set[str] | frozenset[str] | None = set(requested_sections) or None
@@ -1126,7 +1203,12 @@ def describe_parameters(
         ):
             continue
         for name in BUILTIN_DEFAULTS.get(section, {}):
-            if requested_workflow is not None and requested_workflow != "audiobook" and section == "output" and name.startswith("book_"):
+            if (
+                requested_workflow is not None
+                and requested_workflow != "audiobook"
+                and section == "output"
+                and name.startswith("book_")
+            ):
                 continue
             if name_filter and name not in name_filter:
                 continue

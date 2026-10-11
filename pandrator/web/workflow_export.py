@@ -26,6 +26,7 @@ from .generation_subtitles import (
     derive_display_subtitle_artifact,
 )
 from .models import Artifact, new_id
+from .sound_workflow_outputs import render_output_sounds
 from .workflow_output_context import OutputWorkflowContext
 
 
@@ -100,10 +101,27 @@ def export(
         )
         if audio is None:
             raise ValueError("Audiobook export requires generated audio.")
+        original_audio_id = audio.id
+        audio = render_output_sounds(
+            context, audio, session_id=session_id, settings=settings,
+            progress=lambda fraction, detail: progress(0.12 + 0.1 * fraction, detail),
+            cancel_event=cancel_event,
+        )
         if settings.get("export_mode") in {"video_book", "subtitles"}:
             from .workflow_book_export import export_book
 
             return export_book(context, inputs, audio, payload, progress, cancel_event)
+        if audio.id != original_audio_id or audio.role == "sound_mix.audio":
+            from .sound_book_audio_export import export_mixed_book_audio
+
+            mixed_export = export_mixed_book_audio(
+                context, audio, session_id=session_id, export_name=export_name,
+                settings=settings, payload=payload, progress=progress,
+                cancel_event=cancel_event,
+            )
+            produced.append(mixed_export)
+            progress(1.0, "Audiobook export ready")
+            return {"artifact_ids": [mixed_export.id], "paths": [mixed_export.relative_path], "subtitle_diagnostics": []}
         _audio_record, audio_path = context._resolve_input(audio.id)
         audio_dir.mkdir(parents=True, exist_ok=True)
         destination = context.artifacts.next_available_path(
@@ -308,6 +326,12 @@ def export(
             master = ensure_soundtrack_master(
                 context, session_id=session_id, source=upload_media or upload_audio,
                 speech=dubbing_audio, audio_mode=audio_mode, settings=settings,
+                cancel_event=cancel_event,
+            )
+            master = render_output_sounds(
+                context, master, session_id=session_id, settings=settings,
+                timeline_artifact_id=dubbing_audio.id if dubbing_audio else None,
+                progress=lambda fraction, detail: progress(0.35 + 0.25 * fraction, detail),
                 cancel_event=cancel_event,
             )
             format_name = str(settings.get("format") or "wav").lower()

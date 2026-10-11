@@ -92,7 +92,12 @@ def validate_members(path: Path, names: list[str]) -> None:
                 for index in range(max(0, len(lowered_parts) - 1))
             )
         )
-        if unsafe or internal_markdown:
+        private_documentation = any(
+            lowered_parts[index] == "docs"
+            and lowered_parts[index + 1] in {"development", "plans", "research", "reports"}
+            for index in range(max(0, len(lowered_parts) - 1))
+        )
+        if unsafe or internal_markdown or private_documentation:
             rejected.append(normalized)
 
     if rejected:

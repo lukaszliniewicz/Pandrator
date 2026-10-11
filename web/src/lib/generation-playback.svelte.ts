@@ -1,11 +1,16 @@
 import type { GenerationSegment } from './api-models';
 import type { PlayableTake } from './generation-view-models';
 
-type GenerationPlaybackOptions = {
-  getItems: () => GenerationSegment[];
+export type PlaybackItem = Pick<
+  GenerationSegment,
+  'id' | 'removed' | 'silence_after_ms'
+>;
+
+type GenerationPlaybackOptions<T extends PlaybackItem> = {
+  getItems: () => T[];
   getNextCursor: () => number | string | null | undefined;
   loadMore: () => Promise<void>;
-  getTake: (item: GenerationSegment) => PlayableTake | undefined;
+  getTake: (item: T) => Pick<PlayableTake, 'artifact_id'> | undefined;
   onSelect: (id: string) => void;
   onError: (message: string) => void;
 };
@@ -15,7 +20,9 @@ type GenerationPlaybackOptions = {
  * playback. Keeping this lifecycle outside the drawer makes teardown explicit
  * and leaves the component responsible only for selection and presentation.
  */
-export class GenerationPlaybackController {
+export class GenerationPlaybackController<
+  T extends PlaybackItem = GenerationSegment
+> {
   active = $state(false);
   paused = $state(false);
   activePlayingId = $state('');
@@ -24,7 +31,7 @@ export class GenerationPlaybackController {
   private resolveAudio: (() => void) | null = null;
   private token = 0;
 
-  constructor(private readonly options: GenerationPlaybackOptions) {}
+  constructor(private readonly options: GenerationPlaybackOptions<T>) {}
 
   stop() {
     this.token += 1;
@@ -57,7 +64,7 @@ export class GenerationPlaybackController {
     }
   }
 
-  async playOnly(item: GenerationSegment) {
+  async playOnly(item: T) {
     this.stop();
     const token = this.token;
     this.active = true;
@@ -74,8 +81,13 @@ export class GenerationPlaybackController {
       this.options.getItems().findIndex((item) => item.id === startId)
     );
 
+    let previousId = '';
     while (token === this.token) {
       const items = this.options.getItems();
+      if (previousId) {
+        const previousIndex = items.findIndex((item) => item.id === previousId);
+        if (previousIndex >= 0) index = previousIndex + 1;
+      }
       if (index >= items.length) {
         if (this.options.getNextCursor() == null) break;
         const previousLength = items.length;
@@ -84,7 +96,10 @@ export class GenerationPlaybackController {
         continue;
       }
       const item = items[index++];
-      if (item) await this.playTake(item, token);
+      if (item) {
+        previousId = item.id;
+        await this.playTake(item, token);
+      }
     }
 
     if (token === this.token) this.stop();
@@ -103,7 +118,7 @@ export class GenerationPlaybackController {
     }
   }
 
-  private async playTake(item: GenerationSegment, token: number) {
+  private async playTake(item: T, token: number) {
     const take = this.options.getTake(item);
     if (!take || item.removed) return;
 

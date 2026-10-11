@@ -31,6 +31,12 @@ from .models import (
     utcnow,
 )
 
+COMPACT_ASSEMBLY_FIELDS = (
+    "id", "session_id", "generation_run_id", "audio_version_side", "job_id",
+    "artifact_id", "status", "progress", "progress_detail", "settings_hash",
+    "error_message", "created_at", "updated_at",
+)
+
 
 def project_generation_run(payload: dict[str, Any], *, view: str = "full") -> dict[str, Any]:
     """Opt-in transport projection; stored admission receipts remain full."""
@@ -38,7 +44,22 @@ def project_generation_run(payload: dict[str, Any], *, view: str = "full") -> di
         raise ValueError("Generation run view must be full or compact.")
     if view == "full":
         return payload
-    return {key: value for key, value in payload.items() if key != "settings_snapshot"}
+    result = {key: value for key, value in payload.items() if key != "settings_snapshot"}
+    # Assembly settings contain the full pinned take manifest. Removing only
+    # the run snapshot leaves that manifest duplicated in every compact run.
+    def assembly_summary(value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        return {key: value[key] for key in COMPACT_ASSEMBLY_FIELDS if key in value}
+
+    if "assembly" in result:
+        result["assembly"] = assembly_summary(result["assembly"])
+    if isinstance(result.get("audio_version_assemblies"), dict):
+        result["audio_version_assemblies"] = {
+            side: assembly_summary(value)
+            for side, value in result["audio_version_assemblies"].items()
+        }
+    return result
 
 
 @dataclass(frozen=True)

@@ -224,6 +224,17 @@ def test_model_modes_distinguish_design_cloning_and_direction():
     assert all(not modes["environmental_effects"] for modes in (base, design, breeze))
 
 
+def test_optional_reference_does_not_imply_voice_design():
+    modes = model_modes(
+        {"id": "audio_cpp", "adapter": "audio_cpp"},
+        {"id": "moss_tts_local", "voice_mode": "optional_cloning"},
+    )
+
+    assert modes["cloning"]
+    assert not modes["design"]
+    assert modes["reuse"] == "reviewed_reference"
+
+
 def test_pagination_has_no_duplicates_and_rejects_changed_filters():
     entries = catalog_entries([_voice(f"voice-{i}") for i in range(5)], {}, [])
     first = query_catalog(entries, VoiceCatalogQuery(limit=2))

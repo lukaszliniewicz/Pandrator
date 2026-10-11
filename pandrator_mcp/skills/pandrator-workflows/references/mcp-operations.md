@@ -18,6 +18,9 @@ an operation is unfamiliar or the server differs from this reference.
   `workflow_kind`, or `query`; at least one filter is required.
 - Inspect provider, TTS, and voice catalogues only when those choices matter.
   Use actual service/model/voice IDs, not labels guessed from user examples.
+  For routine voice choice, use `get_voice_catalog` with `service_id`, `model`,
+  `view="compact"` and `response_mode="structured"`. Optional `fields` projects
+  only requested safe fields; full profiles remain available when relevant.
 
 For new local speech work, the catalogue recommends `audio_cpp`; XTTS,
 Silero, Kokoro, and Voxtral remain dedicated providers. Compatibility entries
@@ -91,6 +94,9 @@ A returned `work` handle is not a finished artifact. Poll `pandrator_get_work`
 with that handle until terminal; retain it across timeouts and interruptions.
 Prefer waits short enough for the host's request timeout and progress needs.
 Use `pandrator_get_work_log` for diagnosis rather than repeatedly dumping logs.
+For generation, prefer `pandrator_get_generation_operation` with the stable
+`generation_operation_id`; it follows preparation and synthesis and reports
+selected-run audio coverage. See [recovery](recovery.md) for legacy servers.
 
 Use compact generation admissions and run lists for routine orchestration. Request
 `view=full` when inspecting frozen settings. Retain run, job, plan and work IDs
@@ -103,6 +109,22 @@ Call `pandrator_cancel_work` once when cancellation is requested, then inspect
 until terminal. Quick transcription has its own polling and cancellation tools.
 
 ## Generation and delivery
+
+For routine inspection, list runs with `view="compact"`; set `generation_run_id`
+to retrieve a retained run directly. List speech plans with `view="summary"`,
+`include_units=false`. Read only affected units with `view="annotations"`,
+`include_units=true`, and `segment_ids` (up to 100 unique IDs); otherwise page with
+the returned cursor. `full` retains XML and detailed snapshots for diagnosis.
+Segment `fields` is an advertised enum, not an arbitrary field list. A historical
+segment read returns `effective_take` with its originating run, artifact and hash,
+including reused audio. Current active audio is a separate selection.
+
+`pandrator_regenerate_segments` and `pandrator_generate_speech_plan` default to
+`settings_source="current"`. Use `settings_source="run"` with
+`settings_generation_run_id` to reproduce frozen settings, or `matching` for the
+latest compatible snapshot. `generation_run_id` identifies the audio origin;
+it does not select historical settings. A missing historical snapshot fails
+instead of substituting current settings. Returned origins make this explicit.
 
 1. Inspect the live TTS and voice catalogues, then use
    `pandrator_configure_tts` against current settings. Preview and review a
@@ -126,6 +148,20 @@ until terminal. Quick transcription has its own polling and cancellation tools.
 The downloader resumes partial transfers and verifies size and SHA-256. It
 refuses conflicting existing content. Report its final path and verification
 result; do not treat a remote artifact as an already-delivered local file.
+
+## Comparing selected takes
+
+Use `pandrator_create_comparison_export` with two `generation_run_ids` and explicit
+`segment_ids` for all lines from the first run followed by all lines from the
+second. Or pass ordered `clips` with run, segment, `audio_version_side` and optional
+exact `take_id`. Recast sides use their pinned selections; ordinary runs use the
+last eligible take at that run's cutoff. Missing selections fail rather than
+using current audio. Keep one idempotency key and poll the returned work.
+
+The output preserves loudness, uses an explicit `gap_ms`, and creates audio plus
+a manifest recording chosen takes, hashes, clip boundaries and settings origins.
+It compares speech takes; separately rendered environmental SFX are excluded.
+Use the returned artifact IDs with the checked downloader for delivery.
 
 ## Recording edits
 
@@ -162,3 +198,32 @@ TTS catalogue before `pandrator_configure_tts`; the setup tool can save directio
 Gemini context windows, vocalization opt-in, and model-specific ElevenLabs voice
 settings together. Read `generation-controls` and `providers-and-voices` for
 exact tool contracts. Do not put native provider tags in the saved transcript.
+
+## Pronunciation and rendering from completed audio
+
+- `list_pronunciations` filters written forms, language, review status and scope.
+  `create_pronunciation` uses `source_form` plus `phonetic`; session scope requires
+  `session_id`. Update/delete use the entry's `revision` as `expected_revision`.
+  Creation has no idempotency key: after an uncertain create, search for the entry
+  rather than creating it again blindly. PATCH omission differs from explicit null.
+- Dictionary edits preserve existing recordings and manual speech overrides.
+  Re-prepare speech text and refresh changed audio to apply rules to saved plans.
+  For a one-off speech-only correction, `update_generation_segments` supports
+  `optimized_text`; it preserves display/subtitle words. Do not use `text` unless
+  the displayed wording should change too.
+- For a display/subtitle repair with audio to retain, capture each affected
+  segment's exact effective speech first. Where the live contract supports a
+  combined update, submit corrected `text` with that speech as `optimized_text`;
+  a display edit alone can invalidate a speech override. Check the spoken text
+  and selected audio are preserved. Historical runs pin their earlier display
+  revision: inspect the export's text snapshot rather than assuming a current
+  display edit changes a historical-run export.
+- For existing audio, prefer `plan_export_variant` with the exact run ID and
+  `response_mode="structured"`. It creates an immutable export-only snapshot
+  without language/synthesis prerequisites. `plan_workflow(continuation=false)`
+  provides the same direct-stage control with arbitrary safe settings overrides.
+  Orchestration accepts `generation_run_id` for export from completed audio;
+  it rejects upstream passive stages with that historical selection.
+- Plan creation persists a snapshot; execution is separate. Review its exact
+  effects/confirmations and follow the canonical execute next action. Structured
+  responses preserve the whole plan once without repeating it in text.

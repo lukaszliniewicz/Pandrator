@@ -149,6 +149,68 @@ def get_work(
                 reason="Continue monitoring this durable work item until terminal.",
             )
         )
+    admission_marker = result.get("result_summary")
+    if (
+        arguments.work_type == "job" and work.state == "succeeded"
+        and result.get("kind") == "maintenance.session_purge_preview"
+    ):
+        next_actions.append(NextAction(
+            tool="pandrator_get_session_purge_inspection",
+            arguments={"job_id": arguments.work_id},
+            reason="Read the stored impact and guard before admitting permanent deletion.",
+        ))
+    if (
+        arguments.work_type == "job" and work.state == "succeeded"
+        and result.get("kind") == "export.comparison"
+        and isinstance(admission_marker, dict)
+    ):
+        for field in ("output_artifact_id", "manifest_artifact_id"):
+            if admission_marker.get(field):
+                next_actions.append(NextAction(
+                    tool="pandrator_download_artifact",
+                    arguments={"artifact_id": admission_marker[field]},
+                    reason="Download the checksummed comparison audio or ordered manifest.",
+                ))
+    if (
+        arguments.work_type == "job"
+        and work.state == "succeeded"
+        and result.get("kind") == "generation.admit"
+        and isinstance(admission_marker, dict)
+    ):
+        child_job_id = admission_marker.get("job_id")
+        generation_run_id = admission_marker.get("generation_run_id")
+        if (
+            isinstance(child_job_id, str)
+            and child_job_id
+            and isinstance(generation_run_id, str)
+            and generation_run_id
+        ):
+            result["generation_run_id"] = generation_run_id
+            assert application is not None
+            try:
+                child_result = application.get_work(child_job_id)
+            except PandratorMcpError:
+                child_result = None
+            if isinstance(child_result, dict):
+                followup_work = application_work_reference(child_result)
+                result["followup_work"] = followup_work.model_dump(mode="json")
+            else:
+                followup_work = application_work_reference(
+                    {
+                        **admission_marker,
+                        "job_id": child_job_id,
+                        "poll_after_ms": 1_000,
+                    }
+                )
+                result["followup_work"] = followup_work.model_dump(mode="json")
+                result["followup_work_lookup_pending"] = True
+            next_actions.append(
+                NextAction(
+                    tool="pandrator_get_work",
+                    arguments={"work_id": child_job_id},
+                    reason="Continue monitoring this durable work item until terminal.",
+                )
+            )
     return ToolOutcome(
         result=result,
         work=work,

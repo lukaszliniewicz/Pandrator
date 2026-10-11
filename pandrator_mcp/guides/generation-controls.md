@@ -1,7 +1,7 @@
 # Speech directions, dialogue, and character voices
 
 Audiobooks expose **One narrator / Multiple voices** and a dedicated casting
-card in the workflow. In the generation drawer, underlined speech opens a
+card in the workflow. In the Generation workspace, underlined speech opens a
 compiler-backed voice/delivery preview by hover, focus, or tap. Select a phrase
 to assign its speaker or voice, add or clear delivery directions, preview the
 result, and apply the reviewed change. Existing audio stays in history.
@@ -11,11 +11,29 @@ speech-plan segment directly; creating a performance draft just to check casting
 is unnecessary. Set `generation_run_id` for its frozen historical settings and
 `include_request=true` only when debugging the provider request.
 
-The **Speech direction** panel on the speech plan combines generation defaults,
-the session's character dictionary and cast, and block-level direction review.
+Generation defaults, the session's character dictionary and cast, and
+block-level direction review remain separate from the spoken transcript.
 Dialogue recognition lives in **Optimize text for speech → Timing & settings**.
 It can annotate the document without rewriting any spoken words. Emotional
 directions and multiple voices are independent options.
+
+## Settings origins and bounded reads
+
+MCP regeneration defaults to `settings_source="current"`. Historical settings
+require `settings_source="run"` and `settings_generation_run_id`; `matching`
+chooses the latest compatible frozen snapshot. The audio-selection
+`generation_run_id` is separate. Receipts identify both origins, so editing a
+direction and regenerating does not accidentally keep an old setting snapshot.
+
+List runs with `view="compact"` and optionally a specific `generation_run_id`.
+Plan lists default to `view="summary"`, `include_units=false`; request units
+explicitly with `view="annotations"`, `include_units=true`, bounded
+`segment_ids`, or a page. Annotations provide one speech-text field and compact
+spans/events; `full` retains XML and snapshots. Segment fields are an enum shared
+by contract with OpenAPI; invalid projections return allowed and invalid fields.
+Historical segment reads expose `effective_take` with the actual originating
+run, artifact and hash, including audio reused from earlier runs. They do not
+substitute current audio when that selection is unavailable.
 
 ## Character identity and casting
 
@@ -231,5 +249,44 @@ performance directions; CustomVoice 1.7B and VoiceDesign do. Turbo uses
 `max_new_tokens`, not `max_tokens`. FireRed Instruct chooses voice design when no
 reference is supplied; its cloning route uses the instruction slot for the
 reference transcript, so additional delivery directions are reported unsupported.
-Supertonic has no verified vocal-event syntax in audio.cpp 0.8.1. Never insert
+Supertonic has no verified vocal-event syntax in audio.cpp 0.9.1. Never insert
 invented tags or pass editing/path/reference controls through scalar tuning.
+
+Support components and non-model request selectors are excluded from the model
+catalogue; service routing retains its required selectors. `request_aliases`
+groups verified names under one canonical model. AuK needs manual conditioning
+and VAE setup; Irodori Anime remains unverified and is excluded from speech
+choices. Inspect `expressive_capabilities` for the exact route and reference mode,
+separately from `upstream_features`. Native multi-speaker input is not implemented;
+Pandrator assembles separately generated cast parts.
+
+### Editing selected speech
+
+Read `pandrator_get_speech_selection_context` with the current plan revision,
+segment revision and selected text range. It returns the XML action reference,
+flags, inherited delivery, model capabilities and resolved voices. Preview with
+`pandrator_preview_speech_selection`, then apply with
+`pandrator_apply_speech_selection`, the returned preview revision and an idempotency
+key. Character delivery defaults are available in generation controls.
+
+Field edits accept narrator, character or category-only dialogue, a voice override,
+delivery and `vocal_event: {kind, position: before|after, duration_ms?}`. Pause
+duration is 50–5000 ms and remains a model hint; other events cannot have a
+duration. At a cast boundary, after belongs to the preceding voice and before to
+the following voice. XML uses `affinity="previous|following"`. A `speech_xml` edit
+is mutually exclusive with field/cue edits. Omitted fields remain unchanged;
+explicit null clears only schema-permitted fields.
+
+Unsupported annotations stay saved and are reported without reaching the
+provider. Use `enable_performance`, `enable_casting` and `enable_vocalizations`
+only when the user wants those switches enabled. A whole-voice description is
+distinct from phrase delivery; it cannot promise stable identity across requests.
+
+For several edits, preview `pandrator_preview_speech_selection_batch`, then apply
+the same changes with `pandrator_apply_speech_selection_batch`, its preview token,
+and one idempotency key. Up to 100 actions use original speech-text code-point
+offsets and pinned revisions. The batch validates all actions, rejects ambiguous
+overlaps, creates and adopts one plan, and preserves subtitle timing, display
+words, sound anchors and take history. It compiles affected segments once with
+shared plan/context reads. Explicit enable flags and protected-direction unlocks
+retain the single-selection semantics; applying does not generate audio.

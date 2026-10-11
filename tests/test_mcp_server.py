@@ -108,6 +108,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_create_speech_optimization_dispatch_run",
                         "pandrator_create_text_source",
                         "pandrator_describe_parameters",
+                        "pandrator_design_google_voice",
                         "pandrator_download_artifact",
                         "pandrator_execute_component_plan",
                         "pandrator_execute_workflow_plan",
@@ -118,6 +119,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_configure_audiobook",
                         "pandrator_preview_speech_segment",
                         "pandrator_preview_speech_selection",
+                        "pandrator_get_speech_selection_context",
                         "pandrator_apply_speech_selection",
                         "pandrator_get_capabilities",
                         "pandrator_get_dispatch_run",
@@ -179,9 +181,12 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_prepare_speech_plan",
                         "pandrator_promote_voice_design",
                         "pandrator_preview_subtitles",
+                        "pandrator_preview_recast",
+                        "pandrator_preview_undo_recast",
                         "pandrator_preview_session_deletion",
                         "pandrator_propose_media_edit",
                         "pandrator_recommend_next_steps",
+                        "pandrator_recast_voices",
                         "pandrator_refine_media_edit_boundary",
                         "pandrator_regenerate_segments",
                         "pandrator_release_dispatch_batch",
@@ -214,6 +219,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_transcription_get",
                         "pandrator_transcription_result",
                         "pandrator_trash_session",
+                        "pandrator_undo_recast",
                         "pandrator_update_generation_segment",
                         "pandrator_update_generation_segments",
                         "pandrator_update_generation_controls",
@@ -253,6 +259,42 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         tool.annotations.read_only_hint,
                     )
                 tools_by_name = {tool.name: tool for tool in listed.tools}
+                voice_catalog_schema = tools_by_name["pandrator_get_voice_catalog"].input_schema
+                voice_properties = voice_catalog_schema["properties"]
+                self.assertEqual(
+                    ["", "childlike", "youthful", "adult", "older"],
+                    voice_properties["perceived_age"]["enum"],
+                )
+                self.assertEqual("", voice_properties["perceived_age"]["default"])
+                for field in ("delivery_preset", "tag"):
+                    self.assertEqual(40, voice_properties[field]["maxLength"])
+                    self.assertEqual("", voice_properties[field]["default"])
+                self.assertEqual(1024, voice_properties["cursor"]["anyOf"][0]["maxLength"])
+                self.assertEqual(1, voice_properties["limit"]["minimum"])
+                self.assertEqual(200, voice_properties["limit"]["maximum"])
+
+                response_mode_tools = (
+                    "pandrator_get_tts_catalog",
+                    "pandrator_get_voice_catalog",
+                    "pandrator_list_work",
+                    "pandrator_get_work",
+                    "pandrator_get_work_log",
+                )
+                for tool_name in response_mode_tools:
+                    mode_schema = tools_by_name[tool_name].input_schema["properties"][
+                        "response_mode"
+                    ]
+                    self.assertEqual(["standard", "structured"], mode_schema["enum"])
+                    self.assertEqual("standard", mode_schema["default"])
+
+                design_action = ACTION_CATALOG.get("pandrator_design_google_voice")
+                self.assertEqual("DesignGoogleVoiceInput", design_action.input_model)
+                self.assertEqual(RiskClass.WRITE, design_action.risk)
+                self.assertEqual("app.write", design_action.required_scope)
+                self.assertEqual("designGoogleVoice", design_action.downstream_operation_id)
+                self.assertEqual("POST", design_action.method)
+                self.assertEqual("/api/v1/voices/design/google", design_action.path)
+                self.assertTrue(design_action.requires_idempotency)
                 self.assertFalse(
                     tools_by_name["pandrator_trash_session"].annotations.destructive_hint
                 )

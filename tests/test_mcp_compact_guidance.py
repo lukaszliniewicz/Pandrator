@@ -54,6 +54,7 @@ class CompactGuidanceTests(unittest.TestCase):
         self.assertEqual(
             {
                 "schema_version",
+                "contract_revision",
                 "topic",
                 "title",
                 "summary",

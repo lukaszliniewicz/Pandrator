@@ -10,13 +10,18 @@ from datetime import date
 
 from ..constants import MAGPIE_TTS_MODELS, magpie_voice_catalog
 from . import audio_cpp_model_metadata as _audio_cpp_model_metadata_owner
+from .audio_cpp_voice_catalogue_compat import merge_audio_cpp_voice_catalogues
 from .tts_openai_http_policy import _normalize_base_url
 from .tts_provider_profiles import (
     AUDIO_CPP_MODEL_CATALOG,
+    AUDIO_CPP_MODEL_DEFAULT_VOICES,
+    AUDIO_CPP_MODEL_PRESETS,
     AUDIO_CPP_MODEL_VOICE_MODES,
     AUDIO_CPP_PREBUILT_VOICES,
     AUDIO_CPP_VOICE_DESIGN_MODELS,
     AZURE_SPEECH_ADAPTER,
+    AZURE_SPEECH_LEGACY_MODEL_ALIASES,
+    get_tts_provider_profile,
 )
 
 # Kobold Qwen default URLs
@@ -245,7 +250,7 @@ OPENAI_AUDIO_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_AUDIO_DEFAULT_VOICE = "alloy"
 
 
-GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.1-flash-tts-preview"
+GEMINI_AUDIO_DEFAULT_MODEL = "gemini-3.8-flash-tts"
 
 
 VERTEX_AUDIO_DEFAULT_MODEL = GEMINI_AUDIO_DEFAULT_MODEL
@@ -303,16 +308,19 @@ SUPPORTED_AUDIO_PROVIDERS = {
 
 OPENAI_TTS_MODELS = [
     "gpt-4o-mini-tts",
+    "gpt-4o-mini-tts-2025-12-15",
+    "gpt-4o-mini-tts-2025-03-20",
     "tts-1-hd",
     "tts-1",
 ]
 
 
-OPENAI_GENERATION_PROMPT_MODELS = ["gpt-4o-mini-tts"]
+OPENAI_GENERATION_PROMPT_MODELS = [model for model in OPENAI_TTS_MODELS if model.startswith("gpt-4o-mini-tts")]
 
 
 GEMINI_TTS_MODELS = [
     "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
@@ -321,8 +329,10 @@ GEMINI_TTS_MODELS = [
 
 VERTEX_TTS_MODELS = [
     "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-tts",
+    "gemini-2.5-flash-lite-preview-tts",
     "gemini-2.5-pro-tts",
 ]
 
@@ -399,6 +409,23 @@ GEMINI_TTS_VOICES = [
     "Zubenelgenubi",
 ]
 
+_GOOGLE_VOICE_CHARACTERISTICS = {
+    "Achernar": "Soft", "Achird": "Friendly", "Algenib": "Gravelly",
+    "Algieba": "Smooth", "Alnilam": "Firm", "Aoede": "Breezy",
+    "Autonoe": "Bright", "Callirrhoe": "Easy-going", "Charon": "Informative",
+    "Despina": "Smooth", "Enceladus": "Breathy", "Erinome": "Clear",
+    "Fenrir": "Excitable", "Gacrux": "Mature", "Iapetus": "Clear",
+    "Kore": "Firm", "Laomedeia": "Upbeat", "Leda": "Youthful",
+    "Orus": "Firm", "Puck": "Upbeat", "Pulcherrima": "Forward",
+    "Rasalgethi": "Informative", "Sadachbia": "Lively", "Sadaltager": "Knowledgeable",
+    "Schedar": "Even", "Sulafat": "Warm", "Umbriel": "Easy-going",
+    "Vindemiatrix": "Gentle", "Zephyr": "Bright", "Zubenelgenubi": "Casual",
+}
+_GOOGLE_PREBUILT_VOICE_METADATA = {
+    voice: {"display_name": voice, "description": characteristic, "type": "prebuilt"}
+    for voice, characteristic in _GOOGLE_VOICE_CHARACTERISTICS.items()
+}
+
 
 GEMINI_MODEL_ALIASES = {
     "gemini-3.1-flash-tts": "gemini-3.1-flash-tts-preview",
@@ -441,18 +468,40 @@ DEFAULT_TTS_PRICING = {
         "audio_tokens_per_second": 25.0,
     },
 }
+for _snapshot in ("gpt-4o-mini-tts-2025-12-15", "gpt-4o-mini-tts-2025-03-20"):
+    DEFAULT_TTS_PRICING[_snapshot] = copy.deepcopy(DEFAULT_TTS_PRICING["gpt-4o-mini-tts"])
+DEFAULT_TTS_PRICING["gemini-2.5-flash-lite-preview-tts"] = copy.deepcopy(DEFAULT_TTS_PRICING["gemini-2.5-flash-tts"])
 
 
 def _default_tts_pricing(
     provider: str, *, as_of: date | None = None
 ) -> dict[str, dict[str, float]]:
+    if provider == ELEVENLABS_PROVIDER:
+        launch_period = (as_of or date.today()) <= date(2026, 10, 12)
+        rates = {
+            "eleven_v4": 22.0 if launch_period else 80.0,
+            "eleven_v4_turbo": 11.0 if launch_period else 40.0,
+            "eleven_v3": 80.0,
+            "eleven_multilingual_v2": 80.0,
+            "eleven_flash_v2_5": 40.0,
+            "eleven_turbo_v2_5": 40.0,
+        }
+        return {
+            model: {"input_cost_per_million_characters": rate}
+            for model, rate in rates.items()
+        }
     pricing = copy.deepcopy(DEFAULT_TTS_PRICING)
-    # Developer API launch rates expire; Cloud's promotion is a billing credit,
-    # so its usage estimate retains the regular rate before credits.
-    promotional = provider == GEMINI_PROVIDER and (as_of or date.today()) < date(2027, 1, 1)
+    # Both Google pricing pages advertise these launch list prices through
+    # 2026-12-31, followed by the regular list prices from 2027-01-01.
+    launch_period = (as_of or date.today()) < date(2027, 1, 1)
     pricing["gemini-3.8-flash-tts"] = {
-        "input_cost_per_million_tokens": 0.50 if promotional else 1.0,
-        "output_cost_per_million_audio_tokens": 9.0 if promotional else 18.0,
+        "input_cost_per_million_tokens": 0.50 if launch_period else 1.0,
+        "output_cost_per_million_audio_tokens": 9.0 if launch_period else 18.0,
+        "audio_tokens_per_second": 25.0,
+    }
+    pricing["gemini-3.8-flash-lite-tts"] = {
+        "input_cost_per_million_tokens": 0.50 if launch_period else 1.0,
+        "output_cost_per_million_audio_tokens": 6.0 if launch_period else 12.0,
         "audio_tokens_per_second": 25.0,
     }
     return pricing
@@ -777,7 +826,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 service_id, "ignored"
             ),
             "model_voice_modes": {
-                model: "prebuilt" if prebuilt else "cloning" for model in models
+                model: "cloning" if service_id == "kobold_qwen" and model == "Voice Cloning" else "prebuilt" if prebuilt else "cloning" for model in models
             },
         }
         if service_id == "audio_cpp":
@@ -798,16 +847,8 @@ def _default_service_configs() -> list[dict[str, object]]:
                     "model_catalog": AUDIO_CPP_MODEL_CATALOG,
                     "model_voice_modes": AUDIO_CPP_MODEL_VOICE_MODES,
                     GENERATION_PROMPT_MODELS_FIELD: list(AUDIO_CPP_VOICE_DESIGN_MODELS),
-                    "voice_catalogues": {
-                        "qwen3_tts_1_7b_customvoice_q8_0": list(KOBOLD_QWEN_TTS_VOICES),
-                        "magpie_tts_q8_0": magpie_voice_catalog(),
-                        "pocket_tts_english_q8_0": ["alba"],
-                    },
-                    "default_voices": {
-                        "qwen3_tts_1_7b_customvoice_q8_0": KOBOLD_QWEN_DEFAULT_VOICE,
-                        "magpie_tts_q8_0": magpie_voice_catalog()[0],
-                        "pocket_tts_english_q8_0": "alba",
-                    },
+                    "voice_catalogues": copy.deepcopy(AUDIO_CPP_MODEL_PRESETS),
+                    "default_voices": copy.deepcopy(AUDIO_CPP_MODEL_DEFAULT_VOICES),
                 }
             )
         if service_id == "kobold_qwen":
@@ -863,6 +904,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "models": list(GEMINI_TTS_MODELS),
                 "default_model": GEMINI_AUDIO_DEFAULT_MODEL,
                 "voices": list(GEMINI_TTS_VOICES),
+                "voice_metadata": copy.deepcopy(_GOOGLE_PREBUILT_VOICE_METADATA),
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 GENERATION_PROMPT_MODELS_FIELD: list(GEMINI_TTS_MODELS),
                 PREBUILT_VOICE_PROVIDER_FIELD: True,
@@ -880,6 +922,7 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "models": list(VERTEX_TTS_MODELS),
                 "default_model": VERTEX_AUDIO_DEFAULT_MODEL,
                 "voices": list(GEMINI_TTS_VOICES),
+                "voice_metadata": copy.deepcopy(_GOOGLE_PREBUILT_VOICE_METADATA),
                 "default_voice": GEMINI_AUDIO_DEFAULT_VOICE,
                 "vertex_project": "",
                 "vertex_location": VERTEX_AUDIO_DEFAULT_LOCATION,
@@ -898,14 +941,16 @@ def _default_service_configs() -> list[dict[str, object]]:
                 "api_key": "",
                 "is_custom": False,
                 "adapter": ELEVENLABS_NATIVE_ADAPTER,
-                "models": [ELEVENLABS_TTS_DEFAULT_MODEL],
+                "models": ["eleven_v4", "eleven_v4_turbo", "eleven_v3", ELEVENLABS_TTS_DEFAULT_MODEL, "eleven_flash_v2_5", "eleven_turbo_v2_5"],
                 "default_model": ELEVENLABS_TTS_DEFAULT_MODEL,
+                GENERATION_PROMPT_MODELS_FIELD: ["eleven_v4", "eleven_v4_turbo", "eleven_v3"],
                 "voices": [],
                 "default_voice": "",
                 "voice_catalogues": {},
                 "voice_metadata": {},
                 "supports_prebuilt_voices": True,
                 "credential_required": True,
+                "pricing": _default_tts_pricing(ELEVENLABS_PROVIDER),
             },
         ]
     )
@@ -978,16 +1023,50 @@ def _merge_service_config(
     for key in ("request_fields", "request_defaults"):
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
+    if service_id == "audio_cpp" and (
+        isinstance(raw_record.get("voice_catalogues"), dict)
+        or isinstance(raw_record.get("default_voices"), dict)
+    ):
+        builtin_catalogues = record.get("voice_catalogues")
+        builtin_defaults = record.get("default_voices")
+        raw_catalogues = raw_record.get("voice_catalogues")
+        raw_defaults = raw_record.get("default_voices")
+        merged_catalogues, merged_defaults = merge_audio_cpp_voice_catalogues(
+            builtin_catalogues if isinstance(builtin_catalogues, dict) else {},
+            builtin_defaults if isinstance(builtin_defaults, dict) else {},
+            raw_catalogues if isinstance(raw_catalogues, dict) else {},
+            raw_defaults if isinstance(raw_defaults, dict) else {},
+        )
+        record["voice_catalogues"] = merged_catalogues
+        record["default_voices"] = merged_defaults
     for key in (
         "settings",
         "voice_catalogues",
         "voice_metadata",
         "default_voices",
         "default_voices_by_language",
-        "pricing",
     ):
+        if service_id == "audio_cpp" and key in {
+            "voice_catalogues",
+            "default_voices",
+        }:
+            continue
         if isinstance(raw_record.get(key), dict):
             record[key] = copy.deepcopy(raw_record[key])
+    raw_pricing = raw_record.get("pricing")
+    if isinstance(raw_pricing, dict):
+        current_pricing = record.get("pricing")
+        if isinstance(current_pricing, dict):
+            merged_pricing = copy.deepcopy(current_pricing)
+            for model_id, override in raw_pricing.items():
+                current_model_pricing = merged_pricing.get(model_id)
+                if isinstance(current_model_pricing, dict) and isinstance(override, dict):
+                    current_model_pricing.update(copy.deepcopy(override))
+                else:
+                    merged_pricing[model_id] = copy.deepcopy(override)
+            record["pricing"] = merged_pricing
+        else:
+            record["pricing"] = copy.deepcopy(raw_pricing)
     if PREBUILT_VOICE_PROVIDER_FIELD in raw_record:
         record[PREBUILT_VOICE_PROVIDER_FIELD] = bool(
             raw_record[PREBUILT_VOICE_PROVIDER_FIELD]
@@ -1010,6 +1089,10 @@ def _merge_service_config(
 
     models = _parse_model_list(raw_record.get("models", []), provider_key)
     if models:
+        if service_id in {GEMINI_PROVIDER, VERTEX_PROVIDER}:
+            current_models = record.get("models")
+            if isinstance(current_models, list):
+                models = _dedupe_ordered([*current_models, *models])
         record["models"] = models
     else:
         record.setdefault("models", [])
@@ -1375,6 +1458,7 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
                     if str(model).strip()
                 ]
 
+            _refresh_legacy_azure_mai_catalogue(record)
             custom_configs[provider_id] = record
 
     legacy_raw_json = str(
@@ -1394,6 +1478,40 @@ def get_provider_configs(tts_settings) -> list[dict[str, object]]:
         custom_configs.values(),
         key=lambda item: str(item.get("name") or item.get("id") or "").lower(),
     )
+
+
+def _refresh_legacy_azure_mai_catalogue(record: dict) -> None:
+    """Refresh a saved built-in MAI profile's obsolete catalogue projection.
+
+    Connection/auth settings and selected defaults stay owned by the caller.
+    This does not mutate persisted settings or an unrelated custom profile.
+    """
+    if (
+        record.get("adapter") != AZURE_SPEECH_ADAPTER
+        or (record.get("profile_id") or record.get("id")) != "azure-speech-mai-voice-2"
+        or not any(model in AZURE_SPEECH_LEGACY_MODEL_ALIASES for model in record.get("models", []))
+    ):
+        return
+    profile = get_tts_provider_profile("azure-speech-mai-voice-2")
+    assert profile is not None
+    model = str(record.get("default_model") or profile["default_model"])
+    model = AZURE_SPEECH_LEGACY_MODEL_ALIASES.get(model, model)
+    voice = str(record.get("default_voice") or profile["default_voices"].get(model, ""))
+    stem, separator, suffix = voice.rpartition(":")
+    if separator:
+        voice = stem + ":" + AZURE_SPEECH_LEGACY_MODEL_ALIASES.get(suffix, suffix)
+    defaults = copy.deepcopy(profile["default_voices"])
+    for old_model, old_voice in (record.get("default_voices") or {}).items():
+        selected_model = AZURE_SPEECH_LEGACY_MODEL_ALIASES.get(old_model, old_model)
+        voice_stem, colon, voice_model = str(old_voice).rpartition(":")
+        selected_voice = voice_stem + colon + AZURE_SPEECH_LEGACY_MODEL_ALIASES.get(voice_model, voice_model)
+        if selected_voice in profile["voice_catalogues"].get(selected_model, []):
+            defaults[selected_model] = selected_voice
+    for key in ("models", "voices", "model_catalog", "voice_catalogues", "voice_metadata"):
+        record[key] = copy.deepcopy(profile[key])
+    record.update(default_model=model, default_voice=voice, default_voices=defaults)
+    if record.get("name") == "Azure Speech · MAI Voice 2":
+        record["name"] = profile["name"]
 
 
 def _coerce_bool(value, default: bool) -> bool:

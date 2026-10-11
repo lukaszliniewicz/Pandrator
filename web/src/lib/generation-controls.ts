@@ -1,3 +1,5 @@
+import type { SpeechDelivery } from './speech-inspector';
+
 export const voiceCategories = [
   'male',
   'female',
@@ -11,6 +13,7 @@ export type Character = {
   aliases: string[];
   voice_category: VoiceCategory;
   notes: string;
+  delivery?: Partial<SpeechDelivery>;
   locked: boolean;
   status: 'proposed' | 'accepted';
   origin: string;

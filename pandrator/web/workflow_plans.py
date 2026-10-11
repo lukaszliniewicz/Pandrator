@@ -38,7 +38,11 @@ from .models import (
     WorkflowExecutionPlan,
     utcnow,
 )
+from .outcome_plans import resolve_workflow_inputs
+from .source_resolution import resolve_primary_source
 from .work import WorkService
+from .workflow_inputs import workflow_transformations
+from .workflow_prerequisites import WorkflowPrerequisiteService
 from .workflows import (
     GenerationPreflightError,
     ResolvedWorkflowStage,
@@ -563,11 +567,49 @@ class WorkflowExecutionPlanService:
                 f"Stage '{target_stage}' is not available in this workflow.",
                 422,
             )
+        with self.database.session() as db_session:
+            record = db_session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError(session_id)
+            outcome = db_session.scalar(
+                select(OutcomePlan).where(OutcomePlan.session_id == session_id)
+            )
+            plan_value = (
+                outcome.value_json
+                if outcome is not None and isinstance(outcome.value_json, dict)
+                else None
+            )
+            input_choices = resolve_workflow_inputs(record, plan_value)
+            transformations = workflow_transformations(
+                db_session, session_id, outcome, self.database
+            )
+            primary = resolve_primary_source(db_session, session_id)
+            primary_artifact = primary.artifact
+            is_srt_source = False
+            if record.workflow_kind != "audiobook" and primary_artifact is not None:
+                metadata = (
+                    primary_artifact.metadata_json
+                    if isinstance(primary_artifact.metadata_json, dict)
+                    else {}
+                )
+                filename = str(
+                    metadata.get("original_filename")
+                    or primary_artifact.relative_path
+                ).lower()
+                is_srt_source = filename.endswith((".srt", ".vtt"))
+            required = WorkflowPrerequisiteService._continuation_required_stages(
+                record.workflow_kind,
+                target_stage,
+                is_srt_source,
+                input_choices,
+                transformations,
+            )
+            allowed_keys = set(record.included_stages_json or []) | required
         steps: list[dict[str, Any]] = []
         for item in stages[: target_index + 1]:
-            if not item.get("executable"):
-                continue
             key = str(item.get("key") or "")
+            if key not in allowed_keys or not item.get("executable"):
+                continue
             status = str(item.get("status") or "unknown")
             selected_id = item.get("selected_artifact_id")
             if key == target_stage:

@@ -22,6 +22,7 @@
     LogOut,
     Menu,
     Mic2,
+    Bell,
     Moon,
     Plug,
     SlidersHorizontal,
@@ -62,6 +63,7 @@
     { href: '/transcribe', label: 'Quick Transcribe', icon: FileAudio },
     { href: '/sources', label: 'Source library', icon: LibraryBig },
     { href: '/voices', label: 'Voices', icon: Mic2 },
+    { href: '/sounds', label: 'Sounds & Music', icon: Bell },
     { href: '/models', label: 'Audio models', icon: Boxes },
     { href: '/pronunciations', label: 'Pronunciations', icon: Languages },
     { href: '/providers', label: 'Providers & services', icon: Plug },
@@ -260,7 +262,7 @@
       class:collapsed={appState.sidebarCollapsed}
       class:tablet-rail={tabletRail}
       class:mobile-open={mobileOpen}
-      class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[14rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:z-20 md:h-[100svh]"
+      class="app-sidebar fixed inset-y-0 left-0 z-50 flex w-[14rem] flex-col border-r border-[var(--line)] bg-[var(--paper-strong)] px-3 py-4 md:h-[100svh]"
     >
       <div class="sidebar-brand mb-5 flex items-center gap-3 px-2">
         <img
@@ -435,11 +437,11 @@
       visibility: visible;
       transform: none;
     }
-    .app-sidebar.collapsed {
+    .app-sidebar.collapsed:not(.tablet-rail) {
       width: 5rem;
     }
-    .app-sidebar.collapsed .sidebar-brand,
-    .app-sidebar.collapsed .nav-item {
+    .app-sidebar.collapsed:not(.tablet-rail) .sidebar-brand,
+    .app-sidebar.collapsed:not(.tablet-rail) .nav-item {
       justify-content: center;
       gap: 0;
       padding-left: 0;

@@ -19,21 +19,27 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
-RUNTIME_VERSION = "0.9.0"
+RUNTIME_VERSION = "0.9.1"
 SCHEMA_VERSION = 1
-SOURCE_URL = "https://github.com/0xShug0/audio.cpp/tree/v0.9.0/model_specs"
-GITHUB_DOCS_BASE = "https://github.com/0xShug0/audio.cpp/blob/v0.9.0/"
+SOURCE_URL = "https://github.com/0xShug0/audio.cpp/tree/v0.9.1/model_specs"
+GITHUB_DOCS_BASE = "https://github.com/0xShug0/audio.cpp/blob/v0.9.1/"
 HF_BASE = "https://huggingface.co"
-MAX_SMALL_FILE_BYTES = 1 * 1024 * 1024
+MAX_SMALL_FILE_BYTES = 16 * 1024 * 1024
+LEGACY_SMALL_FILE_BYTES = 1 * 1024 * 1024
+LARGE_SIDECAR_EXTENSIONS = frozenset({".json", ".txt", ".tiktoken", ".model", ".yaml", ".yml"})
+NEVER_FETCH_EXTENSIONS = frozenset(
+    {".gguf", ".safetensors", ".pt", ".pth", ".bin", ".npz", ".npy"}
+)
 MAX_WORKERS = 4
 RETRY_COUNT = 2
 SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+GIT_BLOB_SHA1 = re.compile(r"^[0-9a-fA-F]{40}$")
 COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 
 
@@ -171,6 +177,45 @@ def _runtime_metadata(package: dict[str, Any]) -> dict[str, Any] | None:
     return selected or None
 
 
+_COMPONENT_IDS = frozenset({
+    "auk_qwen_bf16", "auk_qwen_q8_0", "auk_vae_f32", "vocos_mel_24khz",
+    "yue2_vae_f16", "yue2_vae_f32",
+})
+_YUE2_MAIN_PACKAGE_IDS = frozenset(
+    {"yue2_main_bf16", "yue2_main_q4_0", "yue2_main_q8_0"}
+)
+_YUE2_F16_VAE_SOURCE_PATH = "yue2-vae-f16.gguf"
+_PACKAGE_TASK_OVERRIDES: dict[str, tuple[str, list[str]]] = {
+    "personaplex_7b_v1_q4_k": ("conversion", ["s2s"]),
+    "personaplex_7b_v1_q8_0": ("conversion", ["s2s"]),
+    "dots_tts_edit_bf16": ("tools", ["edit"]),
+    "dots_tts_edit_q8_0": ("tools", ["edit"]),
+}
+_SPEECH_TASK_OVERRIDES: dict[str, list[str]] = {
+    "maya1_orig": ["tts", "design"],
+    "maya1_q8_0": ["tts", "design"],
+    "irodori_tts_600m_v3_voicedesign_f16": ["tts", "clone", "design"],
+    "irodori_tts_600m_v3_voicedesign_q8_0": ["tts", "clone", "design"],
+    "irodori_tts_v4_small_f16": ["tts", "clone", "design"],
+    "irodori_tts_v4_small_q8_0": ["tts", "clone", "design"],
+    "irodori_tts_500m_v3_f16": ["tts", "clone"],
+    "irodori_tts_500m_v3_q8_0": ["tts", "clone"],
+    "irodori_tts_v4_1_anime_q8_0": ["tts"],
+    "moss_voicegen_bf16_codec_f16_decode": ["design"],
+}
+
+
+def _package_role_annotations(package_id: str) -> dict[str, Any]:
+    if package_id in _COMPONENT_IDS:
+        return {"entry_role": "component", "category": "component", "tasks": []}
+    if package_id in _PACKAGE_TASK_OVERRIDES:
+        category, tasks = _PACKAGE_TASK_OVERRIDES[package_id]
+        return {"category": category, "tasks": tasks.copy()}
+    if package_id in _SPEECH_TASK_OVERRIDES:
+        return {"tasks": _SPEECH_TASK_OVERRIDES[package_id].copy()}
+    return {}
+
+
 def _flatten_family(spec: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": _safe_component(spec.get("family"), "family id"),
@@ -213,6 +258,11 @@ def flatten_packages(specs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             source_files = [
                 safe_relative_path(item, f"{package_id} file path") for item in files
             ]
+            if (
+                package_id in _YUE2_MAIN_PACKAGE_IDS
+                and _YUE2_F16_VAE_SOURCE_PATH not in source_files
+            ):
+                source_files.append(_YUE2_F16_VAE_SOURCE_PATH)
             if len(source_files) != len(set(source_files)):
                 raise SnapshotError(f"{package_id} contains duplicate file paths")
             strip_prefix = _safe_strip_prefix(
@@ -246,6 +296,7 @@ def flatten_packages(specs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 {
                     "id": package_id,
                     "family": family,
+                    **_package_role_annotations(package_id),
                     "label": package.get("display_name"),
                     "format": package.get("format"),
                     "precision": package.get("precision"),
@@ -287,6 +338,14 @@ def _sanitize_reason(error: BaseException) -> str:
     return "network_error"
 
 
+class _MetadataReader(Protocol):
+    """Read-only metadata and bounded-content interface used by the snapshotter."""
+
+    def get_json(self, url: str) -> dict[str, Any]: ...
+
+    def get_small_file(self, url: str) -> bytes: ...
+
+
 class MetadataClient:
     """Public, unauthenticated Hugging Face metadata client with a file cache."""
 
@@ -308,10 +367,13 @@ class MetadataClient:
         suffix = ".bin" if binary else ".json"
         cache_path = self.cache_dir / _cache_key(url, suffix)
         try:
-            cached = cache_path.read_bytes()
+            with cache_path.open("rb") as cached_file:
+                cached = cached_file.read(-1 if max_bytes is None else max_bytes + 1)
         except OSError:
             cached = None
         if cached is not None:
+            if max_bytes is not None and len(cached) > max_bytes:
+                raise SnapshotError("small metadata file exceeds size limit")
             return cached
 
         request = Request(
@@ -371,7 +433,7 @@ def _file_detail(
     source_path: str,
     strip_prefix: str,
     sibling: dict[str, Any] | None,
-    client: MetadataClient,
+    client: _MetadataReader,
     repo: str,
     resolved_revision: str,
     allow_content: bool,
@@ -383,15 +445,15 @@ def _file_detail(
         "sha256": None,
         "size": None,
     }
-    if not sibling:
+    if sibling is None:
         return detail, False
     size = sibling.get("size")
-    if not isinstance(size, int) or size < 0:
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
         size = None
     lfs = sibling.get("lfs")
     if isinstance(lfs, dict):
         lfs_size = lfs.get("size")
-        if isinstance(lfs_size, int) and lfs_size >= 0:
+        if isinstance(lfs_size, int) and not isinstance(lfs_size, bool) and lfs_size >= 0:
             size = lfs_size
         digest = lfs.get("sha256") or lfs.get("oid")
         if (
@@ -403,13 +465,30 @@ def _file_detail(
             detail["size"] = size
             return detail, True
     detail["size"] = size
-    if allow_content and size is not None and size <= MAX_SMALL_FILE_BYTES:
+    extension = PurePosixPath(source_path).suffix.lower()
+    within_legacy_limit = size is not None and size <= LEGACY_SMALL_FILE_BYTES
+    is_large_sidecar = extension in LARGE_SIDECAR_EXTENSIONS
+    may_fetch_content = (
+        allow_content
+        and extension not in NEVER_FETCH_EXTENSIONS
+        and size is not None
+        and size <= MAX_SMALL_FILE_BYTES
+        and (within_legacy_limit or is_large_sidecar)
+    )
+    if may_fetch_content:
         try:
             content = client.get_small_file(_resolve_url(repo, resolved_revision, source_path))
         except SnapshotError:
             return detail, False
-        if size is not None and len(content) != size:
+        if len(content) != size:
             return detail, False
+        blob_id = sibling.get("blobId")
+        if isinstance(blob_id, str) and GIT_BLOB_SHA1.fullmatch(blob_id):
+            git_blob = hashlib.sha1(
+                b"blob " + str(size).encode("ascii") + b"\0" + content
+            ).hexdigest()
+            if git_blob != blob_id.lower():
+                return detail, False
         detail["sha256"] = hashlib.sha256(content).hexdigest()
         detail["size"] = len(content)
         return detail, True
@@ -424,7 +503,8 @@ def _empty_availability(package: dict[str, Any]) -> dict[str, Any]:
     gated = bool(download.get("gated", False))
     return {
         "verified": False,
-        "missing_files": list(package["files"]),
+        "missing_files": [],
+        "unverified_files": [],
         "gated": gated,
         "unsupported_download": unsupported,
         "unavailable_metadata": None,
@@ -434,7 +514,7 @@ def _empty_availability(package: dict[str, Any]) -> dict[str, Any]:
 def build_snapshot(
     specs_dir: Path,
     cache_dir: Path | None = None,
-    client: MetadataClient | None = None,
+    client: _MetadataReader | None = None,
 ) -> dict[str, Any]:
     """Build the complete catalogue, resolving public manifests concurrently."""
 
@@ -509,19 +589,23 @@ def build_snapshot(
                     gated = bool(download.get("gated", False) or metadata.get("gated", False))
                     details: list[dict[str, Any]] = []
                     missing: list[str] = []
+                    unverified: list[str] = []
                     for source_path in package["files"]:
+                        sibling = sibling_map.get(source_path)
                         detail, ok = _file_detail(
                             source_path,
                             package["strip_prefix"],
-                            sibling_map.get(source_path),
+                            sibling,
                             client,
                             download["repo"],
                             resolved_revision,
                             allow_content=not gated,
                         )
                         details.append(detail)
-                        if not ok:
+                        if sibling is None:
                             missing.append(source_path)
+                        elif not ok:
+                            unverified.append(source_path)
                     manifest: dict[str, Any] = {
                         "repository": download["repo"],
                         "requested_revision": download["revision"],
@@ -538,8 +622,21 @@ def build_snapshot(
                     public["weight_manifest"] = manifest
                     availability.update(
                         {
-                            "verified": not missing and all(item["sha256"] for item in details),
+                            "verified": (
+                                not gated
+                                and not missing
+                                and not unverified
+                                and len(details) == len(package["files"])
+                                and all(
+                                    isinstance(item["size"], int)
+                                    and not isinstance(item["size"], bool)
+                                    and isinstance(item["sha256"], str)
+                                    and SHA256.fullmatch(item["sha256"])
+                                    for item in details
+                                )
+                            ),
                             "missing_files": missing,
+                            "unverified_files": unverified,
                             "gated": gated,
                             "unavailable_metadata": None,
                         }

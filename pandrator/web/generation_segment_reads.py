@@ -7,9 +7,11 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
+from sqlalchemy.orm import load_only
 from sqlalchemy.sql.elements import ColumnElement, TextClause
 
 from .database import Database
+from .generation_run_selection import resolve_generation_run_take_ids
 from .models import (
     Artifact,
     AudioTake,
@@ -71,9 +73,11 @@ class GenerationSegmentReader:
         verification: str | None = None,
         generation_run_id: str | None = None,
         audio_version_side: str = "after",
+        take_history: str = "full",
         plan_revision_id: str | None = None,
         view: str = "full",
         fields: list[str] | None = None,
+        segment_ids: list[str] | None = None,
         end_ordinal: int | None = None,
         around_ordinal: int | None = None,
         source_cue_id: str | None = None,
@@ -87,7 +91,14 @@ class GenerationSegmentReader:
         from .generation_review import project_segments, source_reference_values
         from .generation_search import literal_matches
 
+        if take_history not in {"selected", "full"}:
+            raise ValueError("take_history must be 'selected' or 'full'.")
         project_segments({"items": []}, view=view, fields=fields)
+        if segment_ids is not None:
+            if not 1 <= len(segment_ids) <= 100 or len(set(segment_ids)) != len(segment_ids):
+                raise ValueError("segment_ids must contain 1–100 unique identifiers.")
+            if around_ordinal is not None or source_cue_id is not None:
+                raise ValueError("Choose explicit segment IDs or contextual inspection.")
         requested_plan_revision_id = plan_revision_id
         audio_snapshot, _ = self.settings.resolve(session_id, sections=["tts", "audio"])
         if radius < 0 or radius > 25:
@@ -152,6 +163,14 @@ class GenerationSegmentReader:
             filters: list[ColumnElement[bool] | TextClause] = [
                 GenerationSegment.plan_revision_id == plan_revision_id
             ]
+            if segment_ids is not None:
+                found_ids = set(session.scalars(select(GenerationSegment.id).where(
+                    GenerationSegment.plan_revision_id == plan_revision_id,
+                    GenerationSegment.id.in_(segment_ids),
+                )))
+                if found_ids != set(segment_ids):
+                    raise ValueError("Some segment IDs do not belong to the selected speech revision.")
+                filters.append(GenerationSegment.id.in_(segment_ids))
             search_matches_by_id: dict[str, list[dict[str, int]]] = {}
             if q:
                 searchable_rows = session.execute(
@@ -208,7 +227,6 @@ class GenerationSegmentReader:
                 ].as_string()
                 filters.append(
                     select(AudioTake.id)
-                    .join(Artifact, Artifact.id == AudioTake.artifact_id)
                     .where(
                         AudioTake.generation_segment_id == GenerationSegment.id,
                         AudioTake.is_active.is_(True),
@@ -252,34 +270,140 @@ class GenerationSegmentReader:
             rows = rows[:limit]
             takes_by_segment: dict[str, list[AudioTake]] = {}
             artifacts_by_id: dict[str, Artifact] = {}
+            take_stats_by_segment: dict[str, dict[str, Any]] = {}
+            if rows and selected_run is not None and pinned is None:
+                # Match assembly's chronological cutoff, not whichever newer
+                # take happens to be active while reviewing an earlier run.
+                pinned = resolve_generation_run_take_ids(
+                    session,
+                    selected_run,
+                    segment_ids=[row.id for row in rows],
+                )
             if rows:
-                takes = list(
-                    session.scalars(
-                        select(AudioTake)
-                        .where(
-                            AudioTake.generation_segment_id.in_(
-                                [item.id for item in rows]
+                page_segment_ids = [item.id for item in rows]
+                if take_history == "full":
+                    takes = list(
+                        session.scalars(
+                            select(AudioTake)
+                            .where(
+                                AudioTake.generation_segment_id.in_(page_segment_ids)
+                            )
+                            .order_by(AudioTake.created_at.desc())
+                        ).all()
+                    )
+                    for take in takes:
+                        takes_by_segment.setdefault(
+                            take.generation_segment_id, []
+                        ).append(take)
+                    artifact_ids = [
+                        take.artifact_id for take in takes if take.artifact_id
+                    ]
+                else:
+                    take_metadata_by_segment: dict[str, list[Any]] = {}
+                    metadata_rows = session.execute(
+                        select(
+                            AudioTake.id,
+                            AudioTake.generation_segment_id,
+                            AudioTake.is_active,
+                            AudioTake.status,
+                            AudioTake.artifact_id,
+                        )
+                        .where(AudioTake.generation_segment_id.in_(page_segment_ids))
+                        .order_by(AudioTake.created_at.desc())
+                    )
+                    for metadata in metadata_rows:
+                        take_metadata_by_segment.setdefault(
+                            metadata.generation_segment_id, []
+                        ).append(metadata)
+
+                    selected_take_ids: set[str] = set()
+                    for row in rows:
+                        metadata = take_metadata_by_segment.get(row.id, [])
+                        selected_take_id = (
+                            pinned.get(row.id)
+                            if pinned is not None
+                            else next(
+                                (
+                                    take.id
+                                    for take in metadata
+                                    if take.is_active
+                                ),
+                                None,
                             )
                         )
-                        .order_by(AudioTake.created_at.desc())
-                    ).all()
-                )
-                for take in takes:
-                    takes_by_segment.setdefault(take.generation_segment_id, []).append(
-                        take
-                    )
-                artifact_ids = [take.artifact_id for take in takes if take.artifact_id]
+                        if selected_take_id is not None and any(
+                            take.id == selected_take_id for take in metadata
+                        ):
+                            selected_take_ids.add(selected_take_id)
+
+                        active_usable = next(
+                            (
+                                take
+                                for take in metadata
+                                if take.is_active
+                                and take.status == "completed"
+                                and take.artifact_id
+                            ),
+                            None,
+                        )
+                        take_stats_by_segment[row.id] = {
+                            "take_count": len(metadata),
+                            "take_history_loaded": len(metadata) == 0,
+                            "active_take_id": active_usable.id
+                            if active_usable is not None
+                            else None,
+                            "has_usable_take": bool(
+                                active_usable is not None and row.status == "completed"
+                            ),
+                        }
+
+                    if selected_take_ids:
+                        takes = list(
+                            session.scalars(
+                                select(AudioTake).where(
+                                    AudioTake.id.in_(selected_take_ids)
+                                )
+                            ).all()
+                        )
+                        for take in takes:
+                            takes_by_segment.setdefault(
+                                take.generation_segment_id, []
+                            ).append(take)
+                        for row in rows:
+                            stats = take_stats_by_segment[row.id]
+                            stats["take_history_loaded"] = (
+                                len(takes_by_segment.get(row.id, []))
+                                == stats["take_count"]
+                            )
+                    artifact_ids = [
+                        take.artifact_id
+                        for takes in takes_by_segment.values()
+                        for take in takes
+                        if take.artifact_id
+                    ]
                 if artifact_ids:
+                    artifact_query = select(Artifact).where(
+                        Artifact.id.in_(artifact_ids)
+                    )
+                    if take_history == "selected":
+                        artifact_query = artifact_query.options(
+                            load_only(
+                                Artifact.id,
+                                Artifact.state,
+                                Artifact.metadata_json,
+                                Artifact.content_hash,
+                            )
+                        )
                     artifacts_by_id = {
                         artifact.id: artifact
                         for artifact in session.scalars(
-                            select(Artifact).where(Artifact.id.in_(artifact_ids))
+                            artifact_query
                         ).all()
                     }
             from .passage_markers import describe_passages
-            from .speech_annotation_view import annotation_xml_by_segment
+            from .speech_annotation_view import annotation_view_by_segment
 
-            annotation_xml = annotation_xml_by_segment(
+            annotation_view = annotation_view_by_segment(
                 session, plan_revision_id, rows, selected_run
             ) if view == "full" and fields is None else {}
 
@@ -300,8 +424,7 @@ class GenerationSegmentReader:
                     "alignment_group": item.alignment_group,
                     "optimized_text": item.optimized_text,
                     "speech_plan": dict(item.speech_plan_json or {}),
-                    **({"speech_annotation_xml": annotation_xml[item.id]}
-                       if annotation_xml.get(item.id) else {}),
+                    **annotation_view.get(item.id, {}),
                     "optimization_status": item.optimization_status,
                     "optimization_reviewed": item.optimization_reviewed,
                     "optimization_model": item.optimization_model,
@@ -322,6 +445,7 @@ class GenerationSegmentReader:
                         )
                         for take in takes_by_segment.get(item.id, [])
                     ],
+                    **take_stats_by_segment.get(item.id, {}),
                 }
                 for item in rows
             ]
@@ -340,6 +464,19 @@ class GenerationSegmentReader:
                     (take for take in takes_by_segment.get(row.id, []) if take.is_active), None
                 )
                 artifact = artifacts_by_id.get(active_take.artifact_id) if active_take and active_take.artifact_id else None
+                item["effective_take"] = (
+                    {
+                        "id": active_take.id,
+                        "generation_run_id": active_take.generation_run_id,
+                        "artifact_id": active_take.artifact_id,
+                        "content_hash": artifact.content_hash,
+                        "duration_ms": active_take.duration_ms,
+                        "status": active_take.status,
+                    }
+                    if active_take and artifact and artifact.state != "deleted"
+                    and active_take.status in {"completed", "stale"}
+                    else None
+                )
                 reason = take_reuse_reason(row, active_take, artifact, audio_identity.for_segment(row))
                 item["audio_reuse_reason"] = reason
                 item["has_reusable_take"] = reason == "reusable"

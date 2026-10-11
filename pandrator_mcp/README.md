@@ -78,9 +78,10 @@ The current tool surface supports:
 
 Complex actions stay in Pandrator. An agent first obtains a native immutable
 plan, presents its effects and confirmation requirements, and then executes
-that exact plan. Every write uses an idempotency key. Concurrent changes
-produce an explicit revision or stale-plan error instead of a silent
-overwrite.
+that exact plan. Use an idempotency key where the operation supports one.
+For an unkeyed write, such as pronunciation creation, inspect current state
+before retrying an uncertain response. Concurrent changes produce an explicit
+revision or stale-plan error instead of a silent overwrite.
 
 ### Model-orchestrated workflow procedures
 
@@ -796,3 +797,20 @@ logout, preventing an old native secret from becoming an invisible orphan.
 
 Agents can read the packaged `pandrator://guide/security-boundaries` guide for
 the same rules while they work.
+
+### Generation operations and compact discovery (0.6.2)
+
+Generation/regeneration receipts expose a stable `generation_operation_id`.
+`pandrator_get_generation_operation` follows admission into synthesis and returns
+terminal audio coverage; `pandrator_get_generation_run_coverage` reads that coverage
+for a saved version. Work completion and whole-project audio availability are
+separate. Existing `get_work` clients remain supported.
+
+Voice discovery accepts `view="compact"` and an optional safe `fields` projection.
+Workflow/export planning accepts `response_mode="structured"`; plan creation is
+advertised as a snapshot write. Dispatch/orchestration native schemas use ordinary
+object properties, documenting cross-field execution constraints while retaining
+strict runtime validation. The portable input schemas retain JSON Schema
+conditionals. Shared server guidance is short; packaged workflow guides supply
+details on demand. Pronunciation CRUD is now available with scopes and revision
+checks, and dictionary edits describe their effects on saved speech/audio.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 from urllib.parse import quote
 
@@ -158,6 +159,33 @@ class ApplicationVoiceMethods(ApplicationRequests):
             maximum_body_bytes=64 * 1024,
         )
 
+    def design_google_voice(
+        self,
+        *,
+        service_id: str,
+        model: str,
+        name: str,
+        prompt: str,
+        language: str,
+        voice_category: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        body = {
+            "service_id": service_id,
+            "model": model,
+            "name": name,
+            "prompt": prompt,
+            "language": language,
+            "voice_category": voice_category,
+        }
+        return self._request_json(
+            "/api/v1/voices/design/google",
+            method="POST",
+            body=body,
+            idempotency_key=idempotency_key,
+            maximum_body_bytes=16 * 1024,
+        )
+
     def get_voice_samples(self, voice_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/voices/{quote(voice_id, safe='')}/samples")
 
@@ -198,6 +226,8 @@ class ApplicationVoiceMethods(ApplicationRequests):
         transcript_reviewed: bool,
         expected_voice_revision: int,
         idempotency_key: str,
+        start_seconds: float | None = None,
+        end_seconds: float | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "artifact_id": artifact_id,
@@ -207,6 +237,25 @@ class ApplicationVoiceMethods(ApplicationRequests):
         for key, value in {"transcript": transcript, "language": language}.items():
             if value is not None:
                 body[key] = value
+        crop_start = 0.0 if start_seconds is None else start_seconds
+        if start_seconds is not None and (
+            isinstance(start_seconds, bool)
+            or not isinstance(start_seconds, (int, float))
+            or not math.isfinite(start_seconds)
+            or start_seconds < 0
+        ):
+            raise ValueError("start_seconds must be a finite non-negative number.")
+        if end_seconds is not None and (
+            isinstance(end_seconds, bool)
+            or not isinstance(end_seconds, (int, float))
+            or not math.isfinite(end_seconds)
+            or end_seconds <= crop_start
+        ):
+            raise ValueError("end_seconds must be finite and greater than start_seconds.")
+        if start_seconds is not None:
+            body["start_seconds"] = start_seconds
+        if end_seconds is not None:
+            body["end_seconds"] = end_seconds
         return self._request_json(
             f"/api/v1/voices/{quote(voice_id, safe='')}/samples/from-artifact",
             method="POST",

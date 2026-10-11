@@ -92,7 +92,7 @@ async function segmentTexts(page: Page, sessionId: string) {
 
 async function openDrawer(page: Page, sessionId: string) {
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Search and replace' })
   ).toBeVisible();

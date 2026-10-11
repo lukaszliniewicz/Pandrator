@@ -100,7 +100,7 @@ async function fixture(page: Page, discovery = false) {
     }
     await route.fulfill({ json: { effective: effective() } });
   });
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect.poll(() => Boolean(heldFirst)).toBe(true);
   await page
     .getByRole('button', { name: 'Options for segment 1', exact: true })

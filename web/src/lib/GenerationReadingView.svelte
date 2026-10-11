@@ -1,4 +1,10 @@
 <script lang="ts">
+  import { onMount, tick } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
+  import {
+    buildOffsets,
+    selectVirtualWindow
+  } from './generation-virtual-window';
   import { Flag, Play, RotateCcw, Trash2 } from '@lucide/svelte';
   import type { GenerationSegment } from './api-models';
   import type { GenerationSegmentChanges } from './domain-api';
@@ -7,15 +13,17 @@
   import PassageText from './PassageText.svelte';
   import SpeechAnnotationText from './SpeechAnnotationText.svelte';
   import {
-    speakerColors,
     type SpeechSelection,
     type SpeechPreview
   } from './speech-annotations';
+  import type { SpeechCapabilities } from './speech-support';
   import type { PassageBoundary, PassageTextLayer } from './passage-structure';
   import SegmentRegenerationMenu from './SegmentRegenerationMenu.svelte';
 
   let {
     blocks,
+    scrollRoot = null,
+    pinnedSegmentIds = [],
     selectedRunLabel,
     textMode,
     loaded,
@@ -35,13 +43,21 @@
     onmerge,
     showPassageBoundaries = false,
     showSpeechAnnotations = false,
+    multiVoice = false,
+    speakerNames = {},
+    detailsVisible = false,
     speechPreviews = {},
+    speechCapabilities,
+    performanceEnabled = true,
+    vocalizationsEnabled = false,
     onspeech,
     onselection,
     onpassage,
     topologyDisabled = false
   }: {
     blocks: ReadingBlock[];
+    scrollRoot?: HTMLElement | null;
+    pinnedSegmentIds?: string[];
     selectedRunLabel?: string | null;
     textMode: 'display' | 'speech';
     loaded: number;
@@ -67,7 +83,13 @@
     onmerge: (left: GenerationSegment, right: GenerationSegment) => unknown;
     showPassageBoundaries?: boolean;
     showSpeechAnnotations?: boolean;
+    multiVoice?: boolean;
+    speakerNames?: Record<string, string>;
+    detailsVisible?: boolean;
     speechPreviews?: Record<string, SpeechPreview>;
+    speechCapabilities?: SpeechCapabilities;
+    performanceEnabled?: boolean;
+    vocalizationsEnabled?: boolean;
     onspeech?: (
       item: GenerationSegment,
       offset: number,
@@ -84,15 +106,186 @@
     ) => void;
     topologyDisabled?: boolean;
   } = $props();
-  const annotationColors = $derived(
-    speakerColors(
-      blocks.flatMap((block) => block.items),
-      speechPreviews
+  let body = $state<HTMLDivElement>();
+  let scrollTop = $state(0);
+  let viewportHeight = $state(0);
+  let focusedId = $state('');
+  let revealId = $state('');
+  let selectionIds = $state<string[]>([]);
+  let frame = 0;
+  let revealEpoch = 0;
+  let observer: ResizeObserver | undefined;
+  const nodes = new Map<string, HTMLElement>();
+  const measured = new SvelteMap<string, number>();
+  const virtualEnabled = $derived(loaded > 50);
+  const blockBySegment = $derived(
+    new Map(
+      blocks.flatMap((block, index) =>
+        block.items.map((item) => [item.id, index] as const)
+      )
     )
   );
+  const offsets = $derived(
+    buildOffsets(
+      blocks.map(
+        (block) =>
+          measured.get(block.key) ??
+          Math.max(
+            60,
+            (block.items.reduce(
+              (length, item) => length + ontext(item).length,
+              0
+            ) /
+              85) *
+              30 +
+              24
+          )
+      )
+    )
+  );
+  const selection = $derived(
+    selectVirtualWindow(
+      blocks.length,
+      offsets,
+      scrollTop,
+      viewportHeight,
+      2,
+      [
+        ...new Set([
+          activePlayingId,
+          selectedRows.at(-1) ?? '',
+          focusedId,
+          revealId,
+          ...pinnedSegmentIds,
+          ...selectionIds
+        ])
+      ]
+        .map((id) => blockBySegment.get(id))
+        .filter((index): index is number => index !== undefined)
+    )
+  );
+  const visibleIndexes = $derived(
+    virtualEnabled ? selection.indexes : blocks.map((_, index) => index)
+  );
+
+  function updateViewport() {
+    if (!body || !scrollRoot) return;
+    scrollTop = Math.max(
+      0,
+      scrollRoot.getBoundingClientRect().top - body.getBoundingClientRect().top
+    );
+    viewportHeight = scrollRoot.clientHeight;
+  }
+  function scheduleViewport() {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      updateViewport();
+    });
+  }
+  function measure(node: HTMLElement, key: string) {
+    nodes.set(key, node);
+    node.dataset.readingBlock = key;
+    observer?.observe(node);
+    return {
+      destroy() {
+        nodes.delete(key);
+        observer?.unobserve(node);
+      }
+    };
+  }
+  function focused(event: FocusEvent) {
+    focusedId =
+      (event.target as HTMLElement)?.closest<HTMLElement>('[data-segment-id]')
+        ?.dataset.segmentId ?? '';
+  }
+  function selected() {
+    const range = document.getSelection();
+    const id = (node: Node | null) =>
+      (node instanceof Element
+        ? node
+        : node?.parentElement
+      )?.closest<HTMLElement>('[data-segment-id]')?.dataset.segmentId ?? '';
+    selectionIds =
+      range && !range.isCollapsed
+        ? [id(range.anchorNode), id(range.focusNode)]
+        : [];
+  }
+  export async function scrollToSegment(id: string) {
+    const epoch = ++revealEpoch;
+    if (!blockBySegment.has(id)) return false;
+    revealId = id;
+    await tick();
+    if (epoch !== revealEpoch) return false;
+    const node = body?.querySelector<HTMLElement>(
+      `[data-segment-id="${CSS.escape(id)}"]`
+    );
+    node?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    updateViewport();
+    await tick();
+    if (epoch === revealEpoch) revealId = '';
+    return Boolean(node);
+  }
+  onMount(() => {
+    observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const node = entry.target as HTMLElement;
+        const key = node.dataset.readingBlock;
+        const height = node.getBoundingClientRect().height;
+        if (
+          key &&
+          height > 0 &&
+          Math.abs((measured.get(key) ?? 0) - height) > 1
+        )
+          measured.set(key, height);
+      }
+      scheduleViewport();
+    });
+    for (const node of nodes.values()) observer.observe(node);
+    document.addEventListener('selectionchange', selected);
+    updateViewport();
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer?.disconnect();
+      document.removeEventListener('selectionchange', selected);
+    };
+  });
+  $effect(() => {
+    if (!scrollRoot) return;
+    const host = scrollRoot;
+    host.addEventListener('scroll', scheduleViewport, { passive: true });
+    const resize = new ResizeObserver(scheduleViewport);
+    resize.observe(host);
+    updateViewport();
+    return () => {
+      host.removeEventListener('scroll', scheduleViewport);
+      resize.disconnect();
+    };
+  });
+  $effect(() => {
+    const keys = new Set(blocks.map((block) => block.key));
+    for (const key of measured.keys()) if (!keys.has(key)) measured.delete(key);
+  });
 </script>
 
-<div class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8">
+<div
+  class="reading-view mx-auto max-w-4xl px-5 py-7 sm:px-8"
+  data-testid="generation-reading-view"
+  data-loaded-count={loaded}
+  data-rendered-count={visibleIndexes.reduce(
+    (count, index) => count + blocks[index].items.length,
+    0
+  )}
+  data-virtualized={virtualEnabled}
+  onfocusin={focused}
+  onfocusout={(event) => {
+    if (
+      !(event.relatedTarget instanceof Node) ||
+      !body?.contains(event.relatedTarget)
+    )
+      focusedId = '';
+  }}
+>
   <div
     class="mb-7 flex flex-wrap items-end justify-between gap-3 border-b border-[var(--line)] pb-4"
   >
@@ -119,124 +312,148 @@
     </div>
   </div>
 
-  {#each blocks as block (block.key)}
-    {#if ['heading', 'chapter_marker'].includes(block.kind)}
-      <h4
-        class:now-playing={block.items.some(
-          (item) => item.id === activePlayingId
-        )}
-        class:selected-heading={block.items.some((item) =>
-          selectedRows.includes(item.id)
-        )}
-        class="reading-heading"
-      >
-        {#each block.items as item}
-          <button
-            onclick={(event) => onactivate(event, item)}
-            class:removed={item.removed}>{item.text}</button
+  <div bind:this={body}>
+    {#if virtualEnabled && selection.topGap > 0}<div
+        aria-hidden="true"
+        style:height={`${selection.topGap}px`}
+      ></div>{/if}
+    {#each visibleIndexes as blockIndex (blocks[blockIndex].key)}
+      {@const block = blocks[blockIndex]}
+      {#if virtualEnabled && selection.gaps.has(blockIndex)}<div
+          aria-hidden="true"
+          style:height={`${selection.gaps.get(blockIndex)}px`}
+        ></div>{/if}
+      <div use:measure={block.key} style="display: flow-root">
+        {#if ['heading', 'chapter_marker'].includes(block.kind)}
+          <h4
+            class:now-playing={block.items.some(
+              (item) => item.id === activePlayingId
+            )}
+            class:selected-heading={block.items.some((item) =>
+              selectedRows.includes(item.id)
+            )}
+            class="reading-heading"
           >
-        {/each}
-      </h4>
-    {:else}
-      <p class="reading-paragraph">
-        {#each block.items as item, index}
-          <span
-            class:now-playing={item.id === activePlayingId}
-            class:selected-sentence={selectedRows.includes(item.id)}
-            class:removed={item.removed}
-            class="reading-segment"
-          >
-            {#if showSpeechAnnotations && (item.speech_annotation_xml || item.speech_plan?.speech_xml || speechPreviews[item.id])}
-              <SpeechAnnotationText
-                {item}
-                colors={annotationColors}
-                layer={textMode}
-                preview={speechPreviews[item.id]}
-                oninspect={onspeech ?? (() => {})}
-                {onselection}
-              />
-            {:else if showPassageBoundaries && item.passage_structure?.layers[textMode].boundaries.length}
-              <PassageText
-                {item}
-                layer={textMode}
-                oninspect={onpassage ?? (() => {})}
-              />
-            {:else}
-              <span
-                role="button"
-                tabindex="0"
+            {#each block.items as item}
+              <button
+                data-segment-id={item.id}
                 onclick={(event) => onactivate(event, item)}
-                onkeydown={(event) => onactivatekeyboard(event, item)}
-                class="reading-sentence"
-                title={onhasaudio(item)
-                  ? `Play segment ${item.ordinal + 1}`
-                  : 'Select segment actions'}>{ontext(item)}</span
+                class:removed={item.removed}>{item.text}</button
               >
-            {/if}
-            <span
-              class="reading-actions"
-              aria-label={`Actions for segment ${item.ordinal + 1}`}
-            >
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onplay(item);
-                }}
-                disabled={!onhasaudio(item) || item.removed}
-                title="Play segment"
-                aria-label={`Play segment ${item.ordinal + 1}`}
-                ><Play size={13} /></button
+            {/each}
+          </h4>
+        {:else}
+          <p class:continues={!block.closed} class="reading-paragraph">
+            {#each block.items as item, index}
+              <span
+                data-segment-id={item.id}
+                class:now-playing={item.id === activePlayingId}
+                class:selected-sentence={selectedRows.includes(item.id)}
+                class:removed={item.removed}
+                class="reading-segment"
               >
-              <SegmentRegenerationMenu
-                segmentNumber={item.ordinal + 1}
-                disabled={loading || item.removed}
-                compact
-                onregenerate={() => onregenerate(item)}
-                onregeneratewith={() => onregeneratewith(item)}
-              />
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onpatch(item, { marked: !item.marked });
-                }}
-                class:active={item.marked}
-                title={item.marked
-                  ? 'Unmark segment'
-                  : 'Mark for bulk regeneration'}
-                aria-label={item.marked
-                  ? `Unmark segment ${item.ordinal + 1}`
-                  : `Mark segment ${item.ordinal + 1}`}
-                ><Flag size={13} /></button
-              >
-              <button
-                onclick={(event) => {
-                  event.stopPropagation();
-                  onpatch(item, { removed: !item.removed });
-                }}
-                title={item.removed ? 'Restore segment' : 'Remove segment'}
-                aria-label={item.removed
-                  ? `Restore segment ${item.ordinal + 1}`
-                  : `Remove segment ${item.ordinal + 1}`}
-              >
-                {#if item.removed}<RotateCcw size={13} />{:else}<Trash2
-                    size={13}
-                  />{/if}
-              </button>
-            </span>
-          </span>{#if index < block.items.length - 1}
-            <SpeechBoundaryMarker
-              left={item}
-              right={block.items[index + 1]}
-              disabled={topologyDisabled ||
-                item.ordinal + 1 !== block.items[index + 1].ordinal}
-              {onmerge}
-            />
-            <span aria-hidden="true"> </span>
-          {/if}
-        {/each}
-      </p>
-    {/if}
-  {/each}
+                {#if showSpeechAnnotations && (item.speech_annotation_xml || item.speech_annotation || item.speech_plan?.speech_xml || speechPreviews[item.id])}
+                  <SpeechAnnotationText
+                    {item}
+                    capabilities={speechCapabilities}
+                    {performanceEnabled}
+                    {vocalizationsEnabled}
+                    {multiVoice}
+                    {speakerNames}
+                    {detailsVisible}
+                    layer={textMode}
+                    preview={speechPreviews[item.id]}
+                    oninspect={onspeech ?? (() => {})}
+                    {onselection}
+                  />
+                {:else if showPassageBoundaries && item.passage_structure?.layers[textMode].boundaries.length}
+                  <PassageText
+                    {item}
+                    layer={textMode}
+                    oninspect={onpassage ?? (() => {})}
+                  />
+                {:else}
+                  <span
+                    role="button"
+                    tabindex="0"
+                    onclick={(event) => onactivate(event, item)}
+                    onkeydown={(event) => onactivatekeyboard(event, item)}
+                    class="reading-sentence"
+                    title={onhasaudio(item)
+                      ? `Play segment ${item.ordinal + 1}`
+                      : 'Select segment actions'}>{ontext(item)}</span
+                  >
+                {/if}
+                <span
+                  class="reading-actions"
+                  aria-label={`Actions for segment ${item.ordinal + 1}`}
+                >
+                  <button
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onplay(item);
+                    }}
+                    disabled={!onhasaudio(item) || item.removed}
+                    title="Play segment"
+                    aria-label={`Play segment ${item.ordinal + 1}`}
+                    ><Play size={13} /></button
+                  >
+                  <SegmentRegenerationMenu
+                    segmentNumber={item.ordinal + 1}
+                    disabled={loading || item.removed}
+                    compact
+                    onregenerate={() => onregenerate(item)}
+                    onregeneratewith={() => onregeneratewith(item)}
+                  />
+                  <button
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onpatch(item, { marked: !item.marked });
+                    }}
+                    class:active={item.marked}
+                    title={item.marked
+                      ? 'Unmark segment'
+                      : 'Mark for bulk regeneration'}
+                    aria-label={item.marked
+                      ? `Unmark segment ${item.ordinal + 1}`
+                      : `Mark segment ${item.ordinal + 1}`}
+                    ><Flag size={13} /></button
+                  >
+                  <button
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      onpatch(item, { removed: !item.removed });
+                    }}
+                    title={item.removed ? 'Restore segment' : 'Remove segment'}
+                    aria-label={item.removed
+                      ? `Restore segment ${item.ordinal + 1}`
+                      : `Remove segment ${item.ordinal + 1}`}
+                  >
+                    {#if item.removed}<RotateCcw size={13} />{:else}<Trash2
+                        size={13}
+                      />{/if}
+                  </button>
+                </span>
+              </span>{#if index < block.items.length - 1}
+                <SpeechBoundaryMarker
+                  left={item}
+                  right={block.items[index + 1]}
+                  disabled={topologyDisabled ||
+                    item.ordinal + 1 !== block.items[index + 1].ordinal}
+                  {onmerge}
+                />
+                <span aria-hidden="true"> </span>
+              {/if}
+            {/each}
+          </p>
+        {/if}
+      </div>
+    {/each}
+    {#if virtualEnabled && selection.bottomGap > 0}<div
+        aria-hidden="true"
+        style:height={`${selection.bottomGap}px`}
+      ></div>{/if}
+  </div>
 
   {#if !blocks.length}
     <p class="muted py-16 text-center">No segments match this filter.</p>
@@ -293,6 +510,9 @@
     font-size: 1.02rem;
     line-height: 1.9;
     white-space: normal;
+  }
+  .reading-paragraph.continues {
+    margin-bottom: 0;
   }
   .reading-segment {
     position: relative;

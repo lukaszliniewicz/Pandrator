@@ -239,6 +239,11 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "voxcpm_max_len": 4096,
         "fishs2_temperature": 0.7,
         "fishs2_top_p": 0.7,
+        "fishs2_max_new_tokens": None,
+        "fishs2_top_k": None,
+        "fishs2_min_tokens_before_end": None,
+        "fishs2_n_threads": None,
+        "fishs2_verbose": None,
         "fishs2_chunk_length": 200,
         "fishs2_latency": "balanced",
         "fishs2_normalize": True,
@@ -339,6 +344,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "export_mode": "media",
         "audio_mode": "mixed",
         "audio_match_source_duration": True,
+        "include_sounds": True,
         "video_tail_extension_policy": "ask",
         "subtitle_mode": "none",
         "subtitle_selection": "translation",
@@ -830,6 +836,8 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
 
 def validate_output_settings(value: dict[str, Any]) -> None:
     """Validate stored output overrides without touching unrelated keys."""
+    if "include_sounds" in value and type(value["include_sounds"]) is not bool:
+        raise ValueError("include_sounds must be a boolean.")
     if value.get("video_tail_extension_policy", "ask") not in ("ask", "extend"):
         raise ValueError("video_tail_extension_policy must be ask or extend.")
     from pandrator.logic.book_settings import validate_book_settings

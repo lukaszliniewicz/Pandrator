@@ -9,6 +9,25 @@ The MCP work projection deliberately omits raw queue payloads. Logs are bounded
 and redacted. They include operational events and safe identifiers, not source
 documents, prompts, credentials, arbitrary Manager task inputs, or raw results.
 
+Generation and regeneration return `generation_operation_id`. Use
+`pandrator_get_generation_operation` with that ID to follow preparation into
+synthesis without changing handles. Bounded waits run up to 60 seconds; structured
+responses keep the routine receipt small. Terminal synthesis includes selected-run
+coverage: included, effective, generated, inherited and missing audio counts, missing-file
+counts and `export_ready`. Read it independently with
+`pandrator_get_generation_run_coverage` for any saved run. Readiness concerns
+available selected audio, not artistic quality or rendering success.
+
+`audio_version_side="before"` selects the pinned baseline of a recast audio
+version. Ordinary runs, including RVC runs, use `after`; they have no separate
+before/after recast manifest. The generated and inherited counts partition
+effective selections. Run-owned takes can be inherited shared-artifact copies,
+so `run_audio_count` overlaps those counts.
+
+The operation ID is the durable admission job ID. Cancellation through
+`pandrator_cancel_work` also follows its validated child after preparation succeeds.
+Legacy `get_work` still returns individual jobs and `followup_work`.
+
 To diagnose work:
 
 1. inspect the work item;
@@ -28,6 +47,26 @@ deadline. A mutation may still have committed. Follow the returned recovery
 actions: inspect current state and replay the exact request with the same
 idempotency key when supported. Never invent a new key or assume failure means
 no change. A connection failure remains `application_unavailable`.
+
+Compilation-only POST previews explicitly report `safe_to_retry_read` on a
+transport timeout. They do not enqueue, adopt, synthesize or refresh provider
+health. Their stage `timings_ms` separates database/cast reads, normalization,
+context, markup parsing, cast resolution and compilation. This is not a promise
+that every POST is read-only. Unkeyed writes with an unknown outcome require
+inspection, and keyed writes require exact replay with the original key.
+
+Permanent session cleanup also uses durable work. Inspection and deletion
+admission return small receipts; the full stored inventory is retrieved through
+`pandrator_get_session_purge_inspection`. Work is deliberately independent of
+the target session's lifetime. Deletion reuses its revision-bound purge journal
+and rejects cancellation after journal claim. Idempotency reservations normally
+last 24 hours (configurable up to 168); retained work remains available after
+that reservation expires.
+
+Comparison export queues `export.comparison` and publishes audio plus an ordered
+take/checksum manifest. It does not synthesize or alter active audio selections.
+Download the returned audio and manifest artifacts rather than requesting raw
+queue payloads or embedding audio in status responses.
 
 ## Passive dispatch runs
 

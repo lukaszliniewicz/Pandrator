@@ -330,6 +330,7 @@ class CreateSessionInput(ToolInput):
         "voiceover",
         "media_edit",
     ] = "audiobook"
+    interface_mode: Literal["simple", "advanced"] = "simple"
     source_language: str = Field(
         default="auto",
         min_length=2,

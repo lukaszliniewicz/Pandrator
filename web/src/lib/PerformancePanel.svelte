@@ -724,13 +724,18 @@
 >
   <summary class="cursor-pointer font-semibold"
     >Speakers and delivery <span class="muted ml-2 text-xs"
-      >Independent optional passes</span
+      >Optional analysis and draft review</span
     ></summary
   >
   <div class="mt-4 space-y-5">
     <p class="muted text-sm">
-      Keep accepted wording and segment boundaries while directing delivery and
-      assigning voices. {selected?.settings.workflow_kind === 'voiceover'
+      Add speakers and directions manually in <a
+        class="underline"
+        href={`/sessions/${encodeURIComponent(sessionId)}/generation?inspect=speech`}
+        >Generation’s speech inspector</a
+      >, or use optional AI analysis here. Keep accepted wording and segment
+      boundaries while directing delivery and assigning voices. {selected
+        ?.settings.workflow_kind === 'voiceover'
         ? 'Voiceover parts share their segment’s timing window; fit is assessed after assembly.'
         : 'For long-form narration, dialogue turns can flow without paragraph-length pauses.'}
     </p>

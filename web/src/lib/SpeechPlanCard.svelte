@@ -9,13 +9,17 @@
   } from '@lucide/svelte';
   import type { CastDraftController } from './generation-controls';
   import type { Snippet } from 'svelte';
+  import { page } from '$app/state';
   import SpeechPlanPicker from './SpeechPlanPicker.svelte';
+  import NarrationPlanSettings from './NarrationPlanSettings.svelte';
   import PerformancePanel from './PerformancePanel.svelte';
   import AudioReuseNotice from './AudioReuseNotice.svelte';
   import { openSpeechPlanEditor, type SpeechPlanState } from './session-flow';
   let {
     inputControls,
     sessionId,
+    workflowKind = 'audiobook',
+    multiVoice = false,
     plan,
     busy = false,
     showCasting = true,
@@ -28,6 +32,8 @@
   }: {
     inputControls?: Snippet;
     sessionId: string;
+    workflowKind?: string;
+    multiVoice?: boolean;
     plan: SpeechPlanState | null;
     busy?: boolean;
     showCasting?: boolean;
@@ -44,6 +50,7 @@
 </script>
 
 <section
+  id="speech-preparation"
   class="surface rounded-2xl border border-[var(--line)] p-4 sm:rounded-3xl sm:p-6"
   aria-label="Speech plan"
 >
@@ -55,7 +62,9 @@
     <div class="min-w-0 flex-1">
       <h2 class="text-lg font-semibold">Speech plan</h2>
       <p class="muted mt-1 text-sm">
-        Arrange the text into speech blocks before recording audio.
+        Divide your chosen text into blocks, then open Generation to adjust the
+        spoken words and delivery{multiVoice ? ', and assign voices' : ''}.
+        Audio is generated from the selected plan.
       </p>
     </div>
     {#if selected?.reviewed}<span
@@ -99,8 +108,8 @@
             Plan reviewed. Check the generation step below for any remaining
             requirements.
           {:else}
-            Open Review plan to check the text and voices, then mark it
-            reviewed.
+            Open Generation to check the spoken wording and delivery, then mark
+            the plan reviewed from Speech plans.
           {/if}
         </p>
       {/if}
@@ -111,6 +120,11 @@
           undefined}
       />
     {/if}
+    {#if workflowKind === 'audiobook'}<NarrationPlanSettings
+        {sessionId}
+        {busy}
+        onchanged={onperformancechange}
+      />{/if}
     {#if plan?.warning}<p class="text-sm text-amber-700" role="status">
         {plan.warning}
       </p>{/if}
@@ -126,7 +140,10 @@
       <button
         class="btn btn-secondary"
         onclick={onsettings}
-        disabled={busy || !plan}><Settings2 size={16} /> Block settings</button
+        disabled={busy || !plan}
+        ><Settings2 size={16} />{workflowKind === 'audiobook'
+          ? 'Narration settings'
+          : 'Timing & block settings'}</button
       >
       <button
         class={selected ? 'btn btn-secondary' : 'btn btn-primary'}
@@ -144,7 +161,7 @@
           class="btn btn-primary"
           disabled={busy}
           onclick={() => openSpeechPlanEditor(sessionId)}
-          ><Eye size={16} /> Review plan</button
+          ><Eye size={16} /> Open Generation</button
         >
         {#if !selected.reviewed}
           <button
@@ -181,18 +198,25 @@
           version keeps older versions in history and does not record audio.
         </p>
         <p>
-          Make any rewriting changes in the speech-text step first. Generation
-          reads the selected plan's wording.
+          Editing works on this selected plan. A block action affects the whole
+          block; selecting words targets a phrase; placing the cursor offers
+          vocal cues. XML is available from each block’s actions.
+        </p>
+        <p>
+          Speech text includes optimized wording when available. Display and
+          subtitle wording stay separate. Model-support feedback explains which
+          directions can affect new audio.
         </p>
       </div>
     </details>
     {#if selected}
       {#key `${sessionId}:${selected.id}`}
         <PerformancePanel
-          {showCasting}
+          showCasting={multiVoice}
           {externalCastPanel}
           {sessionId}
           revisionId={selected.id}
+          initialOpen={page.url.hash === '#speech-preparation'}
           {busy}
           onchanged={onperformancechange}
         />

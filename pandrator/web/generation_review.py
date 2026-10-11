@@ -22,7 +22,7 @@ COMPACT_SEGMENT_FIELDS = (
     "id", "ordinal", "revision", "text", "source_segment_ids", "status", "removed",
     "optimization_status", "take_count", "active_take_id", "has_usable_take",
     "audio_reuse_reason", "has_reusable_take",
-    "history_take_id",
+    "history_take_id", "effective_take",
 )
 EXTRA_SEGMENT_FIELDS = {"take_count", "active_take_id", "has_usable_take"}
 PROJECTABLE_SEGMENT_FIELDS = set(COMPACT_SEGMENT_FIELDS) | {
@@ -30,7 +30,20 @@ PROJECTABLE_SEGMENT_FIELDS = set(COMPACT_SEGMENT_FIELDS) | {
     "alignment_group", "optimized_text", "speech_plan", "optimization_reviewed",
     "optimization_model", "voice_id", "voice", "language", "silence_after_ms", "marked", "takes",
     "search_matches", "passage_structure",
+    "take_history_loaded",
+    "effective_take",
 }
+
+
+class GenerationProjectionError(ValueError):
+    """Expose the public field contract when a projection is invalid."""
+
+    def __init__(self, fields: list[str]):
+        super().__init__("Segment projection contains an unsupported field.")
+        self.details = {
+            "invalid_fields": sorted(set(fields) - PROJECTABLE_SEGMENT_FIELDS),
+            "allowed_fields": sorted(PROJECTABLE_SEGMENT_FIELDS),
+        }
 
 
 def parse_summary_flag(raw: str | None) -> bool:
@@ -53,8 +66,15 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
     if view not in {"full", "compact", "provenance"}:
         raise ValueError("Segment view must be full, compact, or provenance.")
     if fields is not None and (not fields or set(fields) - PROJECTABLE_SEGMENT_FIELDS):
-        raise ValueError("Segment projection contains an unsupported field.")
+        raise GenerationProjectionError(fields)
     selected = fields or (list(COMPACT_SEGMENT_FIELDS) if view == "compact" else ["id", "ordinal", "revision", "source_segment_ids", "speech_block_provenance"] if view == "provenance" else None)
+    if (
+        selected is not None
+        and fields is None
+        and view == "compact"
+        and any("take_history_loaded" in item for item in payload["items"])
+    ):
+        selected = [*selected, "take_history_loaded"]
     if selected is None:
         return payload
     selected = list(dict.fromkeys(["id", "ordinal", "revision", *selected]))
@@ -63,7 +83,9 @@ def project_segments(payload: dict[str, Any], *, view: str = "full", fields: lis
         item = dict(original)
         takes = item.get("takes") or []
         active = next((take for take in takes if take.get("is_active") and take.get("status") == "completed" and take.get("artifact_id")), None)
-        item.update(take_count=len(takes), active_take_id=active.get("id") if active else None, has_usable_take=bool(active and item.get("status") == "completed"))
+        item.setdefault("take_count", len(takes))
+        item.setdefault("active_take_id", active.get("id") if active else None)
+        item.setdefault("has_usable_take", bool(active and item.get("status") == "completed"))
         rows.append({key: item.get(key) for key in selected})
     return {**payload, "items": rows, "view": view, "fields": selected}
 

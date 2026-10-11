@@ -26,6 +26,26 @@ from ..schemas.generation import (
 from ..work_mapping import application_work_reference
 
 
+def _generation_timeout_actions(error, arguments, *, tool: str) -> None:
+    if arguments.admission:
+        work_id = error.details.get("work_id") or error.details.get("job_id")
+        actions = [NextAction(tool="pandrator_get_generation_operation", arguments={"operation_id": work_id},
+                              reason="Follow preparation and synthesis through the same durable operation.")]
+        if not isinstance(work_id, str) or not work_id:
+            actions = []
+    else:
+        actions = [NextAction(tool="pandrator_list_generation_runs", arguments={"session_id": arguments.session_id, "limit": 5},
+                              reason="Inspect recent runs to learn whether the timed-out request queued work.")]
+    actions.append(NextAction(tool=tool, arguments=arguments.model_dump(mode="json", exclude_unset=True),
+                              reason="Replay only the exact original inputs with the same idempotency key."))
+    error.next_actions = actions
+
+
+def _generation_operation_action(work_id: str) -> NextAction:
+    return NextAction(tool="pandrator_get_generation_operation", arguments={"operation_id": work_id},
+                      reason="Follow preparation and synthesis through the same durable operation, then inspect audio coverage.")
+
+
 def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
     takes = segment.get("takes") or []
     safe_takes = [
@@ -67,6 +87,7 @@ def _segment_projection(segment: dict[str, Any]) -> dict[str, Any]:
         "language": segment.get("language"),
         "selected_take_id": segment.get("selected_take_id"),
         **({"history_take_id": segment["history_take_id"]} if "history_take_id" in segment else {}),
+        **({"effective_take": segment["effective_take"]} if "effective_take" in segment else {}),
         "takes": safe_takes,
     }
 
@@ -96,7 +117,7 @@ def list_generation_segments(
 ) -> dict[str, Any]:
     application = runtime.require_application()
     options: dict[str, Any] = {}
-    for key in ("plan_revision_id", "fields", "end_ordinal", "around_ordinal", "source_cue_id"):
+    for key in ("plan_revision_id", "fields", "segment_ids", "end_ordinal", "around_ordinal", "source_cue_id"):
         value = getattr(arguments, key)
         if value is not None:
             options[key] = value
@@ -233,36 +254,45 @@ def revise_speech_block_plan_batch(runtime: McpRuntime, arguments: ReviseSpeechB
 
 
 def generate_speech_plan(runtime: McpRuntime, arguments: GenerateSpeechPlanInput) -> ToolOutcome:
+    application = runtime.require_application()
+    start_arguments: dict[str, Any] = {
+        "speech_plan_revision_id": arguments.speech_plan_revision_id,
+        "stale_only": arguments.stale_only,
+        "missing_only": arguments.missing_only,
+        "idempotency_key": arguments.idempotency_key,
+        "view": arguments.view,
+        "settings_source": arguments.settings_source,
+        "settings_source_run_id": arguments.settings_source_run_id,
+    }
+    if arguments.admission:
+        start_arguments["admission"] = True
     try:
-        result = runtime.require_application().start_generation_run(
-            arguments.session_id, speech_plan_revision_id=arguments.speech_plan_revision_id,
-            stale_only=arguments.stale_only, idempotency_key=arguments.idempotency_key,
-            view=arguments.view,
-        )
+        result = application.start_generation_run(arguments.session_id, **start_arguments)
     except PandratorMcpError as error:
         if error.code != "application_response_timeout":
             raise
-        error.next_actions = [
-            NextAction(
-                tool="pandrator_list_generation_runs",
-                arguments={"session_id": arguments.session_id, "limit": 5},
-                reason="Inspect recent generation runs to learn whether the timed-out request queued work.",
-            ),
-            NextAction(
-                tool="pandrator_generate_speech_plan",
-                arguments=arguments.model_dump(mode="json", exclude_unset=True),
-                reason="Replay the original generation request only with the same pinned revision and idempotency key.",
-            ),
-        ]
+        _generation_timeout_actions(error, arguments, tool="pandrator_generate_speech_plan")
         raise
+    work_id = result.get("job_id") or result.get("id")
+    if arguments.admission:
+        next_actions = (
+            [_generation_operation_action(work_id)]
+            if isinstance(work_id, str) and work_id
+            else []
+        )
+    else:
+        next_actions = [
+            NextAction(
+                tool="pandrator_list_generation_segments",
+                arguments={"session_id": arguments.session_id, "plan_revision_id": arguments.speech_plan_revision_id, "view": "compact"},
+                reason="Review synthesis progress for the pinned speech-plan revision before assembling its output.",
+            )
+        ]
     return ToolOutcome(
-        result={"schema_version": "1", "session_id": arguments.session_id, **result},
+        result={"schema_version": "1", "session_id": arguments.session_id, **result,
+                "generation_operation_id": work_id},
         work=application_work_reference(result),
-        next_actions=[NextAction(
-            tool="pandrator_list_generation_segments",
-            arguments={"session_id": arguments.session_id, "plan_revision_id": arguments.speech_plan_revision_id, "view": "compact"},
-            reason="Review synthesis progress for the pinned speech-plan revision before assembling its output.",
-        )],
+        next_actions=next_actions,
     )
 
 
@@ -367,17 +397,39 @@ def regenerate_segments(
     arguments: RegenerateSegmentsInput,
 ) -> ToolOutcome:
     application = runtime.require_application()
-    result = application.start_generation_run(
-        arguments.session_id,
-        segment_ids=arguments.segment_ids,
-        operation="regenerate",
-        idempotency_key=arguments.idempotency_key,
-    )
+    start_arguments: dict[str, Any] = {
+        "segment_ids": arguments.segment_ids,
+        "generation_run_id": arguments.generation_run_id,
+        "settings_source": arguments.settings_source,
+        "settings_source_run_id": arguments.settings_source_run_id,
+        "operation": "regenerate",
+        "idempotency_key": arguments.idempotency_key,
+    }
+    if arguments.admission:
+        start_arguments["admission"] = True
+    try:
+        result = application.start_generation_run(arguments.session_id, **start_arguments)
+    except PandratorMcpError as error:
+        if error.code != "application_response_timeout":
+            raise
+        _generation_timeout_actions(error, arguments, tool="pandrator_regenerate_segments")
+        raise
     work = (
         application_work_reference(result)
         if isinstance(result, dict) and (result.get("id") or result.get("work_id"))
         else None
     )
+    if arguments.admission:
+        result_data = {"schema_version": "1", "session_id": arguments.session_id, **result}
+        result_data["segment_count"] = len(arguments.segment_ids)
+        work_id = result.get("job_id") or result.get("id")
+        result_data["generation_operation_id"] = work_id
+        next_actions = (
+            [_generation_operation_action(work_id)]
+            if isinstance(work_id, str) and work_id
+            else []
+        )
+        return ToolOutcome(result=result_data, work=work, next_actions=next_actions)
     return ToolOutcome(
         result={
             "schema_version": "1",

@@ -199,6 +199,7 @@ def register_session_lifecycle_routes(
                     record = sessions.create(
                         payload.name,
                         workflow_kind=payload.workflow_kind,
+                        interface_mode=payload.interface_mode,
                         source_language=payload.source_language,
                         target_language=payload.target_language,
                         workflow_preset=payload.workflow_preset,
@@ -269,6 +270,7 @@ def register_session_lifecycle_routes(
         record = sessions.create(
             payload.name,
             workflow_kind=payload.workflow_kind,
+            interface_mode=payload.interface_mode,
             source_language=payload.source_language,
             target_language=payload.target_language,
             workflow_preset=payload.workflow_preset,
@@ -338,6 +340,7 @@ def register_session_lifecycle_routes(
                     session_id,
                     payload.checkpoint_artifact_id,
                     name=payload.name or "",
+                    interface_mode=payload.interface_mode,
                     expected_revision=payload.expected_revision,
                     carry_media_assets=payload.carry_media_assets,
                     target_language=payload.target_language,

@@ -650,10 +650,18 @@ def resolve_provider_credential(
     shared: bool = True,
     preloaded_database_credentials: Mapping[str, str] | None = None,
 ) -> ResolvedCredential:
-    """Resolve a shared cloud credential before provider-specific fallbacks."""
+    """Resolve shared database credentials only for database references.
+
+    An explicit external or invalid reference is authoritative and must reach
+    ``resolve_secret_reference`` without falling back to shared database data.
+    """
 
     normalized = normalize_credential_id(provider_id).replace("-", "_")
-    if shared and normalized in SHARED_PROVIDER_CREDENTIALS:
+    if (
+        shared
+        and normalized in SHARED_PROVIDER_CREDENTIALS
+        and credential_backend(reference) == "database"
+    ):
         resolved = resolve_secret_reference(
             database,
             paths,

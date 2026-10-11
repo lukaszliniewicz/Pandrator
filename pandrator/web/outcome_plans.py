@@ -11,6 +11,8 @@ from .database import Database
 from .models import OutcomePlan, OutcomePlanHistory, SessionRecord, utcnow
 from .settings_policy import RevisionConflict
 
+WORKFLOW_INPUT_CONSUMERS = frozenset({"translation", "generation"})
+
 
 def derive_legacy_outcome(record: SessionRecord) -> dict[str, Any]:
     included = set(record.included_stages_json or [])
@@ -49,6 +51,32 @@ def derive_legacy_outcome(record: SessionRecord) -> dict[str, Any]:
             "subtitles": "translation" if "translate" in included else "source",
         },
     }
+
+
+def resolve_workflow_inputs(
+    record: SessionRecord, plan_value: dict[str, Any] | None
+) -> dict[str, str]:
+    """Project legacy defaults and stored input choices without persisting them."""
+    stored_inputs = plan_value.get("inputs") if isinstance(plan_value, dict) else None
+    stored_inputs = stored_inputs if isinstance(stored_inputs, dict) else {}
+    defaults = derive_legacy_outcome(record).get("inputs", {})
+    inputs: dict[str, str] = {}
+    for consumer in sorted(WORKFLOW_INPUT_CONSUMERS):
+        role = (
+            str(stored_inputs.get(consumer) or defaults.get(consumer) or "source")
+            .strip()
+            .lower()
+        )
+        if role not in {"source", "correction", "translation"} and not (
+            record.workflow_kind == "media_edit" and role == "media_edit"
+        ):
+            role = str(defaults.get(consumer) or "source").strip().lower()
+        if record.workflow_kind == "media_edit" and role == "source":
+            role = "media_edit"
+        if consumer == "translation" and role == "translation":
+            role = str(defaults.get(consumer) or "correction").strip().lower()
+        inputs[consumer] = role
+    return inputs
 
 
 def resolve_pipeline(

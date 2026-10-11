@@ -23,6 +23,7 @@ from .models import (
     SessionRecord,
     SpeechPlanReview,
 )
+from .outcome_plans import resolve_workflow_inputs
 from .source_resolution import PrimarySourceResolution
 from .workflow_resolution_types import ResolvedWorkflowStage
 from .workflow_stage_types import StageDefinition
@@ -286,14 +287,15 @@ def resolve_workflow_stage_in_session(
         select(OutcomePlan).where(OutcomePlan.session_id == session_id)
     )
     transformations = context.workflow_transformations(session, session_id, outcome, context.database())
-    inputs = (
-        (outcome.value_json or {}).get("inputs", {})
-        if outcome and isinstance(outcome.value_json, dict)
-        else {}
+    inputs = resolve_workflow_inputs(
+        record,
+        outcome.value_json
+        if outcome is not None and isinstance(outcome.value_json, dict)
+        else None,
     )
     if (
         stage_key == "translate"
-        and str(inputs.get("translation") or "correction") != "correction"
+        and str(inputs.get("translation") or "source") != "correction"
     ):
         prerequisite_roles = (
             ("media_edit_subtitles",)
@@ -314,7 +316,7 @@ def resolve_workflow_stage_in_session(
                 "media_edit": ("media_edit_subtitles",),
                 "source": ("transcription", "upload"),
             }.get(
-                str(inputs.get("generation") or "translation"),
+                str(inputs.get("generation") or "source"),
                 prerequisite_roles,
             )
     selections = context.selected_artifacts(session, session_id, all_artifacts)

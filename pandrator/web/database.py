@@ -10,9 +10,36 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0053_generation_audio_versions"
+SCHEMA_HEAD = "0057_segment_lineage_child_index"
+
+
+def is_sqlite_busy(error: BaseException) -> bool:
+    """Recognize SQLite writer contention without hiding other SQL errors."""
+    original = getattr(error, "orig", error)
+    code = getattr(original, "sqlite_errorcode", None)
+    return (
+        isinstance(original, sqlite3.Error)
+        and isinstance(code, int)
+        and (code & 0xFF) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    )
+
+
+@contextmanager
+def _scoped_busy_timeout(connection: Connection, busy_timeout_ms: int | None) -> Iterator[None]:
+    if busy_timeout_ms is None:
+        yield
+        return
+    if busy_timeout_ms < 0:
+        raise ValueError("busy_timeout_ms must be nonnegative")
+    previous = int(connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one())
+    connection.exec_driver_sql(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")
+    try:
+        yield
+    finally:
+        connection.exec_driver_sql(f"PRAGMA busy_timeout = {previous}")
 
 
 def sqlite_url(path: Path) -> str:
@@ -43,15 +70,18 @@ class Database:
     def __init__(self, path: Path):
         self.path = path
         self.engine = create_database_engine(path)
-        self._factory = sessionmaker(
-            bind=self.engine, expire_on_commit=False, future=True
-        )
+        self._factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
 
     @contextmanager
-    def session(self) -> Iterator[Session]:
+    def session(self, *, busy_timeout_ms: int | None = None) -> Iterator[Session]:
         session = self._factory()
         try:
-            yield session
+            if busy_timeout_ms is None:
+                yield session
+            else:
+                with _scoped_busy_timeout(session.connection(), busy_timeout_ms):
+                    yield session
+                    session.flush()
             session.commit()
         except Exception:
             session.rollback()
@@ -80,16 +110,17 @@ class Database:
             connection.close()
 
     @contextmanager
-    def immediate_session(self) -> Iterator[Session]:
+    def immediate_session(self, *, busy_timeout_ms: int | None = None) -> Iterator[Session]:
         """Begin a short SQLite write transaction before reading mutable state."""
         connection = self.engine.connect()
         session: Session | None = None
         try:
-            connection.exec_driver_sql("BEGIN IMMEDIATE")
-            session = Session(bind=connection, expire_on_commit=False, future=True)
-            yield session
-            session.flush()
-            connection.commit()
+            with _scoped_busy_timeout(connection, busy_timeout_ms):
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+                session = Session(bind=connection, expire_on_commit=False, future=True)
+                yield session
+                session.flush()
+                connection.commit()
         except Exception:
             connection.rollback()
             raise

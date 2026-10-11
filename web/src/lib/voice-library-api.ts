@@ -33,6 +33,10 @@ export type VoiceCompatibility = {
   model: string;
   status: string;
   ready: boolean;
+  prepared?: boolean;
+  service_available?: boolean | null;
+  health_checked_at?: string | null;
+  availability_reason?: string | null;
   voice?: string | null;
   supported_languages: string[];
   modes: {

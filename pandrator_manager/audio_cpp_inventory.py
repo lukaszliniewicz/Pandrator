@@ -20,7 +20,92 @@ HUGGINGFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SPEECH_TASKS = frozenset({"tts", "clone", "design", "vdes"})
-CATALOGUE_ONLY_FAMILIES = frozenset({"minimax_h3", "vevo2"})
+CATALOGUE_ONLY_FAMILIES = frozenset({"vevo2"})
+COMPONENT_IDS = frozenset(
+    {"auk_qwen_bf16", "auk_qwen_q8_0", "auk_vae_f32", "vocos_mel_24khz", "yue2_vae_f16", "yue2_vae_f32"}
+)
+GENERATION_FAMILIES = frozenset(
+    {
+        "stable_audio",
+        "controlfoley",
+        "midashenglm_gen",
+        "ace_step",
+        "heartmula",
+        "minimax_music3",
+        "yue2",
+        "minimax_h3",
+    }
+)
+ACE_STEP_MODELS = {
+    "base": "acestep-v15-base",
+    "turbo": "acestep-v15-turbo",
+    "xl_sft": "acestep-v15-xl-sft",
+    "xl_turbo": "acestep-v15-xl-turbo",
+}
+MINIMAX_MUSIC3_VARIANTS = {
+    "minimax_music3_bf16": (
+        "language_model_bf16.gguf",
+        "rvq_depth_decoder_bf16.gguf",
+        "transformer_bf16.gguf",
+    ),
+    "minimax_music3_q4_0": (
+        "language_model_q4_0.gguf",
+        "rvq_depth_decoder_q8_0.gguf",
+        "transformer_q4_0.gguf",
+    ),
+    "minimax_music3_q8_0": (
+        "language_model_q8_0.gguf",
+        "rvq_depth_decoder_q8_0.gguf",
+        "transformer_q8_0.gguf",
+    ),
+}
+MINIMAX_MUSIC3_FIXED_FILES = frozenset(
+    {
+        "config.json",
+        "config/language_model.json",
+        "config/rvq_depth_decoder.json",
+        "config/condition_encoder.json",
+        "config/transformer.json",
+        "config/vocoder.json",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+        "condition_encoder.gguf",
+        "vocoder.gguf",
+    }
+)
+YUE2_MAIN_VARIANTS = {
+    "yue2_main_bf16": "yue2-3b-bf16.gguf",
+    "yue2_main_q4_0": "yue2-3b-q4_0.gguf",
+    "yue2_main_q8_0": "yue2-3b-q8_0.gguf",
+}
+YUE2_FIXED_FILES = frozenset(
+    {
+        "sidecars/yue2-model-config.json",
+        "sidecars/yue2-generation-config.json",
+        "sidecars/yue2-qwen.tiktoken",
+        "sidecars/yue2-vae-config.json",
+        "yue2-vae-f16.gguf",
+    }
+)
+MINIMAX_H3_VARIANTS = {
+    "minimax_h3_q4_k": "dit.gguf",
+    "minimax_h3_q4_k_int8_dit": "dit_int8.gguf",
+}
+MINIMAX_H3_FIXED_FILES = frozenset(
+    {
+        "configuration.json",
+        "FL2VA/processor/chat_template.json",
+        "FL2VA/processor/merges.txt",
+        "FL2VA/processor/preprocessor_config.json",
+        "FL2VA/processor/tokenizer.json",
+        "FL2VA/processor/tokenizer_config.json",
+        "FL2VA/processor/video_preprocessor_config.json",
+        "FL2VA/processor/vocab.json",
+        "text_encoder_q4_k.gguf",
+        "audio_vae_folded_f16.gguf",
+        "video_vae.gguf",
+    }
+)
 
 
 class InventoryError(ValueError):
@@ -52,6 +137,7 @@ class InventoryPackage:
     availability: str | dict[str, Any]
     manifest: tuple[InventoryManifestFile, ...]
     task: str
+    role: str = "model"
 
     @property
     def download_files(self) -> tuple[str, ...]:
@@ -103,6 +189,16 @@ def _availability_is_available(value: Any) -> bool:
     return False
 
 
+def _generation_availability_is_verified(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("verified") is True
+        and not value.get("missing_files")
+        and not value.get("unverified_files")
+        and value.get("unsupported_download") is not True
+    )
+
+
 def _family_rows(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     families = _sequence(payload.get("families"), "families")
     result: dict[str, dict[str, Any]] = {}
@@ -120,6 +216,8 @@ def _family_rows(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _infer_task(package_id: str, family_id: str, tasks: set[str]) -> str:
+    if family_id in GENERATION_FAMILIES:
+        return "gen"
     if tasks and tasks <= {"design", "vdes"}:
         return "vdes"
     lowered_id = package_id.casefold()
@@ -138,6 +236,82 @@ def _infer_task(package_id: str, family_id: str, tasks: set[str]) -> str:
     ):
         return "clon"
     return "tts"
+
+
+def _is_exact_minimax_music3_layout(
+    package_id: str,
+    family_id: str,
+    manifest_paths: tuple[str, ...],
+) -> bool:
+    if family_id != "minimax_music3":
+        return False
+    variant_files = MINIMAX_MUSIC3_VARIANTS.get(package_id)
+    if variant_files is None:
+        return False
+    expected_files = MINIMAX_MUSIC3_FIXED_FILES | frozenset(variant_files)
+    return len(manifest_paths) == len(expected_files) and set(manifest_paths) == expected_files
+
+
+def _is_exact_yue2_main_layout(
+    package_id: str,
+    family_id: str,
+    manifest_paths: tuple[str, ...],
+) -> bool:
+    if family_id != "yue2":
+        return False
+    main_file = YUE2_MAIN_VARIANTS.get(package_id)
+    if main_file is None:
+        return False
+    expected_files = YUE2_FIXED_FILES | {main_file}
+    return len(manifest_paths) == len(expected_files) and set(manifest_paths) == expected_files
+
+
+def _is_exact_minimax_h3_layout(
+    package_id: str,
+    family_id: str,
+    manifest_paths: tuple[str, ...],
+) -> bool:
+    if family_id != "minimax_h3":
+        return False
+    dit_file = MINIMAX_H3_VARIANTS.get(package_id)
+    if dit_file is None:
+        return False
+    expected_files = MINIMAX_H3_FIXED_FILES | {dit_file}
+    return len(manifest_paths) == len(expected_files) and set(manifest_paths) == expected_files
+
+
+def _yue2_session_options(
+    package_id: str,
+    family_id: str,
+    manifest_paths: tuple[str, ...],
+) -> dict[str, str] | None:
+    if not _is_exact_yue2_main_layout(package_id, family_id, manifest_paths):
+        return None
+    return {"model_gguf": YUE2_MAIN_VARIANTS[package_id], "vae_gguf": "yue2-vae-f16.gguf"}
+
+
+def _ace_step_load_options(package_id: str) -> dict[str, str] | None:
+    if not package_id.startswith("ace_step_"):
+        return None
+    for variant, model_path in ACE_STEP_MODELS.items():
+        if package_id.startswith(f"ace_step_{variant}_"):
+            return {"ace_step.dit_model_path": model_path}
+    return None
+
+
+def _minimax_music3_session_options(
+    package_id: str,
+    family_id: str,
+    manifest_paths: tuple[str, ...],
+) -> dict[str, str] | None:
+    if not _is_exact_minimax_music3_layout(package_id, family_id, manifest_paths):
+        return None
+    language_model, rvq_depth_decoder, transformer = MINIMAX_MUSIC3_VARIANTS[package_id]
+    return {
+        "language_model_gguf": language_model,
+        "rvq_depth_decoder_gguf": rvq_depth_decoder,
+        "flow_transformer_gguf": transformer,
+    }
 
 
 def _manifest_rows(
@@ -192,7 +366,17 @@ def _parse_package(
     family_row = families.get(family)
     if family_row is None:
         raise InventoryError(f"Package {package_id!r} references an unknown family.")
-    tasks = {str(task).casefold() for task in family_row["tasks"]}
+    role = row.get("entry_role", "model")
+    if role not in {"model", "component"}:
+        raise InventoryError(f"Package {package_id!r} has an invalid entry role.")
+    if (role == "component") != (package_id in COMPONENT_IDS):
+        raise InventoryError(f"Package {package_id!r} has an inconsistent entry role.")
+    raw_tasks = row.get("tasks", family_row["tasks"])
+    if not isinstance(raw_tasks, list) or any(not isinstance(task, str) or not task for task in raw_tasks):
+        raise InventoryError(f"Package {package_id!r} has invalid tasks.")
+    tasks = {task.casefold() for task in raw_tasks}
+    if role == "component" and (tasks or row.get("category") != "component"):
+        raise InventoryError(f"Package {package_id!r} has invalid component tasks or category.")
     label = row.get("label", package_id)
     if not isinstance(label, str) or not label:
         raise InventoryError(f"Package {package_id!r} has an invalid label.")
@@ -249,16 +433,37 @@ def _parse_package(
         raise InventoryError(f"Package {package_id!r}.files does not match its manifest.")
     if package_format != "gguf":
         raise InventoryError(f"Package {package_id!r} is not a GGUF package.")
+    if family == "yue2" and role == "model" and not _is_exact_yue2_main_layout(
+        package_id, family, manifest_paths
+    ):
+        raise InventoryError(f"Package {package_id!r} does not match a reviewed YuE2 layout.")
+    if family == "minimax_h3" and role == "model" and not _is_exact_minimax_h3_layout(
+        package_id, family, manifest_paths
+    ):
+        raise InventoryError(f"Package {package_id!r} does not match a reviewed MiniMax-H3 layout.")
     gguf_files = tuple(path for path in manifest_paths if path.casefold().endswith(".gguf"))
     if not gguf_files:
         raise InventoryError(f"Package {package_id!r} has no GGUF file.")
     if len(gguf_files) > 1:
-        raise InventoryError(f"Package {package_id!r} contains multiple GGUF files.")
+        backbones = [path for path in gguf_files if not Path(path).name.startswith(("mmproj-", "vocoder-", "tokenizer-"))]
+        lfm_layout = family == "lfm2_audio" and len(backbones) == 1 and set(gguf_files) == {
+            backbones[0], *(str(Path(backbones[0]).with_name(prefix + Path(backbones[0]).name)) for prefix in ("mmproj-", "vocoder-", "tokenizer-"))
+        }
+        minimax_music3_layout = _is_exact_minimax_music3_layout(package_id, family, manifest_paths)
+        yue2_layout = _is_exact_yue2_main_layout(package_id, family, manifest_paths)
+        minimax_h3_layout = _is_exact_minimax_h3_layout(package_id, family, manifest_paths)
+        if not lfm_layout and not minimax_music3_layout and not yue2_layout and not minimax_h3_layout:
+            raise InventoryError(f"Package {package_id!r} contains multiple GGUF files.")
     if package_id.startswith("dots_tts_edit_"):
         raise InventoryError(f"Package {package_id!r} is an editing variant, catalogued only.")
-    if not tasks & SPEECH_TASKS or family in CATALOGUE_ONLY_FAMILIES:
+    if role == "model" and family not in GENERATION_FAMILIES and (
+        not tasks & SPEECH_TASKS or family in CATALOGUE_ONLY_FAMILIES
+    ):
         raise InventoryError(f"Package {package_id!r} is not a normal speech package.")
-    if not _availability_is_available(availability) or gated:
+    available = _availability_is_available(availability)
+    if family in GENERATION_FAMILIES:
+        available = _generation_availability_is_verified(availability)
+    if not available or gated:
         raise InventoryError(f"Package {package_id!r} is not available for installation.")
     return InventoryPackage(
         id=package_id,
@@ -276,6 +481,7 @@ def _parse_package(
         availability=availability,
         manifest=manifest,
         task=_infer_task(package_id, family, tasks),
+        role=role,
     )
 
 
@@ -341,9 +547,24 @@ def load_audio_cpp_packages(path: str | Path | None = None) -> tuple[Any, ...]:
     packages: list[AudioCppModelPackage] = []
     for package in validated_inventory_packages(path):
         language_options = None
+        load_options = None
+        session_options = None
         if package.family == "pocket_tts" and "/" in package.target_directory:
             language = package.target_directory.rsplit("/", 1)[-1]
             language_options = {"language": language}
+        if package.family == "ace_step":
+            load_options = _ace_step_load_options(package.id)
+        elif package.family == "minimax_music3":
+            session_options = _minimax_music3_session_options(
+                package.id,
+                package.family,
+                package.files,
+            )
+        elif package.family == "yue2" and package.role == "model":
+            session_options = _yue2_session_options(package.id, package.family, package.files)
+        if language_options is not None:
+            load_options = language_options
+            session_options = language_options
         packages.append(
             AudioCppModelPackage(
                 id=package.id,
@@ -352,8 +573,8 @@ def load_audio_cpp_packages(path: str | Path | None = None) -> tuple[Any, ...]:
                 files=package.files,
                 sha256=tuple(item.sha256 for item in package.manifest),
                 task=package.task,
-                load_options=language_options,
-                session_options=language_options,
+                load_options=load_options,
+                session_options=session_options,
                 label=package.label,
                 precision=package.precision,
                 download_kind=package.download_kind,
@@ -361,6 +582,7 @@ def load_audio_cpp_packages(path: str | Path | None = None) -> tuple[Any, ...]:
                 revision=package.revision,
                 download_files=package.download_files,
                 strip_prefix=package.strip_prefix,
+                role=package.role,
             )
         )
     return tuple(packages)

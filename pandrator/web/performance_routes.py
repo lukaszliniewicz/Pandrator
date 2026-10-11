@@ -8,6 +8,10 @@ from sqlalchemy import select
 from . import models as m
 from . import performance_plans as plans
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
+from .performance_read_projections import (
+    PERFORMANCE_PLAN_VIEWS,
+    intern_capability_profiles,
+)
 from .performance_schemas import (
     PerformanceAdoptRequest,
     PerformanceEditRequest,
@@ -45,6 +49,37 @@ def register_performance_routes(app, context) -> None:
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("Offset must be nonnegative and limit must be 1–100.")
         return offset, limit
+
+    def read_view():
+        value = request.args.get("view", "full")
+        if value not in PERFORMANCE_PLAN_VIEWS:
+            raise ValueError("view must be one of summary, annotations, full.")
+        return value
+
+    def include_units_query(default: bool) -> bool:
+        value = request.args.get("include_units")
+        if value is None:
+            return default
+        if value.lower() in {"true", "1"}:
+            return True
+        if value.lower() in {"false", "0"}:
+            return False
+        raise ValueError("include_units must be true or false.")
+
+    def segment_ids_query() -> list[str] | None:
+        value = request.args.get("segment_ids")
+        if value is None:
+            return None
+        values = [part.strip() for part in value.split(",")]
+        if not values or any(not item for item in values):
+            raise ValueError("segment_ids must be a comma-separated list of IDs.")
+        if len(values) > 100:
+            raise ValueError("segment_ids may contain at most 100 IDs.")
+        if len(set(values)) != len(values):
+            raise ValueError("segment_ids must contain unique IDs.")
+        if any(len(item) > 80 for item in values):
+            raise ValueError("Each segment ID must be at most 80 characters.")
+        return values
 
     def settings(session, session_id):
         if session.get(m.SessionRecord, session_id) is None:
@@ -139,6 +174,8 @@ def register_performance_routes(app, context) -> None:
     def list_plans(session_id):
         try:
             offset, limit = paging()
+            view = read_view()
+            include_units = include_units_query(False)
             with services.database.session() as session:
                 runtime = settings(session, session_id)
                 statement = select(m.PerformancePlan).where(
@@ -160,17 +197,31 @@ def register_performance_routes(app, context) -> None:
                         .limit(limit)
                     )
                 )
-                from pandrator.logic.speech_performance import resolve_capabilities
+                items = [
+                    plans.describe_plan(
+                        session,
+                        plan,
+                        include_units=include_units,
+                        view=view,
+                    )
+                    for plan in rows
+                ]
+                if view == "full":
+                    from pandrator.logic.speech_performance import resolve_capabilities
 
+                    capabilities = resolve_capabilities(runtime)
+                else:
+                    items, capabilities = intern_capability_profiles(items)
                 return jsonify(
                     {
-                        "items": [
-                            plans.describe_plan(session, plan, include_units=False)
-                            for plan in rows
-                        ],
+                        "items": items,
                         "offset": offset,
                         "limit": limit,
-                        "capabilities": resolve_capabilities(runtime),
+                        **(
+                            {"capabilities": capabilities}
+                            if view == "full"
+                            else {"capability_profiles": capabilities}
+                        ),
                         "performance_enabled": bool(runtime.get("performance_enabled")),
                         "tts_context_mode": runtime.get("tts_context_mode", "off"),
                     }
@@ -181,6 +232,12 @@ def register_performance_routes(app, context) -> None:
     @app.post(base, endpoint="create_performance_plan")
     @guards.require_scope("app.run")
     def create(session_id):
+        try:
+            view = read_view()
+            include_units = include_units_query(True)
+        except ValueError as error:
+            return failure(error)
+
         def operation(session, _plan, body):
             payload = PerformancePlanCreateRequest.model_validate(body)
             plan = plans.create_plan(
@@ -188,7 +245,12 @@ def register_performance_routes(app, context) -> None:
             )
             if payload.mode == "llm":
                 enqueue(session, plan)
-            return plans.describe_plan(session, plan), 201
+            return plans.describe_plan(
+                session,
+                plan,
+                include_units=include_units,
+                view=view,
+            ), 201
 
         return write(
             session_id, "createPerformancePlan", PerformancePlanCreateRequest, operation
@@ -200,6 +262,9 @@ def register_performance_routes(app, context) -> None:
         try:
             offset, limit = paging()
             filter_name = request.args.get("filter", "all")
+            view = read_view()
+            include_units = include_units_query(True)
+            segment_ids = segment_ids_query()
             with services.database.session() as session:
                 return jsonify(
                     plans.describe_plan(
@@ -207,7 +272,10 @@ def register_performance_routes(app, context) -> None:
                         plans.get_plan(session, session_id, plan_id),
                         offset=offset,
                         limit=limit,
+                        include_units=include_units,
                         filter=filter_name,
+                        view=view,
+                        segment_ids=segment_ids,
                     )
                 )
         except (ValueError, KeyError, RevisionConflict) as error:
@@ -337,7 +405,7 @@ def register_performance_routes(app, context) -> None:
                 }
                 model = result["capabilities"].get("model")
                 backend = result["capabilities"].get("backend")
-            catalogue, _ = services.tts_catalogue.snapshot(refresh=True)
+            catalogue, _ = services.tts_catalogue.snapshot(refresh=False)
             service = next((item for item in catalogue.get("services", []) if item.get("id") == backend), None)
             ready = bool(service and service.get("available") and model in (service.get("models") or []))
             result["readiness"] = {

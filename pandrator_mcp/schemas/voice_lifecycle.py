@@ -3,14 +3,51 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictFloat, field_validator, model_validator
 
 from .common import ToolInput
 
 VoiceCategory = Literal["male", "female", "androgynous", "unspecified"]
 Pitch = Literal["low", "mid", "high"]
+VoiceCatalogField = Literal[
+    "key",
+    "id",
+    "kind",
+    "name",
+    "description",
+    "language",
+    "voice_category",
+    "origin",
+    "revision",
+    "collections",
+    "compatibility",
+    "sample_count",
+    "created_at",
+    "updated_at",
+    "bundled",
+    "match_reasons",
+    "reference",
+    "profile",
+    "evidence",
+    "safe_artifact_id",
+]
+VoiceCatalogFields = list[VoiceCatalogField]
+_VOICE_CATALOG_FIELD_NAMES = get_args(VoiceCatalogField)
+VOICE_CATALOG_COMPACT_FIELDS: tuple[VoiceCatalogField, ...] = (
+    "id",
+    "key",
+    "kind",
+    "name",
+    "reference",
+    "language",
+    "voice_category",
+    "revision",
+    "sample_count",
+    "safe_artifact_id",
+    "compatibility",
+)
 
 _SAFE_KEY = r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$"
 _PROFILE_MAX_BYTES = 64 * 1024
@@ -84,8 +121,31 @@ class VoiceCreateInput(ToolInput):
         return _bounded_json_object(value, name="profile", maximum=_PROFILE_MAX_BYTES)
 
 
+class DesignGoogleVoiceInput(ToolInput):
+    service_id: Literal["gemini", "vertex_ai"]
+    model: Literal["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
+    name: str = Field(min_length=1, max_length=255)
+    prompt: str = Field(min_length=1, max_length=4_000)
+    language: str = Field(
+        default="en",
+        min_length=2,
+        max_length=40,
+        pattern=r"^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$",
+    )
+    voice_category: VoiceCategory = "unspecified"
+    idempotency_key: str = Field(min_length=8, max_length=200, pattern=_SAFE_KEY)
+
+    @field_validator("name", "prompt", "language", mode="before")
+    @classmethod
+    def trim_text(_cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 class VoiceCatalogInput(ToolInput):
     """Flat bounded query for the normalized voice catalog."""
+
+    view: Literal["full", "compact"] = "full"
+    fields: VoiceCatalogFields | None = Field(default=None, min_length=1, max_length=20)
 
     # language and limit are retained for compatibility with the legacy tool.
     query: str = Field(default="", max_length=300)
@@ -108,6 +168,25 @@ class VoiceCatalogInput(ToolInput):
     sort: Literal["relevance", "name", "recently_added", "recently_updated"] = "relevance"
     limit: int = Field(default=30, ge=1, le=200)
     cursor: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("fields", mode="before")
+    @classmethod
+    def validate_fields(cls, value: Any) -> Any:
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized = list(value)
+        unknown = [field for field in normalized if field not in _VOICE_CATALOG_FIELD_NAMES]
+        if unknown:
+            allowed = ", ".join(_VOICE_CATALOG_FIELD_NAMES)
+            rejected = ", ".join(repr(field) for field in unknown)
+            raise ValueError(
+                f"Unknown voice catalog field(s): {rejected}. Allowed fields: {allowed}."
+            )
+        if len(normalized) > 20:
+            raise ValueError("fields may include at most 20 voice catalog field names.")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("fields must contain unique voice catalog field names.")
+        return normalized
 
 
 class VoiceCatalogCapabilitiesInput(ToolInput):
@@ -138,6 +217,14 @@ class ImportVoiceReferenceInput(_RevisionWriteInput):
     language: str | None = Field(default=None, max_length=40)
     transcript_reviewed: bool = False
     expected_voice_revision: int = Field(ge=1)
+    start_seconds: StrictFloat = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    end_seconds: StrictFloat | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_crop_range(self) -> ImportVoiceReferenceInput:
+        if self.end_seconds is not None and self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be greater than start_seconds.")
+        return self
 
 
 class TranscribeVoiceSampleInput(_RevisionWriteInput):
@@ -255,6 +342,7 @@ __all__ = [
     "AuditionVoiceInput",
     "CatalogVoiceMetadataChanges",
     "CreateVoiceCollectionInput",
+    "DesignGoogleVoiceInput",
     "GetVoiceSamplesInput",
     "ImportVoiceReferenceInput",
     "ListVoiceCollectionsInput",
@@ -265,9 +353,12 @@ __all__ = [
     "TranscribeVoiceSampleInput",
     "UpdateCatalogVoiceMetadataInput",
     "UpdateVoiceCollectionInput",
+    "VOICE_CATALOG_COMPACT_FIELDS",
     "VoiceCatalogInput",
     "VoiceCatalogCapabilitiesInput",
     "VoiceCategory",
+    "VoiceCatalogField",
+    "VoiceCatalogFields",
     "VoiceCreateInput",
     "VoiceReferenceInput",
 ]

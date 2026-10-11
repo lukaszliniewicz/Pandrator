@@ -27,7 +27,6 @@ def payload() -> dict[str, object]:
         "input": TEXT,
         "voice": "default",
         "response_format": "wav",
-        "speed": 1.0,
         "voxcpm": {
             "cfg_value": 1.5,
             "inference_timesteps": 15,

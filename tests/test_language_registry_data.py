@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 LOGIC_ROOT = REPOSITORY_ROOT / "pandrator" / "logic"
@@ -12,14 +13,14 @@ TAG_PATTERN = re.compile(r"^[a-z]{2,8}(?:-[a-z0-9]{1,8})*$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _load_json(path: Path) -> dict[str, object]:
+def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_language_registry_is_stable_and_referentially_valid() -> None:
     registry = _load_json(LOGIC_ROOT / "language_registry.json")
     assert registry["schema_version"] == 1
-    assert registry["catalogue_revision"] == "2026-10-07"
+    assert registry["catalogue_revision"] == "2026-10-08"
 
     sources = registry["sources"]
     assert isinstance(sources, list)
@@ -66,11 +67,14 @@ def test_language_registry_is_stable_and_referentially_valid() -> None:
         "es-us": "Spanish (United States)",
         "kok": "Konkani",
         "mg": "Malagasy",
-        "or": "Odia",
     }.items():
         assert by_tag[tag]["label"] == label
         assert by_tag[tag]["aliases"] == []
         assert by_tag[tag]["source_ids"] == ["gemini_legacy_tts_languages"]
+
+    assert by_tag["or"]["label"] == "Odia"
+    assert by_tag["or"]["aliases"] == ["ori"]
+    assert "elevenlabs_v4_models" in by_tag["or"]["source_ids"]
 
 
 def test_model_language_sources_preserve_counts_and_coverage_meaning() -> None:

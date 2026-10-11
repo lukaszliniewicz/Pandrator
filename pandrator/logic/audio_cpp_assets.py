@@ -32,6 +32,7 @@ import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from .cancellable_process import ProcessCancelled
@@ -43,6 +44,13 @@ HF_REPO = "audio-cpp/audio.cpp-gguf"
 HF_REVISION = "406756ee8e3b16e902ce40112986c1010775f888"
 HTDEMUCS_REVISION = "351dbab8d8534675ee29440bb402e348b09e55e2"
 DFN2_GIT_BLOB = "d2a4fe4e5dbb1a51f9ec41162460ce82ca4667a6"
+STABLE_AUDIO_SFX_MODEL_ID = "stable_audio_3_small_sfx_q8_0"
+STABLE_AUDIO_SFX_REVISION = "e36610ac69b5262e914a52635324050bee8f1ad2"
+STABLE_AUDIO_SFX_SHA256 = "5bb1ec653134e63dac46264e336ae198a2590195fc996fcd0605021215e9b26f"
+STABLE_AUDIO_SFX_MINIMUM_RUNTIME_VERSION = "0.9.1"
+STABLE_AUDIO_SFX_DIRECTORY = "Stable-Audio-3-Small-SFX-GGUF"
+STABLE_AUDIO_SFX_FILENAME = "stable-audio-3-small-sfx-q8_0.gguf"
+STABLE_AUDIO_SFX_SIZE_BYTES = 1683570688
 _RESERVED_DISK_BYTES = 64 * 1024 * 1024
 _USER_AGENT = "Pandrator-AudioCpp-Assets"
 
@@ -177,6 +185,28 @@ MODELS: dict[str, dict] = {
         "git_blob": DFN2_GIT_BLOB,
         "utility": "deepfilternet2",
         "notes": "48 kHz denoise/enhance via --load-option utility=deepfilternet2.",
+    },
+    STABLE_AUDIO_SFX_MODEL_ID: {
+        "id": STABLE_AUDIO_SFX_MODEL_ID,
+        "label": "Stable Audio 3 Small SFX Q8_0 GGUF",
+        "family": "stable_audio",
+        "cli_task": "gen",
+        "cli_family": "stable_audio",
+        "directory": STABLE_AUDIO_SFX_DIRECTORY,
+        "filename": STABLE_AUDIO_SFX_FILENAME,
+        "kind": "gguf",
+        "repo": HF_REPO,
+        "revision": STABLE_AUDIO_SFX_REVISION,
+        "url": _hf_url(
+            STABLE_AUDIO_SFX_DIRECTORY,
+            STABLE_AUDIO_SFX_FILENAME,
+            revision=STABLE_AUDIO_SFX_REVISION,
+        ),
+        "size_bytes": STABLE_AUDIO_SFX_SIZE_BYTES,
+        "sha256": STABLE_AUDIO_SFX_SHA256,
+        "utility": None,
+        "minimum_runtime_version": STABLE_AUDIO_SFX_MINIMUM_RUNTIME_VERSION,
+        "notes": "CPU-only Stable Audio 3 Small sound-effects generation.",
     },
 }
 
@@ -328,9 +358,16 @@ def find_manager_asset(model_id: str) -> Path | None:
     for models_root in _manager_models_dirs():
         candidate = models_root / spec["directory"] / spec["filename"]
         try:
-            if candidate.is_file() and candidate.stat().st_size == spec["size_bytes"]:
-                return candidate
-        except OSError:
+            root = models_root.resolve()
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+            if (
+                not candidate.is_symlink()
+                and resolved.is_file()
+                and resolved.stat().st_size == spec["size_bytes"]
+            ):
+                return resolved
+        except (OSError, ValueError):
             continue
     return None
 
@@ -360,7 +397,7 @@ def _hash_file(path: Path, event: threading.Event | None) -> str:
 def _verified_cached(path: Path, spec: dict, event: threading.Event | None) -> bool:
     """Fast path: exact size, plus memoized or freshly computed digest."""
     try:
-        if not path.is_file() or path.stat().st_size != spec["size_bytes"]:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != spec["size_bytes"]:
             return False
     except OSError:
         return False
@@ -379,41 +416,236 @@ def _verified_cached(path: Path, spec: dict, event: threading.Event | None) -> b
     return True
 
 
-def _reuse_manager_asset(
+@contextmanager
+def asset_package_lock(
+    package_path: Path, package_id: str, event: threading.Event | None = None
+):
+    """Serialize one complete package installation across threads/processes."""
+    with _model_lock(Path(package_path), f"package:{package_id}", event):
+        yield
+
+
+def _validate_trusted_file_spec(spec: dict) -> None:
+    size = spec.get("size_bytes")
+    digest = spec.get("sha256")
+    url = spec.get("url")
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        raise AudioAssetsError("Pinned model file must have a positive expected size.")
+    if not isinstance(digest, str) or len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise AudioAssetsError("Pinned model file must have a complete SHA-256 digest.")
+    if not isinstance(url, str):
+        raise AudioAssetsError("Pinned model file has no trusted download source.")
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise AudioAssetsError("Pinned model file source is outside the HTTPS allowlist.") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"huggingface.co", "raw.githubusercontent.com"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise AudioAssetsError("Pinned model file source is outside the HTTPS allowlist.")
+
+
+def _copy_verified_source(
+    source: Path,
     destination: Path,
     spec: dict,
     event: threading.Event | None,
     progress: ProgressCallback | None,
 ) -> bool:
-    """Hardlink (fallback copy) a verified Manager file into the cache."""
-    source = find_manager_asset(spec["id"])
-    if source is None:
+    """Atomically reuse an exact Manager file without exposing partial copies."""
+    if source.is_symlink() or not source.is_file():
         return False
-    check_cancelled(event)
-    expected = spec["sha256"]
-    if expected is not None and _hash_file(source, event) != expected:
-        logger.warning("Ignoring Manager asset with unexpected digest: %s", source)
-        return False
-    if progress is not None:
-        progress("reuse", 0, spec["size_bytes"])
-    check_cancelled(event)
     try:
-        os.link(source, destination)
-    except OSError as error:
-        # Cross-device or otherwise un-linkable: fall back to a private copy.
-        logger.debug("Hardlink reuse failed (%s); copying instead.", error)
+        if source.stat().st_size != spec["size_bytes"]:
+            return False
+        if _hash_file(source, event) != spec["sha256"]:
+            logger.warning("Ignoring Manager asset with unexpected digest: %s", source)
+            return False
+    except OSError:
+        return False
+
+    temporary: Path | None = None
+    try:
+        check_cancelled(event)
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent,
+            prefix=f".{spec['id']}-reuse-",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+        temporary.unlink()
         try:
-            shutil.copyfile(source, destination)
-        except OSError as copy_error:
-            raise AudioAssetsError(
-                f"Could not reuse the Manager {spec['id']} asset: {copy_error}"
-            ) from copy_error
-    if progress is not None:
-        progress("reuse", spec["size_bytes"], spec["size_bytes"])
-    key = _cache_key(destination)
-    if key is not None and expected is not None:
-        _VERIFIED.add(key)
-    return True
+            os.link(source, temporary)
+        except OSError:
+            digest = hashlib.sha256()
+            size = 0
+            with source.open("rb") as source_handle, temporary.open("xb") as output:
+                while True:
+                    check_cancelled(event)
+                    chunk = source_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    digest.update(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            if size != spec["size_bytes"] or digest.hexdigest() != spec["sha256"]:
+                return False
+        check_cancelled(event)
+        os.replace(temporary, destination)
+        temporary = None
+        if progress is not None:
+            progress("reuse", spec["size_bytes"], spec["size_bytes"])
+        key = _cache_key(destination)
+        if key is not None:
+            _VERIFIED.add(key)
+        return True
+    except ProcessCancelled:
+        raise
+    except OSError as error:
+        logger.debug("Could not reuse verified Manager file (%s).", error)
+        return False
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def ensure_trusted_file(
+    spec: dict,
+    destination: Path,
+    cancel_event: threading.Event | None = None,
+    progress: ProgressCallback | None = None,
+    *,
+    opener: Callable = urlopen,
+    manager_source: Path | None = None,
+    lock_path: Path | None = None,
+    lock_id: str | None = None,
+) -> Path:
+    """Download one validated pinned file using the shared asset cache rules.
+
+    A package caller may pass a package-wide ``lock_path``/``lock_id`` and call
+    once per manifest entry; all files are then serialized by the same lock.
+    ``spec`` must come from an immutable, trusted allowlist, not request data.
+    """
+    _validate_trusted_file_spec(spec)
+    destination = Path(destination)
+    lock_target = Path(lock_path) if lock_path is not None else destination
+    lock_key = lock_id or str(spec.get("id") or destination.name)
+    with _model_lock(lock_target, lock_key, cancel_event):
+        return _ensure_trusted_file_locked(
+            spec,
+            destination,
+            cancel_event,
+            progress,
+            opener=opener,
+            manager_source=manager_source,
+        )
+
+
+def _ensure_trusted_file_locked(
+    spec: dict,
+    destination: Path,
+    cancel_event: threading.Event | None,
+    progress: ProgressCallback | None,
+    *,
+    opener: Callable,
+    manager_source: Path | None,
+) -> Path:
+    """Unlocked implementation shared by single-file and package installs."""
+    _validate_trusted_file_spec(spec)
+    check_cancelled(cancel_event)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if _verified_cached(destination, spec, cancel_event):
+        return destination.resolve()
+    if manager_source is not None and _copy_verified_source(
+        Path(manager_source), destination, spec, cancel_event, progress
+    ):
+        if _verified_cached(destination, spec, cancel_event):
+            return destination.resolve()
+        destination.unlink(missing_ok=True)
+
+    try:
+        free = shutil.disk_usage(destination.parent).free
+    except OSError as error:
+        raise AudioAssetsError(
+            f"Could not check free space for {spec.get('label', 'the model file')}: {error}"
+        ) from error
+    if free < spec["size_bytes"] + _RESERVED_DISK_BYTES:
+        raise AudioAssetsError(
+            f"Not enough free space for {spec.get('label', 'the model file')} "
+            f"({spec['size_bytes']} bytes)."
+        )
+
+    temporary: Path | None = None
+    try:
+        logger.info(
+            "Downloading the pinned %s (%s bytes).",
+            spec.get("label", spec.get("id", "model file")),
+            spec["size_bytes"],
+        )
+        request = Request(spec["url"], headers={"User-Agent": _USER_AGENT})
+        with (
+            opener(request, timeout=30) as response,
+            tempfile.NamedTemporaryFile(
+                dir=destination.parent,
+                prefix=f".{spec.get('id', 'model')}-download-",
+                delete=False,
+            ) as output,
+        ):
+            temporary = Path(output.name)
+            digest = hashlib.sha256()
+            size = 0
+            if progress is not None:
+                progress("download", 0, spec["size_bytes"])
+            while True:
+                check_cancelled(cancel_event)
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > spec["size_bytes"]:
+                    raise AudioAssetsError("Pinned model download exceeded its expected size.")
+                digest.update(chunk)
+                output.write(chunk)
+                if progress is not None:
+                    progress("download", size, spec["size_bytes"])
+            if size != spec["size_bytes"]:
+                raise AudioAssetsError(
+                    "Pinned model download failed its expected size check "
+                    f"(got {size}, expected {spec['size_bytes']})."
+                )
+            if digest.hexdigest() != spec["sha256"]:
+                raise AudioAssetsError("Pinned model download failed its SHA-256 check.")
+            output.flush()
+            os.fsync(output.fileno())
+        check_cancelled(cancel_event)
+        if progress is not None:
+            progress("verify", spec["size_bytes"], spec["size_bytes"])
+        os.replace(temporary, destination)
+        temporary = None
+        key = _cache_key(destination)
+        if key is not None:
+            _VERIFIED.add(key)
+    except ProcessCancelled:
+        raise
+    except AudioAssetsError:
+        raise
+    except OSError as error:
+        raise AudioAssetsError(
+            f"Could not cache {spec.get('label', spec.get('id', 'model file'))}: {error}"
+        ) from error
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return destination.resolve()
 
 
 def ensure_model(
@@ -433,94 +665,14 @@ def ensure_model(
     check_cancelled(cancel_event)
     destination = cache_path(model_id, settings)
     with _model_lock(destination, model_id, cancel_event):
-        if _verified_cached(destination, spec, cancel_event):
-            return destination.resolve()
-        if find_manager_asset(model_id) is not None:
-            try:
-                if _reuse_manager_asset(
-                    destination, spec, cancel_event, progress
-                ) and _verified_cached(destination, spec, cancel_event):
-                    return destination.resolve()
-            except AudioAssetsError:
-                raise
-            except OSError as error:
-                raise AudioAssetsError(
-                    f"Could not reuse the Manager {model_id} asset: {error}"
-                ) from error
-            destination.unlink(missing_ok=True)
-        try:
-            free = shutil.disk_usage(destination.parent).free
-        except OSError as error:
-            raise AudioAssetsError(
-                f"Could not check free space for the {spec['label']} download: {error}"
-            ) from error
-        if free < spec["size_bytes"] + _RESERVED_DISK_BYTES:
-            raise AudioAssetsError(
-                f"Not enough free space for the {spec['label']} "
-                f"({spec['size_bytes']} bytes)."
-            )
-        temporary: Path | None = None
-        try:
-            logger.info(
-                "Downloading the pinned %s (%s bytes).",
-                spec["label"],
-                spec["size_bytes"],
-            )
-            request = Request(spec["url"], headers={"User-Agent": _USER_AGENT})
-            with (
-                opener(request, timeout=30) as response,
-                tempfile.NamedTemporaryFile(
-                    dir=destination.parent,
-                    prefix=f".{model_id}-download-",
-                    delete=False,
-                ) as output,
-            ):
-                temporary = Path(output.name)
-                digest = hashlib.sha256()
-                size = 0
-                if progress is not None:
-                    progress("download", 0, spec["size_bytes"])
-                while True:
-                    check_cancelled(cancel_event)
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > spec["size_bytes"]:
-                        raise AudioAssetsError(
-                            f"{spec['label']} download exceeded its pinned size."
-                        )
-                    digest.update(chunk)
-                    output.write(chunk)
-                    if progress is not None:
-                        progress("download", size, spec["size_bytes"])
-                if size != spec["size_bytes"]:
-                    raise AudioAssetsError(
-                        f"{spec['label']} download failed its pinned size check "
-                        f"(got {size}, expected {spec['size_bytes']})."
-                    )
-                if spec["sha256"] is not None and digest.hexdigest() != spec["sha256"]:
-                    raise AudioAssetsError(
-                        f"{spec['label']} download failed its pinned SHA-256 check."
-                    )
-                output.flush()
-                os.fsync(output.fileno())
-            check_cancelled(cancel_event)
-            if progress is not None:
-                progress("verify", spec["size_bytes"], spec["size_bytes"])
-            os.replace(temporary, destination)
-            temporary = None
-            key = _cache_key(destination)
-            if key is not None and spec["sha256"] is not None:
-                _VERIFIED.add(key)
-        except OSError as error:
-            raise AudioAssetsError(
-                f"Could not cache {spec['label']}: {error}"
-            ) from error
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-    return destination.resolve()
+        return _ensure_trusted_file_locked(
+            spec,
+            destination,
+            cancel_event,
+            progress,
+            opener=opener,
+            manager_source=find_manager_asset(model_id),
+        )
 
 
 def availability(settings: dict | None = None) -> dict:

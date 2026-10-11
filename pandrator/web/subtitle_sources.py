@@ -158,7 +158,7 @@ def adopt_subtitle_source_in_session(
     content = compose_srt(cues)
     # An immutable content-addressed derivative avoids duplicate uploads, makes
     # interrupted imports retryable and never overwrites a user's reviewed file.
-    destination = artifacts.paths.managed_path(f"sessions/{session_id}/imported-subtitles/{digest}.srt")
+    destination = artifacts.paths.managed_path(f"sessions/{record.storage_key}/imported-subtitles/{digest}.srt")
     # A rolled-back DB publication leaves only a complete candidate. Retrying
     # can register it; deleting it here could race another caller's adoption.
     _publish_subtitle_derivative(destination, content)

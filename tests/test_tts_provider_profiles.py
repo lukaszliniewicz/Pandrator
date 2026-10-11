@@ -180,7 +180,7 @@ class TTSProviderProfileTests(unittest.TestCase):
 
         self.assertIsNotNone(profile)
         assert profile is not None
-        self.assertEqual("Azure Speech · MAI Voice 2", profile["name"])
+        self.assertEqual("Azure Speech · MAI Voice 2.1", profile["name"])
         self.assertEqual("azure_speech", profile["adapter"])
         self.assertEqual(
             "https://YOUR-REGION.tts.speech.microsoft.com", profile["api_base"]
@@ -190,9 +190,9 @@ class TTSProviderProfileTests(unittest.TestCase):
         self.assertTrue(profile["direct_http"])
         self.assertTrue(profile["credential_required"])
         self.assertEqual("AZURE_SPEECH_KEY", profile["api_key_env"])
-        self.assertEqual(["MAI-Voice-2", "MAI-Voice-2-Flash"], profile["models"])
-        self.assertEqual("MAI-Voice-2", profile["default_model"])
-        self.assertEqual("en-US-Ethan:MAI-Voice-2", profile["default_voice"])
+        self.assertEqual(["MAI-Voice-2.1", "MAI-Voice-2.1-Flash"], profile["models"])
+        self.assertEqual("MAI-Voice-2.1", profile["default_model"])
+        self.assertEqual("en-US-Ethan:MAI-Voice-2.1", profile["default_voice"])
         self.assertEqual(
             {
                 "azure_speech_style": "",
@@ -201,15 +201,15 @@ class TTSProviderProfileTests(unittest.TestCase):
             },
             profile["settings"],
         )
-        self.assertIn("en-US-Ethan:MAI-Voice-2", profile["voices"])
-        self.assertIn("en-US-Ethan:MAI-Voice-2-Flash", profile["voices"])
-        self.assertNotIn("en-US-Grant:MAI-Voice-2-Flash", profile["voices"])
+        self.assertIn("en-US-Ethan:MAI-Voice-2.1", profile["voices"])
+        self.assertIn("en-US-Ethan:MAI-Voice-2.1-Flash", profile["voices"])
+        self.assertIn("en-US-Grant:MAI-Voice-2.1-Flash", profile["voices"])
         self.assertEqual(
-            profile["voice_catalogues"]["MAI-Voice-2-Flash"],
+            profile["voice_catalogues"]["MAI-Voice-2.1-Flash"],
             [
                 voice
                 for voice in profile["voices"]
-                if voice.endswith(":MAI-Voice-2-Flash")
+                if voice.endswith(":MAI-Voice-2.1-Flash")
             ],
         )
         self.assertEqual([], profile["generation_prompt_models"])
@@ -257,7 +257,7 @@ class TTSProviderProfileTests(unittest.TestCase):
             for profile in fresh_profiles
             if profile["id"] == "azure-speech-mai-voice-2"
         )
-        azure["voice_metadata"]["MAI-Voice-2:en-US-Ethan:MAI-Voice-2"]["styles"].append(
+        azure["voice_metadata"]["MAI-Voice-2.1:en-US-Ethan:MAI-Voice-2.1"]["styles"].append(
             "changed"
         )
         fresh_azure = tts_provider_profiles.get_tts_provider_profile(
@@ -266,7 +266,7 @@ class TTSProviderProfileTests(unittest.TestCase):
         assert fresh_azure is not None
         self.assertNotIn(
             "changed",
-            fresh_azure["voice_metadata"]["MAI-Voice-2:en-US-Ethan:MAI-Voice-2"][
+            fresh_azure["voice_metadata"]["MAI-Voice-2.1:en-US-Ethan:MAI-Voice-2.1"][
                 "styles"
             ],
         )

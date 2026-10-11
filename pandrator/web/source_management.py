@@ -572,6 +572,7 @@ def start_new_source_session_in_session(
     created = services.sessions.create(
         f"{original.name[:240]} — new source",
         workflow_kind=original.workflow_kind,
+        interface_mode=original.interface_mode,
         source_language=original.source_language,
         target_language=original.target_language,
         workflow_preset=original.workflow_preset,

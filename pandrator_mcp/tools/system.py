@@ -102,7 +102,10 @@ def capabilities(
     runtime: McpRuntime,
     _arguments: CapabilitiesInput,
 ) -> dict[str, Any]:
-    return runtime.require_application().capabilities()
+    from .. import MCP_CONTRACT_REVISION, __version__
+
+    return {**runtime.require_application().capabilities(),
+            "mcp_version": __version__, "mcp_contract_revision": MCP_CONTRACT_REVISION}
 
 
 def system_status(

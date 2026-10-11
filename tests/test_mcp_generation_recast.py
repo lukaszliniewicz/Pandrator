@@ -64,7 +64,8 @@ def test_exact_allowlisted_post_routes_preserve_null_and_empty_selectors(
     client._request_json = Mock(return_value={"ok": True})
     assert client.generation_recast_request(action, arguments) == {"ok": True}
     client._request_json.assert_called_once_with(
-        path, method="POST", body=body, idempotency_key=key, maximum_body_bytes=512 * 1024
+        path, method="POST", body=body, idempotency_key=key,
+        read_only_operation=action in {"preview", "undo_preview"}, maximum_body_bytes=512 * 1024
     )
     with pytest.raises(ValueError):
         client.generation_recast_request("delete", {})
@@ -206,7 +207,7 @@ def test_export_variant_forwards_explicit_and_default_version_side(side):
     application = Mock()
     application.create_workflow_plan.return_value = {"id": "plan-1"}
     runtime = SimpleNamespace(require_application=lambda: application)
-    assert plan_export_variant(runtime, PlanExportVariantInput(**arguments)) == {"id": "plan-1"}
+    assert plan_export_variant(runtime, PlanExportVariantInput(**arguments)).result == {"id": "plan-1"}
     application.create_workflow_plan.assert_called_once_with(
         "session-1", target_stage="export", overrides={"output": {
             "generation_run_id": "run-1", "audio_version_side": side or "after",

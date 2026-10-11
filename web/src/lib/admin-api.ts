@@ -325,6 +325,18 @@ export const speechRecognitionApi = {
 };
 
 export const voiceApi = {
+  designGoogle: (
+    body: ApiSchema<'GoogleVoiceDesignCreate'>,
+    idempotencyKey: string
+  ) =>
+    typedApiJson<
+      '/api/v1/voices/design/google',
+      'post',
+      JobRecord & { voice_id: string }
+    >('/api/v1/voices/design/google', 'post', {
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body
+    }),
   list: <T>() =>
     typedApiJson<'/api/v1/voices', 'get', ItemPage<T>>('/api/v1/voices', 'get'),
   create: <T>(body: ApiSchema<'VoiceCreate'>) =>

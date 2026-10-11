@@ -147,6 +147,44 @@ def resolve_binding(session, binding: dict, settings: dict, _service_config_cach
             raise ValueError(
                 f"Publish or link '{voice.name}' to {actual_service} before casting it."
             )
+        if service in {"gemini", "vertex_ai"} and ready.get(
+            "resource_kind"
+        ) == "designed_voice":
+            from pandrator.logic import google_tts_audio, tts_handler
+            from pandrator.logic.google_voice_scope import google_voice_scope
+
+            normalized_model = tts_handler._normalize_model_for_provider(
+                model, service
+            )
+            if normalized_model not in google_tts_audio.STRUCTURED_TTS_MODELS:
+                raise ValueError(
+                    "Designed Google voices require Gemini 3.8 TTS."
+                )
+            service_config = tts_handler.get_service_config(
+                settings, service, _service_config_cache
+            )
+            if not service_config:
+                raise ValueError(
+                    "Google voice configuration is unavailable for this designed voice."
+                )
+            credential = tts_handler._resolve_openai_audio_api_key(service_config)
+            if credential == tts_handler.XTTS_OPENAI_PLACEHOLDER_API_KEY:
+                credential = ""
+            try:
+                scope = google_voice_scope(service, service_config, credential)
+            except Exception:
+                raise ValueError(
+                    "Google voice credentials or project are unavailable for this designed voice."
+                ) from None
+            saved_scope = str(ready.get("scope_fingerprint") or "").strip()
+            if not saved_scope:
+                raise ValueError(
+                    "Designed Google voice registration is missing its saved scope."
+                )
+            if scope["fingerprint"] != saved_scope:
+                raise ValueError(
+                    "Google voice credentials or project changed since this voice was designed."
+                )
         voice_name = str(
             ready.get("provider_voice_id") or ready.get("voice_id") or voice.name
         )
@@ -249,6 +287,7 @@ def freeze_cast_snapshot(
     _settings_copy=None,
     controls_by_segment: Mapping[str, dict] | None = None,
     validate_segment_ids: Collection[str] | None = None,
+    _voice_reference_index: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     """Freeze all entries, resolving voices only for requested validation IDs."""
     from .generation_rendering import build_render_parts
@@ -262,7 +301,7 @@ def freeze_cast_snapshot(
     controls = get_generation_controls(session, plan.session_id)
     entries, resolutions = {}, {}
     performance = (snapshot.get("performance_snapshot") or {}).get("annotations") or {}
-    reference_index = None
+    reference_index = _voice_reference_index
     validate_ids = set(validate_segment_ids) if validate_segment_ids is not None else None
 
     def apply(binding, base):
@@ -401,10 +440,13 @@ def preview_render_parts(
     settings: dict,
     xml: str | None,
     source_speaker: str | None = None,
+    *,
+    controls: dict[str, Any] | None = None,
 ) -> list[dict]:
     from .generation_rendering import build_render_parts
 
-    controls = get_generation_controls(session, session_id)
+    if controls is None:
+        controls = get_generation_controls(session, session_id)
     resolutions = {}
 
     def apply(binding, base):

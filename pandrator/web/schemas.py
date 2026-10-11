@@ -68,6 +68,7 @@ class SessionCreate(StrictModel):
     workflow_kind: Literal["audiobook", "subtitles", "voiceover", "media_edit"] = (
         "audiobook"
     )
+    interface_mode: Literal["simple", "advanced"] = "simple"
     source_language: str = Field(default="auto", min_length=2, max_length=40)
     target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str = "custom"
@@ -93,6 +94,12 @@ class SessionUpdate(StrictModel):
     workflow_kind: (
         Literal["audiobook", "subtitles", "voiceover", "media_edit"] | None
     ) = None
+    interface_mode: Literal["simple", "advanced"] | None = Field(
+        default=None,
+        json_schema_extra={
+            "anyOf": [{"type": "string", "enum": ["simple", "advanced"]}]
+        },
+    )
     source_language: str | None = Field(default=None, min_length=2, max_length=40)
     target_language: str | None = Field(default=None, min_length=2, max_length=40)
     workflow_preset: str | None = None
@@ -100,9 +107,17 @@ class SessionUpdate(StrictModel):
     status: str | None = None
     multilingual_setup: MultilingualSetup | None = None
 
+    @field_validator("interface_mode", mode="before")
+    @classmethod
+    def reject_null_interface_mode(_cls, value: object) -> object:
+        if value is None:
+            raise ValueError("Interface mode cannot be null.")
+        return value
+
 
 class SessionForkRequest(StrictModel):
     checkpoint_artifact_id: str = Field(min_length=1, max_length=80)
+    interface_mode: Literal["simple", "advanced"] | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
     expected_revision: int | None = Field(default=None, ge=1)
     carry_media_assets: bool = True
@@ -843,8 +858,19 @@ class GenerationStartRequest(StrictModel):
     selected_segment_override: dict[str, Any] = Field(default_factory=dict)
     segment_ids: list[str] = Field(default_factory=list)
     generation_run_id: str | None = None
+    settings_source: Literal["current", "matching_run", "run"] | None = None
     settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
     operation: Literal["generate", "regenerate", "rvc"] = "generate"
+
+    @model_validator(mode="after")
+    def validate_settings_source(self) -> "GenerationStartRequest":
+        if self.settings_source == "run" and not self.settings_source_run_id:
+            raise ValueError("settings_source_run_id is required when settings_source is 'run'.")
+        if self.settings_source in {"current", "matching_run"} and self.settings_source_run_id:
+            raise ValueError(
+                "settings_source_run_id can only be used when settings_source is 'run' or omitted."
+            )
+        return self
 
 
 class OptimizationReviewItem(StrictModel):

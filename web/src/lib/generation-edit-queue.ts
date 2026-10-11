@@ -7,6 +7,13 @@ export class GenerationEditQueue {
   private failures = new Map<string, unknown>();
   private tail: Promise<unknown> = Promise.resolve();
 
+  get hasPending() {
+    return this.pending.size > 0;
+  }
+  get hasFailures() {
+    return this.failures.size > 0;
+  }
+
   resolveId(id: string): string {
     const seen = new Set<string>();
     while (this.replacements.has(id) && !seen.has(id)) {

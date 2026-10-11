@@ -101,7 +101,7 @@ def test_qwen_cjk_budget(language, expected, policy):
     ("tts", "profile", "policy", "target", "input_limit"),
     [
         ({"service": "VoxCPM", "model": "openbmb/VoxCPM2"}, "voxcpm2", 2000, 1800, None),
-        ({"service": "FishS2", "model": "fishaudio/s2-pro"}, "fish_audio_s2", 200, 180, None),
+        ({"service": "FishS2", "model": "fishaudio/s2-pro"}, "fish_audio_s2", 300, 270, None),
         ({"service": "Kokoro", "model": "kokoro"}, "kokoro", 240, 216, None),
         ({"service": "OpenAI", "model": "tts-1"}, "openai", 4000, 3600, 4096),
         ({"service": "Google Gemini", "model": "gemini-2.5-flash-tts"}, "gemini", 4000, 3600, None),

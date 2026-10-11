@@ -274,6 +274,7 @@ def test_current_preview_resolves_named_cast_unicode_offsets_and_no_sidecar(case
         (7, 29, "Kore"),
         (29, 37, "Puck"),
     ]
+    assert all(part["capabilities"]["model"] == result["model"] for part in result["parts"])
     assert all("text" not in part and "input" not in part for part in result["parts"])
 
 
@@ -315,7 +316,7 @@ def test_block_voice_wins_when_casting_is_disabled_and_include_request_is_bounde
     assert expanded["parts"][0]["input"] == text
     assert set(expanded["parts"][0]) == {
         "start", "end", "voice", "voice_source", "fallback", "report",
-        "instructions", "text", "input", "request_options",
+        "instructions", "capabilities", "text", "input", "request_options",
     }
 
 
@@ -463,9 +464,55 @@ def test_adopted_markup_remains_visible_with_runtime_flags_disabled(case, castin
     assert result["parts"][0]["instructions"] == ""
     drawer = case["services"]["generation"].list_segments(case["session_id"])
     assert drawer["items"][0]["speech_annotation_xml"] == adopted_xml
+    assert "speech_annotation" not in drawer["items"][0]
     assert drawer["items"][0]["speech_plan"]["speech_xml"] != adopted_xml
     compact = case["services"]["generation"].list_segments(case["session_id"], view="compact")
     assert "speech_annotation_xml" not in compact["items"][0]
+    assert "speech_annotation" not in compact["items"][0]
+
+
+def test_segment_reader_displays_legacy_annotation_and_frozen_version(case):
+    services = case["services"]
+    segment_id = case["segment_ids"][0]
+    adopted = adopt(case, edit(case, create(case), index=0, instruction="Old direction"))
+    _set_tts(
+        case, service="gemini", model="gemini-2.5-flash-tts",
+        performance_enabled=True,
+    )
+    current = services["generation"].list_segments(case["session_id"])["items"][0]
+    assert current["speech_annotation"]["delivery"]["instruction"] == "Old direction"
+    assert current["speech_annotation"]["decision"] == "steer"
+    assert "speech_annotation_xml" not in current
+
+    snapshot, _ = services["workspace_settings"].resolve(case["session_id"])
+    with services["database"].session() as session:
+        assert freeze_generation_performance_snapshot(session, case["revision_id"], snapshot)
+        run = m.GenerationRun(
+            session_id=case["session_id"], plan_revision_id=case["revision_id"],
+            sequence_number=1, settings_snapshot_json=snapshot, status="completed",
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+        plan = session.get(m.PerformancePlan, adopted["id"])
+        annotations = dict(plan.manual_annotations_json)
+        annotations[segment_id] = {
+            **annotations[segment_id],
+            "delivery": {"instruction": "Current direction"},
+        }
+        plan.manual_annotations_json = annotations
+
+    current = services["generation"].list_segments(case["session_id"])["items"][0]
+    frozen = services["generation"].list_segments(
+        case["session_id"], generation_run_id=run_id
+    )["items"][0]
+    assert current["speech_annotation"]["delivery"]["instruction"] == "Current direction"
+    assert frozen["speech_annotation"]["delivery"]["instruction"] == "Old direction"
+    assert "speech_annotation_xml" not in frozen
+    compact = services["generation"].list_segments(
+        case["session_id"], view="compact"
+    )["items"][0]
+    assert "speech_annotation" not in compact
 
 
 def test_frozen_preview_uses_old_cast_after_current_cast_edit(case):
@@ -517,6 +564,68 @@ def test_frozen_preview_uses_old_cast_after_current_cast_edit(case):
         case["session_id"], generation_run_id=started["id"]
     )
     assert "c-scrooge" in frozen_drawer["items"][0]["speech_annotation_xml"]
+
+
+def test_frozen_preview_keeps_character_delivery_after_current_default_edit(case):
+    services = case["services"]
+    sid = case["segment_ids"][0]
+    with services["database"].session() as session:
+        segment = session.get(m.GenerationSegment, sid)
+        segment.text = "Hello."
+        save_generation_controls(
+            session, case["session_id"], expected_revision=0,
+            characters=[{"id": "c-scrooge", "display_name": "Scrooge",
+                         "delivery": {"instruction": "Old character default"}}],
+        )
+    plan = create(case, annotation_format="xml")
+    response = case["post"](
+        "/" + plan["id"],
+        {"expected_version": plan["version"], "items": [{
+            "segment_id": sid,
+            "speech_xml": (
+                f'<segment id="{sid}"><speaker ref="c-scrooge">'
+                '<ins>Text direction</ins>Hello.</speaker></segment>'
+            ),
+        }]},
+        method="patch",
+    )
+    assert response.status_code == 200, response.get_json()
+    adopt(case, response.get_json())
+    _set_tts(case, service="gemini", model="gemini-2.5-flash-tts",
+             casting_enabled=False, performance_enabled=True)
+    snapshot, _ = services["workspace_settings"].resolve(case["session_id"])
+    with services["database"].session() as session:
+        assert freeze_generation_performance_snapshot(session, case["revision_id"], snapshot)
+        frozen_characters = snapshot["generation_control_snapshot"]["controls"]["characters"]
+        assert frozen_characters[0]["delivery"]["instruction"] == "Old character default"
+        run = m.GenerationRun(
+            session_id=case["session_id"], plan_revision_id=case["revision_id"],
+            sequence_number=1, settings_snapshot_json=snapshot, status="completed",
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    with services["database"].session() as session:
+        save_generation_controls(
+            session, case["session_id"], expected_revision=1,
+            characters=[{"id": "c-scrooge", "display_name": "Scrooge",
+                         "delivery": {"instruction": "New character default"}}],
+        )
+    frozen = preview_speech_segment(
+        services, case["session_id"], revision_id=case["revision_id"],
+        segment_id=sid, generation_run_id=run_id, include_request=True,
+    )
+    current = preview_speech_segment(
+        services, case["session_id"], revision_id=case["revision_id"],
+        segment_id=sid, include_request=True,
+    )
+    frozen_input = frozen["parts"][0]["input"]
+    current_input = current["parts"][0]["input"]
+    assert "Old character default" in frozen_input
+    assert "New character default" not in frozen_input
+    assert "New character default" in current_input
+    assert "Old character default" not in current_input
+    assert frozen_input.count("Text direction") == current_input.count("Text direction") == 1
 
 
 def test_foreign_revision_and_segment_are_rejected(case):

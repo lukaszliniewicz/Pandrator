@@ -41,6 +41,7 @@ from ..constants import (
 )
 from . import audio_cpp_speech_payload as _audio_cpp_speech_payload
 from . import elevenlabs_catalogue_http as _elevenlabs_catalogue_http
+from . import elevenlabs_v4_audio as _elevenlabs_v4_audio
 from . import google_tts_audio as _google_tts_audio
 from . import kobold_qwen_http as _kobold_qwen_http
 from . import kobold_qwen_stream as _kobold_qwen_stream
@@ -58,6 +59,12 @@ from .audio_cpp_speech_payload import (
 )
 from .audio_cpp_speech_payload import (
     _AUDIO_CPP_QWEN_LANGUAGE_NAMES as _AUDIO_CPP_QWEN_LANGUAGE_NAMES,
+)
+from .elevenlabs_speech_contracts import (
+    ELEVENLABS_V4_HTTP_MODEL as _ELEVENLABS_V4_HTTP_MODEL,
+)
+from .elevenlabs_speech_contracts import (
+    ELEVENLABS_V4_TURBO_MODEL as _ELEVENLABS_V4_TURBO_MODEL,
 )
 from .elevenlabs_speech_contracts import (
     _validated_elevenlabs_voice_settings as _validated_elevenlabs_voice_settings,
@@ -151,6 +158,10 @@ from .tts_provider_profiles import (
 )
 from .tts_provider_profiles import (
     AZURE_SPEECH_ADAPTER as AZURE_SPEECH_ADAPTER,
+)
+from .tts_provider_profiles import (
+    AZURE_SPEECH_LEGACY_MODEL_ALIASES,
+    AZURE_SPEECH_VOICE_METADATA,
 )
 from .tts_provider_profiles import (
     AZURE_SPEECH_MODELS as AZURE_SPEECH_MODELS,
@@ -575,6 +586,7 @@ def _audio_cpp_permanent_error(detail: str) -> bool:
     return bool(
         re.search(r"unsupported .+ language tag:", detail, re.IGNORECASE)
         or re.search(r"unknown .+ request option:", detail, re.IGNORECASE)
+        or "audiovae encoder sample capacity exceeded" in detail.casefold()
         or "requires speaker reference audio, not a cached voice id" in detail
     )
 
@@ -1551,7 +1563,7 @@ def _build_fishs2_options(tts_settings: dict) -> dict[str, object]:
         tts_settings.get("fishs2_temperature"),
         FISHS2_DEFAULT_TEMPERATURE,
     )
-    temperature = min(1.0, max(0.0, temperature))
+    temperature = min(2.0, max(0.0, temperature))
 
     top_p = _coerce_float(
         tts_settings.get("fishs2_top_p"),
@@ -1559,47 +1571,33 @@ def _build_fishs2_options(tts_settings: dict) -> dict[str, object]:
     )
     top_p = min(1.0, max(0.0, top_p))
 
-    chunk_length = _coerce_int(
-        tts_settings.get("fishs2_chunk_length"),
-        FISHS2_DEFAULT_CHUNK_LENGTH,
-    )
-    chunk_length = min(300, max(100, chunk_length))
-
-    latency = (
-        str(tts_settings.get("fishs2_latency") or FISHS2_DEFAULT_LATENCY)
-        .strip()
-        .lower()
-    )
-    if latency not in {"normal", "balanced"}:
-        latency = FISHS2_DEFAULT_LATENCY
-
-    speed = _coerce_float(tts_settings.get("speed"), 1.0)
-    speed = min(2.0, max(0.5, speed))
-
-    volume = _coerce_float(
-        tts_settings.get("fishs2_prosody_volume"),
-        FISHS2_DEFAULT_PROSODY_VOLUME,
-    )
-    volume = min(20.0, max(-20.0, volume))
-
-    return {
+    options: dict[str, object] = {
         "temperature": temperature,
         "top_p": top_p,
-        "chunk_length": chunk_length,
-        "latency": latency,
-        "normalize": _coerce_bool(
-            tts_settings.get("fishs2_normalize"),
-            FISHS2_DEFAULT_NORMALIZE,
-        ),
-        "prosody": {
-            "speed": speed,
-            "volume": volume,
-            "normalize_loudness": _coerce_bool(
-                tts_settings.get("fishs2_normalize_loudness"),
-                FISHS2_DEFAULT_NORMALIZE_LOUDNESS,
-            ),
-        },
     }
+    optional_integer_options = (
+        ("fishs2_max_new_tokens", "max_new_tokens", 1, 8192),
+        ("fishs2_top_k", "top_k", 0, 500),
+        ("fishs2_min_tokens_before_end", "min_tokens_before_end", 0, 8192),
+        ("fishs2_n_threads", "n_threads", 0, 512),
+    )
+    for setting_key, option_key, minimum, maximum in optional_integer_options:
+        value = tts_settings.get(setting_key)
+        if setting_key not in tts_settings or value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"{setting_key} must be an integer or unset.") from error
+        if isinstance(value, bool) or (isinstance(value, float) and value != parsed):
+            raise ValueError(f"{setting_key} must be an integer or unset.")
+        options[option_key] = min(maximum, max(minimum, parsed))
+
+    verbose = tts_settings.get("fishs2_verbose")
+    if "fishs2_verbose" in tts_settings and verbose is not None:
+        options["verbose"] = _coerce_bool(verbose, False)
+
+    return options
 
 
 def _normalize_voxtral_model(
@@ -1932,6 +1930,10 @@ def _resolve_azure_speech_api_key(endpoint: dict[str, object]) -> str:
 def _canonical_azure_speech_model(endpoint: dict[str, object], value: str) -> str:
     normalized = str(value or "").strip()
     del endpoint
+    aliases = {key.casefold(): value for key, value in AZURE_SPEECH_LEGACY_MODEL_ALIASES.items()}
+    if normalized.casefold() in aliases:
+        normalized = aliases[normalized.casefold()]
+        logging.warning("Legacy Azure MAI model selection resolves to %s.", normalized)
     allowed = list(AZURE_SPEECH_MODELS)
     by_lower = {item.lower(): item for item in allowed}
     canonical = by_lower.get(normalized.lower())
@@ -1947,6 +1949,11 @@ def _canonical_azure_speech_voice(
 ) -> str:
     normalized = str(value or "").strip()
     del endpoint
+    stem, separator, suffix = normalized.rpartition(":")
+    if separator:
+        aliases = {key.casefold(): value for key, value in AZURE_SPEECH_LEGACY_MODEL_ALIASES.items()}
+        if suffix.casefold() in aliases:
+            normalized = stem + ":" + aliases[suffix.casefold()]
     allowed = list(AZURE_SPEECH_VOICE_CATALOGUES.get(model, ()))
     by_lower = {item.lower(): item for item in allowed}
     canonical = by_lower.get(normalized.lower())
@@ -2001,7 +2008,8 @@ def _validate_azure_speech_request(
 
 
 def _azure_speech_ssml(text: str, model: str, voice: str, tts_settings: dict) -> str:
-    del model  # The selected model is encoded in the full Azure voice ID.
+    model = _canonical_azure_speech_model({}, model)
+    voice = _canonical_azure_speech_voice({}, model, voice)
     locale_match = re.match(r"^([A-Za-z]{2,3}-[A-Za-z]{2,3})-", voice)
     locale = locale_match.group(1) if locale_match else "en-US"
     escaped_locale = escape_xml(locale, {'"': "&quot;", "'": "&apos;"})
@@ -2018,6 +2026,9 @@ def _azure_speech_ssml(text: str, model: str, voice: str, tts_settings: dict) ->
 
     style = str(tts_settings.get("azure_speech_style") or "").strip()
     if style:
+        allowed_styles = AZURE_SPEECH_VOICE_METADATA[f"{model}:{voice}"]["styles"]
+        if style not in allowed_styles:
+            raise ValueError(f"Azure Speech style {style!r} is unavailable for {voice}. Supported styles: {', '.join(allowed_styles)}.")
         escaped_style = escape_xml(style, {'"': "&quot;", "'": "&apos;"})
         style_attributes = [f'style="{escaped_style}"']
         raw_style_degree = tts_settings.get("azure_speech_style_degree")
@@ -2059,7 +2070,18 @@ def _request_azure_speech_audio(
         or AZURE_SPEECH_OUTPUT_FORMAT
     )
     speech_path = str(endpoint.get("speech_path") or "/cognitiveservices/v1").strip()
-    ssml = _azure_speech_ssml(text, model, voice, tts_settings)
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(
+        text,
+        {**tts_settings, "model": model, "xtts_model": model, "voice": voice},
+        endpoint,
+    )
+    ssml_settings = dict(tts_settings)
+    for option in ("azure_speech_style", "azure_speech_style_degree"):
+        if option in compiled.request_options:
+            ssml_settings[option] = compiled.request_options[option]
+    ssml = _azure_speech_ssml(compiled.input, model, voice, ssml_settings)
     url = _configured_endpoint_url(base_url, speech_path)
     try:
         parsed = urlparse(url)
@@ -2207,6 +2229,31 @@ def _request_elevenlabs_audio(
             or ELEVENLABS_API_BASE_URL
         )
     )
+    if model_id in {_ELEVENLABS_V4_HTTP_MODEL, _ELEVENLABS_V4_TURBO_MODEL}:
+        if _timing_sink is not None:
+            _timing_sink.pop("provider_text", None)
+            _timing_sink.pop("output_format", None)
+        voice_settings = compiled.request_options.get("voice_settings")
+        request_arguments = {
+            "base_url": base_url,
+            "api_key": api_key,
+            "model_id": model_id,
+            "voice_id": voice_id,
+            "text": compiled.input,
+            "output_format": output_format,
+            "language_code": language_code,
+            "voice_settings": voice_settings,
+            "timeout_seconds": TTS_GENERATION_TIMEOUT_SECONDS,
+        }
+        if model_id == _ELEVENLABS_V4_HTTP_MODEL:
+            return _elevenlabs_v4_audio.post_dialogue_audio(
+                **request_arguments,
+                previous_text=str(compiled.request_options.get("previous_text") or ""),
+                future_text=str(compiled.request_options.get("next_text") or ""),
+            )
+        return _elevenlabs_v4_audio.stream_turbo_dialogue_audio(
+            **request_arguments,
+        )
     url = f"{base_url}/v1/text-to-speech/{quote(voice_id, safe='')}"
     if _timing_sink is not None:
         url += "/with-timestamps"
@@ -2359,6 +2406,13 @@ def get_audio_cpp_model_catalog(
         if not model_id or model_id in seen:
             continue
         if task and task not in {"tts", "clon", "vdes"}:
+            continue
+        from .audio_cpp_catalogue import package_metadata
+
+        metadata = package_metadata(model_id)
+        if metadata.get("entry_role") == "component":
+            continue
+        if metadata and metadata.get("voice_mode") in {"none", "unknown"}:
             continue
         seen.add(model_id)
         item: dict[str, object] = {"id": model_id}
@@ -2577,10 +2631,15 @@ def _request_magpie_audio(
         or "Magpie-Multilingual.EN-US.Aria"
     )
     normalized_base_url = _normalize_base_url(magpie_base_url, MAGPIE_API_BASE_URL)
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(text, tts_settings, {"id": "magpie"})
+    if len(voice.split(".")) > 3:
+        logging.warning("Legacy Magpie emotion voice suffix is retained; this wrapper uses neutral style.")
 
     payload = {
         "model": str(tts_settings.get("xtts_model") or "").strip() or "magpie-tts",
-        "input": text,
+        "input": compiled.input,
         "voice": voice,
         "language": str(tts_settings.get("language") or "").strip() or None,
         "speed": float(tts_settings.get("speed") or 1.0),
@@ -3006,6 +3065,9 @@ def get_silero_speakers(
 
 
 def _build_xtts_openai_payload(text: str, tts_settings: dict) -> dict:
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(text, tts_settings, {"id": "xtts"})
     model = (
         str(tts_settings.get("xtts_model") or XTTS_DEFAULT_MODEL).strip()
         or XTTS_DEFAULT_MODEL
@@ -3019,7 +3081,7 @@ def _build_xtts_openai_payload(text: str, tts_settings: dict) -> dict:
 
     return {
         "model": model,
-        "input": text,
+        "input": compiled.input,
         "voice": speaker or "default",
         "language": language,
         "response_format": "wav",
@@ -3048,24 +3110,27 @@ def _request_xtts_audio(
 
 
 def _build_voxcpm_payload(text: str, tts_settings: dict) -> dict:
+    from .speech_performance import compile_for_provider
+
     model = _normalize_voxcpm_model(
         tts_settings.get("xtts_model", ""),
         fallback=VOXCPM_DEFAULT_MODEL,
     )
     voice = str(tts_settings.get("speaker") or "").strip() or VOXCPM_DEFAULT_VOICE
+    compiled = compile_for_provider(
+        text, {**tts_settings, "xtts_model": model}, {"id": "voxcpm"}
+    )
 
     payload = {
         "model": model,
-        "input": text,
+        "input": compiled.input,
         "voice": voice,
         "response_format": "wav",
-        "speed": _coerce_float(tts_settings.get("speed"), 1.0),
         "voxcpm": _build_voxcpm_options(tts_settings),
     }
 
-    instructions = str(tts_settings.get("openai_audio_instructions") or "").strip()
-    if instructions:
-        payload["instructions"] = instructions
+    if compiled.instructions:
+        payload["instructions"] = compiled.instructions
 
     return payload
 
@@ -3100,17 +3165,14 @@ def _build_fishs2_payload(text: str, tts_settings: dict) -> dict:
     )
     voice = str(tts_settings.get("speaker") or "").strip() or FISHS2_DEFAULT_VOICE
     fishs2_options = _build_fishs2_options(tts_settings)
-    raw_prosody = fishs2_options.get("prosody")
-    prosody = raw_prosody if isinstance(raw_prosody, dict) else {}
 
     payload = {
         "model": model,
         "input": text,
         "voice": voice,
         "response_format": "wav",
-        "speed": prosody.get("speed", 1.0),
+        "fishs2": fishs2_options,
     }
-    payload.update(fishs2_options)
     from .speech_performance import compile_for_provider
 
     compiled = compile_for_provider(text, {**tts_settings, "xtts_model": model}, {"id": "fishs2"})
@@ -3140,6 +3202,9 @@ def _request_fishs2_audio(
 
 
 def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(text, tts_settings, {"id": "voxtral"})
     model = _normalize_voxtral_model(
         tts_settings.get("xtts_model", ""), fallback=VOXTRAL_DEFAULT_MODEL
     )
@@ -3151,7 +3216,7 @@ def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
 
     return {
         "model": model,
-        "input": text,
+        "input": compiled.input,
         "voice": voice,
         "response_format": "wav",
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
@@ -3160,6 +3225,9 @@ def _build_voxtral_payload(text: str, tts_settings: dict) -> dict:
 
 
 def _build_kokoro_payload(text: str, tts_settings: dict) -> dict:
+    from .speech_performance import compile_for_provider
+
+    compiled = compile_for_provider(text, tts_settings, {"id": "kokoro"})
     model = _strip_provider_prefix(str(tts_settings.get("xtts_model") or "").strip())
     if not model:
         model = KOKORO_DEFAULT_MODEL
@@ -3168,7 +3236,7 @@ def _build_kokoro_payload(text: str, tts_settings: dict) -> dict:
 
     payload = {
         "model": model,
-        "input": text,
+        "input": compiled.input,
         "voice": voice,
         "response_format": "wav",
         "speed": _coerce_float(tts_settings.get("speed"), 1.0),
@@ -3742,7 +3810,7 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
     model = _normalize_model_for_provider(model, VERTEX_PROVIDER)
     structured_tts = _google_tts_audio.is_structured_tts_model(model)
     if structured_tts and location != "global":
-        raise ValueError("Gemini 3.8 Flash TTS on Vertex requires the global location.")
+        raise ValueError("Gemini 3.8 TTS on Vertex requires the global location.")
     voice = str(
         tts_settings.get("speaker")
         or tts_settings.get("voice")
@@ -3818,6 +3886,19 @@ def _decode_audio_response(response: requests.Response) -> AudioSegment:
         raise RuntimeError(
             f"The speech service returned an error instead of audio: {detail}"
         )
+    # Native dialogue transports annotate the requested format because raw PCM
+    # and telephony codecs have no container for ffmpeg to detect. ElevenLabs
+    # PCM is signed 16-bit little-endian, mono.
+    native_format = response.headers.get("X-Pandrator-Audio-Format", "")
+    if re.fullmatch(r"pcm_(8000|16000|22050|24000|32000|44100|48000)", native_format):
+        if len(response.content) % 2:
+            raise ValueError("ElevenLabs returned an incomplete PCM sample.")
+        return AudioSegment(data=response.content, sample_width=2, frame_rate=int(native_format.split("_")[1]), channels=1)
+    if native_format in {"ulaw_8000", "alaw_8000"}:
+        import audioop
+
+        decode = audioop.ulaw2lin if native_format == "ulaw_8000" else audioop.alaw2lin
+        return AudioSegment(data=decode(response.content, 2), sample_width=2, frame_rate=8000, channels=1)
     format_hint = "wav"
     if "mpeg" in content_type or "mp3" in content_type:
         format_hint = "mp3"
@@ -4213,9 +4294,12 @@ def text_to_audio(
                     _audio_cpp_lock_held=True,
                     _timing_sink=_timing_sink,
                 )
-    # Visual subtitle wrapping must never leak into provider payloads.  This
-    # also makes direct callers consistent with dubbing speech blocks.
-    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    # Performance ranges and anchors describe this exact transcript. Changing
+    # whitespace here invalidates the projected offsets at voice boundaries.
+    # Unannotated requests still normalize visual subtitle wrapping.
+    text = str(text or "")
+    if "_performance_markup_scope" not in tts_settings and "_performance" not in tts_settings:
+        text = re.sub(r"\s+", " ", text).strip()
     service = tts_settings.get("service", "XTTS")
     normalized_silero_base_url = _normalize_base_url(
         silero_base_url, SILERO_API_BASE_URL
@@ -4296,6 +4380,9 @@ def text_to_audio(
             elif service == VERTEX_SERVICE:
                 response = _request_vertex_ai_audio(text, tts_settings)
             elif service == "Silero":
+                from .speech_performance import compile_for_provider
+
+                compiled = compile_for_provider(text, tts_settings, {"id": "silero"})
                 language_support = language_preflight.get("language_support")
                 request_aliases = (
                     language_support.get("request_aliases")
@@ -4313,7 +4400,7 @@ def text_to_audio(
                         or tts_settings.get("model")
                         or SILERO_DEFAULT_MODEL
                     ),
-                    "input": text,
+                    "input": compiled.input,
                     "voice": str(tts_settings.get("speaker") or ""),
                     "language": (
                         normalize_silero_language_code(

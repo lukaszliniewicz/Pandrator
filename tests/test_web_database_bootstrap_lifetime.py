@@ -7,8 +7,18 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from pandrator.web import database
+
+
+def test_startup_schema_head_matches_packaged_migrations() -> None:
+    config = Config()
+    config.set_main_option(
+        "script_location", str(Path(database.__file__).with_name("migrations"))
+    )
+    assert database.SCHEMA_HEAD == ScriptDirectory.from_config(config).get_current_head()
 
 
 @pytest.mark.parametrize("state", ["current", "stale", "unversioned", "invalid"])

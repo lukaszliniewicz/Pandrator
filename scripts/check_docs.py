@@ -25,6 +25,7 @@ _FORBIDDEN_PUBLIC_DOCUMENTS = frozenset(
 )
 _REQUIRED_INDEX = Path("docs/README.md")
 _PRIVATE_ROOTS = frozenset({".local-notes", "review-notes", "reviews"})
+_PRIVATE_DOC_SECTIONS = frozenset({"development", "plans", "research", "reports"})
 
 
 def _public_paths(root: Path) -> tuple[Path, ...]:
@@ -59,6 +60,10 @@ def _tracked_markdown(root: Path) -> tuple[Path, ...]:
 def _private_path(relative: Path) -> bool:
     return (
         bool(relative.parts) and relative.parts[0].casefold() in _PRIVATE_ROOTS
+    ) or (
+        len(relative.parts) >= 2
+        and relative.parts[0].casefold() == "docs"
+        and relative.parts[1].casefold() in _PRIVATE_DOC_SECTIONS
     ) or relative.name in _FORBIDDEN_PUBLIC_DOCUMENTS
 
 

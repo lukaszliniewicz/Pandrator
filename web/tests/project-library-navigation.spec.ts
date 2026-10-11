@@ -415,7 +415,7 @@ test('generation shell is visible while its segment request is pending', async (
       page.getByText('Loading speech plan…', { exact: true })
     ).toBeVisible();
     await expect(
-      page.getByRole('button', { name: 'Generation', exact: true })
+      page.getByRole('link', { name: 'Generation', exact: true })
     ).toBeDisabled();
   } finally {
     release();

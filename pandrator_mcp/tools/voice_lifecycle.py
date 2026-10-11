@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
+from collections.abc import Sequence
+from itertools import islice
 from typing import Annotated, Any, Callable
 
 from ..context import McpRuntime
@@ -10,8 +13,10 @@ from ..errors import NextAction, PandratorMcpError
 from ..results import ToolOutcome
 from ..schemas import VoiceCatalogInput
 from ..schemas.voice_lifecycle import (
+    VOICE_CATALOG_COMPACT_FIELDS,
     AuditionVoiceInput,
     CreateVoiceCollectionInput,
+    DesignGoogleVoiceInput,
     GetVoiceSamplesInput,
     ImportVoiceReferenceInput,
     ListVoiceCollectionsInput,
@@ -22,11 +27,19 @@ from ..schemas.voice_lifecycle import (
     UpdateCatalogVoiceMetadataInput,
     UpdateVoiceCollectionInput,
     VoiceCatalogCapabilitiesInput,
+    VoiceCatalogField,
     VoiceCreateInput,
 )
 from ..work_mapping import application_work_reference
 
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "canceled"})
+_SAFE_PROFILE_MAX_BYTES = 64 * 1024
+_PROFILE_MAX_ITEMS = 100
+_PROFILE_TEXT_MAX = 400
+_TRAIT_EVIDENCE_SOURCES = frozenset(
+    {"user", "provider", "design_request", "audition_review"}
+)
+_TRAIT_EVIDENCE_STATUSES = frozenset({"requested", "described", "reviewed"})
 
 
 def _safe_reference(value: Any) -> dict[str, Any] | None:
@@ -39,14 +52,144 @@ def _safe_reference(value: Any) -> dict[str, Any] | None:
     return result or None
 
 
+def _safe_profile_text(value: Any, *, maximum: int = _PROFILE_TEXT_MAX) -> str | None:
+    return value if isinstance(value, str) and len(value) <= maximum else None
+
+
+def _safe_string_list(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    return [
+        item
+        for item in value[:_PROFILE_MAX_ITEMS]
+        if isinstance(item, str) and len(item) <= _PROFILE_TEXT_MAX
+    ]
+
+
+def _safe_trait_evidence(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    source = value.get("source")
+    status = value.get("status")
+    if (
+        not isinstance(source, str)
+        or source not in _TRAIT_EVIDENCE_SOURCES
+        or not isinstance(status, str)
+        or status not in _TRAIT_EVIDENCE_STATUSES
+    ):
+        return None
+    result = {"source": source, "status": status}
+    artifact_id = _safe_profile_text(value.get("artifact_id"), maximum=160)
+    note = _safe_profile_text(value.get("note"), maximum=400)
+    if artifact_id:
+        result["artifact_id"] = artifact_id
+    if note is not None:
+        result["note"] = note
+    return result
+
+
+def _safe_evidence(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for raw_name, raw_evidence in islice(value.items(), _PROFILE_MAX_ITEMS):
+        name = _safe_profile_text(raw_name, maximum=80)
+        evidence = _safe_trait_evidence(raw_evidence)
+        if name and evidence is not None:
+            result[name] = evidence
+    return result
+
+
+def _safe_language(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    for key in ("language", "locale", "accent", "detail"):
+        text = _safe_profile_text(value.get(key))
+        if text is not None:
+            result[key] = text
+    evidence = _safe_trait_evidence(value.get("evidence"))
+    if evidence is not None:
+        result["evidence"] = evidence
+    return result or None
+
+
+def _safe_languages(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    languages: list[dict[str, Any]] = []
+    for raw_language in value[:_PROFILE_MAX_ITEMS]:
+        language = _safe_language(raw_language)
+        if language is not None:
+            languages.append(language)
+    return languages
+
+
 def _safe_profile(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    schema_version = value.get("schema_version")
+    if type(schema_version) is int:
+        result["schema_version"] = schema_version
+    for key in ("pitch", "perceived_age"):
+        text = _safe_profile_text(value.get(key))
+        if text is not None:
+            result[key] = text
+    for key in ("textures", "delivery_presets", "use_cases", "tags"):
+        items = _safe_string_list(value.get(key))
+        if items is not None:
+            result[key] = items
+    languages = _safe_languages(value.get("languages"))
+    if languages is not None:
+        result["languages"] = languages
+    if isinstance(value.get("evidence"), dict):
+        result["evidence"] = _safe_evidence(value["evidence"])
+    try:
+        encoded = json.dumps(
+            result,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return {}
+    return result if len(encoded) <= _SAFE_PROFILE_MAX_BYTES else {}
 
 
-def safe_voice_projection(value: Any) -> dict[str, Any]:
+def safe_voice_projection(
+    value: Any,
+    fields: Sequence[VoiceCatalogField] | None = None,
+) -> dict[str, Any]:
     """Project one backend catalog item without arbitrary provider metadata."""
 
     item = value if isinstance(value, dict) else {}
+    if fields is not None:
+        profile_value = item.get("profile")
+        profile = _safe_profile(profile_value)
+        result: dict[str, Any] = {}
+        for key in fields:
+            if key == "reference":
+                if "reference" in item:
+                    result[key] = _safe_reference(item.get("reference"))
+            elif key == "profile":
+                if "profile" in item:
+                    result[key] = profile
+            elif key == "evidence":
+                evidence = item.get("evidence")
+                if isinstance(evidence, dict):
+                    result[key] = _safe_evidence(evidence)
+                elif isinstance(profile.get("evidence"), dict):
+                    result[key] = profile["evidence"]
+            elif key == "safe_artifact_id":
+                if "safe_artifact_id" in item or "preview_artifact_id" in item:
+                    result[key] = item.get("safe_artifact_id") or item.get(
+                        "preview_artifact_id"
+                    )
+            elif key in item:
+                result[key] = item.get(key)
+        return result
+
     profile = _safe_profile(item.get("profile"))
     return {
         key: item.get(key)
@@ -72,7 +215,7 @@ def safe_voice_projection(value: Any) -> dict[str, Any]:
     } | {
         "reference": _safe_reference(item.get("reference")),
         "profile": profile,
-        "evidence": item.get("evidence")
+        "evidence": _safe_evidence(item.get("evidence"))
         if isinstance(item.get("evidence"), dict)
         else profile.get("evidence", {}),
         "safe_artifact_id": item.get("safe_artifact_id") or item.get("preview_artifact_id"),
@@ -262,9 +405,15 @@ def _job_outcome(
 
 
 def voice_catalog(runtime: McpRuntime, arguments: VoiceCatalogInput) -> dict[str, Any]:
-    payload = runtime.require_application().voice_catalog(
-        **arguments.model_dump(mode="json", exclude_none=True)
-    )
+    forwarded_arguments = arguments.model_dump(mode="json", exclude_none=True)
+    forwarded_arguments.pop("view", None)
+    forwarded_arguments.pop("fields", None)
+    payload = runtime.require_application().voice_catalog(**forwarded_arguments)
+    is_legacy_full = arguments.view == "full" and arguments.fields is None
+    fields = arguments.fields
+    if arguments.view == "compact" and fields is None:
+        fields = list(VOICE_CATALOG_COMPACT_FIELDS)
+    envelope_fields = ("facets", "taxonomy") if is_legacy_full else ()
     result = {
         key: payload.get(key)
         for key in (
@@ -272,18 +421,17 @@ def voice_catalog(runtime: McpRuntime, arguments: VoiceCatalogInput) -> dict[str
             "catalog_revision",
             "total",
             "next_cursor",
-            "facets",
-            "taxonomy",
         )
+        + envelope_fields
         if key in payload
     }
     result["schema_version"] = str(result.get("schema_version") or "1")
     result["items"] = [
-        safe_voice_projection(item)
+        safe_voice_projection(item, fields)
         for item in (payload.get("items") or [])
         if isinstance(item, dict)
     ]
-    collections = payload.get("collections")
+    collections = payload.get("collections") if is_legacy_full else None
     if isinstance(collections, list):
         result["collections"] = [
             {
@@ -302,7 +450,8 @@ def voice_catalog_capabilities(
     arguments: VoiceCatalogCapabilitiesInput,
 ) -> dict[str, Any]:
     payload = runtime.require_application().voice_catalog_capabilities(
-        service_id=arguments.service_id, model=arguments.model,
+        service_id=arguments.service_id,
+        model=arguments.model,
     )
     requested_service = arguments.service_id.casefold() if arguments.service_id else None
     requested_model = arguments.model.casefold() if arguments.model else None
@@ -368,6 +517,32 @@ def create_voice(runtime: McpRuntime, arguments: VoiceCreateInput) -> ToolOutcom
     )
 
 
+def design_google_voice(
+    runtime: McpRuntime,
+    arguments: DesignGoogleVoiceInput,
+) -> ToolOutcome:
+    result = runtime.require_application().design_google_voice(
+        service_id=arguments.service_id,
+        model=arguments.model,
+        name=arguments.name,
+        prompt=arguments.prompt,
+        language=arguments.language,
+        voice_category=arguments.voice_category,
+        idempotency_key=arguments.idempotency_key,
+    )
+    voice_id = result.get("voice_id")
+    if not isinstance(voice_id, str) and isinstance(result.get("result"), dict):
+        voice_id = result["result"].get("voice_id")
+    actions = [
+        NextAction(
+            tool="pandrator_get_voice_catalog",
+            arguments={"query": voice_id if isinstance(voice_id, str) else "", "kind": "managed"},
+            reason="Inspect the saved Google voice after creation completes.",
+        )
+    ]
+    return _job_outcome(runtime, result, next_actions=actions)
+
+
 def get_voice_samples(runtime: McpRuntime, arguments: GetVoiceSamplesInput) -> dict[str, Any]:
     return safe_samples_projection(
         runtime.require_application().get_voice_samples(arguments.voice_id)
@@ -388,14 +563,25 @@ def promote_voice_design(
     )
     if result.get("status") == "ready":
         return ToolOutcome(
-            result={key: result[key] for key in (
-                "status", "sample_id", "artifact_id", "sample_sha256",
-                "voice_revision", "reused_reference",
-            ) if key in result},
-            next_actions=[NextAction(
-                tool="pandrator_get_voice_samples", arguments={"voice_id": arguments.voice_id},
-                reason="Inspect the reused immutable normalized voice reference.",
-            )],
+            result={
+                key: result[key]
+                for key in (
+                    "status",
+                    "sample_id",
+                    "artifact_id",
+                    "sample_sha256",
+                    "voice_revision",
+                    "reused_reference",
+                )
+                if key in result
+            },
+            next_actions=[
+                NextAction(
+                    tool="pandrator_get_voice_samples",
+                    arguments={"voice_id": arguments.voice_id},
+                    reason="Inspect the reused immutable normalized voice reference.",
+                )
+            ],
         )
     return _job_outcome(
         runtime,
@@ -414,6 +600,11 @@ def import_voice_reference(
     runtime: McpRuntime,
     arguments: ImportVoiceReferenceInput,
 ) -> ToolOutcome:
+    crop: dict[str, float] = {}
+    if "start_seconds" in arguments.model_fields_set:
+        crop["start_seconds"] = arguments.start_seconds
+    if "end_seconds" in arguments.model_fields_set and arguments.end_seconds is not None:
+        crop["end_seconds"] = arguments.end_seconds
     result = runtime.require_application().import_voice_reference(
         arguments.voice_id,
         artifact_id=arguments.artifact_id,
@@ -422,6 +613,7 @@ def import_voice_reference(
         transcript_reviewed=arguments.transcript_reviewed,
         expected_voice_revision=arguments.expected_voice_revision,
         idempotency_key=arguments.idempotency_key,
+        **crop,
     )
     return _job_outcome(
         runtime,
@@ -615,6 +807,13 @@ def register_voice_lifecycle_tools(
             write_action,
         ),
         (
+            "pandrator_design_google_voice",
+            "Create and save a Gemini or Vertex designed voice",
+            design_google_voice,
+            DesignGoogleVoiceInput,
+            write_action,
+        ),
+        (
             "pandrator_get_voice_samples",
             "Inspect managed voice samples",
             get_voice_samples,
@@ -723,6 +922,7 @@ __all__ = [
     "audition_voice",
     "create_voice",
     "create_voice_collection",
+    "design_google_voice",
     "get_voice_samples",
     "import_voice_reference",
     "list_voice_collections",

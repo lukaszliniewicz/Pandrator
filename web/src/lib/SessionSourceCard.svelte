@@ -30,12 +30,14 @@
     sessionId,
     refreshKey,
     compact = false,
+    simpleMode = false,
     oninitialsource,
     onchanged
   }: {
     sessionId: string;
     refreshKey: string;
     compact?: boolean;
+    simpleMode?: boolean;
     oninitialsource: () => void;
     onchanged: (message: string) => Promise<unknown>;
   } = $props();
@@ -217,6 +219,7 @@
     : 'surface rounded-3xl border border-[var(--line)] p-5 sm:p-6'}
   aria-label="Project source"
 >
+  {#if simpleMode}<h2 class="mb-3 font-semibold">Source</h2>{/if}
   {#if !compact}<header class="flex items-start gap-4">
       <span
         class="grid size-11 shrink-0 place-items-center rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)]"
@@ -265,12 +268,12 @@
             onclick={() => (picker = 'primary')}
             ><Replace size={14} /> Replace source…</button
           >
-          <button
-            class="btn btn-sm"
-            disabled={busy || Boolean(sourceInfo.blocked_reason)}
-            onclick={() => void proposeRemoval('primary')}
-            ><Trash2 size={14} /> Remove source…</button
-          >
+          {#if !simpleMode}<button
+              class="btn btn-sm"
+              disabled={busy || Boolean(sourceInfo.blocked_reason)}
+              onclick={() => void proposeRemoval('primary')}
+              ><Trash2 size={14} /> Remove source…</button
+            >{/if}
         </div>
       </div>
     {:else}

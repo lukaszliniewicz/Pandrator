@@ -2,6 +2,7 @@ import type { JobStatus } from './job-status';
 import type { AudioCppModelInfo } from './audio-cpp-catalogue';
 import type { PassageStructure } from './passage-structure';
 import type { LanguageSupport } from './language-registry';
+import type { SpeechCapabilities } from './speech-support';
 
 export type LoadState =
   'idle' | 'loading' | 'ready' | 'empty' | 'stale' | 'failed';
@@ -18,6 +19,7 @@ export type SessionRecord = {
   source_language: string;
   target_language: string | null;
   workflow_preset: string;
+  interface_mode?: 'simple' | 'advanced';
   included_stages_json: string[];
   status: string;
   revision: number;
@@ -306,6 +308,7 @@ type GenerationActivitySummary = {
 export type GenerationSummary = {
   session_id: string;
   plan_revision_id: string | null;
+  plan_source_role?: string | null;
   total: number;
   included_total: number;
   active_run: GenerationActivitySummary | null;
@@ -977,6 +980,16 @@ export type VoiceRecord = {
   preferred_sample_transcript_reviewed?: boolean;
 };
 
+export type GoogleVoiceDesignReceipt = {
+  voice_id: string;
+  provider_voice_id?: string;
+  service_id?: string;
+  model?: string;
+  voice_revision?: number;
+  artifact_id?: string;
+  warning?: string;
+};
+
 type TtsLanguage = {
   id?: string;
   name?: string;
@@ -987,6 +1000,10 @@ type TtsLanguage = {
 export type TtsRequestParameter = {
   type: 'integer' | 'number' | 'boolean' | 'string';
   default?: number | string | boolean | null;
+  native_default?: number | string | boolean | null;
+  default_source?: string;
+  default_note?: string;
+  description?: string;
   minimum?: number;
   maximum?: number;
   exclusive_minimum?: number;
@@ -1059,10 +1076,13 @@ export type TtsService = {
   live_voices?: string[];
   voice_catalogues?: Record<string, string[]>;
   voice_metadata?: Record<string, Record<string, unknown>>;
+  voice_catalogue_warning?: string;
+  managed_google_voice_ids?: string[];
   default_voice?: string;
   default_voices?: Record<string, string>;
   default_voices_by_language?: Record<string, Record<string, string>>;
   generation_prompt_models?: string[];
+  expressive_capabilities?: Record<string, SpeechCapabilities>;
   supports_voice_cloning?: boolean;
   supports_voice_deletion?: boolean;
   supports_dynamic_catalog?: boolean;
@@ -1404,6 +1424,8 @@ type SpeechBlockProvenance = {
 };
 
 export type GenerationSegment = {
+  take_count?: number;
+  take_history_loaded?: boolean;
   history_take_id?: string | null;
   passage_structure?: PassageStructure;
   search_matches?: { start: number; end: number }[];
@@ -1423,6 +1445,20 @@ export type GenerationSegment = {
   optimized_text?: string | null;
   speech_plan?: SpeechPlan;
   speech_annotation_xml?: string | null;
+  speech_annotation?: {
+    decision: 'none' | 'steer';
+    delivery: Record<string, unknown>;
+    spans: Array<{
+      anchor: { quote: string; occurrence?: number | null };
+      delivery: Record<string, unknown>;
+    }>;
+    events: Array<{
+      kind: string;
+      anchor?: { quote: string; occurrence?: number | null } | null;
+      position: 'before' | 'after';
+      duration_ms?: number | null;
+    }>;
+  };
   optimization_status?: string | null;
   optimization_reviewed?: boolean;
   optimization_model?: string | null;

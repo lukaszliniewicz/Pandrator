@@ -42,7 +42,7 @@ test('audiobook rows expose compact options and merge adjacent segments', async 
   );
   expect(plan.ok()).toBeTruthy();
   await page.goto(`/sessions/${session.id}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const table = page.getByTestId('generation-segment-table');
   await expect(table.locator('tbody tr[data-segment-id]')).toHaveCount(2);
   // Initial review metadata expands the bar above these rows. Wait for it
@@ -428,7 +428,7 @@ test('intermediate assemblies can be removed without touching final exports', as
     })
   );
   await page.route(
-    `**/api/v1/sessions/${session.id}/generation-runs`,
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
     (route) =>
       route.fulfill({
         contentType: 'application/json',

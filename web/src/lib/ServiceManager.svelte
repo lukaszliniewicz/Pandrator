@@ -23,6 +23,8 @@
     TtsSettingsValue
   } from './api-models';
   import SettingField from './SettingField.svelte';
+  import ParameterLabel from './ParameterLabel.svelte';
+  import { numberPresentation, settingLabel } from './settings-fields';
   import LocalModelPicker from './LocalModelPicker.svelte';
   import CredentialStorageFields, {
     type CredentialBackendProfile
@@ -60,11 +62,11 @@
     fishs2: [
       'fishs2_temperature',
       'fishs2_top_p',
-      'fishs2_chunk_length',
-      'fishs2_latency',
-      'fishs2_normalize',
-      'fishs2_prosody_volume',
-      'fishs2_normalize_loudness'
+      'fishs2_max_new_tokens',
+      'fishs2_top_k',
+      'fishs2_min_tokens_before_end',
+      'fishs2_n_threads',
+      'fishs2_verbose'
     ],
     voxtral: [
       'voxtral_max_frames',
@@ -649,8 +651,10 @@
                     />{/if}
                 </div>
                 <div class="muted mt-3 text-xs">
-                  {service.models?.length ?? 0} models · {service.voices
-                    ?.length ?? 0} voices{service.default_model
+                  {service.models?.length ?? 0} models · {new Set([
+                    ...(service.voices ?? []),
+                    ...(service.live_voices ?? [])
+                  ]).size} voices{service.default_model
                     ? ` · default ${service.default_model}`
                     : ''}
                   {#if service.manager_component_id}
@@ -662,6 +666,12 @@
                 </div>
                 {#if service.description}<p class="muted mt-2 text-xs">
                     {service.description}
+                  </p>{/if}
+                {#if service.voice_catalogue_warning}<p
+                    class="muted mt-2 text-xs"
+                    role="status"
+                  >
+                    {service.voice_catalogue_warning}
                   </p>{/if}
                 <div class="mt-3 flex flex-wrap gap-2">
                   <button
@@ -680,7 +690,7 @@
                     disabled={isDefault(service)}
                     >{isDefault(service) ? 'Default' : 'Make default'}</button
                   >
-                  {#if !service.direct_http && normalizedId(service) !== 'vertex_ai'}<button
+                  {#if !service.direct_http || service.supports_dynamic_catalog}<button
                       class="btn btn-sm btn-secondary"
                       onclick={() => refreshService(service)}
                       disabled={refreshing === service.id}
@@ -944,15 +954,70 @@
                 >Provider defaults</summary
               >
               <div class="provider-default-grid mt-4">
-                {#each settingKeys as key}<SettingField
-                    section="tts"
-                    keyName={key}
-                    value={editing.settings?.[key] ??
-                      payload.builtin_defaults?.[key]}
-                    onchange={(value) => setServiceSetting(key, value)}
-                    compact
-                  />{/each}
+                {#each settingKeys as key}
+                  {#if key.startsWith('fishs2_') && !['fishs2_temperature', 'fishs2_top_p'].includes(key)}
+                    {@const meta = numberPresentation(key)}
+                    <label class="block text-xs font-semibold">
+                      <ParameterLabel
+                        section="tts"
+                        name={key}
+                        label={settingLabel(key)}
+                        compact
+                      />
+                      {#if key === 'fishs2_verbose'}
+                        <select
+                          class="field"
+                          value={editing.settings?.[key] == null
+                            ? ''
+                            : String(editing.settings[key])}
+                          onchange={(event) =>
+                            setServiceSetting(
+                              key,
+                              event.currentTarget.value === ''
+                                ? null
+                                : event.currentTarget.value === 'true'
+                            )}
+                        >
+                          <option value="">Backend default</option>
+                          <option value="false">Off</option>
+                          <option value="true">On</option>
+                        </select>
+                      {:else}
+                        <input
+                          class="field"
+                          type="number"
+                          min={meta.min}
+                          max={meta.max}
+                          step={meta.step}
+                          value={(editing.settings?.[key] as number) ?? ''}
+                          placeholder="Backend default"
+                          oninput={(event) =>
+                            setServiceSetting(
+                              key,
+                              event.currentTarget.value === ''
+                                ? null
+                                : event.currentTarget.valueAsNumber
+                            )}
+                        />
+                      {/if}
+                    </label>
+                  {:else}<SettingField
+                      section="tts"
+                      keyName={key}
+                      value={editing.settings?.[key] ??
+                        payload.builtin_defaults?.[key]}
+                      onchange={(value) => setServiceSetting(key, value)}
+                      compact
+                    />{/if}
+                {/each}
               </div>
+              {#if normalizedId(editing) === 'fishs2'}<p
+                  class="muted mt-3 text-xs"
+                >
+                  These settings reach the FishS2 wrapper. Its API does not
+                  apply speed, volume, latency or chunk-length overrides; use
+                  text delivery cues or audio processing for those effects.
+                </p>{/if}
             </details>{/if}
         </section>
         {#if editing.supports_prebuilt_voices}<a

@@ -92,17 +92,22 @@ The initial compiler supports:
 
 | Route | Directions | Phrase controls / context |
 | --- | --- | --- |
-| Fish S2 through audio.cpp or native Fish S2 | Inline free-form tags | Inline phrase direction; explicit approximate restoration |
+| Fish S2 through audio.cpp or native Fish S2 | Inline free-form tags | Whole-segment cues recommended; phrase cues best effort, can be ignored or extend past the marked text |
 | Qwen 1.7B CustomVoice through audio.cpp | Separate instruction | Phrase intent described in the whole-request instruction |
 | Qwen 1.7B VoiceDesign through audio.cpp | Separate instruction | Stable voice description remains required |
 | Kobold Qwen's instruction-capable prebuilt path | Separate instruction | Not applied to its cloning path |
-| Gemini / Vertex 3.8 Flash TTS | Separate speech metadata | Phrase intent and bounded context in metadata; angle-bracket vocal events |
+| Gemini / Vertex 3.8 Flash and Flash Lite TTS | Separate speech metadata | Phrase intent and bounded context in metadata; angle-bracket vocal events |
 | Gemini / Vertex 3.1 and 2.5 TTS | Prompt envelope | Phrase tags and bounded preceding/following semantic context |
 | Supported OpenAI mini-TTS models | Separate instruction | Phrase intent approximated in the whole-request instruction |
 | Breeze's audio.cpp instruction path | Separate instruction | Whole-request direction |
 | ElevenLabs `eleven_v3` | Inline natural-language audio tags | Soft phrase directions and explicit supported vocal events; no request stitching |
+| ElevenLabs `eleven_v4` | Inline natural-language audio tags | Native dialogue HTTP; up to 100 characters of before/after unspoken context |
+| ElevenLabs `eleven_v4_turbo` | Inline natural-language audio tags | Complete realtime dialogue stream; stability control, no hidden context fields |
 | ElevenLabs supported v2 / v2.5 models | No general direction field | Previous/next text in native stitching fields; no v3 audio tags |
 | Native Chatterbox Turbo | Listed vocal-event tags | No claim of general instruction following |
+| IndexTTS2/2.5 through audio.cpp | Native `options.emotion_text` | Whole-request emotion; required WAV reference; no general or phrase instructions |
+| AuK Base/Flash through audio.cpp | Native `options.instruct` | Whole-request voice description; reference/duration and manual component prerequisites |
+| MOSS-TTSD through audio.cpp | Native `options.instruct` | Request delivery; one positional `[S1]` speaker per rendered request |
 
 Qwen Base/cloning and 0.6B CustomVoice do not inherit 1.7B instruction support.
 Unrecognized variants/routes remain unknown. Voice design is distinct from
@@ -119,7 +124,25 @@ No additional synthesis block is created to emulate an unsupported phrase contro
 When Fish controls are compiled for audio.cpp, the request also selects its
 `tag_aware` internal chunking mode. This safeguard overrides an incompatible raw
 chunk-mode preference for that directed request and is visible in the compiled
-request options. Undirected requests retain their existing chunk settings.
+request options. Undirected requests retain their existing chunk mode.
+
+Scope is resolved from model **capabilities**: `native_instruction_scope`,
+`phrase_instruction_transport`, `phrase_instruction_reliability`,
+`recommended_instruction_scope`, `semantic_context_transport`, and `instruction_transport`.
+`quoted_hint` quotes a phrase in the whole-request instruction; `inline_hint`
+inserts a cue before its text; `none` retains and omits an unsupported phrase
+direction. Neither hint guarantees a phrase boundary. A uniform root direction
+is emitted once; adjacent explicit directions replace automatic restoration cues.
+Internal XML is never passed directly to the provider.
+
+Eleven v4 uses contextual `[pause]`/`[long pause]` tags without fixed duration.
+Verified legacy Multilingual v2 and Flash v2/v2.5 routes use SSML breaks capped
+at three seconds. Unverified Turbo/v3 pause parity remains unclaimed.
+Azure OpenAI deployment names need explicit `model_catalog[].upstream_model_id`
+before native model capabilities apply. Compatible JSON alone does not establish identity.
+
+See [model identities and speech controls](reference/model-capabilities.md)
+for the controls supported by each serving route.
 
 ## Reproducibility and review boundaries
 
@@ -184,7 +207,7 @@ across a production recording.
 
 ## Gemini and ElevenLabs setup
 
-Gemini 3.8 Flash TTS keeps the spoken transcript separate from delivery directions
+Gemini 3.8 Flash and Flash Lite TTS keep the spoken transcript separate from delivery directions
 in `speech_metadata.style` (Cloud: `speechMetadata.style`). Optional preceding and
 following text stays in that metadata, with explicit unspoken context labels.
 Phrase directions are soft whole-request hints; supported vocal events use
@@ -199,7 +222,7 @@ block. Context is text, not previously generated audio. Inline tags and prompt
 separation remain model-interpreted; they do not guarantee an inaudible hidden
 channel or exact phrase timing. See [Google's TTS prompting guide](https://ai.google.dev/gemini-api/docs/speech-generation).
 
-ElevenLabs `eleven_v3` receives compiled directions and supported events inside
+ElevenLabs `eleven_v3`, `eleven_v4` and `eleven_v4_turbo` receive compiled directions and supported events inside
 `text`; there is no separate `instructions` parameter. Phrase restoration is a
 soft direction. The currently mapped vocal events are laugh, sigh, and throat
 clearing, gated by `performance_allow_vocalizations`. Other events are reported
@@ -211,8 +234,15 @@ For supported older ElevenLabs models, preceding/following context uses
 Unknown models receive no inferred expressive capabilities. See
 [ElevenLabs request stitching](https://elevenlabs.io/docs/eleven-api/guides/how-to/text-to-speech/request-stitching).
 
+Eleven v4 uses Text-to-Dialogue HTTP and maps `similarity_boost` to the native
+`settings.similarity` field. The Turbo WebSocket route exposes only `stability`.
+For these routes, unsupported controls are rejected. v4 trims optional context
+to the nearest 100 characters on each side and sends `previous_text`/`future_text`;
+Turbo does not send hidden context. Both routes cap compiled input at 2,000
+characters. A stream must complete successfully before its audio is saved.
+
 Optional `elevenlabs_voice_settings` is an object. An empty object keeps provider
-defaults. Requests can use `stability`, `similarity_boost`, and `style` from 0 to
+defaults. Older-model REST requests can use `stability`, `similarity_boost`, and `style` from 0 to
 1, `speed` from 0.25 to 4, and boolean `use_speaker_boost`. Invalid types,
 ranges, and unknown keys are rejected before the HTTP request. Provider
 documentation disagrees on non-stability settings for Eleven v3; Pandrator

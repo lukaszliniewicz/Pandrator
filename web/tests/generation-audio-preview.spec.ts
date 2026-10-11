@@ -215,7 +215,7 @@ test('rapid keyboard playback replacement remains stoppable', async ({
   const sessionId = await createAudiobookSession(page);
   await mockCompletedCorpus(page, sessionId, 3);
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const row = await revealSegment(page, 'preview-segment-0', 0);
   await row.locator('td').nth(1).click();
 
@@ -270,7 +270,7 @@ test('hundreds of playable rows mount a single audio element on demand', async (
   await mockCompletedCorpus(page, sessionId, 150);
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   // Loaded-data semantics: 100 rows loaded, only the viewport window
   // mounted. DOM row count no longer equals loaded rows.
   const table = page.getByTestId('generation-segment-table');

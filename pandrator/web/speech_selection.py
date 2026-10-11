@@ -10,8 +10,16 @@ from typing import Any
 
 from sqlalchemy import select
 
-from pandrator.logic.speech_markup import parse_speech_markup, plain_speech_markup
-from pandrator.logic.speech_markup_edits import edit_speech_markup_range
+from pandrator.logic.speech_markup import (
+    parse_speech_markup,
+    plain_speech_markup,
+    speech_markup_reference,
+)
+from pandrator.logic.speech_markup_edits import (
+    edit_speech_markup_range,
+    insert_speech_markup_event,
+)
+from pandrator.logic.speech_performance import resolve_capabilities
 
 from . import models as m
 from . import performance_plans as plans
@@ -20,12 +28,24 @@ from .performance_schemas import PerformancePlanCreateRequest
 from .settings_policy import RevisionConflict, stable_hash
 from .source_management import assert_session_idle
 from .speech_annotation_records import record_markup
-from .speech_plan_preview import _runtime_settings
+from .speech_plan_preview import _runtime_settings, preview_speech_segment_in_session
 from .speech_plan_workspace import plan_signature
 from .speech_selection_schemas import (
     SpeechSelectionApplyRequest,
+    SpeechSelectionContextRequest,
     SpeechSelectionRequest,
 )
+
+_STRING_DELIVERY_FIELDS = ("instruction", "emotion", "pace", "cadence", "emphasis")
+_DELIVERY_FIELDS = (*_STRING_DELIVERY_FIELDS, "emotion_intensity")
+_MIXED_FIELDS = ("speaker", "voice", "voice_category", *_DELIVERY_FIELDS)
+
+
+def _empty_delivery() -> dict[str, Any]:
+    return {
+        **dict.fromkeys(_STRING_DELIVERY_FIELDS, ""),
+        "emotion_intensity": None,
+    }
 
 
 def _service(services: Any, key: str) -> Any:
@@ -200,6 +220,22 @@ def _candidate_markup(
     characters: list[dict[str, Any]],
     values: Mapping[str, Any],
 ) -> str:
+    if values.get("speech_xml") is not None:
+        if values["start"] != 0 or values["end"] != len(text):
+            raise ValueError("speech_xml requires the complete speech block range.")
+        source = parse_speech_markup(
+            source_xml, expected_segment_id=segment.id,
+            expected_text=text, characters=characters,
+        )
+        candidate = parse_speech_markup(
+            values["speech_xml"], expected_segment_id=segment.id,
+            expected_text=text, characters=characters,
+        )
+        if candidate.boundary_after != source.boundary_after:
+            raise ValueError(
+                "speech_xml cannot change boundary_after; use block boundary controls."
+            )
+        return candidate.xml
     kwargs: dict[str, Any] = {
         "segment_id": segment.id,
         "text": text,
@@ -208,11 +244,31 @@ def _candidate_markup(
         "end": values["end"],
         "speaker": values.get("speaker", "unchanged"),
         "character_id": values.get("character_id"),
+        "voice_category": values.get("voice_category"),
         "delivery": values.get("delivery"),
     }
     if "voice" in values:
         kwargs["voice"] = values["voice"]
-    return edit_speech_markup_range(source_xml, **kwargs)
+    candidate_xml = (
+        edit_speech_markup_range(source_xml, **kwargs)
+        if values.get("speaker", "unchanged") != "unchanged"
+        or "voice" in values
+        or values.get("delivery") is not None
+        else source_xml
+    )
+    cue = values.get("vocal_event")
+    if cue is not None:
+        return insert_speech_markup_event(
+            candidate_xml,
+            segment_id=segment.id,
+            text=text,
+            characters=characters,
+            offset=values["start"] if cue.get("position", "before") == "before" else values["end"],
+            kind=cue["kind"],
+            duration_ms=cue.get("duration_ms"),
+            affinity="following" if cue.get("position", "before") == "before" else "previous",
+        )
+    return candidate_xml
 
 
 def _transient_plan(
@@ -331,6 +387,10 @@ def _resolve_state(
         model.expected_segment_revision,
     )
     text = str(segment.optimized_text or segment.text or "")
+    if not text:
+        raise ValueError("The selected speech block is empty.")
+    if model.end > len(text):
+        raise ValueError("The selected speech range exceeds the accepted text.")
     controls = get_generation_controls(session, session_id)
     characters = deepcopy(controls.get("characters") or [])
     signature = plan_signature(session, revision.id)
@@ -357,6 +417,10 @@ def _resolve_state(
     )
     runtime["_preview_performance_enabled"] = bool(
         runtime.get("performance_enabled") or values.get("enable_performance", False)
+    )
+    runtime["performance_allow_vocalizations"] = bool(
+        runtime.get("performance_allow_vocalizations")
+        or values.get("enable_vocalizations", False)
     )
     guard = _selection_guard(
         revision_id=revision.id,
@@ -398,6 +462,172 @@ def _selection_response(state: _SelectionState) -> dict[str, Any]:
     }
 
 
+def _selection_spans(parsed, start: int, end: int) -> list[Any]:
+    if start == end:
+        if not parsed.transcript:
+            raise ValueError("The selected speech block is empty.")
+        if start == len(parsed.transcript):
+            selected = [span for span in parsed.spans if span.start < start <= span.end]
+        else:
+            selected = [span for span in parsed.spans if span.start <= start < span.end]
+    else:
+        selected = [
+            span for span in parsed.spans if span.start < end and span.end > start
+        ]
+    if not selected:
+        raise ValueError("The selected speech position does not overlap accepted text.")
+    return selected
+
+
+def _selection_current(parsed, start: int, end: int) -> dict[str, Any]:
+    selected = _selection_spans(parsed, start, end)
+    fields: dict[str, list[Any]] = {key: [] for key in _MIXED_FIELDS}
+    for span in selected:
+        speaker = (
+            "character" if span.speaker_id else
+            "narrator" if span.narrator or not span.dialogue else "dialogue"
+        )
+        fields["speaker"].append((speaker, span.speaker_id))
+        fields["voice"].append(span.voice)
+        fields["voice_category"].append(
+            span.voice_category if speaker == "dialogue" else None
+        )
+        for field in _DELIVERY_FIELDS:
+            value = span.delivery.get(field)
+            fields[field].append(
+                value if field == "emotion_intensity" else value or ""
+            )
+    mixed = [key for key in _MIXED_FIELDS if len(set(fields[key])) > 1]
+    common_speaker = fields["speaker"][0] if "speaker" not in mixed else ("mixed", None)
+    return {
+        "speaker": common_speaker[0],
+        "character_id": common_speaker[1],
+        "voice_category": fields["voice_category"][0] if "voice_category" not in mixed else None,
+        "voice": fields["voice"][0] if "voice" not in mixed else None,
+        "delivery": {
+            field: fields[field][0] if field not in mixed else None
+            for field in _DELIVERY_FIELDS
+        },
+        "mixed_fields": mixed,
+    }
+
+
+def get_speech_selection_context(
+    services: Any,
+    session,
+    session_id: str,
+    request: Mapping[str, Any] | SpeechSelectionContextRequest,
+) -> dict[str, Any]:
+    """Inspect effective authored directions without creating an edit candidate."""
+
+    model = (
+        request if isinstance(request, SpeechSelectionContextRequest)
+        else SpeechSelectionContextRequest.model_validate(request)
+    )
+    _plan, revision, segment = _active_segment(
+        session, session_id, model.revision_id, model.segment_id,
+        model.expected_segment_revision,
+    )
+    text = str(segment.optimized_text or segment.text or "")
+    if not text:
+        raise ValueError("The selected speech block is empty.")
+    if model.end > len(text):
+        raise ValueError("The selected speech range exceeds the accepted text.")
+    controls = get_generation_controls(session, session_id)
+    characters = deepcopy(controls.get("characters") or [])
+    adopted = _current_adopted(session, revision.id, plan_signature(session, revision.id))
+    adopted_record = (
+        plans._annotations(session, adopted).get(segment.id) if adopted else None
+    )
+    legacy = bool(
+        adopted_record and not record_markup(adopted_record) and (
+            any((adopted_record.get("delivery") or {}).values())
+            or adopted_record.get("spans") or adopted_record.get("events")
+        )
+    )
+    if legacy:
+        raw_xml = (segment.speech_plan_json or {}).get("speech_xml")
+        source_xml = raw_xml if isinstance(raw_xml, str) and raw_xml else plain_speech_markup(segment.id, text)
+    else:
+        source_xml = _source_markup(segment, adopted_record, characters, text)
+    parsed = parse_speech_markup(
+        source_xml, expected_segment_id=segment.id, expected_text=text,
+        characters=characters,
+    )
+    current = _selection_current(parsed, model.start, model.end)
+    selected_ids = {
+        span.speaker_id for span in _selection_spans(parsed, model.start, model.end)
+        if span.speaker_id
+    }
+    inherited_characters = []
+    for item in characters:
+        if item.get("id") not in selected_ids:
+            continue
+        delivery = deepcopy(item.get("delivery") or _empty_delivery())
+        delivery.setdefault("emotion_intensity", None)
+        inherited_characters.append(
+            {
+                "id": item["id"],
+                "display_name": item["display_name"],
+                "delivery": delivery,
+            }
+        )
+    workspace = _service(services, "workspace_settings")
+    resolved, _ = workspace.resolve_in_session(
+        session, session_id, sections=["audio", "tts"]
+    )
+    runtime = _runtime_settings(resolved)
+    try:
+        preview = preview_speech_segment_in_session(
+            services, session, session_id,
+            revision_id=revision.id, segment_id=segment.id,
+            _resolved_settings=resolved, _controls=controls,
+        )
+        preview_error = None
+    except RevisionConflict:
+        raise
+    except ValueError as error:
+        if str(error).startswith("Invalid speech markup:"):
+            raise
+        preview = None
+        preview_error = str(error)
+    capabilities = resolve_capabilities(runtime)
+    return {
+        "revision_id": revision.id,
+        "segment_id": segment.id,
+        "segment_revision": segment.revision,
+        "selection": {"start": model.start, "end": model.end,
+                      "text": text[model.start:model.end]},
+        "locked": bool((adopted_record or {}).get("locked")),
+        "editable": not legacy,
+        "edit_blocked_reason": (
+            "This block has legacy structured directions that cannot be edited as speech XML."
+            if legacy else None
+        ),
+        "current": current,
+        "speech_xml": None if legacy else parsed.xml,
+        "markup_reference": speech_markup_reference(),
+        "inherited": {
+            "general_direction": str(
+                runtime.get("generation_prompt")
+                or runtime.get("openai_audio_instructions") or ""
+            ).strip(),
+            "characters": inherited_characters,
+        },
+        "current_flags": {
+            "casting_enabled": bool(runtime.get("casting_enabled")),
+            "performance_enabled": bool(runtime.get("performance_enabled")),
+            "allow_vocalizations": bool(runtime.get("performance_allow_vocalizations")),
+        },
+        "preview": preview,
+        "preview_error": preview_error,
+        "service": str(runtime.get("service_id") or runtime.get("service") or ""),
+        "model": str(capabilities.get("model") or ""),
+        "capabilities": capabilities,
+        "compilation_only": True,
+    }
+
+
 def preview_speech_selection(
     services: Any, session, session_id: str, request: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -415,6 +645,7 @@ def preview_speech_selection(
         "current_flags": {
             "casting_enabled": bool(state.tts.get("casting_enabled")),
             "performance_enabled": bool(state.tts.get("performance_enabled")),
+            "allow_vocalizations": bool(state.tts.get("performance_allow_vocalizations")),
         },
         "preview": preview,
         "compilation_only": True,
@@ -478,6 +709,8 @@ def apply_speech_selection(
         patch["casting_enabled"] = True
     if values.get("enable_performance"):
         patch["performance_enabled"] = True
+    if values.get("enable_vocalizations"):
+        patch["performance_allow_vocalizations"] = True
     if patch:
         workspace = _service(services, "workspace_settings")
         current = workspace.get_in_session(session, session_id, "tts")
@@ -514,8 +747,9 @@ def apply_speech_selection(
         "current_flags": {
             "casting_enabled": bool(flags.get("casting_enabled")),
             "performance_enabled": bool(flags.get("performance_enabled")),
+            "allow_vocalizations": bool(flags.get("performance_allow_vocalizations")),
         },
     }
 
 
-__all__ = ["apply_speech_selection", "preview_speech_selection"]
+__all__ = ["apply_speech_selection", "get_speech_selection_context", "preview_speech_selection"]

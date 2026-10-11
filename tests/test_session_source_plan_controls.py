@@ -436,6 +436,13 @@ class SessionSourcePlanControlTests(unittest.TestCase):
         )
 
     def test_new_session_alternative_preserves_all_original_work(self):
+        current = self.client.get(self.base).get_json()
+        mode_update = self.client.patch(
+            self.base,
+            json={"interface_mode": "advanced"},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(mode_update.status_code, 200, mode_update.get_json())
         first = self.prepare()
         replacement = self.upload(
             SRT.replace("Hello", "Goodbye").encode(), "new-session.srt"
@@ -456,6 +463,12 @@ class SessionSourcePlanControlTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         created_id = response.get_json()["session_id"]
         self.assertNotEqual(created_id, self.sid)
+        self.assertEqual(
+            self.client.get(f"/api/v1/sessions/{created_id}").get_json()[
+                "interface_mode"
+            ],
+            "advanced",
+        )
         self.assertEqual(
             self.client.get(self.base + "/generation-plan/status").get_json()[
                 "selected_revision_id"

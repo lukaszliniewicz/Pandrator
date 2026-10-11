@@ -312,7 +312,7 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertNotIn("Bearer", str(post.call_args.kwargs["headers"]))
         self.assertNotIn("json", post.call_args.kwargs)
         ssml = post.call_args.kwargs["data"]
-        self.assertIn('name="en-US-Ethan:MAI-Voice-2"', ssml)
+        self.assertIn('name="en-US-Ethan:MAI-Voice-2.1"', ssml)
         self.assertIn('A &amp; &lt;tag&gt; "quoted"', ssml)
         self.assertIn('<mstts:express-as style="excited" styledegree="1.2">', ssml)
         self.assertIn('<prosody rate="+25%">', ssml)
@@ -352,7 +352,7 @@ class TTSHandlerTests(unittest.TestCase):
             "riff-24khz-16bit-mono-pcm",
             post.call_args.kwargs["headers"]["X-Microsoft-OutputFormat"],
         )
-        self.assertIn("en-US-Ethan:MAI-Voice-2-Flash", post.call_args.kwargs["data"])
+        self.assertIn("en-US-Ethan:MAI-Voice-2.1-Flash", post.call_args.kwargs["data"])
         self.assertIn('<prosody rate="+0%">', post.call_args.kwargs["data"])
         self.assertNotIn("express-as", post.call_args.kwargs["data"])
 
@@ -470,6 +470,7 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(
             [
                 "gemini-3.8-flash-tts",
+                "gemini-3.8-flash-lite-tts",
                 "gemini-3.1-flash-tts-preview",
                 "gemini-2.5-flash-preview-tts",
                 "gemini-2.5-pro-preview-tts",
@@ -479,8 +480,10 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertEqual(
             [
                 "gemini-3.8-flash-tts",
+                "gemini-3.8-flash-lite-tts",
                 "gemini-3.1-flash-tts-preview",
                 "gemini-2.5-flash-tts",
+                "gemini-2.5-flash-lite-preview-tts",
                 "gemini-2.5-pro-tts",
             ],
             tts_handler.VERTEX_TTS_MODELS,
@@ -504,9 +507,14 @@ class TTSHandlerTests(unittest.TestCase):
             ),
         )
 
+        self.assertEqual("gemini-3.8-flash-tts", tts_handler.GEMINI_AUDIO_DEFAULT_MODEL)
+        self.assertEqual("gemini-3.8-flash-tts", tts_handler.VERTEX_AUDIO_DEFAULT_MODEL)
+
         services = {item["id"]: item for item in tts_handler.get_service_configs({})}
         self.assertEqual(tts_handler.GEMINI_TTS_MODELS, services["gemini"]["models"])
         self.assertEqual(tts_handler.VERTEX_TTS_MODELS, services["vertex_ai"]["models"])
+        self.assertEqual("gemini-3.8-flash-tts", services["gemini"]["default_model"])
+        self.assertEqual("gemini-3.8-flash-tts", services["vertex_ai"]["default_model"])
         self.assertEqual(
             tts_handler.GEMINI_TTS_MODELS,
             services["gemini"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
@@ -519,7 +527,7 @@ class TTSHandlerTests(unittest.TestCase):
     def test_generation_prompt_capabilities_are_model_specific(self):
         services = {item["id"]: item for item in tts_handler.get_service_configs({})}
         self.assertEqual(
-            ["gpt-4o-mini-tts"],
+            [model for model in tts_handler.OPENAI_TTS_MODELS if model.startswith("gpt-4o-mini-tts")],
             services["openai"][tts_handler.GENERATION_PROMPT_MODELS_FIELD],
         )
         self.assertEqual(
@@ -774,12 +782,24 @@ class TTSHandlerTests(unittest.TestCase):
         service = tts_handler.get_service_config({}, tts_handler.VERTEX_PROVIDER)
         assert service is not None
         self.assertEqual("global", service["vertex_location"])
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(b"\x00\x00\x01\x00")
         response = Mock(ok=True)
         response.json.return_value = {
             "candidates": [
                 {
                     "content": {
-                        "parts": [{"inlineData": {"data": base64.b64encode(b"\x00\x00").decode()}}]
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "data": base64.b64encode(output.getvalue()).decode()
+                                }
+                            }
+                        ]
                     }
                 }
             ]
@@ -1140,9 +1160,9 @@ class TTSHandlerTests(unittest.TestCase):
         self.assertTrue(unreviewed["options"]["x_vector_only_mode"])
 
     def test_audio_cpp_inline_reference_replaces_cached_voice_for_cloning_models(self):
-        reference = {"type": "base64", "data": "UklGRg=="}
+        reference = {"type": "base64", "data": "data:audio/wav;base64,UklGRg=="}
         for model in tts_provider_profiles.AUDIO_CPP_MODEL_CATALOG:
-            if model.get("voice_mode") in {"prebuilt", "design"}:
+            if model.get("voice_mode") in {"prebuilt", "design", "unknown", "none"}:
                 continue
             with self.subTest(model=model["id"]):
                 settings = {
@@ -1151,6 +1171,8 @@ class TTSHandlerTests(unittest.TestCase):
                     "audio_cpp_voice_ref": reference,
                     "audio_cpp_reference_text": "Reviewed words.",
                 }
+                if model.get("family") == "auk":
+                    settings["generation_prompt"] = "A warm, clear adult voice."
                 payload = tts_handler._build_audio_cpp_audio_payload("Hello", settings, {})
                 self.assertEqual(reference, payload["voice_ref"])
                 self.assertNotIn("voice", payload)
@@ -1293,11 +1315,13 @@ class TTSHandlerTests(unittest.TestCase):
             if model["family"] not in expected_by_family or model["id"].startswith("pocket_tts_") and model["id"] != "pocket_tts_english_q8_0":
                 continue
             with self.subTest(model=model["id"]):
+                language = "ar" if model["id"].startswith("voicetut_tts_") else "en-US"
+                expected = "arz" if model["id"].startswith("voicetut_tts_") else expected_by_family[model["family"]]
                 payload = tts_handler._build_audio_cpp_audio_payload(
-                    "Test.", {"model": model["id"], "language": "en-US",
+                    "Test.", {"model": model["id"], "language": language,
                               "generation_prompt": "Warm delivery."}, {}
                 )
-                self.assertEqual(expected_by_family[model["family"]], payload.get("language"))
+                self.assertEqual(expected, payload.get("language"))
 
     def test_audio_cpp_firered_maps_languages_and_preserves_native_tags(self):
         cases = {
@@ -1361,6 +1385,10 @@ class TTSHandlerTests(unittest.TestCase):
                     "path": "/private/models/fish",
                 },
                 {"id": "qwen3-asr", "task": "asr", "path": "/private/asr"},
+                {"id": "auk_qwen_q8_0", "task": "tts"},
+                {"id": "vocos_mel_24khz", "task": "tts"},
+                {"id": "personaplex_7b_v1_q8_0", "task": "tts"},
+                {"id": "irodori_tts_v4_1_anime_q8_0", "task": "tts"},
                 {
                     "id": "breeze-clone",
                     "family": "breeze_tts",
@@ -1497,15 +1525,20 @@ class TTSHandlerTests(unittest.TestCase):
             "",
         )
 
-    def test_fishs2_payload_includes_advanced_settings(self):
+    def test_fishs2_payload_uses_nested_request_options_and_ignores_legacy_keys(self):
         payload = tts_handler._build_fishs2_payload(
             "Hello",
             {
                 "xtts_model": "fishs2",
                 "speaker": "demo-voice",
                 "speed": 1.25,
-                "fishs2_temperature": 0.8,
+                "fishs2_temperature": 1.8,
                 "fishs2_top_p": 0.65,
+                "fishs2_max_new_tokens": 1024,
+                "fishs2_top_k": 40,
+                "fishs2_min_tokens_before_end": 4,
+                "fishs2_n_threads": 8,
+                "fishs2_verbose": "false",
                 "fishs2_chunk_length": 240,
                 "fishs2_latency": "normal",
                 "fishs2_normalize": False,
@@ -1516,35 +1549,100 @@ class TTSHandlerTests(unittest.TestCase):
 
         self.assertEqual(payload["model"], "fishaudio/s2-pro")
         self.assertEqual(payload["voice"], "demo-voice")
-        self.assertEqual(payload["temperature"], 0.8)
-        self.assertEqual(payload["top_p"], 0.65)
-        self.assertEqual(payload["chunk_length"], 240)
-        self.assertEqual(payload["latency"], "normal")
-        self.assertFalse(payload["normalize"])
-        self.assertEqual(payload["speed"], 1.25)
-        self.assertEqual(payload["prosody"]["speed"], 1.25)
-        self.assertEqual(payload["prosody"]["volume"], 3.5)
-        self.assertFalse(payload["prosody"]["normalize_loudness"])
+        self.assertEqual(
+            payload["fishs2"],
+            {
+                "temperature": 1.8,
+                "top_p": 0.65,
+                "max_new_tokens": 1024,
+                "top_k": 40,
+                "min_tokens_before_end": 4,
+                "n_threads": 8,
+                "verbose": False,
+            },
+        )
+        self.assertEqual(
+            set(payload), {"model", "input", "voice", "response_format", "fishs2"}
+        )
+        self.assertEqual(payload["input"], "Hello")
 
-    def test_fishs2_payload_clamps_advanced_settings(self):
-        payload = tts_handler._build_fishs2_payload(
+    def test_fishs2_payload_omits_absent_and_null_optional_options(self):
+        absent_payload = tts_handler._build_fishs2_payload("Hello", {})
+        null_payload = tts_handler._build_fishs2_payload(
             "Hello",
             {
-                "speed": 5.0,
-                "fishs2_temperature": 2.0,
-                "fishs2_top_p": -1.0,
-                "fishs2_chunk_length": 999,
-                "fishs2_latency": "fastest",
-                "fishs2_prosody_volume": -100.0,
+                "fishs2_max_new_tokens": None,
+                "fishs2_top_k": None,
+                "fishs2_min_tokens_before_end": None,
+                "fishs2_n_threads": None,
+                "fishs2_verbose": None,
             },
         )
 
-        self.assertEqual(payload["temperature"], 1.0)
-        self.assertEqual(payload["top_p"], 0.0)
-        self.assertEqual(payload["chunk_length"], 300)
-        self.assertEqual(payload["latency"], "balanced")
-        self.assertEqual(payload["speed"], 2.0)
-        self.assertEqual(payload["prosody"]["volume"], -20.0)
+        expected = {
+            "temperature": tts_handler.FISHS2_DEFAULT_TEMPERATURE,
+            "top_p": tts_handler.FISHS2_DEFAULT_TOP_P,
+        }
+        self.assertEqual(absent_payload["fishs2"], expected)
+        self.assertEqual(null_payload["fishs2"], expected)
+
+    def test_fishs2_payload_clamps_nested_numeric_options(self):
+        cases = (
+            ("fishs2_temperature", -1.0, "temperature", 0.0),
+            ("fishs2_temperature", 3.0, "temperature", 2.0),
+            ("fishs2_top_p", -1.0, "top_p", 0.0),
+            ("fishs2_top_p", 2.0, "top_p", 1.0),
+            ("fishs2_max_new_tokens", 0, "max_new_tokens", 1),
+            ("fishs2_max_new_tokens", 9000, "max_new_tokens", 8192),
+            ("fishs2_top_k", -1, "top_k", 0),
+            ("fishs2_top_k", 501, "top_k", 500),
+            ("fishs2_min_tokens_before_end", -1, "min_tokens_before_end", 0),
+            ("fishs2_min_tokens_before_end", 9000, "min_tokens_before_end", 8192),
+            ("fishs2_n_threads", -1, "n_threads", 0),
+            ("fishs2_n_threads", 513, "n_threads", 512),
+        )
+        for settings_key, value, option_key, expected in cases:
+            with self.subTest(settings_key=settings_key, value=value):
+                payload = tts_handler._build_fishs2_payload(
+                    "Hello", {settings_key: value}
+                )
+                self.assertEqual(payload["fishs2"][option_key], expected)
+
+    def test_fishs2_invalid_optional_budget_is_rejected_instead_of_becoming_one_token(self):
+        for value in ("oops", True, 1.5, float("nan")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "integer or unset"):
+                tts_handler._build_fishs2_payload("Hello", {"fishs2_max_new_tokens": value})
+
+    def test_fishs2_payload_compiles_inline_performance_and_respects_disabled_controls(self):
+        transcript = "Keep this exact transcript, with literal [square] brackets."
+        settings = {
+            "generation_prompt": "Speak warmly.",
+            "_performance": {
+                "decision": "steer",
+                "events": [
+                    {"kind": "pause", "position": "after", "duration_ms": 750},
+                    {"kind": "laugh", "position": "before"},
+                ],
+            },
+            "performance_allow_vocalizations": False,
+        }
+
+        payload = tts_handler._build_fishs2_payload(transcript, settings)
+
+        self.assertEqual(
+            payload["input"],
+            "[Speak warmly.]"
+            + transcript
+            + "[pause for approximately 750 milliseconds]",
+        )
+        self.assertNotIn("[laughing]", payload["input"])
+        self.assertNotIn("instructions", payload)
+
+        disabled_payload = tts_handler._build_fishs2_payload(
+            transcript,
+            {**settings, "generation_prompt": "", "performance_enabled": False},
+        )
+        self.assertEqual(disabled_payload["input"], transcript)
 
     def test_fishs2_model_catalog_collapses_compatibility_aliases(self):
         models = tts_handler.normalize_tts_model_catalog(

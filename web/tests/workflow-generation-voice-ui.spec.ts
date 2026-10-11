@@ -59,7 +59,7 @@ test('generation and voice controls expose resolved selection semantics', () => 
 });
 
 test('generation workspace exposes the compact review controls', () => {
-  const drawer = source('GenerationDrawer.svelte');
+  const drawer = source('GenerationWorkspace.svelte');
   const segmentTable = source('GenerationSegmentTable.svelte');
   const boundaryMarker = source('SpeechBoundaryMarker.svelte');
   const stageCard = source('WorkflowStageCard.svelte');

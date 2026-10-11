@@ -64,6 +64,7 @@ export type GenerationLoadOptions = {
   preserveLoaded?: boolean;
   search?: URLSearchParams;
   startOrdinal?: number;
+  visibleOrdinals?: { start: number; end: number };
 };
 
 export type GenerationLoadResult = {
@@ -97,13 +98,19 @@ export class GenerationStore {
   assembly = $state<OutputAssembly | null>(null);
   status = $state<LoadState>('idle');
   error = $state('');
-  private loadedFilter: SegmentFilter | '' = '';
-  private loadedRunId = '';
-  private loadedSearch = '';
-  private loadedStartOrdinal = 0;
-  private loadedPlanRevisionId: string | null = null;
-  private loadedThroughOrdinal = -1;
-  private initialized = false;
+  private loadedScope = '';
+  startOrdinal = $state(0);
+  paging = $state(false);
+  historyLoading = $state(false);
+  historyComplete = $state(false);
+  private runsLoaded = false;
+  private runsDirty = false;
+  private pagePromise?: Promise<GenerationLoadResult>;
+  private historyControllers = new Map<string, AbortController>();
+  private historyPromise?: Promise<void>;
+  private historyController?: AbortController;
+  private cacheEpoch = 0;
+  private freshRows = new Map<string, number>();
   private controller?: AbortController;
   // Mutation epoch: every adopted save bumps this. A load that started
   // earlier must not apply its payload afterwards (see isStaleLoad); the
@@ -121,183 +128,414 @@ export class GenerationStore {
     return this.status === 'loading';
   }
 
+  needsVisibleRefresh(ids: string[]) {
+    return ids.some((id) => this.freshRows.get(id) !== this.cacheEpoch);
+  }
+
+  reconcileActivity() {
+    this.runsDirty = true;
+    this.cacheEpoch += 1;
+  }
+
+  private scope(options: GenerationLoadOptions) {
+    return [
+      options.filter,
+      options.selectedRunId,
+      options.selectedRunVersionId ?? '',
+      options.audioVersionSide ?? 'after',
+      options.search?.toString() ?? ''
+    ].join('|');
+  }
+
+  pageQuery(options: GenerationLoadOptions, cursor = 0, limit = 100) {
+    const query = new URLSearchParams(options.search);
+    query.set('limit', String(limit));
+    if (cursor) query.set('cursor', String(cursor));
+    if (options.filter === 'marked') query.set('marked', 'true');
+    else if (options.filter === 'boundary_flags')
+      query.set('boundary_flags', 'true');
+    else if (options.filter === 'verification_issues')
+      query.set('verification', 'issues');
+    else if (options.filter !== 'all') query.set('status', options.filter);
+    const version = generationHistoryVersion(
+      this.runs,
+      options.selectedRunId,
+      options.selectedRunVersionId
+    );
+    if (version) {
+      query.set('generation_run_id', version.id);
+      if (version.audio_version)
+        query.set('audio_version_side', options.audioVersionSide ?? 'after');
+    }
+    // Older ordinary history uses sequence-based take selection. Its full
+    // history is intentional; current mixes and pinned recasts need one take.
+    query.set(
+      'take_history',
+      !options.selectedRunId || version?.audio_version ? 'selected' : 'full'
+    );
+    return query;
+  }
+
+  private async loadRuns(signal?: AbortSignal, force = false) {
+    if (this.runsLoaded && !this.runsDirty && !force) return;
+    const payload = await generationApi.runs(this.sessionId, signal, {
+      view: 'compact',
+      ...(this.historyComplete ? {} : { limit: 25 })
+    });
+    if (signal?.aborted) return;
+    const known = new Map(this.runs.map((run) => [run.id, run]));
+    const ids = new Set(payload.items.map((run) => run.id));
+    this.runs = [
+      ...payload.items.map((run) => ({ ...known.get(run.id), ...run })),
+      ...this.runs.filter((run) => !ids.has(run.id) && run.settings_snapshot)
+    ].sort((left, right) => right.sequence_number - left.sequence_number);
+    this.activeRun = preferredActiveRun(
+      payload.items.filter((run) => !run.early_repair_parent_run_id)
+    );
+    this.runsLoaded = true;
+    this.runsDirty = false;
+  }
+
+  async ensureRun(id: string, signal?: AbortSignal) {
+    if (!id) return;
+    const existing = this.runs.find((run) => run.id === id);
+    if (existing?.settings_snapshot || (this.historyComplete && existing))
+      return;
+    const run = await generationApi.run(id, signal);
+    if (signal?.aborted) return;
+    this.runs = [run, ...this.runs.filter((item) => item.id !== id)].sort(
+      (left, right) => right.sequence_number - left.sequence_number
+    );
+    this.activeRun = preferredActiveRun(
+      this.runs.filter((item) => !item.early_repair_parent_run_id)
+    );
+  }
+
+  loadHistory(): Promise<void> {
+    if (this.historyPromise) return this.historyPromise;
+    if (this.historyComplete) return Promise.resolve();
+    this.historyLoading = true;
+    const controller = new AbortController();
+    this.historyController = controller;
+    const task = (async () => {
+      try {
+        const payload = await generationApi.runs(
+          this.sessionId,
+          controller.signal
+        );
+        if (controller.signal.aborted) return;
+        this.runs = payload.items;
+        this.historyComplete = true;
+        this.runsLoaded = true;
+      } catch (caught) {
+        if (!controller.signal.aborted) this.error = errorMessage(caught);
+      } finally {
+        this.historyLoading = false;
+        if (this.historyController === controller)
+          this.historyController = undefined;
+      }
+    })();
+    this.historyPromise = task;
+    void task.finally(() => {
+      if (this.historyPromise === task) this.historyPromise = undefined;
+    });
+    return task;
+  }
+
   async load(options: GenerationLoadOptions): Promise<GenerationLoadResult> {
-    const { filter, reset = true, preserveLoaded = reset } = options;
+    if (options.reset === false) return this.loadPage(options);
+    if (
+      options.preserveLoaded !== false &&
+      this.scope(options) === this.loadedScope &&
+      this.pagePromise
+    ) {
+      await this.pagePromise.catch(() => undefined);
+      if (this.scope(options) !== this.loadedScope)
+        return {
+          selectedRunId: options.selectedRunId,
+          shouldExpand: false,
+          discarded: true
+        };
+    }
     this.controller?.abort();
     const controller = new AbortController();
     this.controller = controller;
     const epoch = this.loadEpoch;
-    this.status = this.payload.total ? 'stale' : 'loading';
+    const scope = this.scope(options);
+    const keep = options.preserveLoaded !== false && scope === this.loadedScope;
+    const previous = this.payload;
+    this.status = previous.total ? 'stale' : 'loading';
     this.error = '';
     try {
-      const requestedLimit =
-        reset && preserveLoaded
-          ? Math.min(250, Math.max(100, this.loadedThroughOrdinal + 1))
-          : 100;
-      const query = new URLSearchParams({ limit: String(requestedLimit) });
-      const searchScope = `${options.audioVersionSide ?? 'after'}|${options.search?.toString() ?? ''}`;
-      options.search?.forEach((value, key) => query.set(key, value));
-      const startOrdinal =
-        options.startOrdinal ??
-        (preserveLoaded &&
-        this.loadedFilter === filter &&
-        this.loadedRunId === options.selectedRunId &&
-        this.loadedSearch === searchScope
-          ? this.loadedStartOrdinal
-          : 0);
-      if (startOrdinal) query.set('cursor', String(startOrdinal));
-      if (filter === 'marked') query.set('marked', 'true');
-      else if (filter === 'boundary_flags') query.set('boundary_flags', 'true');
-      else if (filter === 'verification_issues')
-        query.set('verification', 'issues');
-      else if (filter !== 'all') query.set('status', filter);
-      if (!reset && this.payload.next_cursor != null) {
-        query.set('cursor', String(this.payload.next_cursor));
-      }
-      const previousTotal = this.payload.total;
-      const previousRunId = this.activeRun?.id ?? '';
-      const [runPayload, latestAssembly, activeSegments] = await Promise.all([
-        generationApi.runs(this.sessionId, controller.signal),
-        generationApi.latestAssembly(this.sessionId, controller.signal),
-        // The active plan needs no run-history lookup. Load its rows alongside
-        // history/output; history views still resolve their frozen version first.
-        options.selectedRunId
-          ? Promise.resolve(null)
-          : generationApi.segments(this.sessionId, query, controller.signal)
+      await this.loadRuns(controller.signal);
+      if (options.selectedRunId) await this.historyPromise;
+      await this.ensureRun(options.selectedRunId, controller.signal);
+      await this.ensureRun(
+        options.selectedRunVersionId ?? '',
+        controller.signal
+      );
+      if (controller.signal.aborted)
+        return {
+          selectedRunId: options.selectedRunId,
+          shouldExpand: false,
+          discarded: true
+        };
+      let cursor = keep ? this.startOrdinal : (options.startOrdinal ?? 0);
+      const range =
+        keep && previous.items.length ? options.visibleOrdinals : undefined;
+      if (range) cursor = Math.max(0, range.start - 5);
+      const query = this.pageQuery(options, cursor, range ? 250 : 100);
+      if (range) query.set('end_ordinal', String(range.end + 5));
+      const [segments, assembly] = await Promise.all([
+        generationApi.segments(this.sessionId, query, controller.signal),
+        generationApi.latestAssembly(this.sessionId, controller.signal)
       ]);
-      if (controller.signal.aborted) {
-        return {
-          selectedRunId: options.selectedRunId,
-          shouldExpand: false,
-          discarded: true
-        };
-      }
-      const runs = runPayload.items;
-      // Run history is newest-first, but a newer queued regeneration must not
-      // hide the run that currently owns the worker.
-      const activeRun = preferredActiveRun(
-        runs.filter((item) => !item.early_repair_parent_run_id)
-      );
-      const selectedRunId =
-        options.selectedRunId &&
-        runs.some((item) => item.id === options.selectedRunId)
-          ? options.selectedRunId
-          : '';
-      const selectedVersion = generationHistoryVersion(
-        runs,
-        selectedRunId,
-        options.selectedRunVersionId
-      );
-      if (selectedVersion) {
-        query.set('generation_run_id', selectedVersion.id);
-        if (selectedVersion.audio_version)
-          query.set('audio_version_side', options.audioVersionSide ?? 'after');
-      }
-      const next =
-        activeSegments ??
-        (await generationApi.segments(
-          this.sessionId,
-          query,
-          controller.signal
-        ));
-      if (controller.signal.aborted) {
-        return { selectedRunId, shouldExpand: false, discarded: true };
-      }
-      let payload = next;
-      if (!reset && this.payload.plan_revision_id === next.plan_revision_id) {
-        const known = new Set(this.payload.items.map((item) => item.id));
-        payload = {
-          ...next,
-          items: [
-            ...this.payload.items,
-            ...next.items.filter((item) => !known.has(item.id))
-          ]
-        };
-      } else if (
-        preserveLoaded &&
-        this.loadedSearch === searchScope &&
-        this.loadedFilter === filter &&
-        this.loadedRunId === selectedRunId &&
-        this.payload.plan_revision_id === next.plan_revision_id &&
-        this.loadedThroughOrdinal > (next.items.at(-1)?.ordinal ?? -1)
+      let next = segments;
+      // An active plan can change while the user is far down its old rows.
+      // Start the new revision at the beginning rather than adopting a tail.
+      if (
+        keep &&
+        previous.plan_revision_id !== next.plan_revision_id &&
+        cursor
       ) {
-        const items = [...next.items];
-        const known = new Set(items.map((item) => item.id));
-        const lastLoadedOrdinal = this.loadedThroughOrdinal;
-        let nextCursor = next.next_cursor;
-        while (
-          nextCursor != null &&
-          (items.at(-1)?.ordinal ?? -1) < lastLoadedOrdinal
-        ) {
-          const pageQuery = new URLSearchParams(query);
-          pageQuery.set('cursor', String(nextCursor));
-          const page = await generationApi.segments(
-            this.sessionId,
-            pageQuery,
-            controller.signal
-          );
-          if (controller.signal.aborted) {
-            return { selectedRunId, shouldExpand: false, discarded: true };
-          }
-          items.push(...page.items.filter((item) => !known.has(item.id)));
-          for (const item of page.items) known.add(item.id);
-          nextCursor = page.next_cursor;
-        }
-        payload = {
-          ...next,
-          items,
-          next_cursor: nextCursor
-        };
+        next = await generationApi.segments(
+          this.sessionId,
+          this.pageQuery(options),
+          controller.signal
+        );
+        cursor = 0;
       }
-      if (isStaleLoad(epoch, this.loadEpoch)) {
-        // A mutation was adopted after this load started: the loaded page
-        // is older than the authoritative store state. Discard it instead
-        // of overwriting the adopted revision/rows.
-        return { selectedRunId, shouldExpand: false, discarded: true };
-      }
-      this.payload = payload;
-      this.runs = runs;
-      this.activeRun = activeRun;
-      this.assembly = latestAssembly.item;
-      const sameLoadedScope =
-        this.loadedSearch === searchScope &&
-        this.loadedStartOrdinal === startOrdinal &&
-        this.loadedFilter === filter &&
-        this.loadedRunId === selectedRunId &&
-        this.loadedPlanRevisionId === payload.plan_revision_id;
-      this.loadedFilter = filter;
-      this.loadedSearch = searchScope;
-      this.loadedStartOrdinal = startOrdinal;
-      this.loadedRunId = selectedRunId;
-      this.loadedPlanRevisionId = payload.plan_revision_id;
-      this.loadedThroughOrdinal = sameLoadedScope
-        ? Math.max(
-            this.loadedThroughOrdinal,
-            payload.items.at(-1)?.ordinal ?? -1
-          )
-        : (payload.items.at(-1)?.ordinal ?? -1);
-      const shouldExpand =
-        this.initialized &&
-        ((previousTotal === 0 && payload.total > 0) ||
-          (activeRun?.id &&
-            activeRun.id !== previousRunId &&
-            ['queued', 'running', 'pausing'].includes(activeRun.status)));
-      this.initialized = true;
-      this.status = payload.total ? 'ready' : 'empty';
-      return { selectedRunId, shouldExpand: Boolean(shouldExpand) };
-    } catch (caught) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || isStaleLoad(epoch, this.loadEpoch))
         return {
           selectedRunId: options.selectedRunId,
           shouldExpand: false,
           discarded: true
         };
+      const merge = keep && previous.plan_revision_id === next.plan_revision_id;
+      if (merge) {
+        const replacements = new Map(next.items.map((item) => [item.id, item]));
+        const upper = range
+          ? range.end + 5
+          : (next.items.at(-1)?.ordinal ?? cursor - 1);
+        const items = previous.items
+          .filter(
+            (item) =>
+              item.ordinal < cursor ||
+              item.ordinal > upper ||
+              replacements.has(item.id)
+          )
+          .map((item) => {
+            const updated = replacements.get(item.id);
+            if (!updated) return item;
+            replacements.delete(item.id);
+            // Keep an explicitly opened take history if its cardinality and
+            // row revision still match; refresh the chosen take's live metadata.
+            if (
+              item.take_history_loaded &&
+              updated.take_history_loaded === false &&
+              item.revision === updated.revision &&
+              item.takes.length === updated.take_count
+            ) {
+              const chosen = new Map(
+                updated.takes.map((take) => [take.id, take])
+              );
+              return {
+                ...updated,
+                take_history_loaded: true,
+                takes: item.takes.map((take) => ({
+                  ...take,
+                  ...chosen.get(take.id),
+                  is_active:
+                    chosen.get(take.id)?.is_active ??
+                    (updated.takes.some((value) => value.is_active)
+                      ? false
+                      : take.is_active)
+                }))
+              };
+            }
+            return updated;
+          });
+        items.push(...replacements.values());
+        this.payload = {
+          ...next,
+          items: items.sort((a, b) => a.ordinal - b.ordinal),
+          next_cursor: previous.next_cursor
+        };
+      } else {
+        this.payload = next;
+        this.startOrdinal = cursor;
       }
+      this.loadedScope = scope;
+      if (!merge) this.freshRows.clear();
+      for (const item of next.items)
+        this.freshRows.set(item.id, this.cacheEpoch);
+      this.assembly = assembly.item;
+      this.status = this.payload.total ? 'ready' : 'empty';
+      return { selectedRunId: options.selectedRunId, shouldExpand: false };
+    } catch (caught) {
+      if (controller.signal.aborted)
+        return {
+          selectedRunId: options.selectedRunId,
+          shouldExpand: false,
+          discarded: true
+        };
       this.error = errorMessage(caught);
       this.status = 'failed';
       throw caught;
     } finally {
       if (this.controller === controller) this.controller = undefined;
+    }
+  }
+
+  private loadPage(
+    options: GenerationLoadOptions,
+    previous = false
+  ): Promise<GenerationLoadResult> {
+    if (this.pagePromise) return this.pagePromise;
+    const task = this.fetchPage(options, previous);
+    this.pagePromise = task;
+    void task
+      .finally(() => {
+        if (this.pagePromise === task) this.pagePromise = undefined;
+      })
+      .catch(() => undefined);
+    return task;
+  }
+
+  loadPrevious(options: GenerationLoadOptions) {
+    return this.loadPage(options, true);
+  }
+
+  private async fetchPage(
+    options: GenerationLoadOptions,
+    previous: boolean
+  ): Promise<GenerationLoadResult> {
+    const discarded = {
+      selectedRunId: options.selectedRunId,
+      shouldExpand: false,
+      discarded: true
+    };
+    if (this.scope(options) !== this.loadedScope) return discarded;
+    const cursor = previous
+      ? Math.max(0, this.startOrdinal - 100)
+      : this.payload.next_cursor;
+    if (cursor == null || (previous && this.startOrdinal <= 0))
+      return discarded;
+    this.controller?.abort();
+    const controller = new AbortController();
+    this.controller = controller;
+    const epoch = this.loadEpoch;
+    const revision = this.payload.plan_revision_id;
+    const query = this.pageQuery(options, cursor);
+    if (revision) query.set('plan_revision_id', revision);
+    if (previous) query.set('end_ordinal', String(this.startOrdinal - 1));
+    this.paging = true;
+    this.error = '';
+    try {
+      const page = await generationApi.segments(
+        this.sessionId,
+        query,
+        controller.signal
+      );
+      if (
+        controller.signal.aborted ||
+        isStaleLoad(epoch, this.loadEpoch) ||
+        revision !== this.payload.plan_revision_id ||
+        this.scope(options) !== this.loadedScope
+      )
+        return discarded;
+      if (page.plan_revision_id !== revision)
+        throw new Error('The speech plan changed. Refresh the segment list.');
+      if (!previous && page.next_cursor != null && page.next_cursor <= cursor)
+        throw new Error(
+          'The segment list did not advance. Retry loading the page.'
+        );
+      const known = new Set(this.payload.items.map((item) => item.id));
+      this.payload = {
+        ...this.payload,
+        ...page,
+        items: [
+          ...this.payload.items,
+          ...page.items.filter((item) => !known.has(item.id))
+        ].sort((a, b) => a.ordinal - b.ordinal),
+        next_cursor: previous ? this.payload.next_cursor : page.next_cursor
+      };
+      if (previous) this.startOrdinal = cursor;
+      for (const item of page.items)
+        this.freshRows.set(item.id, this.cacheEpoch);
+      this.status = this.payload.total ? 'ready' : 'empty';
+      return { selectedRunId: options.selectedRunId, shouldExpand: false };
+    } catch (caught) {
+      if (controller.signal.aborted) return discarded;
+      this.error = errorMessage(caught);
+      throw caught;
+    } finally {
+      if (this.controller === controller) this.controller = undefined;
+      this.paging = false;
+    }
+  }
+
+  async loadTakeHistory(
+    item: GenerationSegment,
+    options: GenerationLoadOptions
+  ) {
+    if (
+      item.take_history_loaded !== false ||
+      this.historyControllers.has(item.id)
+    )
+      return;
+    const controller = new AbortController();
+    this.historyControllers.set(item.id, controller);
+    const epoch = this.loadEpoch;
+    const revision = this.payload.plan_revision_id;
+    const query = this.pageQuery(options);
+    for (const key of [
+      'status',
+      'marked',
+      'verification',
+      'boundary_flags',
+      'q',
+      'cursor'
+    ])
+      query.delete(key);
+    query.set('take_history', 'full');
+    query.set('around_ordinal', String(item.ordinal));
+    query.set('radius', '0');
+    if (revision) query.set('plan_revision_id', revision);
+    try {
+      const page = await generationApi.segments(
+        this.sessionId,
+        query,
+        controller.signal
+      );
+      if (
+        controller.signal.aborted ||
+        isStaleLoad(epoch, this.loadEpoch) ||
+        revision !== this.payload.plan_revision_id
+      )
+        return;
+      const full = page.items.find(
+        (row) => row.id === item.id && row.revision === item.revision
+      );
+      if (!full)
+        throw new Error(
+          'This segment changed. Refresh before opening its recordings.'
+        );
+      this.payload = {
+        ...this.payload,
+        items: this.payload.items.map((row) =>
+          row.id === item.id
+            ? {
+                ...row,
+                takes: full.takes,
+                take_count: full.takes.length,
+                take_history_loaded: true
+              }
+            : row
+        )
+      };
+    } finally {
+      this.historyControllers.delete(item.id);
     }
   }
 
@@ -405,6 +643,18 @@ export class GenerationStore {
     this.unsubscribe = invalidationBus.subscribe((batch) => {
       this.patchLiveProgress(batch);
       if (
+        batch.events.length &&
+        batch.events.every((event) => event.type === 'job.progress')
+      )
+        return;
+      if (
+        invalidates(batch, 'generation', this.sessionId) ||
+        invalidates(batch, 'output', this.sessionId)
+      ) {
+        this.runsDirty = true;
+        this.cacheEpoch += 1;
+      }
+      if (
         shouldRefresh() &&
         (invalidates(batch, 'generation', this.sessionId) ||
           invalidates(batch, 'output', this.sessionId))
@@ -421,6 +671,10 @@ export class GenerationStore {
       this.unsubscribe?.();
       this.unsubscribe = undefined;
       this.controller?.abort();
+      this.historyController?.abort();
+      for (const controller of this.historyControllers.values())
+        controller.abort();
+      this.historyControllers.clear();
       if (this.refreshTimer !== undefined)
         window.clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -450,6 +704,7 @@ export class GenerationStore {
     }
     this.refreshInFlight = true;
     try {
+      await this.pagePromise?.catch(() => undefined);
       const result = await this.load({
         ...getOptions(),
         reset: true,

@@ -41,6 +41,7 @@
   import SettingsModal from './SettingsModal.svelte';
   import PrebuiltVoiceLibrary from './PrebuiltVoiceLibrary.svelte';
   import VoiceDesignDialog from './VoiceDesignDialog.svelte';
+  import ReferenceAudioImport from './ReferenceAudioImport.svelte';
   import { modalFocus } from './modal-focus';
 
   type Voice = VoiceRecord;
@@ -155,6 +156,7 @@
   let editDescription = $state('');
   let editCategory = $state<VoiceCategory>('unspecified');
   let voiceDesignOpen = $state(false);
+  let referenceImportOpen = $state(false);
   let designInitialVoiceId = $state('');
 
   const tourSteps = [
@@ -374,7 +376,8 @@
   async function designedVoiceSaved(
     voiceId: string,
     providerVoiceId?: string,
-    warning?: string
+    warning?: string,
+    serviceId = 'audio_cpp'
   ) {
     const savedNotice =
       warning ??
@@ -389,7 +392,8 @@
     } catch (caught) {
       notice = `${savedNotice} The library could not refresh automatically: ${errorMessage(caught)}`;
     }
-    if (providerVoiceId) onvoicepublished?.(providerVoiceId);
+    if (providerVoiceId && serviceId === 'audio_cpp')
+      onvoicepublished?.(providerVoiceId);
   }
 
   async function saveVoice() {
@@ -1415,6 +1419,12 @@
                   ><CloudUpload size={16} />
                   {uploadingSample ? 'Uploading…' : 'Upload sample'}</button
                 >
+                <button
+                  type="button"
+                  onclick={() => (referenceImportOpen = true)}
+                  disabled={uploadingSample}
+                  class="btn btn-secondary">Trim & import…</button
+                >
               </div>
               <input
                 bind:this={sampleUploadInput}
@@ -1981,6 +1991,23 @@
     onclose={() => (voiceDesignOpen = false)}
     onsaved={designedVoiceSaved}
   />{/if}
+{#if referenceImportOpen && selected && !selected.bundled}
+  {#key selected.id}
+    <ReferenceAudioImport
+      voiceId={selected.id}
+      revision={selected.revision}
+      language={sampleLanguage}
+      {samples}
+      onclose={() => (referenceImportOpen = false)}
+      onchanged={async () => {
+        await loadVoices();
+        if (selected) await choose(selected);
+        notice =
+          'New sample saved. Review or transcribe its excerpt before using it.';
+      }}
+    />
+  {/key}
+{/if}
 {#if deleteDialogOpen && selected}<div
     class="fixed inset-0 z-[80] grid place-items-center bg-black/45 p-4 backdrop-blur-sm"
     role="presentation"

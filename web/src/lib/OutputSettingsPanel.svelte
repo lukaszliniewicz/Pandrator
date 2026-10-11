@@ -154,6 +154,7 @@
         'album',
         'genre',
         'cover_artifact_id',
+        'include_sounds',
         'export_mode',
         'subtitle_format',
         ...Object.keys(settings?.effective ?? {}).filter((key) =>
@@ -161,7 +162,7 @@
         )
       ]);
     if (subtitleWorkspace) return new Set(sharedSubtitleKeys);
-    const keys = new Set(sharedSubtitleKeys);
+    const keys = new Set([...sharedSubtitleKeys, 'include_sounds']);
     if (hasSourceAudio) {
       keys.add('audio_mode');
       for (const key of mixKeys) keys.add(key);
@@ -555,6 +556,20 @@
       {message}
     </p>{/if}
   {#if settings}
+    {#if !subtitleWorkspace && exportMode !== 'text'}
+      <label class="mt-5 flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={Boolean(value('include_sounds', true))}
+          onchange={(event) =>
+            set('include_sounds', event.currentTarget.checked)}
+        />
+        Include project sound effects
+      </label>
+      <p class="muted mt-1 text-xs">
+        Review pending sound placements before creating an export.
+      </p>
+    {/if}
     {#if subtitleWorkspace}
       <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <label

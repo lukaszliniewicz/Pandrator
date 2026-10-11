@@ -565,12 +565,34 @@ def prepare_speech_plan(
         db_session=session,
         force_new=True,
     )
+    audio_reuse = {
+        "reused_audio_count": 0,
+        "new_audio_needed_count": len(segment_ids),
+        "reason_counts": (
+            {"source_revision_unavailable": len(segment_ids)}
+            if segment_ids
+            else {}
+        ),
+    }
+    if expected_plan_revision_id is not None:
+        from .speech_plan_audio_reuse import inherit_rebuilt_plan_audio
+
+        snapshot, _snapshot_hash = services.workspace_settings.resolve_in_session(
+            session, session_id
+        )
+        audio_reuse = inherit_rebuilt_plan_audio(
+            session,
+            expected_plan_revision_id,
+            new_id,
+            snapshot,
+        )
     return {
         "session_id": session_id,
         "selected_revision_id": new_id,
         "segment_count": len(segment_ids),
         "content_signature": plan_signature(session, new_id),
         "synthesis_started": False,
+        "audio_reuse": audio_reuse,
     }
 
 

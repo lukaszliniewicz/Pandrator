@@ -106,8 +106,10 @@ def test_unknown_model_does_not_silently_gain_cloning():
 
 
 def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
-    assert len(inventory()["families"]) == 101
-    assert catalogue_page(limit=100)["total"] == 316
+    assert len(inventory()["families"]) == 112
+    # Four compatibility package aliases are excluded from canonical rows.
+    assert len(inventory()["packages"]) == 362
+    assert catalogue_page(limit=100)["total"] == 358
     qwen = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")
     assert qwen["reference_audio"] == "not_used"
     assert not qwen["upstream_features"]["voice_cloning"]
@@ -202,7 +204,8 @@ def test_editing_variants_remain_catalogue_only():
 def test_moss_design_maps_instruction_language_and_full_width_seed():
     model = "moss_voicegen_bf16_codec_f16_decode"
     result = payload("Hello.", settings(model, language="en", generation_prompt="Warm baritone", audio_cpp_seed=4294967295), {})
-    assert result["instructions"] == "Warm baritone"
+    assert result["options"]["instruct"] == "Warm baritone"
+    assert "instructions" not in result
     assert result["options"]["language"] == "English"
     assert result["options"]["seed"] == -1
     assert "language" not in result and "seed" not in result

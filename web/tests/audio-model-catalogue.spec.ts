@@ -208,6 +208,69 @@ test('voice design uses catalogue models, languages and their own licence', asyn
   });
 });
 
+for (const width of [1280, 390]) {
+  for (const [modelId, label] of [
+    ['eleven_v4', 'Eleven v4'],
+    ['eleven_v4_turbo', 'Eleven v4 Turbo']
+  ]) {
+    test(`Eleven v4 catalogue describes ${modelId} at ${width}`, async ({
+      page
+    }, info) => {
+      await page.setViewportSize({ width, height: 900 });
+      await signIn(page);
+      await page
+        .getByRole('combobox', { name: 'Provider', exact: true })
+        .selectOption('elevenlabs');
+      await page.getByLabel('Recommended starting points').uncheck();
+      await page.getByLabel('Search models').fill(modelId);
+      await page
+        .getByRole('button', { name: 'Apply filters', exact: true })
+        .click();
+      const model = page.locator('article').filter({
+        has: page.getByRole('heading', { name: label, exact: true })
+      });
+      await model
+        .getByText('Languages, licence and controls', { exact: true })
+        .click();
+      const length = model.getByRole('region', { name: 'Generation length' });
+      await expect(
+        length.getByText('Request input limit: 2,000 characters.', {
+          exact: true
+        })
+      ).toBeVisible();
+      await expect(
+        length.getByText('Default audiobook target: 1,350 characters.', {
+          exact: false
+        })
+      ).toBeVisible();
+      if (modelId === 'eleven_v4') {
+        await expect(
+          length.getByText('Model input limit: 10,000 characters;', {
+            exact: false
+          })
+        ).toBeVisible();
+        await expect(
+          model.getByText(/100 characters of unspoken text context/)
+        ).toBeVisible();
+      } else {
+        await expect(model.getByText(/Model input limit:/)).toHaveCount(0);
+        await expect(
+          model.getByText(/realtime route supports stability/)
+        ).toBeVisible();
+      }
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth
+        )
+      ).toBeTruthy();
+      await page.screenshot({
+        path: info.outputPath('eleven-v4-catalogue.png'),
+        fullPage: true
+      });
+    });
+  }
+}
+
 test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', async ({
   page
 }, info) => {
@@ -232,7 +295,7 @@ test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', a
   await expect(page.locator('article')).toContainText('gpt-4o-mini-tts');
   await provider.selectOption('gemini');
   await apply.click();
-  await expect(page.locator('article')).toHaveCount(4);
+  await expect(page.locator('article')).toHaveCount(5);
   await provider.selectOption('azure');
   await capability.selectOption('emotion_control');
   await apply.click();
@@ -255,47 +318,49 @@ test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', a
 });
 
 for (const provider of ['gemini', 'vertex_ai']) {
-  for (const width of [1280, 390]) {
-    test(`Gemini 3.8 catalogue exposes structured speech controls for ${provider} at ${width}`, async ({
-      page
-    }, info) => {
-      await page.setViewportSize({ width, height: 900 });
-      const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(error.message));
-      await signIn(page);
-      await page
-        .getByRole('combobox', { name: 'Provider', exact: true })
-        .selectOption(provider);
-      await page.getByLabel('Recommended starting points').uncheck();
-      await page.getByLabel('Search models').fill('gemini-3.8-flash-tts');
-      await page
-        .getByRole('button', { name: 'Apply filters', exact: true })
-        .click();
-      await expect(page.locator('article')).toHaveCount(1);
-      const model = page.locator('article');
-      await expect(
-        model.getByRole('heading', {
-          name: 'gemini-3.8-flash-tts',
-          exact: true
-        })
-      ).toBeVisible();
-      await model
-        .getByText('Languages, licence and controls', { exact: true })
-        .click();
-      await expect(model.getByText(/unspoken speech metadata/)).toBeVisible();
-      await expect(
-        model.getByText('Direction scope:', { exact: true })
-      ).toBeVisible();
-      expect(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= window.innerWidth
-        )
-      ).toBeTruthy();
-      await page.screenshot({
-        path: info.outputPath('gemini38-catalogue.png'),
-        fullPage: true
+  for (const modelId of ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']) {
+    for (const width of [1280, 390]) {
+      test(`Gemini 3.8 catalogue exposes structured speech controls for ${provider} ${modelId} at ${width}`, async ({
+        page
+      }, info) => {
+        await page.setViewportSize({ width, height: 900 });
+        const errors: string[] = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        await signIn(page);
+        await page
+          .getByRole('combobox', { name: 'Provider', exact: true })
+          .selectOption(provider);
+        await page.getByLabel('Recommended starting points').uncheck();
+        await page.getByLabel('Search models').fill(modelId);
+        await page
+          .getByRole('button', { name: 'Apply filters', exact: true })
+          .click();
+        await expect(page.locator('article')).toHaveCount(1);
+        const model = page.locator('article');
+        await expect(
+          model.getByRole('heading', {
+            name: modelId,
+            exact: true
+          })
+        ).toBeVisible();
+        await model
+          .getByText('Languages, licence and controls', { exact: true })
+          .click();
+        await expect(model.getByText(/unspoken speech metadata/)).toBeVisible();
+        await expect(
+          model.getByText('Direction scope:', { exact: true })
+        ).toBeVisible();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth
+          )
+        ).toBeTruthy();
+        await page.screenshot({
+          path: info.outputPath('gemini38-catalogue.png'),
+          fullPage: true
+        });
+        expect(errors).toEqual([]);
       });
-      expect(errors).toEqual([]);
-    });
+    }
   }
 }

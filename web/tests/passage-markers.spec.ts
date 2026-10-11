@@ -91,7 +91,7 @@ async function setup(page: Page, item = segment()) {
   const id = (await created.json()).id as string;
   let splitBody: Record<string, unknown> | undefined;
   let revision = 'plan-a';
-  await page.route(`**/api/v1/sessions/${id}/generation-runs`, (route) =>
+  await page.route(`**/api/v1/sessions/${id}/generation-runs*`, (route) =>
     route.fulfill({ json: { items: [] } })
   );
   await page.route(`**/api/v1/sessions/${id}/generation-segments?*`, (route) =>
@@ -119,7 +119,7 @@ async function setup(page: Page, item = segment()) {
     }
   );
   await page.goto(`/sessions/${id}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   return { getSplit: () => splitBody, sessionId: id };
 }
 
@@ -278,7 +278,7 @@ test('passage markers default on and remember a hidden preference after reload',
     .click();
   await expect(dot).toHaveCount(0);
   await page.reload();
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(dot).toHaveCount(0);
   await page
     .getByRole('button', { name: 'Display options', exact: true })

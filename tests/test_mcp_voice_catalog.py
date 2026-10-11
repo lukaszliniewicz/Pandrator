@@ -1,5 +1,9 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
+
+import pytest
+from pydantic import ValidationError
 
 from pandrator_mcp.clients.application import ApplicationClient
 from pandrator_mcp.schemas import TtsCatalogInput, VoiceCatalogInput
@@ -24,6 +28,15 @@ def test_voice_catalog_forwards_flat_filters_and_projects_safe_items():
         "next_cursor": "cursor",
         "facets": {"kind": {"provider": 1}},
         "taxonomy": {"voice_category": ["female"]},
+        "collections": [
+            {
+                "id": "collection-1",
+                "name": "Narrators",
+                "revision": 3,
+                "member_count": 1,
+                "provider_token": "must-not-leak",
+            }
+        ],
         "items": [
             {
                 "key": "provider:s:m:v",
@@ -34,7 +47,11 @@ def test_voice_catalog_forwards_flat_filters_and_projects_safe_items():
                     "voice": "v",
                 },
                 "name": "Voice",
-                "profile": {"evidence": {"pitch": {"status": "described"}}},
+                "profile": {
+                    "evidence": {
+                        "pitch": {"source": "user", "status": "described"}
+                    }
+                },
                 "compatibility": [],
                 "preview_artifact_id": "artifact-1",
                 "provider_token": "must-not-leak",
@@ -68,8 +85,366 @@ def test_voice_catalog_forwards_flat_filters_and_projects_safe_items():
     assert call["ready_only"] is True
     assert call["sort"] == "recently_updated"
     assert call["cursor"] == "cursor-1"
-    assert result["items"][0]["safe_artifact_id"] == "artifact-1"
+    assert "view" not in call
+    assert "fields" not in call
+    assert result == {
+        "schema_version": "1",
+        "catalog_revision": "rev-1",
+        "total": 1,
+        "next_cursor": "cursor",
+        "facets": {"kind": {"provider": 1}},
+        "taxonomy": {"voice_category": ["female"]},
+        "items": [
+            {
+                "key": "provider:s:m:v",
+                "name": "Voice",
+                "compatibility": [],
+                "reference": {
+                    "kind": "provider",
+                    "service_id": "s",
+                    "model": "m",
+                    "voice": "v",
+                },
+                "profile": {
+                    "evidence": {
+                        "pitch": {"source": "user", "status": "described"}
+                    }
+                },
+                "evidence": {
+                    "pitch": {"source": "user", "status": "described"}
+                },
+                "safe_artifact_id": "artifact-1",
+            }
+        ],
+        "collections": [
+            {
+                "id": "collection-1",
+                "name": "Narrators",
+                "revision": 3,
+                "member_count": 1,
+            }
+        ],
+    }
     assert "provider_token" not in str(result)
+
+
+def test_voice_catalog_compact_default_projects_safe_rows_and_keeps_page_metadata():
+    application = Mock()
+    application.voice_catalog.return_value = {
+        "schema_version": "2",
+        "catalog_revision": "rev-compact",
+        "total": 8,
+        "next_cursor": "next-page",
+        "facets": {"kind": {"managed": 8}},
+        "taxonomy": {"voice_category": ["female"]},
+        "collections": [{"id": "collection-1", "name": "Narrators"}],
+        "items": [
+            {
+                "id": "voice-1",
+                "key": "managed:voice-1",
+                "kind": "managed",
+                "name": "Mara",
+                "reference": {
+                    "kind": "managed",
+                    "voice_id": "voice-1",
+                    "provider_token": "must-not-leak",
+                },
+                "language": "en",
+                "voice_category": "female",
+                "revision": 4,
+                "sample_count": 2,
+                "safe_artifact_id": "safe-artifact-1",
+                "compatibility": [{"service_id": "audio_cpp", "ready": True}],
+                "description": "not requested",
+                "profile": {"private_provider_data": "not requested"},
+                "provider_token": "must-not-leak",
+            }
+        ],
+    }
+
+    result = voice_catalog(_runtime(application), VoiceCatalogInput(view="compact"))
+
+    assert result == {
+        "schema_version": "2",
+        "catalog_revision": "rev-compact",
+        "total": 8,
+        "next_cursor": "next-page",
+        "items": [
+            {
+                "id": "voice-1",
+                "key": "managed:voice-1",
+                "kind": "managed",
+                "name": "Mara",
+                "reference": {"kind": "managed", "voice_id": "voice-1"},
+                "language": "en",
+                "voice_category": "female",
+                "revision": 4,
+                "sample_count": 2,
+                "safe_artifact_id": "safe-artifact-1",
+                "compatibility": [{"service_id": "audio_cpp", "ready": True}],
+            }
+        ],
+    }
+    call = application.voice_catalog.call_args.kwargs
+    assert "view" not in call
+    assert "fields" not in call
+    assert "provider_token" not in str(result)
+
+
+def test_voice_catalog_explicit_fields_return_only_selected_keys():
+    application = Mock()
+    application.voice_catalog.return_value = {
+        "schema_version": "1",
+        "catalog_revision": "rev-1",
+        "total": 1,
+        "next_cursor": None,
+        "facets": {"kind": {"managed": 1}},
+        "taxonomy": {"voice_category": ["female"]},
+        "collections": [{"id": "collection-1"}],
+        "items": [
+            {
+                "id": "voice-1",
+                "key": "managed:voice-1",
+                "name": "Mara",
+                "voice_category": "female",
+                "profile": {"evidence": {"pitch": {"status": "described"}}},
+                "provider_secret": "must-not-leak",
+            }
+        ],
+    }
+
+    result = voice_catalog(
+        _runtime(application),
+        VoiceCatalogInput(view="full", fields=["id", "name", "voice_category"]),
+    )
+
+    assert result == {
+        "schema_version": "1",
+        "catalog_revision": "rev-1",
+        "total": 1,
+        "next_cursor": None,
+        "items": [{"id": "voice-1", "name": "Mara", "voice_category": "female"}],
+    }
+    assert "provider_secret" not in str(result)
+
+
+def test_voice_catalog_explicit_row_collections_do_not_restore_global_collections():
+    application = Mock()
+    application.voice_catalog.return_value = {
+        "collections": [{"id": "global-collection"}],
+        "items": [
+            {
+                "collections": [{"id": "row-collection", "name": "Narrators"}],
+            }
+        ],
+    }
+
+    result = voice_catalog(
+        _runtime(application),
+        VoiceCatalogInput(view="compact", fields=["collections"]),
+    )
+
+    assert result == {
+        "schema_version": "1",
+        "items": [{"collections": [{"id": "row-collection", "name": "Narrators"}]}],
+    }
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ([], "at least 1 item"),
+        (["id", "id"], "unique voice catalog field names"),
+        (["id", "provider_secret"], "Unknown voice catalog field(s)"),
+        (["id"] * 21, "at most 20 voice catalog field names"),
+    ],
+)
+def test_voice_catalog_rejects_invalid_field_lists(fields, message):
+    with pytest.raises(ValidationError) as error:
+        VoiceCatalogInput(fields=fields)
+
+    assert message in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("view", "fields"),
+    [("full", None), ("compact", ["profile", "evidence", "safe_artifact_id"])],
+)
+def test_voice_catalog_safe_profile_evidence_and_preview_artifact_projection(view, fields):
+    application = Mock()
+    application.voice_catalog.return_value = {
+        "items": [
+            {
+                "profile": {
+                    "schema_version": 1,
+                    "pitch": "low",
+                    "perceived_age": "adult",
+                    "textures": ["warm", {"provider_secret": "must-not-leak"}, 7],
+                    "delivery_presets": ["storytelling"],
+                    "use_cases": ["narration"],
+                    "languages": [
+                        {
+                            "language": "en",
+                            "locale": "en-US",
+                            "accent": "soft",
+                            "detail": "safe language detail",
+                            "evidence": {
+                                "source": "provider",
+                                "status": "described",
+                                "note": "provider supplied evidence",
+                                "provider_token": "must-not-leak",
+                            },
+                            "provider_token": "must-not-leak",
+                        },
+                        {"language": {"provider_secret": "must-not-leak"}},
+                        "invalid language row",
+                    ],
+                    "tags": ["Narrator", {"access_token": "must-not-leak"}],
+                    "evidence": {
+                        "pitch": {
+                            "source": "user",
+                            "status": "described",
+                            "note": "profile evidence",
+                            "provider_secret": "must-not-leak",
+                        },
+                        "provider_metadata": {"token": "must-not-leak"},
+                        "invalid_source": {"source": "unknown", "status": "reviewed"},
+                    },
+                    "provider_metadata": {"api_key": "must-not-leak"},
+                },
+                "preview_artifact_id": "preview-1",
+                "artifact_id": "raw-artifact-1",
+                "provider_secret": "must-not-leak",
+                "evidence": {
+                    "pitch": {
+                        "source": "audition_review",
+                        "status": "reviewed",
+                        "artifact_id": "evidence-artifact-1",
+                        "note": "reviewed pitch",
+                        "reviewer": "must-not-leak",
+                        "confidence": 0.99,
+                    },
+                    "provider_metadata": {"token": "must-not-leak"},
+                },
+            }
+        ]
+    }
+
+    result = voice_catalog(
+        _runtime(application),
+        VoiceCatalogInput(view=view, fields=fields),
+    )
+
+    safe_profile = {
+        "schema_version": 1,
+        "pitch": "low",
+        "perceived_age": "adult",
+        "textures": ["warm"],
+        "delivery_presets": ["storytelling"],
+        "use_cases": ["narration"],
+        "languages": [
+            {
+                "language": "en",
+                "locale": "en-US",
+                "accent": "soft",
+                "detail": "safe language detail",
+                "evidence": {
+                    "source": "provider",
+                    "status": "described",
+                    "note": "provider supplied evidence",
+                },
+            }
+        ],
+        "tags": ["Narrator"],
+        "evidence": {
+            "pitch": {
+                "source": "user",
+                "status": "described",
+                "note": "profile evidence",
+            }
+        },
+    }
+    safe_evidence = {
+        "pitch": {
+            "source": "audition_review",
+            "status": "reviewed",
+            "artifact_id": "evidence-artifact-1",
+            "note": "reviewed pitch",
+        }
+    }
+    if fields is None:
+        assert result["items"][0]["profile"] == safe_profile
+        assert result["items"][0]["evidence"] == safe_evidence
+        assert result["items"][0]["safe_artifact_id"] == "preview-1"
+    else:
+        assert result["items"] == [
+            {
+                "profile": safe_profile,
+                "evidence": safe_evidence,
+                "safe_artifact_id": "preview-1",
+            }
+        ]
+    assert "raw-artifact-1" not in str(result)
+    assert "provider_secret" not in str(result)
+    assert "provider_token" not in str(result)
+    assert "access_token" not in str(result)
+    assert "api_key" not in str(result)
+    assert "reviewer" not in str(result)
+    assert "confidence" not in str(result)
+
+
+def test_voice_catalog_compact_projection_reduces_synthetic_three_row_json_bytes():
+    def row(index):
+        return {
+            "id": f"voice-{index}",
+            "key": f"managed:voice-{index}",
+            "kind": "managed",
+            "name": f"Voice {index}",
+            "description": "A detailed voice description. " * 8,
+            "language": "en",
+            "voice_category": "female",
+            "origin": "user",
+            "revision": index,
+            "collections": [],
+            "compatibility": [],
+            "sample_count": 2,
+            "created_at": "2026-10-11T00:00:00Z",
+            "updated_at": "2026-10-11T00:00:00Z",
+            "bundled": False,
+            "match_reasons": ["name"],
+            "reference": {"kind": "managed", "voice_id": f"voice-{index}"},
+            "profile": {"tags": ["profile detail. " * 18 for _ in range(5)]},
+            "evidence": {
+                "pitch": {
+                    "source": "user",
+                    "status": "described",
+                    "note": "evidence detail. " * 18,
+                }
+            },
+            "preview_artifact_id": f"preview-{index}",
+            "provider_metadata": {"private": "provider detail. " * 18},
+        }
+
+    application = Mock()
+    application.voice_catalog.return_value = {
+        "schema_version": "1",
+        "catalog_revision": "rev-size",
+        "total": 3,
+        "next_cursor": None,
+        "facets": {"kind": {"managed": 3}},
+        "taxonomy": {"voice_category": ["female"]},
+        "collections": [],
+        "items": [row(index) for index in range(3)],
+    }
+
+    full = voice_catalog(_runtime(application), VoiceCatalogInput())
+    compact = voice_catalog(_runtime(application), VoiceCatalogInput(view="compact"))
+    full_bytes = len(json.dumps(full, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    compact_bytes = len(
+        json.dumps(compact, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+    assert compact_bytes < full_bytes * 0.65
 
 
 def test_voice_client_forwards_new_flat_filters():

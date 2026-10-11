@@ -5,6 +5,7 @@
     readable,
     type AudioCppModelInfo
   } from './audio-cpp-catalogue';
+  import SpeechCapabilitySummary from './SpeechCapabilitySummary.svelte';
   let {
     model,
     expanded = false
@@ -26,7 +27,7 @@
   <div class="mt-3 space-y-3 leading-relaxed">
     {#if model.capabilities?.length}
       <div>
-        <strong>Available controls:</strong>
+        <strong>Controls available in Pandrator:</strong>
         <ul class="mt-1 flex flex-wrap gap-1" aria-label="Available controls">
           {#each model.capabilities as capability}<li
               class="rounded border border-[var(--line)] px-2 py-0.5"
@@ -35,6 +36,35 @@
             </li>{/each}
         </ul>
       </div>
+    {/if}
+    {#if model.category === 'tts' && model.expressive_capabilities}
+      <SpeechCapabilitySummary capabilities={model.expressive_capabilities} />
+    {/if}
+    {#if model.request_aliases?.length}
+      <p class="muted">
+        Request aliases: {model.request_aliases.join(', ')}. These select the
+        same model on this service.
+      </p>
+    {/if}
+    {#if model.request_parameters && Object.keys(model.request_parameters).length}
+      <details>
+        <summary class="cursor-pointer font-semibold"
+          >Model tuning parameters</summary
+        >
+        <p class="muted mt-1">
+          These are model settings, separate from text directions and audio
+          effects. Blank settings use the backend's defaults.
+        </p>
+        <ul class="mt-2 space-y-1">
+          {#each Object.entries(model.request_parameters) as [name, parameter]}
+            <li>
+              <strong>{readable(name)}</strong> · {parameter.type}
+              {#if parameter.enum?.length}
+                · {parameter.enum.map(String).join(', ')}{/if}
+            </li>
+          {/each}
+        </ul>
+      </details>
     {/if}
     <div>
       <strong>Languages:</strong>
@@ -66,7 +96,15 @@
           characters. Language and configured output budgets can reduce this target.
         </p>
         {#if limits.input_characters}<p>
-            Provider input limit: {limits.input_characters.toLocaleString()} characters.
+            {limits.input_limit_note
+              ? 'Request input limit'
+              : 'Provider input limit'}: {limits.input_characters.toLocaleString()}
+            characters.
+          </p>{/if}
+        {#if limits.input_limit_note}<p>{limits.input_limit_note}</p>{/if}
+        {#if limits.model_input_characters}<p>
+            Model input limit: {limits.model_input_characters.toLocaleString()} characters;
+            the selected route can have a smaller request limit.
           </p>{/if}
         {#if limits.input_tokens}<p>
             Provider input limit: {limits.input_tokens.toLocaleString()} tokens, including
@@ -83,9 +121,16 @@
             characters. This is configurable.
           </p>{/if}
         {#if limits.runtime_output_budget}<p>
-            Runtime output budget: {limits.runtime_output_budget.value.toLocaleString()}
-            {limits.runtime_output_budget.unit.replaceAll('_', ' ')}.
+            {#if limits.runtime_output_budget.value != null}
+              Runtime output budget: {limits.runtime_output_budget.value.toLocaleString()}
+              {limits.runtime_output_budget.unit.replaceAll('_', ' ')}.
+            {:else}
+              Runtime output budget comes from the selected checkpoint;
+              fallback: {limits.runtime_output_budget.fallback_value?.toLocaleString()}
+              {limits.runtime_output_budget.unit.replaceAll('_', ' ')}.
+            {/if}
           </p>{/if}
+        {#if limits.runtime_chunk_note}<p>{limits.runtime_chunk_note}</p>{/if}
         <p class="muted">
           Longer requests can improve continuity, but output budgets and voice
           quality still need checking for the selected model. Limits checked {limits.checked_at}.

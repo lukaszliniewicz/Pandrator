@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from pandrator.logic import audio_cpp_catalogue
 from scripts.snapshot_audio_cpp_catalogue import (
+    MAX_SMALL_FILE_BYTES,
+    MetadataClient,
     SnapshotError,
+    _cache_key,
+    _file_detail,
     build_snapshot,
     flatten_packages,
     load_specs,
@@ -36,18 +42,18 @@ def test_catalogue_resources_use_utf8_with_legacy_windows_default(monkeypatch, l
 
 
 class FixtureClient:
-    def __init__(self, metadata: dict, files: dict[str, bytes]) -> None:
+    def __init__(self, metadata: dict[str, Any], files: dict[str, bytes]) -> None:
         self.metadata = metadata
         self.files = files
         self.json_calls = 0
-        self.file_calls = 0
+        self.file_calls: list[str] = []
 
-    def get_json(self, _url: str) -> dict:
+    def get_json(self, url: str) -> dict[str, Any]:
         self.json_calls += 1
         return self.metadata
 
     def get_small_file(self, url: str) -> bytes:
-        self.file_calls += 1
+        self.file_calls.append(url)
         return self.files[url.rsplit("/", 1)[-1]]
 
 
@@ -140,6 +146,38 @@ def test_flatten_merges_defaults_and_keeps_exact_source_files(tmp_path: Path) ->
     assert package["_local_files"] == ["weights.gguf", "config.json"]
 
 
+def test_yue2_main_packages_compose_f16_vae_and_vae_rows_are_components() -> None:
+    vae_file = "yue2-vae-f16.gguf"
+    specs = [
+        {
+            "family": "yue2",
+            "packages": [
+                {
+                    "id": package_id,
+                    "target_directory": "Yue2-3B-GGUF",
+                    "files": files,
+                }
+                for package_id, files in (
+                    ("yue2_main_bf16", ["yue2-3b-bf16.gguf"]),
+                    ("yue2_main_q4_0", ["yue2-3b-q4_0.gguf", vae_file]),
+                    ("yue2_main_q8_0", ["yue2-3b-q8_0.gguf"]),
+                    ("yue2_vae_f16", [vae_file]),
+                    ("yue2_vae_f32", ["yue2-vae-f32.gguf"]),
+                )
+            ],
+        }
+    ]
+    packages = {package["id"]: package for package in flatten_packages(specs)}
+
+    for package_id in ("yue2_main_bf16", "yue2_main_q4_0", "yue2_main_q8_0"):
+        assert packages[package_id]["files"].count(vae_file) == 1
+        assert packages[package_id]["_local_files"].count(vae_file) == 1
+    for package_id in ("yue2_vae_f16", "yue2_vae_f32"):
+        assert packages[package_id]["entry_role"] == "component"
+        assert packages[package_id]["category"] == "component"
+        assert packages[package_id]["tasks"] == []
+
+
 def test_unsafe_filename_family_and_package_paths_are_rejected(tmp_path: Path) -> None:
     specs = tmp_path / "specs"
     specs.mkdir()
@@ -209,7 +247,170 @@ def test_manifest_resolution_preserves_missing_and_gated_entries(tmp_path: Path)
     assert "weight_manifest" not in packages["fixture_gated"]
     assert packages["fixture_unsupported"]["availability"]["unsupported_download"] is True
     assert client.json_calls == 1
-    assert client.file_calls == 1
+    assert len(client.file_calls) == 1
+    assert client.file_calls[0].endswith("/config.json")
+    assert not any(url.endswith("/weights.gguf") for url in client.file_calls)
+
+
+def _git_blob_id(content: bytes) -> str:
+    return hashlib.sha1(
+        b"blob " + str(len(content)).encode("ascii") + b"\0" + content
+    ).hexdigest()
+
+
+def test_large_tokenizer_sidecar_is_hashed_at_immutable_revision() -> None:
+    content = b"tokenizer-data\n" * 100_000
+    revision = "0123456789abcdef0123456789abcdef01234567"
+    client = FixtureClient({}, {"tokenizer.json": content})
+    detail, verified = _file_detail(
+        "Fixture-GGUF/tokenizer.json",
+        "Fixture-GGUF",
+        {"size": len(content), "blobId": _git_blob_id(content)},
+        client,
+        "fixture/repo",
+        revision,
+        allow_content=True,
+    )
+
+    assert len(content) > 1024 * 1024
+    assert verified is True
+    assert detail["size"] == len(content)
+    assert detail["sha256"] == hashlib.sha256(content).hexdigest()
+    assert client.file_calls == [
+        "https://huggingface.co/fixture/repo/resolve/"
+        f"{revision}/Fixture-GGUF/tokenizer.json"
+    ]
+
+
+def test_content_fallback_rejects_declared_size_and_git_blob_conflicts() -> None:
+    content = b"exact body"
+    client = FixtureClient({}, {"tokenizer.json": content})
+    detail, verified = _file_detail(
+        "Fixture-GGUF/tokenizer.json",
+        "Fixture-GGUF",
+        {"size": len(content) + 1},
+        client,
+        "fixture/repo",
+        "0123456789abcdef0123456789abcdef01234567",
+        allow_content=True,
+    )
+    assert verified is False
+    assert detail["sha256"] is None
+
+    detail, verified = _file_detail(
+        "Fixture-GGUF/tokenizer.json",
+        "Fixture-GGUF",
+        {"size": len(content), "blobId": "0" * 40},
+        client,
+        "fixture/repo",
+        "0123456789abcdef0123456789abcdef01234567",
+        allow_content=True,
+    )
+    assert verified is False
+    assert detail["sha256"] is None
+
+
+class _Response:
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
+        self.body = body
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self, limit: int | None = None) -> bytes:
+        return self.body if limit is None else self.body[:limit]
+
+
+def test_small_file_client_enforces_network_and_cached_upper_bounds(tmp_path: Path) -> None:
+    at_limit = b"x" * MAX_SMALL_FILE_BYTES
+    client = MetadataClient(
+        tmp_path / "network-ok",
+        opener=lambda *_args, **_kwargs: _Response(at_limit),
+        retries=0,
+    )
+    assert len(client.get_small_file("https://huggingface.co/fixture/at-limit")) == len(
+        at_limit
+    )
+
+    too_large = b"x" * (MAX_SMALL_FILE_BYTES + 1)
+    client = MetadataClient(
+        tmp_path / "network-over",
+        opener=lambda *_args, **_kwargs: _Response(too_large),
+        retries=0,
+    )
+    with pytest.raises(SnapshotError, match="size limit"):
+        client.get_small_file("https://huggingface.co/fixture/over-limit")
+
+    cache_dir = tmp_path / "cached-over"
+    cache_dir.mkdir()
+    url = "https://huggingface.co/fixture/cached-over-limit"
+    (cache_dir / _cache_key(url, ".bin")).write_bytes(too_large)
+    client = MetadataClient(
+        cache_dir,
+        opener=lambda *_args, **_kwargs: pytest.fail("oversized cache must not refetch"),
+        retries=0,
+    )
+    with pytest.raises(SnapshotError, match="size limit"):
+        client.get_small_file(url)
+
+
+@pytest.mark.parametrize(
+    "extension",
+    [".gguf", ".safetensors", ".pt", ".pth", ".bin", ".npz", ".npy"],
+)
+def test_weight_file_extensions_never_use_content_fallback(extension: str) -> None:
+    source_path = f"Fixture-GGUF/weights{extension}"
+    client = FixtureClient({}, {})
+    detail, verified = _file_detail(
+        source_path,
+        "Fixture-GGUF",
+        {"size": 16},
+        client,
+        "fixture/repo",
+        "0123456789abcdef0123456789abcdef01234567",
+        allow_content=True,
+    )
+
+    assert verified is False
+    assert detail["sha256"] is None
+    assert client.file_calls == []
+
+
+def test_missing_and_present_unverified_files_are_reported_separately(
+    tmp_path: Path,
+) -> None:
+    specs_dir = _fixture_specs(tmp_path)
+    metadata = {
+        "sha": "0123456789abcdef0123456789abcdef01234567",
+        "gated": False,
+        "siblings": [
+            {
+                "rfilename": "Fixture-GGUF/weights.gguf",
+                "size": 8,
+                "lfs": {"sha256": "a" * 64, "size": 8},
+            },
+            {"rfilename": "Fixture-GGUF/config.json", "size": 2},
+        ],
+    }
+    client = FixtureClient(metadata, {"config.json": b"bad"})
+    snapshot = build_snapshot(specs_dir, client=client)
+    package = next(item for item in snapshot["packages"] if item["id"] == "fixture_q8")
+
+    assert package["availability"]["missing_files"] == []
+    assert package["availability"]["unverified_files"] == ["Fixture-GGUF/config.json"]
+    assert package["availability"]["verified"] is False
+    assert client.file_calls == [
+        "https://huggingface.co/fixture/repo/resolve/"
+        "0123456789abcdef0123456789abcdef01234567/Fixture-GGUF/config.json"
+    ]
+
+    package = next(item for item in snapshot["packages"] if item["id"] == "fixture_missing")
+    assert package["availability"]["missing_files"] == ["Fixture-GGUF/missing.gguf"]
+    assert package["availability"]["unverified_files"] == []
 
 
 def test_real_source_has_expected_inventory_counts() -> None:

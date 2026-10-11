@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 
 from .database import Database
 from .generation_audio_versions import audio_version_summary
+from .generation_run_selection import resolve_generation_run_take_ids
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, utcnow
 
 
@@ -30,9 +31,7 @@ def finalize_generation_run(
         if version_summary is not None:
             incomplete = int(version_summary["remaining_count"])
             repair_requested = False
-        elif operation == "rvc" or (
-            operation == "regenerate" and run.output_generation_run_id is None
-        ):
+        elif operation == "rvc":
             incomplete = int(
                 session.scalar(
                     select(func.count())
@@ -44,6 +43,19 @@ def finalize_generation_run(
                     )
                 )
                 or 0
+            )
+        elif operation == "regenerate" and run.output_generation_run_id is None:
+            selected_take_ids = resolve_generation_run_take_ids(session, run)
+            segment_states = session.execute(
+                select(GenerationSegment.id, GenerationSegment.status).where(
+                    GenerationSegment.plan_revision_id == plan_revision_id,
+                    GenerationSegment.removed.is_(False),
+                )
+            )
+            incomplete = sum(
+                1
+                for segment_id, status in segment_states
+                if status != "completed" or segment_id not in selected_take_ids
             )
         else:
             completed_segments = (

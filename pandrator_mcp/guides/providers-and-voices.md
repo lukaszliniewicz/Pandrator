@@ -58,7 +58,8 @@ spellings and prompt-separated semantic context. Unknown routes must not inherit
 capabilities merely because another model in the family supports them.
 
 Pandrator compiles `pandrator.performance/v1` annotations into Fish S2 inline
-controls, capable Qwen/OpenAI instruction fields, Gemini's labelled prompt, Eleven v3 audio tags, and
+controls, capable Qwen/OpenAI instruction fields, Gemini 3.8's speech metadata,
+legacy Gemini's labelled prompt, Eleven v3 audio tags, and
 supported event-only formats. Never put native provider tags into the stored
 transcript. Preview an actual block with `pandrator_preview_performance_plan` to
 see applied, approximate, unsupported and disabled controls without synthesizing.
@@ -72,7 +73,27 @@ is labelled semantic evidence, not a new voice reference. For backends lacking
 unspoken text context, use a contextual performance plan to derive supported
 utterance directions instead. Qwen Base/cloning is not instruction-capable on
 the reviewed route. Do not substitute previous generated audio for semantic
-context automatically.
+context automatically. Both `gemini-3.8-flash-tts` and
+`gemini-3.8-flash-lite-tts` use unspoken `speech_metadata.style` on the Gemini
+API or `speechMetadata.style` on Vertex, with the transcript kept separately.
+The 3.1/2.5 models retain the labelled prompt format. Vertex 3.8 requires the
+`global` location and Google Cloud authentication. Inspect model-specific voice
+catalogues after refreshing to select extended or stored custom Google voices.
+Use `pandrator_design_google_voice` with `service_id` set to `gemini` or
+`vertex_ai`, an exact 3.8 model ID, name, prompt, language and an idempotency key
+to create and save a voice from its description. It queues a durable job and
+creates the local library identity immediately. Follow its work reference, then
+inspect the managed voice catalogue for its provider ID and audition artifact.
+Google chooses the audition text; this is not a reviewed reference sample.
+The saved voice works with both 3.8 models in its original credential/project
+scope. Vertex creates at Flash TTS rates and requires the creation request to
+omit `voice.model`; Pandrator handles that route difference.
+
+Replay the same idempotency key to inspect an existing request. Pandrator does
+not automatically repeat an uncertain Google creation; refresh the catalogue
+and inspect Activity & logs before creating another voice. Stored voices have
+a 200-per-project quota and expire one year after their last use. Recording-based
+replication and remote deletion are managed through Google's Voices API.
 
 Credentials belong in Pandrator's credential store or an approved MCP
 credential backend. Never paste a provider key into a tool argument, target
@@ -110,7 +131,32 @@ differs on non-stability settings for v3; they are forwarded but reported as
 approximate and may be ignored. Existing Turbo v2.5
 selections remain discoverable; upstream recommends Flash v2.5 for new work.
 
+`eleven_v4` uses native Text-to-Dialogue HTTP with inline directions, stability
+and similarity (`similarity_boost` in Pandrator settings). Context is trimmed to
+the nearest 100 characters before and after, then sent as hidden native fields.
+`eleven_v4_turbo` collects one complete dialogue WebSocket turn; the documented
+route supports stability only and has no hidden text context fields. Both cap
+compiled input at 2,000 characters; v4's model-level limit is larger than this
+route recommendation. Unsupported controls stop before generation. An empty
+voice-settings object restores provider defaults. Native v4 timestamp alignment
+is not yet used; use the existing alignment workflow where needed.
+
+audio.cpp 0.9.1 adds KittenTTS2, KugelAudio and LFM2.5-Audio to the speech
+catalogue. Kitten cloning requires a reviewed matching transcript. LFM checkpoint
+language is fixed: English accepts four native voice presets; Japanese uses its
+built-in voice and rejects a selected voice ID. Native scalar request controls
+are model-specific; saved settings do not establish acoustic verification.
+
 For direct whole-block or phrase edits use `pandrator_preview_speech_selection`
 and `pandrator_apply_speech_selection`, following the `generation-controls`
 guide. `pandrator_update_generation_segment` changes text, voice, or language;
 it is not a delivery-instruction editor.
+
+## Compact voice discovery
+
+Use `get_voice_catalog(service_id=..., model=..., view="compact",
+response_mode="structured")` for routine voice selection. The default compact
+fields include the reusable reference and compatibility. Optional `fields` selects
+an explicit allowlist. These projections retain pagination and catalogue revision,
+while omitting global taxonomy/facets and full profiles. Retrieve full profiles
+only for decisions that need them; nested profile/evidence fields are sanitized.

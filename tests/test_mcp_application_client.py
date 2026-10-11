@@ -236,6 +236,7 @@ class ApplicationClientTests(unittest.TestCase):
             CredentialResolver(()),
             session=session,
             local_bootstrap=lambda _target, _session: "csrf-value",
+            timeout_seconds=1200.0,
         )
 
         client.initialize_upload(
@@ -255,6 +256,7 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual("upload:course:1", initialized["headers"]["Idempotency-Key"])
         self.assertEqual("PUT", chunk["method"])
         self.assertEqual(b"data", chunk["data"])
+        self.assertEqual(120.0, chunk["timeout"])
         self.assertEqual("b" * 64, chunk["headers"]["X-Chunk-SHA256"])
         self.assertTrue(completed["url"].endswith("/api/v1/uploads/upload-1/complete"))
         self.assertEqual({"refresh": "true"}, catalog["params"])
@@ -272,6 +274,7 @@ class ApplicationClientTests(unittest.TestCase):
             CredentialResolver(()),
             session=session,
             local_bootstrap=lambda _target, _session: "csrf-value",
+            timeout_seconds=1200.0,
         )
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "final.bin"
@@ -286,6 +289,7 @@ class ApplicationClientTests(unittest.TestCase):
             self.assertTrue(result["resumed"])
             self.assertEqual(content, destination.read_bytes())
             self.assertEqual("bytes=3-", session.calls[0]["headers"]["Range"])
+            self.assertEqual(120.0, session.calls[0]["timeout"])
 
             other = Path(directory) / "other.bin"
             other.write_bytes(b"do not overwrite")
@@ -375,6 +379,7 @@ class ApplicationClientTests(unittest.TestCase):
             {
                 "name": "Project",
                 "workflow_kind": "audiobook",
+                "interface_mode": "simple",
                 "source_language": "en",
                 "target_language": None,
                 "workflow_preset": "custom",
@@ -639,8 +644,132 @@ class ApplicationClientTests(unittest.TestCase):
             client.list_generation_segments("session-1")
         self.assertEqual("application_unavailable", connection_error.exception.code)
         self.assertTrue(connection_error.exception.retryable)
-        self.assertEqual({}, connection_error.exception.details)
+        self.assertEqual({
+            "operation_outcome": "not_applicable", "retry_policy": "safe_to_retry_read",
+        }, connection_error.exception.details)
         self.assertEqual(1, len(session.calls))
+
+        client, session = client_for(requests.exceptions.Timeout("slow compilation"))
+        with self.assertRaises(PandratorMcpError) as preview_timeout:
+            client.performance_plan_request("preview", {
+                "session_id": "s", "plan_id": "p", "segment_id": "segment",
+            })
+        self.assertTrue(preview_timeout.exception.retryable)
+        self.assertEqual("safe_to_retry_read", preview_timeout.exception.details["retry_policy"])
+        self.assertEqual("not_applicable", preview_timeout.exception.details["operation_outcome"])
+        self.assertEqual(1, len(session.calls))
+
+        client, session = client_for(requests.exceptions.ConnectionError("unknown write"))
+        with self.assertRaises(PandratorMcpError) as uncertain_write:
+            client._request_json("/api/v1/test", method="POST", body={})
+        self.assertFalse(uncertain_write.exception.retryable)
+        self.assertEqual("inspect_state", uncertain_write.exception.details["retry_policy"])
+        self.assertEqual(1, len(session.calls))
+
+    def test_session_purge_timeouts_reach_transport_with_scoped_ceiling(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession([FakeResponse(200, {}) for _ in range(5)])
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+            timeout_seconds=15.0,
+        )
+
+        client.preview_session_deletion("session-1")
+        client.delete_session_permanently(
+            "session-1", expected_revision=4, impact_token="a" * 64
+        )
+        client._request_json(
+            "/api/v1/test",
+            authenticated=False,
+            request_timeout_seconds=999.0,
+        )
+        client._request_json(
+            "/api/v1/test",
+            authenticated=False,
+            request_timeout_seconds=0.5,
+            request_timeout_limit_seconds=10.0,
+        )
+        client._request_json(
+            "/api/v1/test",
+            authenticated=False,
+            request_timeout_seconds=900.0,
+            request_timeout_limit_seconds=300.0,
+        )
+        self.assertEqual(
+            [300.0, 900.0, 120.0, 1.0, 300.0],
+            [request["timeout"] for request in session.calls],
+        )
+
+        larger_session = FakeSession([FakeResponse(200, {}) for _ in range(4)])
+        larger_client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=larger_session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+            timeout_seconds=1200.0,
+        )
+        larger_client.preview_session_deletion("session-1")
+        larger_client.delete_session_permanently(
+            "session-1", expected_revision=4, impact_token="a" * 64
+        )
+        larger_client.get_session("session-1")
+        larger_client.upload_chunk("upload-1", 0, b"data", sha256="b" * 64)
+        self.assertEqual(1200.0, larger_client.timeout_seconds)
+        self.assertEqual(
+            [1200.0, 1200.0, 120.0, 120.0],
+            [request["timeout"] for request in larger_session.calls],
+        )
+
+    def test_request_timeout_limit_rejects_invalid_values_before_network(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession([])
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+        invalid_limits: list[Any] = [
+            0.99,
+            1200.01,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            "not numeric",
+        ]
+
+        for limit in invalid_limits:
+            with self.subTest(limit=limit):
+                with self.assertRaises(ValueError):
+                    client._request_json(
+                        "/api/v1/test",
+                        authenticated=False,
+                        request_timeout_limit_seconds=limit,
+                    )
+        self.assertEqual([], session.calls)
+
+    def test_local_auth_retry_preserves_extended_request_timeout_limit(self):
+        origin = "http://127.0.0.1:8097"
+        session = FakeSession(
+            [FakeResponse(401, {"error": "expired"}), FakeResponse(200, {})]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        client._request_json(
+            "/api/v1/test",
+            request_timeout_seconds=900.0,
+            request_timeout_limit_seconds=1200.0,
+        )
+        self.assertEqual(2, len(session.calls))
+        self.assertEqual([900.0, 900.0], [call["timeout"] for call in session.calls])
 
     def test_expensive_generation_mutations_use_extended_timeout_and_idempotency(self):
         origin = "http://127.0.0.1:8097"
@@ -677,6 +806,7 @@ class ApplicationClientTests(unittest.TestCase):
             stale_only=True,
             idempotency_key="generation:run:timeout-1",
             view="compact",
+            admission=False,
         )
         self.assertEqual({"view": "compact"}, session.calls[-1]["params"])
         self.assertNotIn("view", json.loads(session.calls[-1]["data"]))
@@ -710,6 +840,70 @@ class ApplicationClientTests(unittest.TestCase):
                 self.assertTrue(request["url"].endswith(path))
                 self.assertEqual(120.0, request["timeout"])
                 self.assertEqual(idempotency_key, request["headers"]["Idempotency-Key"])
+
+    def test_generation_admission_uses_normal_timeout_and_replays_same_identity(self):
+        origin = "http://127.0.0.1:8097"
+        admission = {
+            "id": "admission-job-1",
+            "job_id": "admission-job-1",
+            "session_id": "session-1",
+            "status": "queued",
+            "stage": "preparing",
+            "speech_plan_revision_id": "plan-revision-3",
+            "request_id": "request-1",
+        }
+        session = FakeSession(
+            [FakeResponse(202, admission), FakeResponse(202, admission)]
+        )
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=session,
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        first = client.start_generation_run(
+            "session-1",
+            speech_plan_revision_id="plan-revision-3",
+            stale_only=True,
+            idempotency_key="generation:admission:retry-1",
+            view="full",
+            admission=True,
+        )
+        replay = client.start_generation_run(
+            "session-1",
+            speech_plan_revision_id="plan-revision-3",
+            stale_only=True,
+            idempotency_key="generation:admission:retry-1",
+            view="full",
+            admission=True,
+        )
+
+        self.assertEqual("admission-job-1", first["job_id"])
+        self.assertEqual(first, replay)
+        self.assertEqual(2, len(session.calls))
+        for request in session.calls:
+            with self.subTest(url=request["url"]):
+                self.assertEqual("POST", request["method"])
+                self.assertTrue(
+                    request["url"].endswith(
+                        "/api/v1/sessions/session-1/generation-admissions"
+                    )
+                )
+                self.assertEqual(
+                    {
+                        "operation": "generate",
+                        "speech_plan_revision_id": "plan-revision-3",
+                        "stale_only": True,
+                    },
+                    json.loads(request["data"]),
+                )
+                self.assertEqual(
+                    "generation:admission:retry-1",
+                    request["headers"]["Idempotency-Key"],
+                )
+                self.assertEqual(client.timeout_seconds, request["timeout"])
+                self.assertNotIn("view", request.get("params") or {})
 
     def test_dispatch_methods_map_exact_routes_bodies_and_queries(self):
         origin = "http://127.0.0.1:8097"
@@ -998,6 +1192,44 @@ class ApplicationClientTests(unittest.TestCase):
         self.assertEqual("batch-1", caught.exception.details["batch_id"])
         self.assertTrue(caught.exception.retryable)
 
+    def test_revision_conflict_preserves_bounded_downstream_error(self):
+        origin = "http://127.0.0.1:8097"
+        downstream_details = {
+            "expected_revision": 4,
+            "current_revision": 5,
+            **{f"detail_{index}": index for index in range(25)},
+        }
+        client = ApplicationClient(
+            local_registry(origin).bind("local"),
+            CredentialResolver(()),
+            session=FakeSession(
+                [
+                    FakeResponse(
+                        409,
+                        {
+                            "error": {
+                                "code": "revision_conflict",
+                                "message": "The voice catalog changed; inspect it again.",
+                                "details": downstream_details,
+                            }
+                        },
+                    )
+                ]
+            ),
+            local_bootstrap=lambda _target, _session: "csrf-value",
+        )
+
+        with self.assertRaises(PandratorMcpError) as caught:
+            client._request_json("/api/v1/voices/design/google", method="POST", body={})
+
+        self.assertEqual("revision_conflict", caught.exception.code)
+        self.assertEqual("The voice catalog changed; inspect it again.", str(caught.exception))
+        self.assertEqual(4, caught.exception.details["expected_revision"])
+        self.assertEqual(5, caught.exception.details["current_revision"])
+        self.assertEqual(409, caught.exception.details["status"])
+        self.assertEqual(21, len(caught.exception.details))
+        self.assertNotIn("detail_18", caught.exception.details)
+
     def test_bounded_post_uses_csrf_idempotency_and_typed_errors(self):
         origin = "http://127.0.0.1:8097"
         session = FakeSession(
@@ -1130,6 +1362,34 @@ class ApplicationClientTests(unittest.TestCase):
                 with self.assertRaises(PandratorMcpError) as caught:
                     method()
                 self.assertEqual(code, caught.exception.code)
+
+    def test_reference_import_retains_actionable_artifact_errors(self):
+        for status, code in (
+            (422, "invalid_reference_artifact"),
+            (422, "unsafe_reference_artifact"),
+            (409, "reference_artifact_changed"),
+        ):
+            with self.subTest(code=code):
+                response = FakeResponse(
+                    status,
+                    {"error": {"code": code, "message": "Reference cannot be imported."}},
+                )
+                client = ApplicationClient(
+                    local_registry("http://127.0.0.1:8097").bind("local"),
+                    CredentialResolver(()),
+                    session=FakeSession([response]),
+                    local_bootstrap=lambda _target, _session: None,
+                )
+                with self.assertRaises(PandratorMcpError) as caught:
+                    client.import_voice_reference(
+                        "voice-1", artifact_id="artifact-1", transcript=None,
+                        language="en", transcript_reviewed=False,
+                        expected_voice_revision=1, idempotency_key="reference-import-1",
+                    )
+                self.assertEqual(code, caught.exception.code)
+                self.assertEqual(status, caught.exception.details["status"])
+                self.assertEqual("Reference cannot be imported.", str(caught.exception))
+                self.assertTrue(response.closed)
 
     def test_identity_canonical_origin_must_equal_configured_origin(self):
         origin = "https://application.example"

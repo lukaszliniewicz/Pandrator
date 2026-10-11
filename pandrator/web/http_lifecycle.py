@@ -264,11 +264,14 @@ class ApiGuards:
             return "app.cancel"
         if endpoint == "job_video_tail_decision":
             return "app.run"
+        if path == "/api/v1/sounds/generate" or path.endswith(("/sound-plan/render", "/sound-plan/resolve")):
+            return "app.run"
         if path == "/api/v1/jobs":
             return "app.admin"
         run_markers = (
             "/run",
             "/generation-runs",
+            "/generation-admissions",
             "/agent-runs",
             "/preview",
             "/transcribe",

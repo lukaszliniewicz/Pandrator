@@ -183,7 +183,7 @@ async function fixture(page: Page) {
             }
           }
     );
-  await page.route(`**${endpoint}/generation-runs`, (route) => {
+  await page.route(`**${endpoint}/generation-runs*`, (route) => {
     if (route.request().method() === 'POST') {
       posts.push(route.request().postDataJSON());
       const key = route.request().headers()['idempotency-key'];
@@ -229,7 +229,7 @@ async function fixture(page: Page) {
     heldSave = route;
   });
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(
     page.getByRole('textbox', {
       name: 'Script text for segment 1',

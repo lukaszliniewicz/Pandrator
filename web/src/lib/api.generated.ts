@@ -653,7 +653,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["getGenerationRun"];
         put?: never;
         post?: never;
         delete: operations["deleteGenerationRun"];
@@ -1384,6 +1384,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/purge-inspections/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getPurgeInspection */
+        get: operations["getPurgeInspection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rvc/convert": {
         parameters: {
             query?: never;
@@ -1685,6 +1702,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/comparison-exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export a comparison of selected speech takes
+         * @description Queue one reusable WAV or MP3 from the ordered selected speech takes. Recast sides use their pinned before/after takes. The separately assembled sound mix is excluded.
+         */
+        post: operations["createComparisonExport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/dispatch-runs": {
         parameters: {
             query?: never;
@@ -1727,6 +1764,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["forkSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/generation-admissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["admitGenerationRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2480,6 +2533,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/purge-admissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** admitSessionPurge */
+        post: operations["admitSessionPurge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/purge-inspections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** admitSessionPurgeInspection */
+        post: operations["admitSessionPurgeInspection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/purge-preview": {
         parameters: {
             query?: never;
@@ -2559,6 +2646,118 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["patchSessionSettings"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getProjectSoundPlan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan/cues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["addProjectSound"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan/cues/{cueId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["removeProjectSound"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProjectSound"];
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan/mix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getProjectSoundMix"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["renderProjectSounds"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolveProjectSounds"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/sound-plan/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restoreProjectSounds"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/sessions/{sessionId}/source-cleaning-dispatch-runs": {
@@ -2889,6 +3088,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply an atomic speech selection batch
+         * @description Adopt one copied manual XML performance plan for all reviewed changes and create one sound-plan version if sound cues changed.
+         */
+        post: operations["applySpeechSelectionBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-batch-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview an atomic speech selection batch
+         * @description Compile each affected speech block without creating rows or contacting providers. The default reply is compact; detailed_preview includes up to ten full block previews.
+         */
+        post: operations["previewSpeechSelectionBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["getSpeechSelectionContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/speech-plan/selection-preview": {
         parameters: {
             query?: never;
@@ -2900,7 +3155,7 @@ export interface paths {
         put?: never;
         /**
          * Preview a direct speech-selection edit
-         * @description Compile a selected phrase with proposed speaker, voice, and delivery metadata. This read-only operation creates no performance-plan row and does not access providers or synthesize audio.
+         * @description Compile a selected phrase with proposed speaker, voice, and delivery metadata, or insert a vocal_event at a cursor (start equals end). Cursor requests cannot include speaker, voice, delivery or XML edits. This read-only operation creates no performance-plan row and does not access providers or synthesize audio.
          */
         post: operations["previewSpeechSelection"];
         delete?: never;
@@ -3251,6 +3506,135 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSounds"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listSoundCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/candidates/{candidateId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSoundCandidate"];
+        put?: never;
+        post?: never;
+        delete: operations["discardSoundCandidate"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/catalogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["soundCatalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["generateSound"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Import original audio bytes (maximum 50 MiB and 300 seconds), with a fixed managed audio role. No source kind or role is caller-controlled. */
+        put: operations["importSoundAudio"];
+        post: operations["importSoundMultipart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["saveSound"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sounds/{itemId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSound"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["updateSound"];
         trace?: never;
     };
     "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
@@ -4033,6 +4417,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/voices/design/google": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["designGoogleVoice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/voices/reference-audio/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Import original audio bytes (maximum 50 MiB and 300 seconds), with a fixed managed audio role. No source kind or role is caller-controlled. */
+        put: operations["importVoiceReferenceAudio"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/voices/{voiceId}": {
         parameters: {
             query?: never;
@@ -4446,6 +4863,7 @@ export interface components {
         CharacterEntry: {
             /** Aliases */
             aliases?: string[];
+            delivery?: components["schemas"]["Delivery"];
             /** Display Name */
             display_name: string;
             /**
@@ -4508,6 +4926,40 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
+        /** ComparisonExportClipRequest */
+        ComparisonExportClipRequest: {
+            /**
+             * Audio Version Side
+             * @default after
+             * @enum {string}
+             */
+            audio_version_side?: "before" | "after";
+            /** Generation Run Id */
+            generation_run_id: string;
+            /** Segment Id */
+            segment_id: string;
+            /**
+             * Take Id
+             * @default null
+             */
+            take_id?: string | null;
+        };
+        /** ComparisonExportRequest */
+        ComparisonExportRequest: {
+            /** Clips */
+            clips: components["schemas"]["ComparisonExportClipRequest"][];
+            /**
+             * Gap Ms
+             * @default 350
+             */
+            gap_ms?: number;
+            /**
+             * Output Format
+             * @default wav
+             * @enum {string}
+             */
+            output_format?: "wav" | "mp3";
+        };
         /** CredentialUpdate */
         CredentialUpdate: {
             /**
@@ -4549,6 +5001,11 @@ export interface components {
              * @default
              */
             emotion?: string;
+            /**
+             * Emotion Intensity
+             * @default null
+             */
+            emotion_intensity?: number | null;
             /**
              * Emphasis
              * @default
@@ -5156,6 +5613,19 @@ export interface components {
             /** Status */
             status: string;
         };
+        GenerationAdmissionReceipt: {
+            cancellable: boolean;
+            id: string;
+            job_id: string;
+            poll_after_ms: number;
+            request_id: string;
+            session_id: string;
+            speech_plan_revision_id: string;
+            /** @constant */
+            stage: "preparing";
+            /** @constant */
+            status: "queued";
+        };
         /**
          * GenerationControlsUpdateRequest
          * @description Revision-checked replacement of one or both generation-control sections.
@@ -5509,6 +5979,11 @@ export interface components {
                 [key: string]: unknown;
             };
             /**
+             * Settings Source
+             * @default null
+             */
+            settings_source?: ("current" | "matching_run" | "run") | null;
+            /**
              * Settings Source Run Id
              * @default null
              */
@@ -5535,6 +6010,11 @@ export interface components {
             included_total: number;
             /** Plan Revision Id */
             plan_revision_id: string | null;
+            /**
+             * Plan Source Role
+             * @default null
+             */
+            plan_source_role?: string | null;
             /** Session Id */
             session_id: string;
             /**
@@ -5589,6 +6069,34 @@ export interface components {
              * @enum {string}
              */
             text_layer?: "display" | "speech";
+        };
+        /** GoogleVoiceDesignCreate */
+        GoogleVoiceDesignCreate: {
+            /**
+             * Language
+             * @default en
+             */
+            language?: string;
+            /**
+             * Model
+             * @enum {string}
+             */
+            model: "gemini-3.8-flash-tts" | "gemini-3.8-flash-lite-tts";
+            /** Name */
+            name: string;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Service Id
+             * @enum {string}
+             */
+            service_id: "gemini" | "vertex_ai";
+            /**
+             * Voice Category
+             * @default unspecified
+             * @enum {string}
+             */
+            voice_category?: "male" | "female" | "androgynous" | "unspecified";
         };
         /** JobCreate */
         JobCreate: {
@@ -6811,6 +7319,53 @@ export interface components {
              */
             secret_ref?: string | null;
         };
+        /** PurgeAdmissionRequest */
+        PurgeAdmissionRequest: {
+            /**
+             * Confirm
+             * @constant
+             */
+            confirm: true;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Impact Token */
+            impact_token: string;
+        };
+        /** PurgeInspectionRequest */
+        PurgeInspectionRequest: Record<string, never>;
+        /** PurgeInspectionStatus */
+        PurgeInspectionStatus: {
+            /**
+             * Error
+             * @default null
+             */
+            error?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Inspection
+             * @default null
+             */
+            inspection?: {
+                [key: string]: unknown;
+            } | null;
+            /** Job Id */
+            job_id: string;
+            /** State */
+            state: string;
+        };
+        /** PurgeJobReceipt */
+        PurgeJobReceipt: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * State
+             * @constant
+             */
+            state: "queued";
+            /** Target Session Id */
+            target_session_id: string;
+        };
         /** RecordingTimingRequest */
         RecordingTimingRequest: {
             /** Expected Revision */
@@ -6869,6 +7424,12 @@ export interface components {
         SessionCreate: {
             /** Included Stages */
             included_stages?: string[];
+            /**
+             * Interface Mode
+             * @default simple
+             * @enum {string}
+             */
+            interface_mode?: "simple" | "advanced";
             /** @default null */
             multilingual_setup?: components["schemas"]["MultilingualSetup"] | null;
             /** Name */
@@ -6914,6 +7475,11 @@ export interface components {
              * @default null
              */
             expected_revision?: number | null;
+            /**
+             * Interface Mode
+             * @default null
+             */
+            interface_mode?: ("simple" | "advanced") | null;
             /**
              * Name
              * @default null
@@ -6967,6 +7533,11 @@ export interface components {
              * @default null
              */
             included_stages?: string[] | null;
+            /**
+             * Interface Mode
+             * @default null
+             */
+            interface_mode?: "simple" | "advanced";
             /** @default null */
             multilingual_setup?: components["schemas"]["MultilingualSetup"] | null;
             /**
@@ -7004,6 +7575,248 @@ export interface components {
         SettingUpdate: {
             /** Value */
             value: unknown;
+        };
+        /** SoundAnchor */
+        SoundAnchor: {
+            /**
+             * End
+             * @default null
+             */
+            end?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "before_segment" | "after_segment" | "source_time" | "after_word" | "next_pause";
+            /**
+             * Occurrence
+             * @default null
+             */
+            occurrence?: number | null;
+            /**
+             * Quote
+             * @default null
+             */
+            quote?: string | null;
+            /**
+             * Segment Id
+             * @default null
+             */
+            segment_id?: string | null;
+            /**
+             * Start
+             * @default null
+             */
+            start?: number | null;
+            /**
+             * Time Seconds
+             * @default null
+             */
+            time_seconds?: number | null;
+        };
+        /** SoundCueCreate */
+        SoundCueCreate: {
+            anchor: components["schemas"]["SoundAnchor"];
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Included
+             * @default true
+             */
+            included?: boolean;
+            playback?: components["schemas"]["SoundPlayback"];
+            /** Variant Id */
+            variant_id: string;
+        };
+        /** SoundCueUpdate */
+        SoundCueUpdate: {
+            /** @default null */
+            anchor?: components["schemas"]["SoundAnchor"] | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Included
+             * @default null
+             */
+            included?: boolean | null;
+            /** @default null */
+            playback?: components["schemas"]["SoundPlayback"] | null;
+            /**
+             * Variant Id
+             * @default null
+             */
+            variant_id?: string | null;
+        };
+        /** SoundGenerate */
+        SoundGenerate: {
+            /**
+             * Backend
+             * @default cpu
+             * @enum {string}
+             */
+            backend?: "cpu" | "vulkan" | "cuda";
+            /**
+             * Candidate Count
+             * @description Generate this many candidates in one request with the same settings and distinct seeds. An explicit seed is the base; subsequent seeds increment with wrap.
+             * @default 1
+             */
+            candidate_count?: number;
+            /**
+             * Duration Seconds
+             * @default null
+             */
+            duration_seconds?: number | null;
+            /**
+             * Kind
+             * @default null
+             */
+            kind?: ("sound" | "music") | null;
+            /**
+             * Lyrics
+             * @default null
+             */
+            lyrics?: string | null;
+            /**
+             * Model Id
+             * @default stable_audio_3_small_sfx_q8_0
+             */
+            model_id?: string;
+            /**
+             * Parameters
+             * @default null
+             */
+            parameters?: {
+                [key: string]: string | boolean | number;
+            } | null;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Seed
+             * @default null
+             */
+            seed?: number | null;
+            /**
+             * Threads
+             * @default null
+             */
+            threads?: number | null;
+        };
+        /** SoundMixRequest */
+        SoundMixRequest: {
+            /** Base Artifact Id */
+            base_artifact_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Timeline Artifact Id
+             * @default null
+             */
+            timeline_artifact_id?: string | null;
+        };
+        /** SoundPlanRestore */
+        SoundPlanRestore: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Source Plan Id */
+            source_plan_id: string;
+        };
+        /** SoundPlayback */
+        SoundPlayback: {
+            /**
+             * Fade In Ms
+             * @default 5
+             */
+            fade_in_ms?: number;
+            /**
+             * Fade Out Ms
+             * @default 5
+             */
+            fade_out_ms?: number;
+            /**
+             * Gain Db
+             * @default 0
+             */
+            gain_db?: number;
+            /**
+             * Mode
+             * @default null
+             */
+            mode?: ("insert" | "overlay") | null;
+            /**
+             * Offset Ms
+             * @default 0
+             */
+            offset_ms?: number;
+            /**
+             * Trim End Seconds
+             * @default null
+             */
+            trim_end_seconds?: number | null;
+            /**
+             * Trim Start Seconds
+             * @default 0
+             */
+            trim_start_seconds?: number;
+        };
+        /** SoundResolveRequest */
+        SoundResolveRequest: {
+            /**
+             * Cue Ids
+             * @default null
+             */
+            cue_ids?: string[] | null;
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** SoundSave */
+        SoundSave: {
+            /** Candidate Id */
+            candidate_id: string;
+            /**
+             * Expected Revision
+             * @default null
+             */
+            expected_revision?: number | null;
+            /**
+             * Item Id
+             * @default null
+             */
+            item_id?: string | null;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /**
+             * Tags
+             * @default null
+             */
+            tags?: string[] | null;
+        };
+        /** SoundUpdate */
+        SoundUpdate: {
+            /**
+             * Archived
+             * @default null
+             */
+            archived?: boolean | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /**
+             * Preferred Variant Id
+             * @default null
+             */
+            preferred_variant_id?: string | null;
+            /**
+             * Tags
+             * @default null
+             */
+            tags?: string[] | null;
         };
         /** SourceAttachRequest */
         SourceAttachRequest: {
@@ -7813,12 +8626,22 @@ export interface components {
              * @default false
              */
             enable_performance?: boolean;
+            /**
+             * Enable Vocalizations
+             * @default false
+             */
+            enable_vocalizations?: boolean;
             /** End */
             end: number;
             /** Expected Preview Revision */
             expected_preview_revision: string;
             /** Expected Segment Revision */
             expected_segment_revision: number;
+            /**
+             * Expected Sound Plan Revision
+             * @default null
+             */
+            expected_sound_plan_revision?: number | null;
             /** Revision Id */
             revision_id: string;
             /** Segment Id */
@@ -7828,7 +8651,12 @@ export interface components {
              * @default unchanged
              * @enum {string}
              */
-            speaker?: "unchanged" | "narrator" | "character";
+            speaker?: "unchanged" | "narrator" | "dialogue" | "character";
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
             /** Start */
             start: number;
             /**
@@ -7836,11 +8664,53 @@ export interface components {
              * @default false
              */
             unlock_locked?: boolean;
+            /** @default null */
+            vocal_event?: components["schemas"]["SpeechSelectionVocalEvent"] | null;
             /**
              * Voice
              * @default null
              */
             voice?: string | null;
+            /**
+             * Voice Category
+             * @default null
+             */
+            voice_category?: ("male" | "female" | "androgynous" | "unspecified") | null;
+        };
+        /** SpeechSelectionBatchApplyRequest */
+        SpeechSelectionBatchApplyRequest: {
+            /** Changes */
+            changes: components["schemas"]["SpeechSelectionRequest"][];
+            /**
+             * Detailed Preview
+             * @default false
+             */
+            detailed_preview?: boolean;
+            /** Expected Preview Revision */
+            expected_preview_revision: string;
+        };
+        /** SpeechSelectionBatchRequest */
+        SpeechSelectionBatchRequest: {
+            /** Changes */
+            changes: components["schemas"]["SpeechSelectionRequest"][];
+            /**
+             * Detailed Preview
+             * @default false
+             */
+            detailed_preview?: boolean;
+        };
+        /** SpeechSelectionContextRequest */
+        SpeechSelectionContextRequest: {
+            /** End */
+            end: number;
+            /** Expected Segment Revision */
+            expected_segment_revision: number;
+            /** Revision Id */
+            revision_id: string;
+            /** Segment Id */
+            segment_id: string;
+            /** Start */
+            start: number;
         };
         /**
          * SpeechSelectionDelivery
@@ -7857,6 +8727,11 @@ export interface components {
              * @default null
              */
             emotion?: string | null;
+            /**
+             * Emotion Intensity
+             * @default null
+             */
+            emotion_intensity?: number | null;
             /**
              * Emphasis
              * @default null
@@ -7892,10 +8767,20 @@ export interface components {
              * @default false
              */
             enable_performance?: boolean;
+            /**
+             * Enable Vocalizations
+             * @default false
+             */
+            enable_vocalizations?: boolean;
             /** End */
             end: number;
             /** Expected Segment Revision */
             expected_segment_revision: number;
+            /**
+             * Expected Sound Plan Revision
+             * @default null
+             */
+            expected_sound_plan_revision?: number | null;
             /** Revision Id */
             revision_id: string;
             /** Segment Id */
@@ -7905,7 +8790,12 @@ export interface components {
              * @default unchanged
              * @enum {string}
              */
-            speaker?: "unchanged" | "narrator" | "character";
+            speaker?: "unchanged" | "narrator" | "dialogue" | "character";
+            /**
+             * Speech Xml
+             * @default null
+             */
+            speech_xml?: string | null;
             /** Start */
             start: number;
             /**
@@ -7913,11 +8803,37 @@ export interface components {
              * @default false
              */
             unlock_locked?: boolean;
+            /** @default null */
+            vocal_event?: components["schemas"]["SpeechSelectionVocalEvent"] | null;
             /**
              * Voice
              * @default null
              */
             voice?: string | null;
+            /**
+             * Voice Category
+             * @default null
+             */
+            voice_category?: ("male" | "female" | "androgynous" | "unspecified") | null;
+        };
+        /** SpeechSelectionVocalEvent */
+        SpeechSelectionVocalEvent: {
+            /**
+             * Duration Ms
+             * @default null
+             */
+            duration_ms?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "pause" | "laugh" | "chuckle" | "sigh" | "inhale" | "exhale" | "cough" | "gasp" | "clear_throat";
+            /**
+             * Position
+             * @default before
+             * @enum {string}
+             */
+            position?: "before" | "after";
         };
         /** StageSelectionUpdate */
         StageSelectionUpdate: {
@@ -8583,6 +9499,51 @@ export interface components {
             /** Remove Members */
             remove_members?: components["schemas"]["VoiceReference"][];
         };
+        /**
+         * VoiceCompatibility
+         * @description Provider compatibility plus independent preparation and health evidence.
+         */
+        VoiceCompatibility: {
+            /**
+             * Availability Reason
+             * @default null
+             */
+            availability_reason?: string | null;
+            /**
+             * Health Checked At
+             * @default null
+             */
+            health_checked_at?: string | null;
+            /** Model */
+            model: string;
+            /** Modes */
+            modes: {
+                [key: string]: unknown;
+            };
+            /** Prepared */
+            prepared: boolean;
+            /** Ready */
+            ready: boolean;
+            /**
+             * Service Available
+             * @default null
+             */
+            service_available?: boolean | null;
+            /** Service Id */
+            service_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needs_reference" | "needs_link" | "scope_mismatch" | "unavailable" | "ready" | "unknown" | "model_unavailable";
+            /** Supported Languages */
+            supported_languages: string[];
+            /**
+             * Voice
+             * @default null
+             */
+            voice?: string | null;
+        };
         /** VoiceCreate */
         VoiceCreate: {
             /**
@@ -8756,6 +9717,11 @@ export interface components {
         VoiceReferenceImportRequest: {
             /** Artifact Id */
             artifact_id: string;
+            /**
+             * End Seconds
+             * @default null
+             */
+            end_seconds?: number | null;
             /** Expected Voice Revision */
             expected_voice_revision: number;
             /**
@@ -8763,6 +9729,11 @@ export interface components {
              * @default null
              */
             language?: string | null;
+            /**
+             * Start Seconds
+             * @default 0
+             */
+            start_seconds?: number;
             /**
              * Transcript
              * @default null
@@ -8942,6 +9913,11 @@ export interface components {
              * @enum {string}
              */
             state: "queued" | "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+            /**
+             * Target Session Id
+             * @default null
+             */
+            target_session_id?: string | null;
             /**
              * Type
              * @default job
@@ -10015,6 +10991,28 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Initial event-stream resource snapshot and cursor */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getGenerationRun: {
+        parameters: {
+            query?: {
+                view?: "full" | "compact";
+            };
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Generation run by stable ID */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -11298,6 +12296,72 @@ export interface operations {
             };
         };
     };
+    getPurgeInspection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable purge work or inspection result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeInspectionStatus"];
+                };
+            };
+            /** @description Durable purge work or inspection result. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeInspectionStatus"];
+                };
+            };
+            /** @description Invalid request or missing idempotency key. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target or inspection not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, idempotency, or purge state conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     convertWithRvc: {
         parameters: {
             query?: never;
@@ -12132,6 +13196,78 @@ export interface operations {
             };
         };
     };
+    createComparisonExport: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComparisonExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Comparison export work item queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description An idempotency key is required or invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks app.run. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The session, run, segment, or artifact was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The idempotency key conflicts or is still in progress. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The selection, source audio, or export options are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listDispatchRuns: {
         parameters: {
             query?: never;
@@ -12225,6 +13361,42 @@ export interface operations {
             };
             /** @description Unsupported checkpoint */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    admitGenerationRun: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Automation principals require it; browser writes may omit it. Use it for safe retries. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerationStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Stable preparation work handle; poll work and follow its child generation job. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationAdmissionReceipt"];
+                };
+            };
+            /** @description Inputs changed or retry identity conflicts. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12934,6 +14106,10 @@ export interface operations {
         parameters: {
             query?: {
                 view?: "full" | "compact";
+                /** @description Look up one run owned by this session. */
+                generation_run_id?: string;
+                limit?: number;
+                include_repairs?: boolean;
             };
             header?: never;
             path: {
@@ -13032,6 +14208,8 @@ export interface operations {
                 generation_run_id?: string;
                 /** @description Choose the exact before or after take map of a recast run. */
                 audio_version_side?: "before" | "after";
+                /** @description Return all take history or only the selected take for each segment. Default full preserves the legacy response. */
+                take_history?: "selected" | "full";
                 /** @description Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets. */
                 q?: string;
                 match_case?: boolean;
@@ -13040,6 +14218,7 @@ export interface operations {
                 text_field?: "text" | "spoken";
                 /** @description Filter nonremoved speech blocks by boundary-risk flags. */
                 boundary_flags?: boolean;
+                segment_ids?: string[];
                 plan_revision_id?: string;
                 view?: string;
                 fields?: string;
@@ -13585,6 +14764,9 @@ export interface operations {
             query?: {
                 offset?: number;
                 limit?: number;
+                /** @description summary returns plan metadata; annotations returns compact speech-text units; full preserves the legacy representation. */
+                view?: "summary" | "annotations" | "full";
+                include_units?: boolean;
                 plan_revision_id?: string;
             };
             header?: never;
@@ -13652,7 +14834,10 @@ export interface operations {
     };
     createPerformancePlan: {
         parameters: {
-            query?: never;
+            query?: {
+                view?: "summary" | "annotations" | "full";
+                include_units?: boolean;
+            };
             header: {
                 "Idempotency-Key": string;
             };
@@ -13727,6 +14912,12 @@ export interface operations {
             query?: {
                 offset?: number;
                 limit?: number;
+                /** @description summary returns plan metadata; annotations returns compact speech-text units; full preserves the legacy representation. */
+                view?: "summary" | "annotations" | "full";
+                include_units?: boolean;
+                filter?: "all" | "directed" | "unreviewed" | "locked" | "dialogue" | "unresolved";
+                /** @description Comma-separated, unique segment IDs from this plan; at most 100 IDs. */
+                segment_ids?: string;
             };
             header?: never;
             path: {
@@ -14434,6 +15625,132 @@ export interface operations {
             };
         };
     };
+    admitSessionPurge: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurgeAdmissionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable purge work or inspection result. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeJobReceipt"];
+                };
+            };
+            /** @description Invalid request or missing idempotency key. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target or inspection not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, idempotency, or purge state conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    admitSessionPurgeInspection: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurgeInspectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Durable purge work or inspection result. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeJobReceipt"];
+                };
+            };
+            /** @description Invalid request or missing idempotency key. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Insufficient scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target or inspection not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision, idempotency, or purge state conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getSessionPurgePreview: {
         parameters: {
             query?: never;
@@ -14623,6 +15940,503 @@ export interface operations {
         responses: {
             /** @description Shallow-merge fields into the stored session override */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getProjectSoundPlan: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+                segment_id?: string[];
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    addProjectSound: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundCueCreate"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeProjectSound: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                cueId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateProjectSound: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+                cueId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundCueUpdate"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getProjectSoundMix: {
+        parameters: {
+            query?: {
+                base_artifact_id?: string;
+            };
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renderProjectSounds: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundMixRequest"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resolveProjectSounds: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restoreProjectSounds: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundPlanRestore"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15430,6 +17244,158 @@ export interface operations {
             };
             /** @description The request fields or speech markup are invalid. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    applySpeechSelectionBatch: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSelectionBatchApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Adopted atomic selection batch. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The speech session or segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The selected speech plan, block, lock, or preview is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields or speech markup are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    previewSpeechSelectionBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSelectionBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Compilation-only batch preview. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The authenticated actor lacks the required scope. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The speech session or segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The selected speech plan, block, lock, or preview is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request fields or speech markup are invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSpeechSelectionContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSelectionContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Current selected-text directions and compilation preview. */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16393,6 +18359,667 @@ export interface operations {
             };
             /** @description Revision conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSounds: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+                query?: string;
+                tag?: string;
+                archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listSoundCandidates: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSoundCandidate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidateId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    discardSoundCandidate: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                candidateId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    soundCatalogue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    generateSound: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundGenerate"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    importSoundAudio: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Audio-Filename": string;
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    importSoundMultipart: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** Format: binary */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    saveSound: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundSave"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getSound: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateSound: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoundUpdate"];
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18250,6 +20877,107 @@ export interface operations {
         responses: {
             /** @description Created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    designGoogleVoice: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for every caller. Reuse the same key and identical body to receive the original job and voice. */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoogleVoiceDesignCreate"];
+            };
+        };
+        responses: {
+            /** @description Google voice creation queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Idempotency conflict or duplicate local voice name */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable Google voice configuration */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    importVoiceReferenceAudio: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Audio-Filename": string;
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Sound-domain result. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Required scope is missing. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Sound or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid request or unavailable placement/runtime. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

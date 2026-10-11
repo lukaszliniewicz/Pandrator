@@ -54,7 +54,10 @@ def test_manager_projects_canonical_metadata_for_every_installable_model():
     projection = _projection()
     models = {model.id: model for model in _audio_cpp_models()}
 
-    assert set(models) == set(MODEL_PACKAGES)
+    assert set(models) == {
+        model_id for model_id, package in MODEL_PACKAGES.items()
+        if package.role == "model"
+    }
     for model_id, model in models.items():
         canonical = projection["models"][model_id]
         assert model.model_info == canonical
@@ -95,7 +98,7 @@ def test_chatterbox_turbo_does_not_gain_emotion_or_instruction_controls():
     assert standard["voice_mode"] == "cloning"
     assert "voice_cloning" in standard["capabilities"]
     assert standard["upstream_features"]["voice_conversion"] is True
-    assert "voice_conversion" in standard["capabilities"]
+    assert "voice_conversion" not in standard["capabilities"]
     assert turbo["voice_mode"] == "prebuilt"
     assert {"prebuilt_voices", "vocal_events"} <= set(turbo["capabilities"])
     assert not {

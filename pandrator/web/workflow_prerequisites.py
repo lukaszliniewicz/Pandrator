@@ -114,7 +114,7 @@ class WorkflowPrerequisiteService:
         transformations: dict[str, Any],
     ) -> tuple[str, ...]:
         if definition_key == "translate":
-            translation_parent = str(input_choices.get("translation") or "correction")
+            translation_parent = str(input_choices.get("translation") or "source")
             return (
                 ("correction",)
                 if translation_parent == "correction"
@@ -132,7 +132,7 @@ class WorkflowPrerequisiteService:
             return ("tts_optimized",)
         if workflow_kind == "audiobook":
             return ("prepared_text",)
-        generation_parent = str(input_choices.get("generation") or "translation")
+        generation_parent = str(input_choices.get("generation") or "source")
         if workflow_kind == "media_edit" and generation_parent in {
             "source",
             "media_edit",
@@ -158,8 +158,8 @@ class WorkflowPrerequisiteService:
         elif target_key in {"generate_audio", "export"}:
             if workflow_kind != "media_edit" and not is_srt_source:
                 required.add("transcribe")
-            translation_parent = str(input_choices.get("translation") or "correction")
-            generation_parent = str(input_choices.get("generation") or "translation")
+            translation_parent = str(input_choices.get("translation") or "source")
+            generation_parent = str(input_choices.get("generation") or "source")
             translation_required = (
                 bool(transformations.get("translation")) or generation_parent == "translation"
             )

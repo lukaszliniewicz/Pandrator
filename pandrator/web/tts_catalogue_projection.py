@@ -59,6 +59,7 @@ COMPACT_TTS_SERVICE_FIELDS = frozenset({
     "online",
     "available",
     "availability_reason",
+    "health_checked_at",
     "models",
     "default_model",
     "voices",
@@ -67,6 +68,8 @@ COMPACT_TTS_SERVICE_FIELDS = frozenset({
     "model_catalog",
     "model_voice_modes",
     "voice_metadata",
+    "voice_catalogue_warning",
+    "managed_google_voice_ids",
     "default_voice",
     "default_voices",
     "default_voices_by_language",
@@ -83,6 +86,7 @@ COMPACT_TTS_SERVICE_FIELDS = frozenset({
     "credential_required",
     "credential_configured",
     "credential_source",
+    "credential_origin",
     "credential_backend",
     "credential_reference",
     "catalogue_role",
@@ -556,6 +560,13 @@ def _filter_service_models(
     missing = [model_id for model_id in selected if model_id not in known]
     if missing:
         raise TtsCatalogueModelNotFoundError(service_id, missing)
+    capabilities = service.get("expressive_capabilities")
+    if isinstance(capabilities, dict):
+        service["expressive_capabilities"] = {
+            model_id: profile
+            for model_id, profile in capabilities.items()
+            if str(model_id) in wanted
+        }
     if isinstance(catalog, list):
         service["model_catalog"] = [
             item
@@ -658,4 +669,3 @@ def _supports_parallel_cloud_synthesis(service: Mapping[str, Any]) -> bool:
             )
         )
     return False
-

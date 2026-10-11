@@ -120,3 +120,26 @@ Recording and transcript files may be imported only from a named,
 operator-approved local source root returned by
 `pandrator_browse_local_sources`. Relative paths must be selected from that
 browse result and may not escape the approved root.
+
+## Existing audio and pronunciation edits
+
+For an export from completed audio, use `pandrator_plan_export_variant` with the
+selected run ID and `response_mode="structured"`. It creates an export-only
+snapshot rather than proposing upstream synthesis. General `plan_workflow`
+accepts `continuation=false` for direct-stage plans; orchestration can pin
+`generation_run_id` with no preceding passive stages. Plan snapshots are writes;
+review and execution are separate operations.
+
+Pronunciation entries have typed list/create/update/delete tools. Filter by text,
+language, status and global/session scope. Update/delete require the current entry
+revision. Creation is not idempotent: inspect after an uncertain response before
+retrying. Dictionary changes retain existing recordings and manual speech text;
+prepare speech text again and refresh changed audio. A one-off respelling can use
+`update_generation_segments.optimized_text` without changing display/subtitle text.
+
+Explicit speech-plan preparation reports `audio_reuse` counts. Unchanged timed
+blocks can inherit completed recordings from the immediately preceding plan when
+the same document, exact cue boundaries, spoken text, model, voice and delivery
+identity agree. Changed or uncertain inputs need new audio. Narration without
+document provenance also requires the same source artifact and exact source
+references. Historical recordings and sound-cue placement remain separate.

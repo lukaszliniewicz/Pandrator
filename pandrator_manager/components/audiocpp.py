@@ -17,7 +17,7 @@ from ..context import ManagerContext
 from ..models import ComputeVariant
 from .host import compute_choices, normalized_architecture, resolve_auto_compute
 
-AUDIO_CPP_VERSION = "0.9.0"
+AUDIO_CPP_VERSION = "0.9.1"
 AUDIO_CPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/v{AUDIO_CPP_VERSION}"
 )
@@ -206,66 +206,66 @@ for _package in _INVENTORY_PACKAGES:
         MODEL_PACKAGES[_package.id] = _package
 
 SUPPORTED_MODEL_IDS = MANUAL_MODEL_IDS + tuple(
-    package.id for package in _INVENTORY_PACKAGES if package.id not in MANUAL_MODEL_IDS
+    package.id for package in _INVENTORY_PACKAGES
+    if package.role == "model" and package.id not in MANUAL_MODEL_IDS
 )
 
 # Public alias matching the naming used by the other native driver.
-# Digests: upstream v0.9.0 release assets, published 2026-09-30. Portable Linux
+# Digests: upstream v0.9.1 release assets, published 2026-10-07. Portable Linux
 # builds avoid requiring the release runner's CPU instruction set. Windows CUDA
-# stays on the 12.4 binary/runtime pair for driver compatibility; upstream also
-# publishes a 13.3 pair which Pandrator does not pin.
+# stays on the 12.4 binary/runtime pair for driver compatibility.
 ASSETS: dict[tuple[str, str, ComputeVariant], tuple[AudioCppAsset, ...]] = {
     ("linux", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.0-bin-ubuntu-x64-cpu-portable.tar.gz",
-            "cf87b6baa46cf45fc8a2816b8f04f0f3f3fce32cca297231a4da56543f19fe87",
+            "audio-v0.9.1-bin-ubuntu-x64-cpu-portable.tar.gz",
+            "a73fed5d83b9d411b7b2aac1556396b81fcba57efcb4f03bc3d690ab0db8bfef",
             ComputeVariant.CPU,
         ),
     ),
     ("linux", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.0-bin-ubuntu-x64-vulkan-portable.tar.gz",
-            "ce661a7b39add12e91f1c7cc590d55854a39ec0a2fd04c004b3fed29cb978398",
+            "audio-v0.9.1-bin-ubuntu-x64-vulkan-portable.tar.gz",
+            "1aae59b03d10c0fa289fe11f4529ef8325bec4dad5c003652b99c23f3d9f5e32",
             ComputeVariant.VULKAN,
         ),
     ),
     # Best-effort Linux CUDA: upstream publishes only the
-    # cuda12.8-colab-tagged binary for 0.9.0, with no bundled cudart archive
+    # cuda12.8-colab-tagged binary for 0.9.1, with no bundled cudart archive
     # (unlike Windows). It needs a compatible CUDA 12 runtime/driver plus NCCL 2 and has not
     # been tested on local NVIDIA hardware. Staging fails closed when the
     # archive layout differs from the expected archive-root files.
     ("linux", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.0-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
-            "c9ed906f918246669c324f0d31f1b7dd80cbe003c35cf8a54932f333b57ca3f6",
+            "audio-v0.9.1-bin-ubuntu-x64-cuda12.8-colab.tar.gz",
+            "de068e8a22eb8f9c229c8ecaf77e12b6340be4d7d91606604fae7ccc48c174b6",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CPU): (
         AudioCppAsset(
-            "audio-v0.9.0-bin-windows-x64-cpu-portable.zip",
-            "3ee19466a1a2b5366364ca8447a4794391dd89671e655ffd01aa421ac1668bfa",
+            "audio-v0.9.1-bin-windows-x64-cpu-portable.zip",
+            "2fccc73dc97af84da1e81c3af545fa619348a46d023ea7d927ba80bc8680d2a0",
             ComputeVariant.CPU,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.VULKAN): (
         AudioCppAsset(
-            "audio-v0.9.0-bin-windows-x64-vulkan.zip",
-            "f884538138e44528a0bf17bb75dbe7ff7350cb91a14cb72c3e9cc1d4a31d6f1f",
+            "audio-v0.9.1-bin-windows-x64-vulkan.zip",
+            "3425c4e60f36c16d50b5418e37b8a5f2811741237a8575ae645c119fbceeadd4",
             ComputeVariant.VULKAN,
         ),
     ),
     ("windows", "x86_64", ComputeVariant.CUDA): (
         AudioCppAsset(
-            "audio-v0.9.0-bin-windows-x64-cuda12.4.zip",
-            "f935d399b1cabb96422d9b35278dcabbbe7c16638a0e100a9b983421511eeb91",
+            "audio-v0.9.1-bin-windows-x64-cuda12.4.zip",
+            "f32a40f8fb14ac4772c9c25525f97715db228979178e51654da73aa65005c0ef",
             ComputeVariant.CUDA,
             kind="cuda_binary",
         ),
         AudioCppAsset(
-            "audio-v0.9.0-cudart-windows-x64-cuda12.4.zip",
-            "155377e0b18d568002a6cb252a36dc2b96aaa93606c0e44ace945ec3123564fe",
+            "audio-v0.9.1-cudart-windows-x64-cuda12.4.zip",
+            "8bfdce7cb00b5a51560b5ab0d444344d86a2f0d7e2727bb7f18c15ef4734451b",
             ComputeVariant.CUDA,
             kind="cuda_runtime",
         ),
@@ -338,9 +338,16 @@ def server_config(
         raise ValueError("audio.cpp requires at least one model package.")
     if len(selected) != len(set(selected)):
         raise ValueError("audio.cpp model packages must be unique.")
+    selected_backend = str(backend.value if isinstance(backend, ComputeVariant) else backend)
+    if selected_backend not in {"cpu", "vulkan", "cuda"}:
+        raise ValueError(f"audio.cpp does not support backend {selected_backend!r}.")
+    if "minimax_h3_q4_k_int8_dit" in selected and selected_backend != "cuda":
+        raise ValueError("MiniMax-H3 int8-DiT requires the CUDA backend.")
     models: list[dict] = []
     for package_id in selected:
         package = model_package(package_id)
+        if package.role == "component":
+            raise ValueError(f"audio.cpp package {package_id!r} is a component, not a model.")
         entry: dict[str, object] = {
             "id": package.id,
             "family": package.family,
@@ -353,9 +360,6 @@ def server_config(
         if package.session_options:
             entry["session_options"] = dict(package.session_options)
         models.append(entry)
-    selected_backend = str(backend.value if isinstance(backend, ComputeVariant) else backend)
-    if selected_backend not in {"cpu", "vulkan", "cuda"}:
-        raise ValueError(f"audio.cpp does not support backend {selected_backend!r}.")
     return {
         "host": "127.0.0.1",
         "port": AUDIO_CPP_PORT,

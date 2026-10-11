@@ -1,6 +1,8 @@
 import multiprocessing
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -8,9 +10,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from pandrator.logic import tts_handler
 from pandrator.web.database import Database
+from pandrator.web.job_execution import current_job_lease
 from pandrator.web.jobs import JobQueue, Worker, noop_handler
 from pandrator.web.models import Job, ResourceClaim, utcnow
 from tests.web_test_support import prepare_web_test_data_root
@@ -54,6 +58,69 @@ class AtomicJobQueueTests(unittest.TestCase):
     def tearDown(self):
         self.database.dispose()
         self.temporary.cleanup()
+
+    def test_retry_then_complete_clears_current_error_and_retry_detail(self):
+        job = self.queue.enqueue("noop", max_attempts=2)
+        first = self.queue.claim("worker")
+        self.assertEqual(job.id, first.id)
+        self.assertTrue(
+            self.queue.fail(
+                job.id,
+                "worker",
+                "temporary_failure",
+                "Temporary failure",
+                lease_generation=first.lease_generation,
+            )
+        )
+        queued = self.queue.get(job.id)
+        self.assertEqual("queued", queued.status)
+        self.assertEqual("temporary_failure", queued.error_code)
+        self.assertEqual("Retry scheduled after attempt 1 of 2", queued.progress_detail)
+
+        second = self.queue.claim("worker")
+        self.assertEqual(job.id, second.id)
+        self.queue.complete(job.id, "worker", {}, lease_generation=second.lease_generation)
+        completed = self.queue.get(job.id)
+        self.assertEqual("succeeded", completed.status)
+        self.assertIsNone(completed.error_code)
+        self.assertIsNone(completed.error_message)
+        self.assertIsNone(completed.progress_detail)
+        event_types = [
+            event.event_type
+            for event in self.queue.events_after()
+            if event.job_id == job.id
+        ]
+        self.assertIn("job.retry_scheduled", event_types)
+        self.assertIn("job.succeeded", event_types)
+
+    def test_complete_preserves_current_success_detail_after_retry(self):
+        job = self.queue.enqueue("noop", max_attempts=2)
+        first = self.queue.claim("worker")
+        self.assertTrue(
+            self.queue.fail(
+                job.id,
+                "worker",
+                "temporary_failure",
+                "Temporary failure",
+                lease_generation=first.lease_generation,
+            )
+        )
+        second = self.queue.claim("worker")
+        self.assertTrue(
+            self.queue.heartbeat(
+                job.id,
+                "worker",
+                lease_generation=second.lease_generation,
+                progress=0.8,
+                detail="Work completed",
+            )
+        )
+        self.queue.complete(job.id, "worker", {}, lease_generation=second.lease_generation)
+        completed = self.queue.get(job.id)
+        self.assertEqual("succeeded", completed.status)
+        self.assertEqual("Work completed", completed.progress_detail)
+        self.assertIsNone(completed.error_code)
+        self.assertIsNone(completed.error_message)
 
     def _thread_claim(self, barrier: threading.Barrier, worker_id: str):
         database = Database(self.database_path)
@@ -385,6 +452,35 @@ class WorkerResilienceTests(unittest.TestCase):
         self.database.dispose()
         self.temporary.cleanup()
 
+    def test_heartbeat_writes_have_bounded_waits(self):
+        job = self.queue.enqueue("noop", resource_keys=["gpu:0"])
+        claimed = self.queue.claim("worker")
+        self.assertIsNotNone(claimed)
+        generation = claimed.lease_generation
+        self.assertTrue(
+            self.queue.acquire_resources(
+                job.id, "worker", ["gpu:0"], lease_generation=generation
+            )
+        )
+        with sqlite3.connect(self.database_path) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            started = time.monotonic()
+            with self.assertRaises(OperationalError):
+                self.queue.heartbeat(
+                    job.id, "worker", lease_generation=generation
+                )
+            self.assertLess(time.monotonic() - started, 1.0)
+            started = time.monotonic()
+            with self.assertRaises(OperationalError):
+                self.queue.heartbeat_resources(
+                    job.id, "worker", lease_generation=generation
+                )
+            self.assertLess(time.monotonic() - started, 1.0)
+            writer.rollback()
+        self.assertTrue(
+            self.queue.heartbeat(job.id, "worker", lease_generation=generation)
+        )
+
     def test_tts_provider_failure_reaches_job_error_with_secrets_redacted(self):
         job = self.queue.enqueue("test.synthesize")
         response = tts_handler.requests.Response()
@@ -505,6 +601,49 @@ class WorkerResilienceTests(unittest.TestCase):
         self.assertEqual("failed", failed.status)
         self.assertEqual("worker_lease_lost", failed.error_code)
         self.assertEqual("succeeded", self.queue.get(healthy.id).status)
+
+    def test_writer_contention_does_not_cancel_monitor_renewal(self):
+        def hold_writer_during_monitor(_payload, _progress, cancel_event):
+            with sqlite3.connect(self.database_path) as writer:
+                writer.execute("BEGIN IMMEDIATE")
+                self.assertFalse(cancel_event.wait(0.8))
+                writer.rollback()
+            self.assertFalse(cancel_event.wait(0.7))
+            return {"renewed": True}
+
+        job = self.queue.enqueue("wait")
+        worker = Worker(self.queue, "worker", {"wait": hold_writer_during_monitor})
+        self.assertTrue(worker.run_once())
+        self.assertEqual("succeeded", self.queue.get(job.id).status)
+
+    def test_false_heartbeat_still_loses_lease(self):
+        def wait_for_monitor(_payload, _progress, cancel_event):
+            self.assertTrue(cancel_event.wait(0.8))
+            return {}
+
+        job = self.queue.enqueue("wait")
+        worker = Worker(self.queue, "worker", {"wait": wait_for_monitor})
+        with patch.object(self.queue, "heartbeat", return_value=False):
+            self.assertTrue(worker.run_once())
+        failed = self.queue.get(job.id)
+        self.assertEqual("failed", failed.status)
+        self.assertEqual("worker_lease_lost", failed.error_code)
+
+    def test_handler_context_contains_exact_lease_and_is_reset(self):
+        def inspect_lease(payload, _progress, _cancel_event):
+            lease = current_job_lease.get()
+            self.assertIsNotNone(lease)
+            self.assertEqual(payload["_job_id"], lease["job_id"])
+            self.assertEqual("worker", lease["owner_id"])
+            self.assertEqual(payload["_lease_generation"], lease["lease_generation"])
+            return {}
+
+        job = self.queue.enqueue("inspect")
+        worker = Worker(self.queue, "worker", {"inspect": inspect_lease})
+        self.assertIsNone(current_job_lease.get())
+        self.assertTrue(worker.run_once())
+        self.assertIsNone(current_job_lease.get())
+        self.assertEqual("succeeded", self.queue.get(job.id).status)
 
 
 if __name__ == "__main__":

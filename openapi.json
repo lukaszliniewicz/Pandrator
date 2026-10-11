@@ -401,6 +401,9 @@
             "title": "Aliases",
             "type": "array"
           },
+          "delivery": {
+            "$ref": "#/components/schemas/Delivery"
+          },
           "display_name": {
             "maxLength": 255,
             "minLength": 1,
@@ -524,6 +527,87 @@
         "title": "ChunkUploadInitialize",
         "type": "object"
       },
+      "ComparisonExportClipRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio_version_side": {
+            "default": "after",
+            "enum": [
+              "before",
+              "after"
+            ],
+            "title": "Audio Version Side",
+            "type": "string"
+          },
+          "generation_run_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Generation Run Id",
+            "type": "string"
+          },
+          "segment_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "take_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Take Id"
+          }
+        },
+        "required": [
+          "generation_run_id",
+          "segment_id"
+        ],
+        "title": "ComparisonExportClipRequest",
+        "type": "object"
+      },
+      "ComparisonExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/ComparisonExportClipRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Clips",
+            "type": "array"
+          },
+          "gap_ms": {
+            "default": 350,
+            "maximum": 10000,
+            "minimum": 0,
+            "title": "Gap Ms",
+            "type": "integer"
+          },
+          "output_format": {
+            "default": "wav",
+            "enum": [
+              "wav",
+              "mp3"
+            ],
+            "title": "Output Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clips"
+        ],
+        "title": "ComparisonExportRequest",
+        "type": "object"
+      },
       "CredentialUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -605,6 +689,20 @@
             "maxLength": 80,
             "title": "Emotion",
             "type": "string"
+          },
+          "emotion_intensity": {
+            "anyOf": [
+              {
+                "maximum": 2,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emotion Intensity"
           },
           "emphasis": {
             "default": "",
@@ -2126,6 +2224,52 @@
         "title": "GenerationActivitySummary",
         "type": "object"
       },
+      "GenerationAdmissionReceipt": {
+        "properties": {
+          "cancellable": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "poll_after_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "speech_plan_revision_id": {
+            "type": "string"
+          },
+          "stage": {
+            "const": "preparing",
+            "type": "string"
+          },
+          "status": {
+            "const": "queued",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "job_id",
+          "session_id",
+          "status",
+          "stage",
+          "speech_plan_revision_id",
+          "request_id",
+          "cancellable",
+          "poll_after_ms"
+        ],
+        "type": "object"
+      },
       "GenerationControlsUpdateRequest": {
         "additionalProperties": false,
         "description": "Revision-checked replacement of one or both generation-control sections.",
@@ -3035,6 +3179,23 @@
             "title": "Selected Segment Override",
             "type": "object"
           },
+          "settings_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "current",
+                  "matching_run",
+                  "run"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Settings Source"
+          },
           "settings_source_run_id": {
             "anyOf": [
               {
@@ -3109,6 +3270,18 @@
               }
             ],
             "title": "Plan Revision Id"
+          },
+          "plan_source_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Source Role"
           },
           "session_id": {
             "title": "Session Id",
@@ -3268,6 +3441,65 @@
           "action"
         ],
         "title": "GenerationTopologyEdit",
+        "type": "object"
+      },
+      "GoogleVoiceDesignCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "default": "en",
+            "maxLength": 40,
+            "pattern": "^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$",
+            "title": "Language",
+            "type": "string"
+          },
+          "model": {
+            "enum": [
+              "gemini-3.8-flash-tts",
+              "gemini-3.8-flash-lite-tts"
+            ],
+            "title": "Model",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "service_id": {
+            "enum": [
+              "gemini",
+              "vertex_ai"
+            ],
+            "title": "Service Id",
+            "type": "string"
+          },
+          "voice_category": {
+            "default": "unspecified",
+            "enum": [
+              "male",
+              "female",
+              "androgynous",
+              "unspecified"
+            ],
+            "title": "Voice Category",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service_id",
+          "model",
+          "name",
+          "prompt"
+        ],
+        "title": "GoogleVoiceDesignCreate",
         "type": "object"
       },
       "JobCreate": {
@@ -6191,6 +6423,111 @@
         "title": "ProviderUpdate",
         "type": "object"
       },
+      "PurgeAdmissionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "const": true,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "impact_token": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "title": "Impact Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "impact_token",
+          "confirm"
+        ],
+        "title": "PurgeAdmissionRequest",
+        "type": "object"
+      },
+      "PurgeInspectionRequest": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "PurgeInspectionRequest",
+        "type": "object"
+      },
+      "PurgeInspectionStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "inspection": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inspection"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state"
+        ],
+        "title": "PurgeInspectionStatus",
+        "type": "object"
+      },
+      "PurgeJobReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "state": {
+            "const": "queued",
+            "title": "State",
+            "type": "string"
+          },
+          "target_session_id": {
+            "title": "Target Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state",
+          "target_session_id"
+        ],
+        "title": "PurgeJobReceipt",
+        "type": "object"
+      },
       "RecordingTimingRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6337,6 +6674,15 @@
             "title": "Included Stages",
             "type": "array"
           },
+          "interface_mode": {
+            "default": "simple",
+            "enum": [
+              "simple",
+              "advanced"
+            ],
+            "title": "Interface Mode",
+            "type": "string"
+          },
           "multilingual_setup": {
             "anyOf": [
               {
@@ -6436,6 +6782,22 @@
             ],
             "default": null,
             "title": "Expected Revision"
+          },
+          "interface_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "simple",
+                  "advanced"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Interface Mode"
           },
           "name": {
             "anyOf": [
@@ -6634,6 +6996,19 @@
             "default": null,
             "title": "Included Stages"
           },
+          "interface_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "simple",
+                  "advanced"
+                ],
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Interface Mode"
+          },
           "multilingual_setup": {
             "anyOf": [
               {
@@ -6744,6 +7119,650 @@
           "value"
         ],
         "title": "SettingUpdate",
+        "type": "object"
+      },
+      "SoundAnchor": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End"
+          },
+          "kind": {
+            "enum": [
+              "before_segment",
+              "after_segment",
+              "source_time",
+              "after_word",
+              "next_pause"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "occurrence": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Occurrence"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quote"
+          },
+          "segment_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Segment Id"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Start"
+          },
+          "time_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Time Seconds"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "SoundAnchor",
+        "type": "object"
+      },
+      "SoundCueCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/SoundAnchor"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "included": {
+            "default": true,
+            "title": "Included",
+            "type": "boolean"
+          },
+          "playback": {
+            "$ref": "#/components/schemas/SoundPlayback"
+          },
+          "variant_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Variant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "variant_id",
+          "anchor"
+        ],
+        "title": "SoundCueCreate",
+        "type": "object"
+      },
+      "SoundCueUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SoundAnchor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "included": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Included"
+          },
+          "playback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SoundPlayback"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "variant_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Variant Id"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "SoundCueUpdate",
+        "type": "object"
+      },
+      "SoundGenerate": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "default": "cpu",
+            "enum": [
+              "cpu",
+              "vulkan",
+              "cuda"
+            ],
+            "title": "Backend",
+            "type": "string"
+          },
+          "candidate_count": {
+            "default": 1,
+            "description": "Generate this many candidates in one request with the same settings and distinct seeds. An explicit seed is the base; subsequent seeds increment with wrap.",
+            "maximum": 8,
+            "minimum": 1,
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "maximum": 600.0,
+                "minimum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Seconds"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sound",
+                  "music"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "lyrics": {
+            "anyOf": [
+              {
+                "maxLength": 16000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lyrics"
+          },
+          "model_id": {
+            "default": "stable_audio_3_small_sfx_q8_0",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Model Id",
+            "type": "string"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "maxLength": 2000,
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                },
+                "maxProperties": 32,
+                "propertyNames": {
+                  "maxLength": 64
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "prompt": {
+            "maxLength": 8000,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seed"
+          },
+          "threads": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Threads"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "SoundGenerate",
+        "type": "object"
+      },
+      "SoundMixRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_artifact_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Base Artifact Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "timeline_artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeline Artifact Id"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "base_artifact_id"
+        ],
+        "title": "SoundMixRequest",
+        "type": "object"
+      },
+      "SoundPlanRestore": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "source_plan_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Source Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "source_plan_id"
+        ],
+        "title": "SoundPlanRestore",
+        "type": "object"
+      },
+      "SoundPlayback": {
+        "additionalProperties": false,
+        "properties": {
+          "fade_in_ms": {
+            "default": 5,
+            "maximum": 1000,
+            "minimum": 0,
+            "title": "Fade In Ms",
+            "type": "integer"
+          },
+          "fade_out_ms": {
+            "default": 5,
+            "maximum": 1000,
+            "minimum": 0,
+            "title": "Fade Out Ms",
+            "type": "integer"
+          },
+          "gain_db": {
+            "default": 0.0,
+            "maximum": 12,
+            "minimum": -60,
+            "title": "Gain Db",
+            "type": "number"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "insert",
+                  "overlay"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mode"
+          },
+          "offset_ms": {
+            "default": 0,
+            "maximum": 10000,
+            "minimum": -10000,
+            "title": "Offset Ms",
+            "type": "integer"
+          },
+          "trim_end_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Trim End Seconds"
+          },
+          "trim_start_seconds": {
+            "default": 0.0,
+            "minimum": 0,
+            "title": "Trim Start Seconds",
+            "type": "number"
+          }
+        },
+        "title": "SoundPlayback",
+        "type": "object"
+      },
+      "SoundResolveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cue_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cue Ids"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "SoundResolveRequest",
+        "type": "object"
+      },
+      "SoundSave": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Item Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tags"
+          }
+        },
+        "required": [
+          "candidate_id"
+        ],
+        "title": "SoundSave",
+        "type": "object"
+      },
+      "SoundUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "preferred_variant_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preferred Variant Id"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tags"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "SoundUpdate",
         "type": "object"
       },
       "SourceAttachRequest": {
@@ -8710,6 +9729,11 @@
             "title": "Enable Performance",
             "type": "boolean"
           },
+          "enable_vocalizations": {
+            "default": false,
+            "title": "Enable Vocalizations",
+            "type": "boolean"
+          },
           "end": {
             "minimum": 0,
             "title": "End",
@@ -8726,6 +9750,19 @@
             "minimum": 1,
             "title": "Expected Segment Revision",
             "type": "integer"
+          },
+          "expected_sound_plan_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Sound Plan Revision"
           },
           "revision_id": {
             "maxLength": 128,
@@ -8744,10 +9781,24 @@
             "enum": [
               "unchanged",
               "narrator",
+              "dialogue",
               "character"
             ],
             "title": "Speaker",
             "type": "string"
+          },
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
           },
           "start": {
             "minimum": 0,
@@ -8758,6 +9809,17 @@
             "default": false,
             "title": "Unlock Locked",
             "type": "boolean"
+          },
+          "vocal_event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechSelectionVocalEvent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "voice": {
             "anyOf": [
@@ -8771,6 +9833,24 @@
             ],
             "default": null,
             "title": "Voice"
+          },
+          "voice_category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "male",
+                  "female",
+                  "androgynous",
+                  "unspecified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Category"
           }
         },
         "required": [
@@ -8782,6 +9862,103 @@
           "expected_preview_revision"
         ],
         "title": "SpeechSelectionApplyRequest",
+        "type": "object"
+      },
+      "SpeechSelectionBatchApplyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechSelectionRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Changes",
+            "type": "array"
+          },
+          "detailed_preview": {
+            "default": false,
+            "title": "Detailed Preview",
+            "type": "boolean"
+          },
+          "expected_preview_revision": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "title": "Expected Preview Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "expected_preview_revision"
+        ],
+        "title": "SpeechSelectionBatchApplyRequest",
+        "type": "object"
+      },
+      "SpeechSelectionBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/SpeechSelectionRequest"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Changes",
+            "type": "array"
+          },
+          "detailed_preview": {
+            "default": false,
+            "title": "Detailed Preview",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "title": "SpeechSelectionBatchRequest",
+        "type": "object"
+      },
+      "SpeechSelectionContextRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "minimum": 0,
+            "title": "End",
+            "type": "integer"
+          },
+          "expected_segment_revision": {
+            "minimum": 1,
+            "title": "Expected Segment Revision",
+            "type": "integer"
+          },
+          "revision_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Revision Id",
+            "type": "string"
+          },
+          "segment_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0,
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision_id",
+          "segment_id",
+          "expected_segment_revision",
+          "start",
+          "end"
+        ],
+        "title": "SpeechSelectionContextRequest",
         "type": "object"
       },
       "SpeechSelectionDelivery": {
@@ -8819,6 +9996,20 @@
             ],
             "default": null,
             "title": "Emotion"
+          },
+          "emotion_intensity": {
+            "anyOf": [
+              {
+                "maximum": 2,
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emotion Intensity"
           },
           "emphasis": {
             "anyOf": [
@@ -8911,6 +10102,11 @@
             "title": "Enable Performance",
             "type": "boolean"
           },
+          "enable_vocalizations": {
+            "default": false,
+            "title": "Enable Vocalizations",
+            "type": "boolean"
+          },
           "end": {
             "minimum": 0,
             "title": "End",
@@ -8920,6 +10116,19 @@
             "minimum": 1,
             "title": "Expected Segment Revision",
             "type": "integer"
+          },
+          "expected_sound_plan_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Sound Plan Revision"
           },
           "revision_id": {
             "maxLength": 128,
@@ -8938,10 +10147,24 @@
             "enum": [
               "unchanged",
               "narrator",
+              "dialogue",
               "character"
             ],
             "title": "Speaker",
             "type": "string"
+          },
+          "speech_xml": {
+            "anyOf": [
+              {
+                "maxLength": 262144,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Speech Xml"
           },
           "start": {
             "minimum": 0,
@@ -8952,6 +10175,17 @@
             "default": false,
             "title": "Unlock Locked",
             "type": "boolean"
+          },
+          "vocal_event": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SpeechSelectionVocalEvent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "voice": {
             "anyOf": [
@@ -8965,6 +10199,24 @@
             ],
             "default": null,
             "title": "Voice"
+          },
+          "voice_category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "male",
+                  "female",
+                  "androgynous",
+                  "unspecified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice Category"
           }
         },
         "required": [
@@ -8975,6 +10227,54 @@
           "end"
         ],
         "title": "SpeechSelectionRequest",
+        "type": "object"
+      },
+      "SpeechSelectionVocalEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "anyOf": [
+              {
+                "maximum": 5000,
+                "minimum": 50,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Duration Ms"
+          },
+          "kind": {
+            "enum": [
+              "pause",
+              "laugh",
+              "chuckle",
+              "sigh",
+              "inhale",
+              "exhale",
+              "cough",
+              "gasp",
+              "clear_throat"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "position": {
+            "default": "before",
+            "enum": [
+              "before",
+              "after"
+            ],
+            "title": "Position",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "SpeechSelectionVocalEvent",
         "type": "object"
       },
       "StageSelectionUpdate": {
@@ -10561,6 +11861,117 @@
         "title": "VoiceCollectionUpdate",
         "type": "object"
       },
+      "VoiceCompatibility": {
+        "additionalProperties": false,
+        "description": "Provider compatibility plus independent preparation and health evidence.",
+        "properties": {
+          "availability_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Availability Reason"
+          },
+          "health_checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Health Checked At"
+          },
+          "model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "modes": {
+            "additionalProperties": true,
+            "title": "Modes",
+            "type": "object"
+          },
+          "prepared": {
+            "title": "Prepared",
+            "type": "boolean"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "service_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Available"
+          },
+          "service_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Service Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "needs_reference",
+              "needs_link",
+              "scope_mismatch",
+              "unavailable",
+              "ready",
+              "unknown",
+              "model_unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supported_languages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Languages",
+            "type": "array"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "service_id",
+          "model",
+          "status",
+          "ready",
+          "prepared",
+          "modes",
+          "supported_languages"
+        ],
+        "title": "VoiceCompatibility",
+        "type": "object"
+      },
       "VoiceCreate": {
         "additionalProperties": false,
         "properties": {
@@ -11048,6 +12459,18 @@
             "title": "Artifact Id",
             "type": "string"
           },
+          "end_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Seconds"
+          },
           "expected_voice_revision": {
             "minimum": 1,
             "title": "Expected Voice Revision",
@@ -11065,6 +12488,12 @@
             ],
             "default": null,
             "title": "Language"
+          },
+          "start_seconds": {
+            "default": 0.0,
+            "minimum": 0,
+            "title": "Start Seconds",
+            "type": "number"
           },
           "transcript": {
             "anyOf": [
@@ -11482,6 +12911,18 @@
             ],
             "title": "State",
             "type": "string"
+          },
+          "target_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Session Id"
           },
           "type": {
             "const": "job",
@@ -12937,6 +14378,26 @@
         }
       }
     },
+    "/api/v1/generation-operations/{operationId}": {
+      "get": {
+        "operationId": "getGenerationOperation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "operationId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stable preparation/synthesis state with optional terminal audio coverage"
+          }
+        }
+      }
+    },
     "/api/v1/generation-runs/{runId}": {
       "delete": {
         "operationId": "deleteGenerationRun",
@@ -12955,6 +14416,49 @@
             "description": "Generation run deleted"
           }
         }
+      },
+      "get": {
+        "operationId": "getGenerationRun",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generation run by stable ID"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/generation-runs/{runId}/audio-version/undo": {
@@ -13095,6 +14599,26 @@
         "responses": {
           "202": {
             "description": "Cancellation requested"
+          }
+        }
+      }
+    },
+    "/api/v1/generation-runs/{runId}/coverage": {
+      "get": {
+        "operationId": "getGenerationRunCoverage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Available selected audio and whole-plan readiness counts"
           }
         }
       }
@@ -14531,6 +16055,72 @@
         }
       }
     },
+    "/api/v1/purge-inspections/{jobId}": {
+      "get": {
+        "operationId": "getPurgeInspection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "jobId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeInspectionStatus"
+                }
+              }
+            },
+            "description": "Durable purge work or inspection result."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeInspectionStatus"
+                }
+              }
+            },
+            "description": "Durable purge work or inspection result."
+          },
+          "400": {
+            "description": "Invalid request or missing idempotency key."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Target or inspection not found."
+          },
+          "409": {
+            "description": "Revision, idempotency, or purge state conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "getPurgeInspection"
+      }
+    },
     "/api/v1/rvc/convert": {
       "post": {
         "operationId": "convertWithRvc",
@@ -15818,6 +17408,88 @@
         }
       }
     },
+    "/api/v1/sessions/{sessionId}/comparison-exports": {
+      "post": {
+        "description": "Queue one reusable WAV or MP3 from the ordered selected speech takes. Recast sides use their pinned before/after takes. The separately assembled sound mix is excluded.",
+        "operationId": "createComparisonExport",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComparisonExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Comparison export work item queued."
+          },
+          "400": {
+            "description": "An idempotency key is required or invalid."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks app.run."
+          },
+          "404": {
+            "description": "The session, run, segment, or artifact was not found."
+          },
+          "409": {
+            "description": "The idempotency key conflicts or is still in progress."
+          },
+          "422": {
+            "description": "The selection, source audio, or export options are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ],
+        "summary": "Export a comparison of selected speech takes"
+      }
+    },
     "/api/v1/sessions/{sessionId}/dispatch-runs": {
       "get": {
         "operationId": "listDispatchRuns",
@@ -15975,6 +17647,70 @@
           {
             "nativeOAuth": [
               "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/generation-admissions": {
+      "post": {
+        "operationId": "admitGenerationRun",
+        "parameters": [
+          {
+            "description": "Automation principals require it; browser writes may omit it. Use it for safe retries.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationAdmissionReceipt"
+                }
+              }
+            },
+            "description": "Stable preparation work handle; poll work and follow its child generation job."
+          },
+          "409": {
+            "description": "Inputs changed or retry identity conflicts."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
             ]
           }
         ]
@@ -17005,6 +18741,31 @@
             }
           },
           {
+            "description": "Look up one run owned by this session.",
+            "in": "query",
+            "name": "generation_run_id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_repairs",
+            "schema": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          {
             "in": "path",
             "name": "sessionId",
             "required": true,
@@ -17162,6 +18923,19 @@
             }
           },
           {
+            "description": "Return all take history or only the selected take for each segment. Default full preserves the legacy response.",
+            "in": "query",
+            "name": "take_history",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "selected",
+                "full"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "description": "Literal search across the complete selected speech plan. Matching items include original-text UTF-16 search_matches offsets.",
             "in": "query",
             "name": "q",
@@ -17206,6 +18980,21 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "segment_ids",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "style": "form"
           },
           {
             "in": "query",
@@ -18126,6 +19915,28 @@
             }
           },
           {
+            "description": "summary returns plan metadata; annotations returns compact speech-text units; full preserves the legacy representation.",
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "summary",
+                "annotations",
+                "full"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_units",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "plan_revision_id",
             "schema": {
@@ -18200,6 +20011,27 @@
               "maxLength": 200,
               "minLength": 8,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "summary",
+                "annotations",
+                "full"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_units",
+            "schema": {
+              "default": true,
+              "type": "boolean"
             }
           },
           {
@@ -18291,6 +20123,55 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "description": "summary returns plan metadata; annotations returns compact speech-text units; full preserves the legacy representation.",
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "summary",
+                "annotations",
+                "full"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_units",
+            "schema": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "directed",
+                "unreviewed",
+                "locked",
+                "dialogue",
+                "unresolved"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated, unique segment IDs from this plan; at most 100 IDs.",
+            "explode": false,
+            "in": "query",
+            "name": "segment_ids",
+            "schema": {
+              "maxLength": 8099,
+              "type": "string"
+            },
+            "style": "form"
           },
           {
             "in": "path",
@@ -19137,6 +21018,158 @@
         "summary": "Permanently remove a trashed session"
       }
     },
+    "/api/v1/sessions/{sessionId}/purge-admissions": {
+      "post": {
+        "operationId": "admitSessionPurge",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurgeAdmissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeJobReceipt"
+                }
+              }
+            },
+            "description": "Durable purge work or inspection result."
+          },
+          "400": {
+            "description": "Invalid request or missing idempotency key."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Target or inspection not found."
+          },
+          "409": {
+            "description": "Revision, idempotency, or purge state conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "admitSessionPurge"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/purge-inspections": {
+      "post": {
+        "operationId": "admitSessionPurgeInspection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurgeInspectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeJobReceipt"
+                }
+              }
+            },
+            "description": "Durable purge work or inspection result."
+          },
+          "400": {
+            "description": "Invalid request or missing idempotency key."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Insufficient scope."
+          },
+          "404": {
+            "description": "Target or inspection not found."
+          },
+          "409": {
+            "description": "Revision, idempotency, or purge state conflict."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "admitSessionPurgeInspection"
+      }
+    },
     "/api/v1/sessions/{sessionId}/purge-preview": {
       "get": {
         "operationId": "getSessionPurgePreview",
@@ -19435,6 +21468,617 @@
         "responses": {
           "200": {
             "description": "Replace session override; omitted fields are removed"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan": {
+      "get": {
+        "operationId": "getProjectSoundPlan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "segment_id",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan/cues": {
+      "post": {
+        "operationId": "addProjectSound",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundCueCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan/cues/{cueId}": {
+      "delete": {
+        "operationId": "removeProjectSound",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "cueId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "pattern": "^\"?[0-9]+\"?$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateProjectSound",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "cueId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundCueUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan/mix": {
+      "get": {
+        "operationId": "getProjectSoundMix",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "base_artifact_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan/render": {
+      "post": {
+        "operationId": "renderProjectSounds",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundMixRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan/resolve": {
+      "post": {
+        "operationId": "resolveProjectSounds",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sessions/{sessionId}/sound-plan/restore": {
+      "post": {
+        "operationId": "restoreProjectSounds",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundPlanRestore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
           }
         },
         "security": [
@@ -20618,9 +23262,201 @@
         "summary": "Apply a reviewed direct speech-selection edit"
       }
     },
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-batch": {
+      "post": {
+        "description": "Adopt one copied manual XML performance plan for all reviewed changes and create one sound-plan version if sound cues changed.",
+        "operationId": "applySpeechSelectionBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSelectionBatchApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Adopted atomic selection batch."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The speech session or segment was not found."
+          },
+          "409": {
+            "description": "The selected speech plan, block, lock, or preview is stale."
+          },
+          "422": {
+            "description": "The request fields or speech markup are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ],
+        "summary": "Apply an atomic speech selection batch"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-batch-preview": {
+      "post": {
+        "description": "Compile each affected speech block without creating rows or contacting providers. The default reply is compact; detailed_preview includes up to ten full block previews.",
+        "operationId": "previewSpeechSelectionBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSelectionBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Compilation-only batch preview."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The authenticated actor lacks the required scope."
+          },
+          "404": {
+            "description": "The speech session or segment was not found."
+          },
+          "409": {
+            "description": "The selected speech plan, block, lock, or preview is stale."
+          },
+          "422": {
+            "description": "The request fields or speech markup are invalid."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ],
+        "summary": "Preview an atomic speech selection batch"
+      }
+    },
+    "/api/v1/sessions/{sessionId}/speech-plan/selection-context": {
+      "post": {
+        "operationId": "getSpeechSelectionContext",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSelectionContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Current selected-text directions and compilation preview."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
     "/api/v1/sessions/{sessionId}/speech-plan/selection-preview": {
       "post": {
-        "description": "Compile a selected phrase with proposed speaker, voice, and delivery metadata. This read-only operation creates no performance-plan row and does not access providers or synthesize audio.",
+        "description": "Compile a selected phrase with proposed speaker, voice, and delivery metadata, or insert a vocal_event at a cursor (start equals end). Cursor requests cannot include speaker, voice, delivery or XML edits. This read-only operation creates no performance-plan row and does not access providers or synthesize audio.",
         "operationId": "previewSpeechSelection",
         "parameters": [
           {
@@ -21920,6 +24756,758 @@
             "description": "Revision conflict"
           }
         }
+      }
+    },
+    "/api/v1/sounds": {
+      "get": {
+        "operationId": "listSounds",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/candidates": {
+      "get": {
+        "operationId": "listSoundCandidates",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/candidates/{candidateId}": {
+      "delete": {
+        "operationId": "discardSoundCandidate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "candidateId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      },
+      "get": {
+        "operationId": "getSoundCandidate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "candidateId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/catalogue": {
+      "get": {
+        "operationId": "soundCatalogue",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/generate": {
+      "post": {
+        "operationId": "generateSound",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundGenerate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.run"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/import": {
+      "post": {
+        "operationId": "importSoundMultipart",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      },
+      "put": {
+        "description": "Import original audio bytes (maximum 50 MiB and 300 seconds), with a fixed managed audio role. No source kind or role is caller-controlled.",
+        "operationId": "importSoundAudio",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Audio-Filename",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/save": {
+      "post": {
+        "operationId": "saveSound",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/sounds/{itemId}": {
+      "get": {
+        "operationId": "getSound",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "itemId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.read"
+            ]
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateSound",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "itemId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SoundUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
       }
     },
     "/api/v1/source-cleaning-dispatch-batches/{batchId}/inspect": {
@@ -24824,6 +28412,122 @@
         "responses": {
           "201": {
             "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerToken": []
+          },
+          {
+            "nativeOAuth": [
+              "app.write"
+            ]
+          }
+        ]
+      }
+    },
+    "/api/v1/voices/design/google": {
+      "post": {
+        "operationId": "designGoogleVoice",
+        "parameters": [
+          {
+            "description": "Required for every caller. Reuse the same key and identical body to receive the original job and voice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleVoiceDesignCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Google voice creation queued"
+          },
+          "409": {
+            "description": "Idempotency conflict or duplicate local voice name"
+          },
+          "422": {
+            "description": "Invalid request or unavailable Google voice configuration"
+          }
+        }
+      }
+    },
+    "/api/v1/voices/reference-audio/import": {
+      "put": {
+        "description": "Import original audio bytes (maximum 50 MiB and 300 seconds), with a fixed managed audio role. No source kind or role is caller-controlled.",
+        "operationId": "importVoiceReferenceAudio",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Audio-Filename",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Sound-domain result."
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "Required scope is missing."
+          },
+          "404": {
+            "description": "Sound or project was not found."
+          },
+          "409": {
+            "description": "Revision or idempotency conflict."
+          },
+          "422": {
+            "description": "Invalid request or unavailable placement/runtime."
           }
         },
         "security": [

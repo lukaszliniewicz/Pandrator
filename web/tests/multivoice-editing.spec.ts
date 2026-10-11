@@ -126,7 +126,7 @@ async function setup(
     takes: [],
     ...(options.plain ? {} : { speech_plan: { speech_xml: xml } })
   };
-  await page.route(`**/api/v1/sessions/${id}/generation-runs`, (route) =>
+  await page.route(`**/api/v1/sessions/${id}/generation-runs*`, (route) =>
     route.fulfill({ json: { items: [] } })
   );
   await page.route(`**/api/v1/sessions/${id}/generation-segments?*`, (route) =>
@@ -223,7 +223,7 @@ async function setup(
     }
   );
   await page.goto(`/sessions/${id}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   return { id, bodies };
 }
 

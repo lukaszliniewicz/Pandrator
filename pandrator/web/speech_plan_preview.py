@@ -271,6 +271,7 @@ def _compile_parts(
             "fallback": bool(part.get("fallback")),
             "report": deepcopy(compiled.report),
             "instructions": compiled.instructions,
+            "capabilities": deepcopy(compiled.capabilities),
         }
         if include_request:
             public.update(
@@ -338,6 +339,7 @@ def _current_parts(
         settings,
         xml if isinstance(xml, str) else None,
         segment.speaker,
+        controls=controls,
     )
     return parsed, parts
 
@@ -400,127 +402,153 @@ def preview_speech_segment(
 
     database = _get_services_value(services, "database")
     with database.session() as session:
-        frozen = generation_run_id is not None
-        _plan, _revision, segment = _plan_segment(
+        return preview_speech_segment_in_session(
+            services, session, session_id,
+            revision_id=revision_id, segment_id=segment_id,
+            generation_run_id=generation_run_id,
+            include_request=include_request,
+        )
+
+
+def preview_speech_segment_in_session(
+    services: Any,
+    session,
+    session_id: str,
+    *,
+    revision_id: str,
+    segment_id: str,
+    generation_run_id: str | None = None,
+    include_request: bool = False,
+    _resolved_settings: dict[str, Any] | None = None,
+    _controls: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compile one segment within the caller's consistent database snapshot."""
+
+    frozen = generation_run_id is not None
+    _plan, _revision, segment = _plan_segment(
+        session,
+        session_id,
+        revision_id,
+        segment_id,
+        frozen=frozen,
+    )
+    snapshot: dict[str, Any] = {}
+    run = None
+    if generation_run_id is not None:
+        run = session.get(m.GenerationRun, generation_run_id)
+        if run is None or run.session_id != session_id:
+            raise KeyError(generation_run_id)
+        if run.plan_revision_id != revision_id:
+            raise RevisionConflict(
+                "The selected generation run belongs to a different speech plan revision."
+            )
+        snapshot = deepcopy(run.settings_snapshot_json or {})
+        _assert_snapshot_revision(snapshot, revision_id)
+        settings = _runtime_settings(snapshot)
+        controls = (snapshot.get("generation_control_snapshot") or {}).get(
+            "controls"
+        ) or {}
+        _segment_overrides(settings, segment)
+        parsed, parts = _frozen_parts(segment, settings, snapshot)
+        annotation = (
+            ((snapshot.get("performance_snapshot") or {}).get("annotations") or {})
+            .get(segment.id, {})
+            .get("annotation")
+            if settings.get("performance_enabled")
+            else None
+        )
+        source = "run_snapshot"
+    else:
+        workspace = _get_services_value(services, "workspace_settings")
+        if _resolved_settings is None:
+            resolved, _ = workspace.resolve_in_session(
+                session, session_id, sections=["audio", "tts"]
+            )
+        else:
+            resolved = deepcopy(_resolved_settings)
+        settings = _runtime_settings(resolved)
+        controls = _controls if _controls is not None else get_generation_controls(session, session_id)
+        adopted_xml = None
+        annotation_record = None
+        if settings.get("performance_enabled") or settings.get("casting_enabled"):
+            adopted = session.scalar(
+                select(m.PerformancePlan).where(
+                    m.PerformancePlan.plan_revision_id == revision_id,
+                    m.PerformancePlan.status == "adopted",
+                )
+            )
+            if adopted is None:
+                if settings.get("performance_enabled"):
+                    raise ValueError(
+                        "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
+                    )
+            else:
+                _assert_current(session, adopted)
+                annotation_record = _annotations(session, adopted).get(segment_id)
+                adopted_xml = record_markup(annotation_record)
+            if settings.get("performance_enabled") and annotation_record is not None:
+                settings["_performance"] = record_annotation(annotation_record) or {}
+        _segment_overrides(settings, segment)
+        units = semantic_context_units(session, revision_id)
+        contexts = semantic_context_window(
+            units,
+            settings,
+            target_ids={segment_id},
+        )
+        settings["_semantic_context"] = contexts.get(segment_id, {})
+        parsed, parts = _current_parts(
             session,
             session_id,
-            revision_id,
-            segment_id,
-            frozen=frozen,
+            segment,
+            settings,
+            controls=controls,
+            adopted_xml=adopted_xml,
         )
-        snapshot: dict[str, Any] = {}
-        run = None
-        if generation_run_id is not None:
-            run = session.get(m.GenerationRun, generation_run_id)
-            if run is None or run.session_id != session_id:
-                raise KeyError(generation_run_id)
-            if run.plan_revision_id != revision_id:
-                raise RevisionConflict(
-                    "The selected generation run belongs to a different speech plan revision."
+        if not (settings.get("casting_enabled") or settings.get("performance_enabled")):
+            # Saved directions remain inspectable while disabled. Actual
+            # compiler parts above still use the generation settings.
+            from .speech_annotation_view import annotation_xml_by_segment
+
+            display_xml = annotation_xml_by_segment(
+                session, revision_id, [segment]
+            ).get(segment_id)
+            if display_xml:
+                parsed = parse_speech_markup(
+                    display_xml,
+                    expected_segment_id=segment_id,
+                    expected_text=_segment_text(segment),
+                    characters=_character_dictionary(controls),
                 )
-            snapshot = deepcopy(run.settings_snapshot_json or {})
-            _assert_snapshot_revision(snapshot, revision_id)
-            settings = _runtime_settings(snapshot)
-            controls = (snapshot.get("generation_control_snapshot") or {}).get(
-                "controls"
-            ) or {}
-            _segment_overrides(settings, segment)
-            parsed, parts = _frozen_parts(segment, settings, snapshot)
-            annotation = (
-                ((snapshot.get("performance_snapshot") or {}).get("annotations") or {})
-                .get(segment.id, {})
-                .get("annotation")
-                if settings.get("performance_enabled")
-                else None
-            )
-            source = "run_snapshot"
-        else:
-            workspace = _get_services_value(services, "workspace_settings")
-            resolved, _ = workspace.resolve(session_id, sections=["audio", "tts"])
-            settings = _runtime_settings(resolved)
-            controls = get_generation_controls(session, session_id)
-            adopted_xml = None
-            annotation_record = None
-            if settings.get("performance_enabled") or settings.get("casting_enabled"):
-                adopted = session.scalar(
-                    select(m.PerformancePlan).where(
-                        m.PerformancePlan.plan_revision_id == revision_id,
-                        m.PerformancePlan.status == "adopted",
-                    )
-                )
-                if adopted is None:
-                    if settings.get("performance_enabled"):
-                        raise ValueError(
-                            "Performance is enabled, but this speech plan has no adopted performance plan. Adopt one or disable performance."
-                        )
-                else:
-                    _assert_current(session, adopted)
-                    annotation_record = _annotations(session, adopted).get(segment_id)
-                    adopted_xml = record_markup(annotation_record)
-                if settings.get("performance_enabled") and annotation_record is not None:
-                    settings["_performance"] = record_annotation(annotation_record) or {}
-            _segment_overrides(settings, segment)
-            units = semantic_context_units(session, revision_id)
-            contexts = semantic_context_window(
-                units,
-                settings,
-                target_ids={segment_id},
-            )
-            settings["_semantic_context"] = contexts.get(segment_id, {})
-            parsed, parts = _current_parts(
-                session,
-                session_id,
-                segment,
-                settings,
-                controls=controls,
-                adopted_xml=adopted_xml,
-            )
-            if not (settings.get("casting_enabled") or settings.get("performance_enabled")):
-                # Saved directions remain inspectable while disabled. Actual
-                # compiler parts above still use the generation settings.
-                from .speech_annotation_view import annotation_xml_by_segment
+        annotation = settings.get("_performance") if settings.get("performance_enabled") else None
+        source = "current_plan"
 
-                display_xml = annotation_xml_by_segment(
-                    session, revision_id, [segment]
-                ).get(segment_id)
-                if display_xml:
-                    parsed = parse_speech_markup(
-                        display_xml,
-                        expected_segment_id=segment_id,
-                        expected_text=_segment_text(segment),
-                        characters=_character_dictionary(controls),
-                    )
-            annotation = settings.get("_performance") if settings.get("performance_enabled") else None
-            source = "current_plan"
+    capabilities = resolve_capabilities(settings)
+    compiled_parts = _compile_parts(parts, include_request=include_request)
+    result: dict[str, Any] = {
+        "session_id": session_id,
+        "revision_id": revision_id,
+        "segment_id": segment_id,
+        "source": source,
+        "text": parsed.transcript,
+        "service": str(
+            settings.get("service") or settings.get("tts_service") or ""
+        ),
+        "model": str(capabilities.get("model") or ""),
+        "casting_enabled": bool(settings.get("casting_enabled")),
+        "performance_enabled": bool(settings.get("performance_enabled")),
+        "capabilities": capabilities,
+        "spans": _public_spans(
+            parsed,
+            parts,
+            _character_dictionary(controls, snapshot if run else None),
+        ),
+        "parts": compiled_parts,
+        "events": _public_events(parsed, parsed.transcript, annotation),
+        "boundary_after": parsed.boundary_after,
+        "compilation_only": True,
+    }
+    if generation_run_id is not None:
+        result["generation_run_id"] = generation_run_id
+    return result
 
-        capabilities = resolve_capabilities(settings)
-        compiled_parts = _compile_parts(parts, include_request=include_request)
-        result: dict[str, Any] = {
-            "session_id": session_id,
-            "revision_id": revision_id,
-            "segment_id": segment_id,
-            "source": source,
-            "text": parsed.transcript,
-            "service": str(
-                settings.get("service") or settings.get("tts_service") or ""
-            ),
-            "model": str(capabilities.get("model") or ""),
-            "casting_enabled": bool(settings.get("casting_enabled")),
-            "performance_enabled": bool(settings.get("performance_enabled")),
-            "capabilities": capabilities,
-            "spans": _public_spans(
-                parsed,
-                parts,
-                _character_dictionary(controls, snapshot if run else None),
-            ),
-            "parts": compiled_parts,
-            "events": _public_events(parsed, parsed.transcript, annotation),
-            "boundary_after": parsed.boundary_after,
-            "compilation_only": True,
-        }
-        if generation_run_id is not None:
-            result["generation_run_id"] = generation_run_id
-        return result
-
-
-__all__ = ["preview_speech_segment"]
+__all__ = ["preview_speech_segment", "preview_speech_segment_in_session"]

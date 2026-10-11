@@ -1,11 +1,19 @@
 import inspect
 import tempfile
 import unittest
+from datetime import timedelta
+from unittest.mock import patch
+
+from sqlalchemy import event
 
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.credentials import SecretRedactor
+from pandrator.web.database import Database
 from pandrator.web.http_lifecycle import ApiGuards
-from pandrator.web.models import JobEvent
+from pandrator.web.jobs import JobQueue
+from pandrator.web.models import Job, JobEvent, SessionRecord, utcnow
+from pandrator.web.work import WorkService, _work_state
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -87,6 +95,31 @@ class WorkApiTests(unittest.TestCase):
         )
         self.assertIn("[REDACTED]", log["data"]["message"])
         self.assertLessEqual(len(log["data"]["trace"]), 8_020)
+
+    def test_legacy_success_does_not_project_previous_attempt_as_current_failure(self):
+        services = self.app.extensions["pandrator"]
+        queue = services["jobs"]
+        job = queue.enqueue("noop", {}, max_attempts=2)
+        first = queue.claim("test-worker")
+        queue.fail(
+            job.id, "test-worker", "worker_lease_lost", "Previous lease failure",
+            lease_generation=first.lease_generation,
+        )
+        second = queue.claim("test-worker")
+        queue.complete(job.id, "test-worker", {}, lease_generation=second.lease_generation)
+        with services["database"].session() as session:
+            historical = session.get(Job, job.id)
+            historical.error_code = "worker_lease_lost"
+            historical.error_message = "Previous lease failure"
+            historical.progress_detail = "Retry scheduled after attempt 1 of 2"
+
+        current = self.client.get(f"/api/v1/work/{job.id}").get_json()
+        self.assertEqual("succeeded", current["state"])
+        self.assertIsNone(current["error"])
+        self.assertIsNone(current["detail"])
+        events = self.client.get(f"/api/v1/work/{job.id}/events").get_json()["items"]
+        self.assertIn("job.retry_scheduled", [event["event_type"] for event in events])
+        self.assertEqual("worker_lease_lost", queue.get(job.id).error_code)
 
     def test_work_cancel_uses_safe_projection(self):
         queue = self.app.extensions["pandrator"]["jobs"]
@@ -239,6 +272,241 @@ class WorkApiTests(unittest.TestCase):
         self.assertIs(extension["redactor"], extension["jobs"].secret_redactor)
         source = inspect.getsource(ApiGuards)
         self.assertNotIn("services.jobs", source)
+
+
+class WorkServiceListingTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        paths = prepare_web_test_data_root(self.temporary.name)
+        self.database = Database(paths.database)
+        self.queue = JobQueue(self.database)
+        self.work = WorkService(self.queue, SecretRedactor(self.database))
+
+    def tearDown(self):
+        self.database.dispose()
+        self.temporary.cleanup()
+
+    def _insert_jobs(self, rows):
+        session_ids = {
+            row.get("session_id") for row in rows if row.get("session_id")
+        }
+        now = utcnow()
+        with self.database.session() as session:
+            session.add_all(
+                SessionRecord(
+                    id=session_id,
+                    name=session_id,
+                    storage_key=f"storage-{session_id}",
+                    workflow_kind="audiobook",
+                    source_language="en",
+                    included_stages_json=[],
+                    status="idle",
+                    revision=1,
+                )
+                for session_id in session_ids
+            )
+            session.flush()
+            session.add_all(
+                Job(
+                    id=row["id"],
+                    kind=row.get("kind", "noop"),
+                    session_id=row.get("session_id"),
+                    status=row.get("status", "queued"),
+                    payload_json=row.get("payload_json", {}),
+                    result_json=row.get("result_json"),
+                    progress=row.get("progress", 0.0),
+                    progress_detail=row.get("progress_detail"),
+                    error_code=row.get("error_code"),
+                    error_message=row.get("error_message"),
+                    attempts=row.get("attempts", 0),
+                    max_attempts=row.get("max_attempts", 1),
+                    created_at=row.get("created_at", now),
+                    updated_at=row.get("updated_at", now),
+                    started_at=row.get("started_at"),
+                    finished_at=row.get("finished_at"),
+                )
+                for row in rows
+            )
+
+    def test_old_matching_active_job_is_not_hidden_by_new_terminal_history(self):
+        now = utcnow()
+        rows = [
+            {
+                "id": f"terminal-{index}",
+                "kind": "noop",
+                "status": "succeeded",
+                "created_at": now - timedelta(seconds=index),
+            }
+            for index in range(501)
+        ]
+        rows.append(
+            {
+                "id": "old-queued",
+                "kind": "generation.audio",
+                "status": "queued",
+                "created_at": now - timedelta(seconds=1_000),
+            }
+        )
+        self._insert_jobs(rows)
+
+        listing = self.work.list(
+            states=("queued", "running", "cancel_requested"), limit=100
+        )
+
+        self.assertEqual(["old-queued"], [item.id for item in listing])
+        self.assertEqual("queued", listing[0].state)
+
+    def test_sql_filters_and_limits_before_projection_without_loading_raw_payloads(self):
+        now = utcnow()
+        ignored_payload = {"history": "x" * 64_000}
+        self._insert_jobs(
+            [
+                {
+                    "id": "match-newest",
+                    "session_id": "session-a",
+                    "kind": "alpha",
+                    "status": "queued",
+                    "created_at": now,
+                },
+                {
+                    "id": "match-middle",
+                    "session_id": "session-a",
+                    "kind": "alpha",
+                    "status": "queued",
+                    "created_at": now - timedelta(seconds=1),
+                },
+                {
+                    "id": "match-oldest",
+                    "session_id": "session-a",
+                    "kind": "alpha",
+                    "status": "queued",
+                    "created_at": now - timedelta(seconds=2),
+                },
+                {
+                    "id": "other-session",
+                    "session_id": "session-b",
+                    "kind": "alpha",
+                    "status": "queued",
+                    "created_at": now + timedelta(seconds=3),
+                    "payload_json": ignored_payload,
+                },
+                {
+                    "id": "other-kind",
+                    "session_id": "session-a",
+                    "kind": "beta",
+                    "status": "queued",
+                    "created_at": now + timedelta(seconds=2),
+                    "payload_json": ignored_payload,
+                },
+                {
+                    "id": "other-state",
+                    "session_id": "session-a",
+                    "kind": "alpha",
+                    "status": "succeeded",
+                    "created_at": now + timedelta(seconds=1),
+                    "payload_json": ignored_payload,
+                },
+            ]
+        )
+        statements = []
+
+        def capture_sql(_connection, _cursor, statement, parameters, _context, _many):
+            statements.append((statement, parameters))
+
+        event.listen(self.database.engine, "before_cursor_execute", capture_sql)
+        try:
+            with patch.object(self.work, "_project", wraps=self.work._project) as project:
+                listing = self.work.list(
+                    session_id="session-a",
+                    kinds=(" alpha ",),
+                    states=("queued",),
+                    limit=2,
+                )
+        finally:
+            event.remove(self.database.engine, "before_cursor_execute", capture_sql)
+
+        self.assertEqual(["match-newest", "match-middle"], [item.id for item in listing])
+        self.assertEqual(2, project.call_count)
+        job_selects = [
+            (statement, parameters)
+            for statement, parameters in statements
+            if "SELECT jobs.id, jobs.kind" in statement and "FROM jobs" in statement
+        ]
+        self.assertEqual(1, len(job_selects))
+        statement, parameters = job_selects[0]
+        select_clause = statement.split("FROM jobs", maxsplit=1)[0].lower()
+        for excluded_column in (
+            "payload_json",
+            "resource_keys_json",
+            "lease_owner",
+            "lease_expires_at",
+            "lease_generation",
+            "available_at",
+        ):
+            self.assertNotIn(excluded_column, select_clause)
+        self.assertIn("jobs.session_id =", statement)
+        self.assertIn("jobs.kind in", statement.lower())
+        self.assertIn("lower(trim(coalesce(nullif(jobs.status", statement.lower())
+        self.assertIn("order by jobs.created_at desc", statement.lower())
+        self.assertIn("limit ?", statement.lower())
+        self.assertEqual((2, 0), tuple(parameters[-2:]))
+
+    def test_sql_state_filter_matches_public_alias_normalization(self):
+        rows = [
+            ("canceled", "canceled"),
+            ("cancelled", "cancelled"),
+            ("cancel-request", "cancel_requested"),
+            ("running-uppercase", " RUNNING "),
+            ("queued-uppercase", " QUEUED "),
+            ("empty-status", ""),
+            ("unknown-status", "mystery"),
+            ("spaces-status", "   "),
+        ]
+        self._insert_jobs(
+            [{"id": job_id, "status": status} for job_id, status in rows]
+        )
+        requests = (
+            "CANCELED",
+            "cancelled",
+            " cancel_requested ",
+            "RUNNING",
+            " QUEUED ",
+            "waiting",
+            "unknown",
+        )
+
+        with patch.object(self.queue, "_reconcile_stale") as reconcile:
+            for requested in requests:
+                expected_state = _work_state(requested)
+                expected_ids = [
+                    job_id
+                    for job_id, status in rows
+                    if _work_state(status) == expected_state
+                ]
+                actual_ids = [
+                    item.id
+                    for item in self.work.list(states=(requested,), limit=100)
+                ]
+                self.assertCountEqual(expected_ids, actual_ids, requested)
+
+            no_filter = self.work.list(states=("  ",), limit=100)
+            self.assertCountEqual(
+                [job_id for job_id, _status in rows],
+                [item.id for item in no_filter],
+            )
+        self.assertEqual(len(requests) + 1, reconcile.call_count)
+
+    def test_diagnostic_list_retains_complete_raw_job_payload(self):
+        raw_payload = {"private_input": "diagnostic-only"}
+        self._insert_jobs(
+            [{"id": "diagnostic-job", "payload_json": raw_payload}]
+        )
+
+        result = self.work.diagnostic_list(10)
+
+        self.assertEqual(1, len(result))
+        self.assertIsInstance(result[0], Job)
+        self.assertEqual(raw_payload, result[0].payload_json)
 
 
 class ApplicationIdentityTests(unittest.TestCase):

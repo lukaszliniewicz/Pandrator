@@ -30,18 +30,18 @@ def test_permanent_delete_requires_explicit_confirmation_and_preview_token():
     )
     assert valid.session_id == "session"
     with pytest.raises(ValidationError):
-        DeleteSessionPermanentlyInput(
-            session_id="s",
-            expected_revision=4,
-            impact_token="a" * 64,
-        )
+        DeleteSessionPermanentlyInput.model_validate({
+            "session_id": "s",
+            "expected_revision": 4,
+            "impact_token": "a" * 64,
+        })
     with pytest.raises(ValidationError):
-        DeleteSessionPermanentlyInput(
-            session_id="s",
-            expected_revision=4,
-            impact_token="a" * 64,
-            confirm=False,
-        )
+        DeleteSessionPermanentlyInput.model_validate({
+            "session_id": "s",
+            "expected_revision": 4,
+            "impact_token": "a" * 64,
+            "confirm": False,
+        })
     with pytest.raises(ValidationError):
         DeleteSessionPermanentlyInput(
             session_id="s",
@@ -59,18 +59,23 @@ def test_trash_policy_is_revision_guarded_and_nullable_within_bounds():
     with pytest.raises(ValidationError):
         UpdateSessionTrashPolicyInput(expected_revision=0, days=3651)
     with pytest.raises(ValidationError):
-        UpdateSessionTrashPolicyInput(expected_revision=0)
+        UpdateSessionTrashPolicyInput.model_validate({"expected_revision": 0})
     assert GetSessionTrashPolicyInput().model_dump() == {}
 
 
 def test_purge_and_policy_client_routes_preserve_preconditions():
     client = object.__new__(ApplicationClient)
+    client.timeout_seconds = 15.0
     client._request_json = Mock(return_value={"state": "complete"})
 
     client.preview_session_deletion("session/a")
     assert client._request_json.call_args.args == (
         "/api/v1/sessions/session%2Fa/purge-preview",
     )
+    assert client._request_json.call_args.kwargs == {
+        "request_timeout_seconds": 300.0,
+        "request_timeout_limit_seconds": 1200.0,
+    }
 
     client.delete_session_permanently(
         "session/a", expected_revision=9, impact_token="b" * 64
@@ -80,6 +85,8 @@ def test_purge_and_policy_client_routes_preserve_preconditions():
     assert kwargs == {
         "method": "POST",
         "body": {"expected_revision": 9, "impact_token": "b" * 64},
+        "request_timeout_seconds": 900.0,
+        "request_timeout_limit_seconds": 1200.0,
     }
 
     client.get_session_trash_policy()
@@ -91,6 +98,31 @@ def test_purge_and_policy_client_routes_preserve_preconditions():
         "method": "PATCH",
         "body": {"expected_revision": 1, "days": None},
     }
+
+
+def test_purge_client_preserves_a_larger_configured_timeout_and_other_routes():
+    client = object.__new__(ApplicationClient)
+    client.timeout_seconds = 1200.0
+    client._request_json = Mock(return_value={})
+
+    client.preview_session_deletion("session")
+    assert client._request_json.call_args.kwargs == {
+        "request_timeout_seconds": 1200.0,
+        "request_timeout_limit_seconds": 1200.0,
+    }
+
+    client.delete_session_permanently(
+        "session", expected_revision=7, impact_token="d" * 64
+    )
+    assert client._request_json.call_args.kwargs == {
+        "method": "POST",
+        "body": {"expected_revision": 7, "impact_token": "d" * 64},
+        "request_timeout_seconds": 1200.0,
+        "request_timeout_limit_seconds": 1200.0,
+    }
+
+    client.get_session("session")
+    assert client._request_json.call_args.kwargs == {}
 
 
 def test_purge_tools_pass_through_backend_state_and_strip_mcp_confirmation():
@@ -107,7 +139,7 @@ def test_purge_tools_pass_through_backend_state_and_strip_mcp_confirmation():
     runtime.require_application.return_value = application
 
     assert preview_session_deletion(
-        runtime, PreviewSessionDeletionInput(session_id="s")
+        runtime, PreviewSessionDeletionInput(session_id="s", admission=False)
     ).result["can_purge"]
     deleted = delete_session_permanently(
         runtime,
@@ -116,6 +148,7 @@ def test_purge_tools_pass_through_backend_state_and_strip_mcp_confirmation():
             expected_revision=3,
             impact_token="c" * 64,
             confirm=True,
+            admission=False,
         ),
     )
     assert deleted.result == {"state": "complete"}
@@ -133,13 +166,13 @@ def test_purge_tools_pass_through_backend_state_and_strip_mcp_confirmation():
 def test_catalog_marks_deletion_destructive_and_policy_as_revision_guarded():
     preview = ACTION_CATALOG.get("pandrator_preview_session_deletion")
     assert preview.risk == RiskClass.READ
-    assert preview.downstream_operation_id == "getSessionPurgePreview"
+    assert preview.downstream_operation_id == "admitSessionPurgeInspection"
 
     deletion = ACTION_CATALOG.get("pandrator_delete_session_permanently")
     assert deletion.risk == RiskClass.WRITE
     assert deletion.requires_confirmation
-    assert deletion.downstream_operation_id == "purgeSession"
-    assert deletion.path == "/api/v1/sessions/{sessionId}/purge"
+    assert deletion.downstream_operation_id == "admitSessionPurge"
+    assert deletion.path == "/api/v1/sessions/{sessionId}/purge-admissions"
 
     policy_read = ACTION_CATALOG.get("pandrator_get_session_trash_policy")
     policy_write = ACTION_CATALOG.get("pandrator_update_session_trash_policy")

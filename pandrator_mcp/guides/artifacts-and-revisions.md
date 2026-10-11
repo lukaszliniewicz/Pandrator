@@ -27,10 +27,16 @@ session listings hide it. Use `pandrator_list_sessions(include_trashed=true)` an
 `pandrator_restore_session` with the current revision to restore it.
 
 For permanent cleanup, inspect a trashed session with
-`pandrator_preview_session_deletion`. Proceed only when `can_purge` is true,
-using the returned revision and impact token with
-`pandrator_delete_session_permanently(confirm=true)`. The tool also requires
-explicit confirmation; its `state` reports whether cleanup completed or failed.
+`pandrator_preview_session_deletion`. The default durable admission returns a
+work handle; poll it and retrieve `pandrator_get_session_purge_inspection` with
+the inspection job ID. Proceed only when the stored `can_purge` is true, using
+its revision and impact token with
+`pandrator_delete_session_permanently(confirm=true)`. Keep one idempotency key
+for each reviewed request and poll deletion to completion. Work and its target
+ID survive deletion. After journal claim, cancellation is unavailable. Replay
+is guaranteed within the configured reservation retention window (default 24
+hours, maximum 168), not indefinitely. `admission=false` retains the synchronous
+legacy path.
 `pandrator_get_session_trash_policy` and
 `pandrator_update_session_trash_policy` manage automatic retention for future
 trash events only. Setting `days=null` disables automatic cleanup.
@@ -39,5 +45,6 @@ trash events only. Setting `days=null` disables automatic cleanup.
 its session and artifact ID first. Active takes, reference samples, source uses,
 active assemblies, and dependent work are protected by the native API. There is
 no restore operation for the removed file. Repeating deletion returns not found;
-inspect artifacts after an uncertain response. These deletion/restore tools do
-not accept an idempotency key. They never imply deleting other sessions or files.
+inspect artifacts after an uncertain response. Output deletion and session
+trash/restore do not accept an idempotency key; durable purge does. These tools
+never imply deleting other sessions or files.

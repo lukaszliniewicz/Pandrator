@@ -419,11 +419,16 @@ class _FakeApplication:
         session_id,
         *,
         segment_ids=None,
+        generation_run_id=None,
+        settings_source=None,
+        settings_source_run_id=None,
         operation="generate",
         idempotency_key="",
         speech_plan_revision_id=None,
         stale_only=False,
+        missing_only=False,
         view="full",
+        admission=None,
     ):
         self.calls.append(
             (
@@ -431,16 +436,31 @@ class _FakeApplication:
                 {
                     "session_id": session_id,
                     "segment_ids": segment_ids,
+                    "generation_run_id": generation_run_id,
+                    "settings_source": settings_source,
+                    "settings_source_run_id": settings_source_run_id,
                     "operation": operation,
                     "idempotency_key": idempotency_key,
                     "speech_plan_revision_id": speech_plan_revision_id,
                     "stale_only": stale_only,
+                    "missing_only": missing_only,
                     "view": view,
+                    "admission": admission,
                 },
             )
         )
         if self.generation_run_error is not None:
             raise self.generation_run_error
+        if admission:
+            return {
+                "id": "admission-job-1",
+                "job_id": "admission-job-1",
+                "session_id": session_id,
+                "status": "queued",
+                "stage": "preparing",
+                "speech_plan_revision_id": speech_plan_revision_id or "plan-revision-3",
+                "request_id": "request-1",
+            }
         return {
             "id": "run-gen-1",
             "job_id": "job-gen-1",
@@ -742,7 +762,7 @@ class PreviewAndGenerationTests(unittest.TestCase):
         self.assertEqual("topology:batch:timeout-1", replay["idempotency_key"])
         self.assertEqual("plan-revision-3", replay["expected_revision_id"])
 
-    def test_generate_speech_plan_timeout_inspects_runs_and_replays_exact_arguments(self):
+    def test_generate_speech_plan_admission_timeout_replays_exact_arguments(self):
         self.application.generation_run_error = PandratorMcpError(
             "application_response_timeout",
             "The Pandrator mutation timed out before a response; its outcome is unknown.",
@@ -766,22 +786,69 @@ class PreviewAndGenerationTests(unittest.TestCase):
 
         self.assertEqual(self.application.generation_run_error.details, caught.exception.details)
         self.assertEqual(
-            ["pandrator_list_generation_runs", "pandrator_generate_speech_plan"],
+            ["pandrator_generate_speech_plan"],
             [action.tool for action in caught.exception.next_actions],
         )
         self.assertEqual(
-            {"session_id": "session-1", "limit": 5},
+            arguments.model_dump(mode="json", exclude_unset=True),
             caught.exception.next_actions[0].arguments,
         )
-        self.assertEqual(
-            arguments.model_dump(mode="json", exclude_unset=True),
-            caught.exception.next_actions[1].arguments,
-        )
-        self.assertEqual("plan-revision-17", caught.exception.next_actions[1].arguments["speech_plan_revision_id"])
-        self.assertEqual("generation:timeout:exact-replay-1", caught.exception.next_actions[1].arguments["idempotency_key"])
+        self.assertEqual("plan-revision-17", caught.exception.next_actions[0].arguments["speech_plan_revision_id"])
+        self.assertEqual("generation:timeout:exact-replay-1", caught.exception.next_actions[0].arguments["idempotency_key"])
         self.assertEqual(
             ["start_generation_run"],
             [name for name, _payload in self.application.calls],
+        )
+        call = self.application.calls[-1][1]
+        self.assertEqual("current", call["settings_source"])
+        self.assertIsNone(call["settings_source_run_id"])
+        self.assertFalse(call["missing_only"])
+
+    def test_generate_speech_plan_admission_returns_preparation_work(self):
+        outcome = generate_speech_plan(
+            self.runtime,
+            GenerateSpeechPlanInput(
+                session_id="session-1",
+                speech_plan_revision_id="plan-revision-17",
+                idempotency_key="generation:admission:1",
+            ),
+        )
+
+        self.assertEqual("admission-job-1", outcome.result["id"])
+        self.assertEqual("preparing", outcome.result["stage"])
+        self.assertEqual("admission-job-1", outcome.work.id)
+        self.assertEqual(["pandrator_get_generation_operation"], [action.tool for action in outcome.next_actions])
+        self.assertEqual(
+            {"operation_id": "admission-job-1"},
+            outcome.next_actions[0].arguments,
+        )
+        self.assertTrue(self.application.calls[-1][1]["admission"])
+        self.assertEqual("current", self.application.calls[-1][1]["settings_source"])
+        self.assertIsNone(self.application.calls[-1][1]["settings_source_run_id"])
+        self.assertFalse(self.application.calls[-1][1]["missing_only"])
+
+    def test_generate_speech_plan_legacy_false_preserves_run_followup(self):
+        outcome = generate_speech_plan(
+            self.runtime,
+            GenerateSpeechPlanInput(
+                session_id="session-1",
+                speech_plan_revision_id="plan-revision-17",
+                idempotency_key="generation:legacy:1",
+                admission=False,
+                missing_only=True,
+                settings_source="run",
+                settings_source_run_id="settings-source-run-9",
+            ),
+        )
+
+        self.assertEqual("run-gen-1", outcome.result["run_id"])
+        self.assertEqual(["pandrator_list_generation_segments"], [action.tool for action in outcome.next_actions])
+        self.assertIsNone(self.application.calls[-1][1]["admission"])
+        self.assertTrue(self.application.calls[-1][1]["missing_only"])
+        self.assertEqual("run", self.application.calls[-1][1]["settings_source"])
+        self.assertEqual(
+            "settings-source-run-9",
+            self.application.calls[-1][1]["settings_source_run_id"],
         )
 
     def test_revise_speech_block_plan_exposes_typed_split_and_follow_up(self):
@@ -831,21 +898,55 @@ class PreviewAndGenerationTests(unittest.TestCase):
                 session_id="session-1",
                 segment_ids=["segment-1", "segment-2"],
                 idempotency_key="regen:1",
+                generation_run_id="audio-origin-run-5",
             ),
         )
         self.assertEqual(2, regen.result["segment_count"])
         self.assertEqual("queued", regen.result["status"])
         self.assertIsNotNone(regen.work)
-        self.assertEqual("job-gen-1", regen.work.id)
-        self.assertEqual("run-gen-1", regen.result["run_id"])
-        self.assertEqual(
-            "regenerate",
-            next(
-                payload["operation"]
-                for name, payload in self.application.calls
-                if name == "start_generation_run"
+        self.assertEqual("admission-job-1", regen.work.id)
+        self.assertEqual("admission-job-1", regen.result["job_id"])
+        self.assertNotIn("run_id", regen.result)
+        self.assertEqual(["pandrator_get_generation_operation"], [action.tool for action in regen.next_actions])
+        self.assertEqual("admission-job-1", regen.next_actions[0].arguments["operation_id"])
+        first_regeneration = self.application.calls[-1][1]
+        self.assertEqual("regenerate", first_regeneration["operation"])
+        self.assertEqual("current", first_regeneration["settings_source"])
+        self.assertEqual("audio-origin-run-5", first_regeneration["generation_run_id"])
+        self.assertIsNone(first_regeneration["settings_source_run_id"])
+        self.assertTrue(self.application.calls[-1][1]["admission"])
+
+        historical = regenerate_segments(
+            self.runtime,
+            RegenerateSegmentsInput(
+                session_id="session-1",
+                segment_ids=["segment-1"],
+                idempotency_key="regen:historical:1",
+                generation_run_id="audio-origin-run-6",
+                settings_source="run",
+                settings_source_run_id="settings-source-run-2",
             ),
         )
+        self.assertEqual(1, historical.result["segment_count"])
+        historical_call = self.application.calls[-1][1]
+        self.assertEqual("audio-origin-run-6", historical_call["generation_run_id"])
+        self.assertEqual("run", historical_call["settings_source"])
+        self.assertEqual(
+            "settings-source-run-2", historical_call["settings_source_run_id"]
+        )
+
+        legacy = regenerate_segments(
+            self.runtime,
+            RegenerateSegmentsInput(
+                session_id="session-1",
+                segment_ids=["segment-1"],
+                idempotency_key="regen:legacy:1",
+                admission=False,
+            ),
+        )
+        self.assertEqual("run-gen-1", legacy.result["run_id"])
+        self.assertEqual(["pandrator_list_generation_segments"], [action.tool for action in legacy.next_actions])
+        self.assertIsNone(self.application.calls[-1][1]["admission"])
 
         assembled = assemble_generation_run(
             self.runtime,

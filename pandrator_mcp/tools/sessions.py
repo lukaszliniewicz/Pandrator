@@ -63,6 +63,7 @@ def _session_projection(item: dict[str, Any]) -> dict[str, Any]:
         "id": item.get("id"),
         "name": item.get("name"),
         "workflow_kind": item.get("workflow_kind"),
+        "interface_mode": item.get("interface_mode") or "advanced",
         "source_language": item.get("source_language"),
         "target_language": item.get("target_language"),
         "workflow_preset": item.get("workflow_preset"),
@@ -427,6 +428,7 @@ def create_session(
     result = runtime.require_application().create_session(
         name=arguments.name,
         workflow_kind=arguments.workflow_kind,
+        interface_mode=arguments.interface_mode,
         source_language=arguments.source_language,
         target_language=arguments.target_language,
         workflow_preset=arguments.workflow_preset,

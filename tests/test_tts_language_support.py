@@ -96,6 +96,7 @@ def test_legacy_gemini_models_survive_catalogue_english_filter():
     assert {row["id"] for row in afrikaans["items"]} == {
         "gemini-3.1-flash-tts-preview",
         "gemini-3.8-flash-tts",
+        "gemini-3.8-flash-lite-tts",
     }
 
 
@@ -269,8 +270,8 @@ def test_model_catalogue_exposes_support_record_and_does_not_use_provider_wide_f
     fish = _item("fishs2", "fishaudio/s2-pro")
     direct_gemini = _item("gemini", "gemini-2.5-flash-preview-tts")
     vertex = _item("vertex_ai", "gemini-2.5-flash-tts")
-    kokoro_alias = _item("kokoro", "gpt-4o-mini-tts")
-    azure = _item("azure", "MAI-Voice-2")
+    kokoro_model = _item("kokoro", "kokoro")
+    azure = _item("azure", "MAI-Voice-2.1")
 
     assert fish["language_support"]["coverage"] == "claim"
     assert fish["supported_languages"] == fish["language_support"]["languages"]
@@ -280,8 +281,8 @@ def test_model_catalogue_exposes_support_record_and_does_not_use_provider_wide_f
         "gemini_legacy_tts_languages"
     ]
     assert vertex["language_support"]["native_route"] == "vertex_generate_content"
-    assert kokoro_alias["language_support"]["coverage"] == "claim"
-    assert "en-gb" in kokoro_alias["supported_languages"]
+    assert kokoro_model["language_support"]["coverage"] == "claim"
+    assert "en-gb" in kokoro_model["supported_languages"]
     assert azure["language_support"]["coverage"] == "subset"
 
     custom = _build_item(

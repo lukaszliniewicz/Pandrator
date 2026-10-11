@@ -23,6 +23,7 @@ from pandrator.runtime import DataPaths
 from .artifacts import ArtifactService, sha256_file
 from .credentials import hydrate_stt_settings, hydrate_tts_settings, redact_inline_secrets
 from .database import Database
+from .media_process import run_media_process
 from .models import AppSetting, Artifact, Voice, VoiceSample, utcnow
 from .training_publication import publish_training_bundle, transition_training
 from .voice_library import (
@@ -32,6 +33,11 @@ from .voice_library import (
     sample_file_status,
 )
 from .voice_reference_reuse import REFERENCE_PREPARATION_PROFILE, verified_sample_artifact
+from .voice_reference_trim import (
+    inspect_voice_reference_trim,
+    reference_trim_requested,
+    trim_voice_reference_audio,
+)
 
 if TYPE_CHECKING:
     from .manager_proxy import LocalManagerProxy
@@ -208,6 +214,27 @@ def normalize_voice_recording(
             raise ValueError(
                 "The reviewed voice-design preview changed before it could be saved."
             )
+    trim_requested = reference_trim_requested(
+        payload.get("start_seconds", 0.0), payload.get("end_seconds")
+    )
+    reference_trim = None
+    if trim_requested:
+        if not expected_source_hash:
+            raise ValueError("A selected voice-reference crop requires its source hash.")
+        reference_trim = inspect_voice_reference_trim(
+            source_path,
+            payload.get("start_seconds", 0.0),
+            payload.get("end_seconds"),
+            ffprobe_executable=str(payload.get("ffprobe_executable") or "") or None,
+            cancel_event=cancel_event,
+        )
+        if sha256_file(source_path) != expected_source_hash:
+            raise ValueError("The selected voice-reference source changed during inspection.")
+    if reference_trim is not None:
+        sample_provenance = {
+            **(sample_provenance or {}),
+            "reference_trim": reference_trim.provenance(),
+        }
     with context.database.session() as session:
         voice = session.get(Voice, voice_id)
         if voice is None:
@@ -227,6 +254,25 @@ def normalize_voice_recording(
     destination = voice_dir / f"sample-{source_artifact.id}-{uuid.uuid4().hex}.wav"
     output_committed = False
     try:
+        if reference_trim is not None:
+            progress(0.03, "Selecting the voice-reference crop")
+            cropped = (
+                context.paths.temporary
+                / f"voice-trim-{source_artifact.id}-{uuid.uuid4().hex}.wav"
+            )
+            cleanup_temporary.append(cropped)
+            trim_voice_reference_audio(
+                source_path,
+                cropped,
+                reference_trim,
+                ffmpeg_executable=ffmpeg_executable,
+                cancel_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                return {}
+            if sha256_file(source_path) != expected_source_hash:
+                raise ValueError("The selected voice-reference source changed during cropping.")
+            normalize_source_path = cropped
         if noise_reduction == VOICE_NOISE_REDUCTION_DEEPFILTERNET2:
             progress(0.05, "Preparing audio for DeepFilterNet2 cleanup")
             resampled = (
@@ -234,24 +280,25 @@ def normalize_voice_recording(
                 / f"voice-clean-{source_artifact.id}-{uuid.uuid4().hex}-48k.wav"
             )
             cleanup_temporary.append(resampled)
-            subprocess.run(
-                [
-                    ffmpeg_executable,
-                    "-y",
-                    "-i",
-                    str(source_path),
-                    "-ac",
-                    "1",
-                    "-ar",
-                    str(VOICE_CLEANUP_INPUT_SAMPLE_RATE),
-                    "-c:a",
-                    "pcm_s16le",
-                    str(resampled),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            resample_command = [
+                ffmpeg_executable,
+                "-y",
+                "-i",
+                str(normalize_source_path),
+                "-ac",
+                "1",
+                "-ar",
+                str(VOICE_CLEANUP_INPUT_SAMPLE_RATE),
+                "-c:a",
+                "pcm_s16le",
+                str(resampled),
+            ]
+            if reference_trim is not None:
+                run_media_process(resample_command, cancel_event=cancel_event)
+            else:
+                subprocess.run(
+                    resample_command, check=True, capture_output=True, text=True
+                )
             if cancel_event.is_set():
                 return {}
             # Imported lazily so the default path never requires the
@@ -312,9 +359,16 @@ def normalize_voice_recording(
             "pcm_s16le",
             str(destination),
         ]
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        if reference_trim is not None:
+            run_media_process(command, cancel_event=cancel_event)
+        else:
+            subprocess.run(command, check=True, capture_output=True, text=True)
         if cancel_event.is_set():
             return {}
+        if reference_trim is not None and sha256_file(source_path) != expected_source_hash:
+            raise ValueError(
+                "The selected voice-reference source changed before it could be saved."
+            )
         sample_metadata: dict[str, Any] | None = (
             {"sample_provenance": sample_provenance}
             if sample_provenance is not None
@@ -347,6 +401,18 @@ def normalize_voice_recording(
         prepared = context.artifacts.prepare_registration(destination)
         removable: list[Path] = []
         with context.database.session() as session:
+            if reference_trim is not None:
+                current_source = session.get(Artifact, source_artifact.id)
+                if (
+                    current_source is None
+                    or current_source.state == "deleted"
+                    or str(current_source.content_hash or "").strip().casefold()
+                    != expected_source_hash
+                    or sha256_file(source_path) != expected_source_hash
+                ):
+                    raise ValueError(
+                        "The selected voice-reference source changed before publication."
+                    )
             voice = session.get(Voice, voice_id)
             if voice is None:
                 raise ValueError("Voice was removed before the sample could be saved.")

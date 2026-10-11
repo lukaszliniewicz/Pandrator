@@ -117,9 +117,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(308, len(rules))
+        self.assertEqual(346, len(rules))
         self.assertEqual(
-            301,
+            339,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertTrue({
@@ -142,6 +142,15 @@ class BackendArchitectureTests(unittest.TestCase):
             "/api/v1/translation-project-operations/<operation_id>/exports/bundle",
             "/api/v1/sessions/<session_id>/subtitles/<stage>/passage-review",
             "/api/v1/artifacts/<artifact_id>/video-preview",
+            "/api/v1/sessions/<session_id>/generation-admissions",
+            "/api/v1/generation-runs/<run_id>",
+            "/api/v1/sessions/<session_id>/speech-plan/selection-batch",
+            "/api/v1/sessions/<session_id>/speech-plan/selection-batch-preview",
+            "/api/v1/sessions/<session_id>/purge-inspections",
+            "/api/v1/sessions/<session_id>/purge-admissions",
+            "/api/v1/purge-inspections/<job_id>",
+            "/api/v1/sessions/<session_id>/comparison-exports",
+            "/api/v1/voices/design/google",
         }.issubset({rule.rule for rule in rules}))
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
         self.assertEqual("library", route_domain("/api/v1/voice-catalog"))
@@ -407,13 +416,17 @@ class BackendArchitectureTests(unittest.TestCase):
     def test_workflow_job_registry_has_domain_ownership_and_late_binding(self):
         handlers = self.app.extensions["pandrator"]["workflow_handlers"]
         registry = handlers.handler_registry
-        self.assertEqual(38, len(registry))
+        self.assertEqual(46, len(registry))
+        self.assertIn("generation.admit", registry)
+        self.assertIn("voice.google_design", registry)
         self.assertEqual(
             {
                 "delivery",
                 "generation",
+                "maintenance",
                 "media_edit",
                 "source",
+                "sounds",
                 "text",
                 "transcription",
                 "voice",
@@ -860,6 +873,8 @@ class BackendArchitectureTests(unittest.TestCase):
             "default_model": "fish",
             "default_voice": "sofia",
             "voices": ["manual"],
+            "voice_catalogues": {"fish": ["cached-fish-reference"]},
+            "default_voices": {"fish": "cached-fish-reference"},
         }
         with (
             patch(
@@ -884,16 +899,17 @@ class BackendArchitectureTests(unittest.TestCase):
         self.assertEqual(["fish", "breeze", "omnivoice"], catalogue["models"])
         self.assertEqual(
             {
-                "fish": ["sofia", "manual", "narrator"],
-                "breeze": ["manual", "breeze-voice"],
-                "omnivoice": ["manual", "narrator", "reader"],
+                "fish": ["cached-fish-reference", "narrator"],
+                "breeze": ["breeze-voice"],
+                "omnivoice": ["narrator", "reader"],
             },
             catalogue["voice_catalogues"],
         )
         self.assertEqual(
-            ["sofia", "manual", "narrator", "breeze-voice", "reader"],
+            ["cached-fish-reference", "narrator", "breeze-voice", "reader"],
             catalogue["voices"],
         )
+        self.assertEqual("cached-fish-reference", catalogue["default_voice"])
         self.assertEqual("optional_cloning", catalogue["model_voice_modes"]["breeze"])
         self.assertEqual("fish", catalogue["default_model"])
 

@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 from threading import Lock
 from time import monotonic
 from typing import Any, Protocol
@@ -31,6 +32,7 @@ from .credentials import (
     database_reference,
     provider_credential_status,
     redact_inline_secrets,
+    redact_secret_text,
     resolve_provider_credential,
     resolve_provider_credentials,
     resolve_secret_reference,
@@ -44,7 +46,7 @@ from .managed_services import (
     effective_tts_connection_mode,
 )
 from .manager_proxy import LocalManagerProxy, ManagerProxyError
-from .models import AppSetting, Artifact
+from .models import AppSetting, Artifact, Voice
 from .settings_policy import BUILTIN_DEFAULTS
 from .tts_catalogue_projection import (
     MAX_TTS_DETAIL_MODEL_IDS,
@@ -94,12 +96,18 @@ class TtsCatalogueService:
         self.manager_bridge = LocalManagerProxy() if manager_bridge is None else manager_bridge
         self._native_discovery: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
         self._native_discovery_guard = Lock()
+        self._health_observations: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._health_observations_guard = Lock()
+
+    _HEALTH_OBSERVATION_TTL_SECONDS = 60.0
+    _MAX_HEALTH_OBSERVATIONS = 128
 
     @staticmethod
     def _native_discovery_key(
         service: dict[str, Any], settings: dict[str, Any], api_key: str = "",
     ) -> str | None:
-        if normalize_service_id(service.get("adapter")) != "audio_cpp":
+        service_id = normalize_service_id(service.get("id") or service.get("name"))
+        if normalize_service_id(service.get("adapter")) != "audio_cpp" and service_id not in {"gemini", "vertex_ai"}:
             return None
         identity = {
             "service_id": normalize_service_id(service.get("id") or service.get("name")),
@@ -107,8 +115,92 @@ class TtsCatalogueService:
             "connection_mode": service.get("connection_mode"),
             "settings": settings,
             "credential_hash": hashlib.sha256(api_key.encode()).hexdigest(),
+            "adc_identity_hash": service.get("_adc_identity_hash", ""),
         }
         return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+
+    @staticmethod
+    def _health_observation_key(
+        service: dict[str, Any], settings: dict[str, Any], api_key: str = "",
+    ) -> str | None:
+        """Fence short-lived health by provider, endpoint, settings, and credential."""
+        service_id = normalize_service_id(service.get("id") or service.get("name"))
+        if not service_id:
+            return None
+        identity = {
+            "service_id": service_id,
+            "endpoint": str(service.get("api_base") or "").rstrip("/"),
+            "connection_mode": service.get("connection_mode"),
+            "settings": settings,
+            "credential_hash": hashlib.sha256(api_key.encode()).hexdigest(),
+            "adc_identity_hash": service.get("_adc_identity_hash", ""),
+        }
+        return hashlib.sha256(
+            json.dumps(identity, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+    def _remember_health_observations(
+        self,
+        services: list[dict[str, Any]],
+        keys: Sequence[str | None],
+        sensitive_values: Sequence[Sequence[str]],
+    ) -> None:
+        expiry = monotonic() + self._HEALTH_OBSERVATION_TTL_SECONDS
+        checked_at = datetime.now(timezone.utc).isoformat()
+        with self._health_observations_guard:
+            for service, key, values in zip(
+                services, keys, sensitive_values, strict=True
+            ):
+                if key is None:
+                    continue
+                reason = service.get("availability_reason")
+                if isinstance(reason, str):
+                    safe_reason = redact_secret_text(reason, tuple(values))
+                    for value in values:
+                        if value:
+                            safe_reason = safe_reason.replace(value, "[REDACTED]")
+                else:
+                    safe_reason = None
+                service["availability_reason"] = safe_reason
+                observation = {
+                    "online": service.get("online"),
+                    "available": service.get("available"),
+                    "availability_reason": safe_reason,
+                    "health_checked_at": checked_at,
+                }
+                service["health_checked_at"] = checked_at
+                self._health_observations[key] = (expiry, observation)
+                self._health_observations.move_to_end(key)
+            while len(self._health_observations) > self._MAX_HEALTH_OBSERVATIONS:
+                self._health_observations.popitem(last=False)
+
+    def _apply_health_observations(
+        self, services: list[dict[str, Any]], keys: Sequence[str | None],
+    ) -> None:
+        now = monotonic()
+        with self._health_observations_guard:
+            for service, key in zip(services, keys, strict=True):
+                if key is None:
+                    service.update(
+                        online=None,
+                        available=None,
+                        availability_reason=None,
+                        health_checked_at=None,
+                    )
+                    continue
+                cached = self._health_observations.get(key)
+                if cached is None or now >= cached[0]:
+                    if cached is not None:
+                        del self._health_observations[key]
+                    service.update(
+                        online=None,
+                        available=None,
+                        availability_reason=None,
+                        health_checked_at=None,
+                    )
+                    continue
+                self._health_observations.move_to_end(key)
+                service.update(deepcopy(cached[1]))
 
     def _cached_native_discovery(self, key: str | None) -> dict[str, Any] | None:
         if key is None:
@@ -124,13 +216,15 @@ class TtsCatalogueService:
             return deepcopy(cached[1])
 
     def _retain_native_discovery(self, key: str | None, catalogue: dict[str, Any]) -> None:
-        if key is None:
+        if key is None or catalogue.get("voice_catalogue_warning"):
             return
         # Availability belongs to the current manager/health projection, never
         # to retained model discovery. Native loaded flags remain model metadata.
         discovery = {
             name: deepcopy(value) for name, value in catalogue.items()
-            if name not in {"available", "online", "availability_reason"}
+            if name not in {
+                "available", "online", "availability_reason", "health_checked_at",
+            }
         }
         with self._native_discovery_guard:
             self._native_discovery[key] = (monotonic(), discovery)
@@ -217,6 +311,37 @@ class TtsCatalogueService:
             )
         service["credential_backend"] = credential_backend(secret_reference)
         service["credential_reference"] = credential_reference_input(secret_reference)
+        if service_id == "vertex_ai" and not service.get("credential_configured"):
+            try:
+                import google.auth
+
+                credentials, project = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+                )
+                if project or service.get("vertex_project"):
+                    service["_google_project"] = str(service.get("vertex_project") or project)
+                    service.update(
+                        credential_configured=True,
+                        credential_source="application_default",
+                    )
+                    identity = [
+                        type(credentials).__name__, project,
+                        getattr(credentials, "refresh_token", None),
+                        getattr(credentials, "service_account_email", None),
+                        getattr(credentials, "quota_project_id", None),
+                    ]
+                    service["_adc_identity_hash"] = hashlib.sha256(
+                        json.dumps(identity, default=str).encode()
+                    ).hexdigest()
+            except Exception:  # noqa: BLE001 - absent ADC is a normal unconfigured state
+                pass
+        source = str(service.get("credential_source") or "").casefold()
+        if source in {"database", "environment", "keyring", "file", "application_default"}:
+            service["credential_origin"] = source
+        elif source == "none" and service.get("credential_configured") is False:
+            service["credential_origin"] = "unconfigured"
+        else:
+            service["credential_origin"] = "unknown"
 
     def _resolved_api_key(self, service: dict[str, Any]) -> str:
         service_id, key_env, secret_reference = self._credential_details(service)
@@ -227,6 +352,78 @@ class TtsCatalogueService:
             fallback_environment_variable=key_env,
         )
         return credential.resolved_value()
+
+    def _merge_remembered_google_voices(
+        self, services: list[dict[str, Any]], credentials: list[ResolvedCredential],
+    ) -> None:
+        """Keep created voices selectable after restart, within their Google scope."""
+        from pandrator.logic.google_tts_audio import STRUCTURED_TTS_MODELS
+        from pandrator.logic.google_voice_scope import google_voice_scope
+
+        if not any(service.get("id") in {"gemini", "vertex_ai"} for service in services):
+            return
+        with self.database.session() as session:
+            voices = list(session.scalars(select(Voice)).all())
+            saved = [
+                (voice.name, voice.language, voice.description, deepcopy(voice.metadata_json or {}))
+                for voice in voices
+            ]
+        for service, credential in zip(services, credentials, strict=True):
+            service_id = str(service.get("id") or "")
+            if service_id not in {"gemini", "vertex_ai"}:
+                continue
+            service["managed_google_voice_ids"] = []
+            candidates = [
+                item for item in saved
+                if ((item[3].get("providers") or {}).get(service_id) or {}).get("resource_kind") == "designed_voice"
+            ]
+            if not candidates:
+                continue
+            try:
+                scope = google_voice_scope(service_id, service, credential.resolved_value())
+            except (ValueError, RuntimeError):
+                continue
+            catalogues = deepcopy(service.get("voice_catalogues") or {})
+            metadata = deepcopy(service.get("voice_metadata") or {})
+            for name, language, description, voice_metadata in candidates:
+                registration = (voice_metadata.get("providers") or {}).get(service_id) or {}
+                if (registration.get("resource_kind") != "designed_voice"
+                    or registration.get("status") != "ready"
+                    or registration.get("scope_fingerprint") != scope["fingerprint"]):
+                    continue
+                identifier = str(registration.get("voice_id") or "")
+                if not identifier.startswith("voice_"):
+                    continue
+                # Google extends storage after each use. A discovery response
+                # may therefore report a later expiry than the creation receipt.
+                expiry = next((
+                    metadata.get(f"{model}:{identifier}", {}).get("expire_time")
+                    for model in STRUCTURED_TTS_MODELS
+                    if metadata.get(f"{model}:{identifier}", {}).get("expire_time")
+                ), registration.get("expire_time"))
+                if expiry:
+                    try:
+                        expires_at = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+                        if expires_at.tzinfo and expires_at <= datetime.now(timezone.utc):
+                            continue
+                    except ValueError:
+                        pass
+                service["managed_google_voice_ids"].append(identifier)
+                for model in service.get("models", []):
+                    if model not in STRUCTURED_TTS_MODELS:
+                        continue
+                    catalogues[model] = list(dict.fromkeys([
+                        *catalogues.get(model, service.get("voices") or []), identifier,
+                    ]))
+                    metadata[f"{model}:{identifier}"] = {
+                        **metadata.get(f"{model}:{identifier}", {}),
+                        "id": identifier, "display_name": name,
+                        "description": description or "", "language_code": language or "",
+                        "type": "prompted", "model": model,
+                        **({"expire_time": expiry} if expiry else {}),
+                    }
+            service["voice_catalogues"] = catalogues
+            service["voice_metadata"] = metadata
 
     def _refresh(
         self,
@@ -710,15 +907,22 @@ class TtsCatalogueService:
             self.paths,
             credential_inputs,
         )
+        for service, credential in zip(services, resolved_credentials, strict=True):
+            self._decorate_credentials(service, resolved_credential=credential)
         discovery_keys = [
             self._native_discovery_key(
                 service, {**default_value, **connection_value}, credential.resolved_value(),
             )
             for service, credential in zip(services, resolved_credentials, strict=True)
         ]
-        for service, resolved_credential, discovery_key in zip(
+        health_keys = [
+            self._health_observation_key(
+                service, {**default_value, **connection_value}, credential.resolved_value(),
+            )
+            for service, credential in zip(services, resolved_credentials, strict=True)
+        ]
+        for service, discovery_key in zip(
             services,
-            resolved_credentials,
             discovery_keys,
             strict=True,
         ):
@@ -727,23 +931,21 @@ class TtsCatalogueService:
                     service["model_catalog"] = _audio_cpp_static_model_catalog(service)
             discovery = self._cached_native_discovery(discovery_key)
             if discovery is not None:
-                if compact:
+                if compact and "model_catalog" in discovery:
                     # Choosers retain the native IDs/modes without importing
                     # full discovery records into their compact model metadata.
                     discovery["model_catalog"] = _slim_model_catalog(discovery)
                 service.update(discovery)
-            self._decorate_credentials(
-                service,
-                resolved_credential=resolved_credential,
-            )
+            service.pop("_adc_identity_hash", None)
             service_id = normalize_service_id(service.get("id") or service.get("name"))
             service["supports_parallel_synthesis"] = _supports_parallel_cloud_synthesis(
                 service
             )
-            if service_id == "xtts":
+            if service_id in {"xtts", "gemini", "vertex_ai"}:
                 capabilities = self.providers.capabilities(service)
                 service["supports_dynamic_catalog"] = capabilities.dynamic_catalog
-                service["supports_model_upload"] = capabilities.model_upload
+                if service_id == "xtts":
+                    service["supports_model_upload"] = capabilities.model_upload
         if refresh:
             self._refresh(
                 services,
@@ -752,7 +954,28 @@ class TtsCatalogueService:
                 ],
                 discovery_keys=discovery_keys,
             )
+            self._remember_health_observations(
+                services,
+                health_keys,
+                [
+                    tuple(
+                        value
+                        for value in (
+                            credential.resolved_value(),
+                            str(service.get("credential_reference") or ""),
+                        )
+                        if value
+                    )
+                    for service, credential in zip(
+                        services, resolved_credentials, strict=True
+                    )
+                ],
+            )
+        else:
+            self._apply_health_observations(services, health_keys)
+        self._merge_remembered_google_voices(services, resolved_credentials)
         for service in services:
+            service.pop("_google_project", None)
             service.update(
                 provider_policy(
                     normalize_service_id(service.get("id") or service.get("name"))

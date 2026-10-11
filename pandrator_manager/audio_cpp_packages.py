@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 AUDIO_CPP_MODEL_REPOSITORY = "audio-cpp/audio.cpp-gguf"
@@ -11,7 +11,7 @@ AUDIO_CPP_MODEL_REVISION = "dc6fecccc2b0c6bdda0a8b2f38fa61394fee0b9c"
 
 @dataclass(frozen=True, slots=True)
 class AudioCppModelPackage:
-    """A package id and its stable v0.7.2 model-spec output layout."""
+    """A package id and its pinned model-spec output layout."""
 
     id: str
     family: str
@@ -32,12 +32,35 @@ class AudioCppModelPackage:
     revision: str = AUDIO_CPP_MODEL_REVISION
     download_files: tuple[str, ...] = ()
     strip_prefix: str = ""
+    role: str = "model"
+
+    def __setstate__(self, state: list[object] | tuple[object, ...]) -> None:
+        """Read slot pickles made before the optional role field existed."""
+
+        names = tuple(field.name for field in fields(self))
+        if not isinstance(state, (list, tuple)) or len(state) not in {len(names) - 1, len(names)}:
+            raise ValueError("Invalid audio.cpp package pickle state.")
+        for name, value in zip(names, state, strict=False):
+            object.__setattr__(self, name, value)
+        if len(state) == len(names) - 1:
+            object.__setattr__(self, "role", "model")
 
     @property
     def config_path(self) -> str:
-        if self.family == "pocket_tts":
+        if self.family in {"pocket_tts", "minimax_music3", "yue2"}:
             return f"models/{self.target_directory}"
-        gguf = next(path for path in self.files if path.casefold().endswith(".gguf"))
+        if self.family == "minimax_h3":
+            dit_file = {
+                "minimax_h3_q4_k": "dit.gguf",
+                "minimax_h3_q4_k_int8_dit": "dit_int8.gguf",
+            }[self.id]
+            return f"models/{self.target_directory}/{dit_file}"
+        gguf = next(
+            path for path in self.files
+            if path.casefold().endswith(".gguf") and (
+                self.family != "lfm2_audio" or not Path(path).name.startswith(("mmproj-", "vocoder-", "tokenizer-"))
+            )
+        )
         return f"models/{self.target_directory}/{gguf}"
 
     def marker_path(self, models_root: Path) -> Path:

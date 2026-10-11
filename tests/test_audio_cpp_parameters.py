@@ -77,7 +77,8 @@ class AudioCppParameterTests(unittest.TestCase):
                     "Warm baritone with a Scottish accent.", payload["instructions"]
                 )
                 self.assertEqual(123, payload["seed"])
-                if "top_p" in speed_settings.get("audio_cpp_options", {}):
+                audio_cpp_options = speed_settings.get("audio_cpp_options")
+                if isinstance(audio_cpp_options, dict) and "top_p" in audio_cpp_options:
                     self.assertEqual(0.8, payload["options"]["top_p"])
 
     def test_breeze_rejects_non_neutral_legacy_speed_locally(self):
@@ -109,6 +110,7 @@ class AudioCppParameterTests(unittest.TestCase):
         representative = {
             "qwen3_tts": {"max_tokens": 1},
             "fish_audio_s2": {"text_chunk_mode": "word_budget"},
+            "auk": {"duration_sec": 1.0},
             "voxcpm2": {"min_tokens": 0},
             "magpie_tts": {"text_chunk_mode": "tag_aware"},
             "chatterbox": {"do_sample": True},
@@ -126,8 +128,17 @@ class AudioCppParameterTests(unittest.TestCase):
                         model["id"]: representative.get(model["family"], {})
                     },
                 }
-                if model["voice_mode"] == "design" or "fireredtts3_instruct" in model["id"]:
+                if (
+                    model["family"] == "auk"
+                    or model["voice_mode"] == "design"
+                    or "fireredtts3_instruct" in model["id"]
+                ):
                     settings["generation_prompt"] = "Warm and clear."
+                if model["family"] == "index_tts2":
+                    settings["audio_cpp_voice_ref"] = {
+                        "type": "base64",
+                        "data": "data:audio/wav;base64,ZmFrZQ==",
+                    }
                 payload = tts_handler._build_audio_cpp_audio_payload(
                     "Hello", settings, endpoint
                 )

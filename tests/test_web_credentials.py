@@ -13,9 +13,15 @@ from pandrator.web.credentials import (
     STT_SERVICE_ENVS,
     ResolvedCredential,
     database_reference,
+    environment_reference,
     hydrate_stt_settings,
+    hydrate_tts_settings,
     prepare_stt_settings_for_storage,
     provider_credential_key,
+    resolve_provider_credential,
+    resolve_provider_credentials,
+    secret_file_reference,
+    shared_provider_credential_key,
     stt_service_credential_key,
     upsert_credential,
 )
@@ -180,6 +186,155 @@ class CredentialStorageTests(unittest.TestCase):
             hydrated["provider_configs"][0]["api_key"], "shared-secret"
         )
         self.assertEqual(hydrated["provider_configs"][0]["api_key_env"], "")
+
+    def test_vertex_file_reference_overrides_legacy_shared_database_credential(self):
+        shared_key = shared_provider_credential_key("vertex_ai")
+        stored_value = "stale-vertex-database-fixture"
+        file_value = "current-vertex-file-fixture"
+        secret_path = Path(self.temporary.name, "vertex-service-account.secret")
+        secret_path.write_text(file_value + "\n", encoding="utf-8")
+        if os.name != "nt":
+            secret_path.chmod(0o600)
+
+        with self.database.session() as session:
+            upsert_credential(
+                session, shared_key, "Vertex shared credential", stored_value
+            )
+
+        settings = {
+            "service": "Vertex AI",
+            "provider_configs": [
+                {
+                    "id": "vertex_ai",
+                    "secret_ref": secret_file_reference(secret_path),
+                }
+            ],
+        }
+        hydrated = hydrate_tts_settings(
+            self.database,
+            self.app.extensions["pandrator"]["paths"],
+            settings,
+            manager_bridge=SimpleNamespace(configured=False),
+        )
+        from pandrator.logic import tts_handler
+
+        runtime_service = tts_handler.get_service_config(hydrated, "vertex_ai")
+        self.assertIsNotNone(runtime_service)
+        self.assertEqual(file_value, runtime_service["api_key"])
+        self.assertEqual("", runtime_service["api_key_env"])
+        self.assertNotIn(file_value, json.dumps(settings))
+        with self.database.session() as session:
+            self.assertEqual(
+                stored_value, session.get(StoredCredential, shared_key).secret_value
+            )
+
+    def test_explicit_environment_reference_overrides_shared_database_for_cloud_providers(self):
+        providers = ("openai", "gemini", "vertex_ai")
+        reference_variable = "PANDRATOR_TEST_CREDENTIAL_REFERENCE"
+        environment_value = "selected-environment-fixture"
+        stored_values = {
+            provider: f"stale-{provider}-database-fixture" for provider in providers
+        }
+        with self.database.session() as session:
+            for provider, stored_value in stored_values.items():
+                upsert_credential(
+                    session,
+                    shared_provider_credential_key(provider),
+                    f"{provider} shared credential",
+                    stored_value,
+                )
+
+        with mock.patch.dict(os.environ, {reference_variable: environment_value}):
+            for provider in providers:
+                with self.subTest(provider=provider):
+                    resolved = resolve_provider_credential(
+                        self.database,
+                        self.app.extensions["pandrator"]["paths"],
+                        provider,
+                        environment_reference(reference_variable),
+                    )
+                    self.assertEqual("environment", resolved.source)
+                    self.assertEqual(environment_value, resolved.resolved_value())
+
+        missing_variable = "PANDRATOR_TEST_MISSING_CREDENTIAL_REFERENCE"
+        with mock.patch.dict(os.environ, {missing_variable: ""}):
+            for provider in providers:
+                with self.subTest(provider=provider, missing=True):
+                    resolved = resolve_provider_credential(
+                        self.database,
+                        self.app.extensions["pandrator"]["paths"],
+                        provider,
+                        environment_reference(missing_variable),
+                    )
+                    self.assertEqual("environment", resolved.source)
+                    self.assertFalse(resolved.configured)
+                    self.assertEqual("", resolved.resolved_value())
+
+    def test_explicit_missing_file_and_invalid_reference_do_not_fall_back_to_database(self):
+        provider = "vertex_ai"
+        shared_key = shared_provider_credential_key(provider)
+        with self.database.session() as session:
+            upsert_credential(
+                session, shared_key, "Vertex shared credential", "stored-fixture"
+            )
+
+        missing_path = Path(self.temporary.name, "missing-vertex.secret")
+        with self.assertRaises(FileNotFoundError):
+            resolve_provider_credential(
+                self.database,
+                self.app.extensions["pandrator"]["paths"],
+                provider,
+                secret_file_reference(missing_path),
+            )
+        with self.assertRaises(ValueError):
+            resolve_provider_credential(
+                self.database,
+                self.app.extensions["pandrator"]["paths"],
+                provider,
+                "invalid-explicit-reference",
+            )
+
+    def test_batched_resolution_preserves_explicit_reference_and_database_preference(self):
+        providers = ("openai", "gemini", "vertex_ai")
+        shared_values = {
+            provider: f"shared-{provider}-fixture" for provider in providers
+        }
+        vertex_direct_value = "direct-vertex-database-fixture"
+        vertex_direct_key = provider_credential_key("vertex_ai")
+        with self.database.session() as session:
+            for provider, secret_value in shared_values.items():
+                upsert_credential(
+                    session,
+                    shared_provider_credential_key(provider),
+                    f"{provider} shared credential",
+                    secret_value,
+                )
+            upsert_credential(
+                session,
+                vertex_direct_key,
+                "Vertex direct credential",
+                vertex_direct_value,
+            )
+
+        variable = "PANDRATOR_TEST_BATCHED_CREDENTIAL_REFERENCE"
+        environment_value = "batched-environment-fixture"
+        with mock.patch.dict(os.environ, {variable: environment_value}):
+            resolved = resolve_provider_credentials(
+                self.database,
+                self.app.extensions["pandrator"]["paths"],
+                [
+                    ("openai", environment_reference(variable), "", True),
+                    ("gemini", None, "", True),
+                    ("vertex_ai", database_reference(vertex_direct_key), "", True),
+                ],
+            )
+            self.assertEqual("environment", resolved[0].source)
+            self.assertEqual(environment_value, resolved[0].resolved_value())
+
+        self.assertEqual("database", resolved[1].source)
+        self.assertEqual(shared_values["gemini"], resolved[1].resolved_value())
+        self.assertEqual("database", resolved[2].source)
+        self.assertEqual(shared_values["vertex_ai"], resolved[2].resolved_value())
 
     def test_environment_move_is_verified_before_reference_and_old_value_change(self):
         old_secret = "database-only-secret"

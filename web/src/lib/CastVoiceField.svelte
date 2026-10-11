@@ -256,7 +256,7 @@
           ></label
         >
         <label class="block"
-          >Stable voice description <span class="muted"
+          >Voice description <span class="muted"
             >· for models that design a voice</span
           ><textarea
             class="input mt-1 w-full"
@@ -266,7 +266,10 @@
             value={value?.voice_description ?? ''}
             oninput={(event) =>
               update('voice_description', event.currentTarget.value)}
-          ></textarea></label
+          ></textarea><span class="muted mt-1 block text-xs"
+            >A description guides the model; it does not guarantee the same
+            voice across different passages.</span
+          ></label
         >
       </div>
     </details>

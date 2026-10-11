@@ -32,6 +32,7 @@ async function createGenerationPlan(
     headers,
     data: {
       name: uniqueName('Reading mode regression'),
+      interface_mode: 'advanced',
       workflow_kind: workflowKind
     }
   });
@@ -48,7 +49,7 @@ async function createGenerationPlan(
   return session.id as string;
 }
 
-test('wizard creates a guided subtitle workspace and preserves setup return', async ({
+test('wizard offers Simple and Advanced and creates a guided subtitle workspace', async ({
   page
 }) => {
   const sessionName = uniqueName('Playwright subtitles');
@@ -60,6 +61,8 @@ test('wizard creates a guided subtitle workspace and preserves setup return', as
     .getByRole('button', { name: /Create subtitles/ })
     .first()
     .click();
+  await expect(page.getByRole('radio', { name: /Simple/ })).toBeChecked();
+  await page.getByRole('radio', { name: /Advanced/ }).check();
   await page.getByRole('button', { name: 'Add later' }).click();
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review', exact: true }).click();
@@ -1009,7 +1012,7 @@ test('reading mode flows segments together and separates only saved paragraphs',
   ]);
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Display options' }).click();
   await page.getByRole('button', { name: 'Reading view', exact: true }).click();
 
@@ -1124,7 +1127,7 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
     });
   });
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Versioned speech plans' });
   await expect(dialog).toBeVisible();
@@ -1195,8 +1198,8 @@ test('narrow screens use the full viewport for dialogs and the generation drawer
     { text: 'Its controls and speech blocks must remain reachable.' }
   ]);
   await page.goto(`/sessions/${sessionId}`);
-  const drawer = page.locator('.generation-drawer');
-  await drawer.getByRole('button', { name: 'Generation', exact: true }).click();
+  const drawer = page.locator('.generation-workspace');
+  await drawer.getByRole('link', { name: 'Generation', exact: true }).click();
   for (const viewport of [
     { width: 390, height: 844 },
     { width: 700, height: 600 },
@@ -1210,7 +1213,7 @@ test('narrow screens use the full viewport for dialogs and the generation drawer
       drawer.getByRole('button', { name: 'Use half height' })
     ).toBeHidden();
     await expect(
-      drawer.getByRole('button', { name: 'Generation', exact: true })
+      drawer.getByRole('link', { name: 'Generation', exact: true })
     ).toBeInViewport();
     await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     await page.screenshot({
@@ -1219,11 +1222,11 @@ test('narrow screens use the full viewport for dialogs and the generation drawer
       )
     });
   }
-  await drawer.getByRole('button', { name: 'Generation', exact: true }).click();
+  await drawer.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
   await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
   await page.setViewportSize({ width: 1280, height: 720 });
-  await drawer.getByRole('button', { name: 'Generation', exact: true }).click();
+  await drawer.getByRole('link', { name: 'Generation', exact: true }).click();
   await drawer.getByRole('button', { name: 'Use half height' }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
   await expect
@@ -1264,7 +1267,7 @@ test('speech-block boundaries expose evidence and cursor edits are reversible', 
   });
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const rows = page.locator('tbody tr[data-segment-id]');
   await expect(rows).toHaveCount(2);
 
@@ -1344,11 +1347,13 @@ test('running generation controls stay on one drawer header row', async ({
     status: 'running',
     progress: 0.4
   };
-  await page.route(`**/api/v1/sessions/${sessionId}/generation-runs`, (route) =>
-    route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({ items: [run] })
-    })
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
+    (route) =>
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [run] })
+      })
   );
   await page.route(
     `**/api/v1/sessions/${sessionId}/generation-segments?*`,
@@ -1382,7 +1387,7 @@ test('running generation controls stay on one drawer header row', async ({
   );
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(
     page.getByRole('button', {
       name: 'Stop safely after the current segment'
@@ -1413,7 +1418,7 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   ]);
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
 
   const rows = page.locator('tbody tr[data-segment-id]');
   await rows.nth(0).locator('td').nth(1).click();
@@ -1488,7 +1493,7 @@ test('generation segment search and replace preserves partial words and saves ev
   ]);
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Search and replace' }).click();
   await page.getByLabel('Find in generation segments').fill('cat');
   await page.getByLabel('Replace in generation segments').fill('dog');
@@ -1533,7 +1538,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
     progress: phase === 'completed' ? 1 : 0.5
   });
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() === 'POST') {
         if (failNextRegeneration) {
@@ -1604,7 +1609,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await page.goto(`/sessions/${sessionId}`);
   const drawer = page.locator('[data-generation-layout]');
   await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
   const regenerate = page.getByRole('button', {
@@ -1703,7 +1708,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   ]);
   await page.goto(`/sessions/${unrelatedSessionId}`);
   await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 });
 
@@ -1784,7 +1789,7 @@ test('selecting a take from history returns to Active mix without changing anoth
   let activeFirstTakeId = 'take-1-old';
   const selectedTakeRequests: string[] = [];
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -1884,7 +1889,7 @@ test('selecting a take from history returns to Active mix without changing anoth
   );
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const picker = page.locator('label.run-picker select');
   await expect(picker).toHaveValue('');
   await expect(picker.locator('option')).toHaveCount(3);
@@ -1986,7 +1991,7 @@ test('generated segments return to the current filtered page after repeated rege
     { text: 'Placeholder.' }
   ]);
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() === 'POST') {
         phase = 'running';
@@ -2066,7 +2071,7 @@ test('generated segments return to the current filtered page after repeated rege
   );
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const filter = page.getByLabel('Segments to display');
   const regeneratedRow = page.locator('tr[data-segment-id="segment-100"]');
   const regenerateSegment101 = regeneratedRow.locator(
@@ -2285,7 +2290,7 @@ test('alternate regeneration sends one selected-only setting set and returns to 
     })
   );
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() === 'POST') {
         posted.push(route.request().postDataJSON() as Record<string, unknown>);
@@ -2341,7 +2346,7 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   );
 
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const picker = page.locator('label.run-picker select');
   const regenerationOptions = page.getByRole('button', {
     name: 'Regeneration options'

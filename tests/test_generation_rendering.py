@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from pydub import AudioSegment
 
+from pandrator.logic.speech_markup import parse_speech_markup
+from pandrator.logic.speech_performance import compile_performance
 from pandrator.web.generation_rendering import (
     build_render_parts,
     execute_render_parts,
@@ -31,6 +33,106 @@ def xml(text: str) -> str:
         + text
         + '</speaker></dialogue></segment>'
     )
+
+
+def test_character_delivery_merges_before_projection_without_voice_splits():
+    controls = {
+        "characters": [{
+            "id": "c-one", "display_name": "One", "voice_category": "male",
+            "delivery": {"instruction": "Character default", "emotion": "calm", "pace": "slower"},
+        }],
+        "cast": {},
+    }
+    markup = (
+        '<segment id="s"><speaker ref="c-one">A</speaker>'
+        '<speaker ref="c-one"><ins>Text direction</ins><pace>brisk</pace>B</speaker></segment>'
+    )
+    settings = {
+        "casting_enabled": False, "performance_enabled": True,
+        "voice_mode_version": 1, "generation_prompt": "Project direction",
+        "service": "unknown", "model": "unknown",
+    }
+    parts = build_render_parts("AB", settings, speech_xml=markup, segment_id="s", controls=controls)
+    assert len(parts) == 1
+    annotation = parts[0]["settings"]["_performance"]
+    assert annotation["spans"][0]["delivery"]["instruction"] == "Character default"
+    assert annotation["spans"][1]["delivery"]["instruction"] == "Character default\nText direction"
+    assert annotation["spans"][1]["delivery"]["emotion"] == "calm"
+    assert annotation["spans"][1]["delivery"]["pace"] == "brisk"
+    compiled = compile_performance("AB", parts[0]["settings"])
+    assert compiled.instructions.count("Project direction") <= 1
+    assert "Character default" not in compiled.instructions
+    assert "Text direction" not in compiled.instructions
+
+    disabled = build_render_parts(
+        "AB", {**settings, "performance_enabled": False}, speech_xml=markup,
+        segment_id="s", controls=controls,
+    )
+    assert "_performance" not in disabled[0]["settings"]
+    assert "_performance_markup_scope" not in disabled[0]["settings"]
+    without_xml = build_render_parts(
+        "AB",
+        {
+            **settings,
+            "_performance_markup_scope": {
+                "root_delivery": {"instruction": "stale"},
+                "spans": [],
+            },
+        },
+    )
+    assert "_performance_markup_scope" not in without_xml[0]["settings"]
+    old_controls = {"characters": [{"id": "c-one", "display_name": "One"}], "cast": {}}
+    old = build_render_parts("AB", settings, speech_xml=markup, segment_id="s", controls=old_controls)
+    assert old[0]["settings"]["_performance"]["spans"][0]["delivery"]["instruction"] == "Text direction"
+
+
+def test_character_delivery_combined_instruction_bound_is_actionable():
+    controls = {"characters": [{
+        "id": "c-one", "display_name": "One",
+        "delivery": {"instruction": "a" * 1200},
+    }], "cast": {}}
+    with pytest.raises(ValueError, match="c-one.*shorten its default or the text direction"):
+        build_render_parts(
+            "A", {"performance_enabled": True},
+            speech_xml='<segment id="s"><speaker ref="c-one"><ins>x</ins>A</speaker></segment>',
+            segment_id="s", controls=controls,
+        )
+
+
+def test_gemini_compiles_book_character_and_text_directions_once_in_order():
+    controls = {"characters": [{
+        "id": "c-one", "display_name": "One",
+        "delivery": {"instruction": "Character default"},
+    }], "cast": {}}
+    parts = build_render_parts(
+        "Hello", {
+            "service": "gemini", "model": "gemini-2.5-flash-tts",
+            "casting_enabled": False, "performance_enabled": True,
+            "generation_prompt": "Book instruction",
+        },
+        speech_xml='<segment id="s"><speaker ref="c-one"><ins>Text direction</ins>Hello</speaker></segment>',
+        segment_id="s", controls=controls,
+    )
+    assert len(parts) == 1
+    compiled = compile_performance(parts[0]["text"], parts[0]["settings"])
+    assert compiled.input.count("Book instruction") == 1
+    assert compiled.input.count("Character default") == 1
+    assert compiled.input.count("Text direction") == 1
+    assert compiled.input.index("Book instruction") < compiled.input.index("Character default")
+    assert compiled.input.index("Character default") < compiled.input.index("Text direction")
+
+
+def test_character_defaults_do_not_replace_legacy_plain_source_annotation():
+    controls = {"characters": [{
+        "id": "c-one", "display_name": "One",
+        "delivery": {"instruction": "Character default"},
+    }], "cast": {}}
+    legacy = {"decision": "steer", "delivery": {"instruction": "Legacy direction"}}
+    parts = build_render_parts(
+        "Hello", {"performance_enabled": True, "_performance": legacy},
+        source_speaker="c-one", controls=controls,
+    )
+    assert parts[0]["settings"]["_performance"] == legacy
 
 
 def test_two_voices_preserve_one_logical_text_and_precedence():
@@ -129,6 +231,12 @@ def test_root_and_scoped_directions_project_inside_one_same_voice_part():
     assert annotation["spans"][0]["delivery"]["instruction"] == "root direction"
     assert annotation["spans"][1]["anchor"]["quote"] == "B"
     assert annotation["spans"][1]["delivery"]["instruction"] == "root direction"
+    scope = parts[0]["settings"]["_performance_markup_scope"]
+    assert scope["root_delivery"]["instruction"] == "root direction"
+    assert [(span["start"], span["end"]) for span in scope["spans"]] == [(0, 1), (1, 2)]
+    parsed = parse_speech_markup(markup, expected_segment_id="s", expected_text="AB")
+    assert parsed.root_delivery["instruction"] == "root direction"
+    assert "root_delivery" not in parsed.public()
 
 
 def test_xml_directions_project_to_each_part_and_events_choose_one_boundary():
@@ -145,6 +253,65 @@ def test_xml_directions_project_to_each_part_and_events_choose_one_boundary():
     assert len(parts[1]["settings"]["_performance"]["events"]) == 2
     assert parts[1]["settings"]["_performance"]["events"][0]["position"] == "before"
     assert parts[1]["settings"]["_performance"]["events"][1]["position"] == "after"
+
+
+def test_cast_parts_keep_root_scope_and_assign_boundary_events_without_timing_changes():
+    markup = (
+        '<segment id="s"><ins>Whisper.</ins><dialogue>'
+        '<speaker ref="c-one">A<event kind="pause" duration_ms="300" '
+        'affinity="previous"/></speaker>'
+        '<event kind="sigh" affinity="following"/>'
+        '<speaker ref="c-two"><ins>say this</ins>B</speaker>'
+        '</dialogue></segment>'
+    )
+    parts = build_render_parts(
+        "AB",
+        {
+            "service": "gemini",
+            "model": "gemini-3.8-flash-tts",
+            "casting_enabled": True,
+            "performance_enabled": True,
+        },
+        speech_xml=markup,
+        segment_id="s",
+        controls=CONTROLS,
+    )
+    assert [part["text"] for part in parts] == ["A", "B"]
+    assert [part["settings"]["voice"] for part in parts] == ["one", "two"]
+    assert all(
+        part["settings"]["_performance_markup_scope"]["root_delivery"]["instruction"]
+        == "Whisper."
+        for part in parts
+    )
+    first_events = parts[0]["settings"]["_performance"]["events"]
+    second_events = parts[1]["settings"]["_performance"]["events"]
+    assert first_events == [{
+        "kind": "pause",
+        "anchor": None,
+        "position": "after",
+        "duration_ms": 300,
+    }]
+    assert second_events == [{
+        "kind": "sigh",
+        "anchor": None,
+        "position": "before",
+        "duration_ms": None,
+    }]
+    endpoint = {
+        "id": "gemini",
+        "provider": "gemini",
+        "adapter": "openai_compatible",
+        "models": ["gemini-3.8-flash-tts"],
+    }
+    compiled_parts = [
+        compile_performance(part["text"], part["settings"], endpoint)
+        for part in parts
+    ]
+    assert [compiled.transcript for compiled in compiled_parts] == ["A", "B"]
+    assert compiled_parts[0].instructions == "Whisper."
+    assert compiled_parts[1].instructions == "Whisper.\nsay this"
+    assert compiled_parts[0].instructions.count("Whisper.") == 1
+    assert compiled_parts[1].instructions.count("Whisper.") == 1
 
 
 def test_whitespace_folds_without_empty_provider_requests():

@@ -95,14 +95,26 @@ def selection_is_unchanged(take: AudioTake | None, expected: dict[str, Any] | No
 
 
 def capture_selection_guards(session: Any, revision_id: str) -> dict[str, Any]:
-    rows = list(session.scalars(select(GenerationSegment).where(
+    segment_ids = list(session.scalars(select(GenerationSegment.id).where(
         GenerationSegment.plan_revision_id == revision_id
     )))
-    guards = {row.id: selection_guard(None) for row in rows}
-    for take in session.scalars(select(AudioTake).join(
-        GenerationSegment, GenerationSegment.id == AudioTake.generation_segment_id
-    ).where(GenerationSegment.plan_revision_id == revision_id, AudioTake.is_active.is_(True))):
-        guards[take.generation_segment_id] = selection_guard(take)
+    guards = {segment_id: selection_guard(None) for segment_id in segment_ids}
+    for start in range(0, len(segment_ids), 500):
+        batch = segment_ids[start:start + 500]
+        # Filter active rows after the segment-ID lookup so SQLite uses the
+        # segment index rather than scanning the global active-take index.
+        for segment_id, artifact_id, revision, is_active in session.execute(
+            select(
+                AudioTake.generation_segment_id,
+                AudioTake.artifact_id,
+                AudioTake.revision,
+                AudioTake.is_active,
+            ).where(
+                AudioTake.generation_segment_id.in_(batch),
+            )
+        ):
+            if is_active:
+                guards[segment_id] = {"artifact_id": artifact_id, "revision": revision}
     return guards
 
 

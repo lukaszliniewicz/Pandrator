@@ -77,7 +77,7 @@ def probe_spec(filename="probe.gguf", size=64, digest=None, **extra):
     return entry, payload
 
 
-def test_allowlist_pins_all_six_models_with_immutable_sources():
+def test_allowlist_pins_existing_assets_with_immutable_sources():
     assert sorted(MODELS) == [
         "bs_roformer",
         "deepfilternet2",
@@ -85,12 +85,14 @@ def test_allowlist_pins_all_six_models_with_immutable_sources():
         "mel_band_roformer",
         "qwen3_asr_0_6b",
         "qwen3_asr_1_7b",
+        "stable_audio_3_small_sfx_q8_0",
     ]
     for _model_id, spec in MODELS.items():
         assert spec["size_bytes"] > 0
         assert spec["sha256"] is not None and len(spec["sha256"]) == 64
         assert spec["url"].startswith("https://")
         assert spec["revision"] in spec["url"]  # immutable pin, HF or git commit
+    assert MODELS["stable_audio_3_small_sfx_q8_0"]["sha256"].startswith("5bb1ec65")
     assert MODELS["qwen3_asr_0_6b"]["sha256"].startswith("6c44ec2f")
     assert MODELS["qwen3_asr_1_7b"]["sha256"].startswith("da4fc2ac")
     assert MODELS["bs_roformer"]["sha256"].startswith("9a55a8ca")
@@ -229,7 +231,7 @@ def test_partial_or_corrupt_download_leaves_no_file(settings, monkeypatch):
 def test_oversize_download_is_rejected(settings, monkeypatch):
     entry, payload = probe_spec(size=16)
     monkeypatch.setitem(MODELS, "probe", entry)
-    with pytest.raises(AudioAssetsError, match="pinned size"):
+    with pytest.raises(AudioAssetsError, match="expected size"):
         ensure_model(
             "probe", settings, opener=lambda *a, **k: FakeResponse(payload + b"extra")
         )

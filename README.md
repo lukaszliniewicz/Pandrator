@@ -270,25 +270,6 @@ and the [privacy guide](docs/security/privacy-and-security.md) for data flows.
 | Installation, updates, and repair | [Manager guide](pandrator_manager/README.md) |
 | MCP connection and workflow skill setup | [MCP guide](pandrator_mcp/README.md) |
 
-## Development
-
-For source development, install [Pixi](https://pixi.sh/) and use the committed
-lockfile:
-
-```bash
-git clone https://github.com/lukaszliniewicz/Pandrator.git
-cd Pandrator
-pixi install --locked
-pixi install --environment web-build --locked
-pixi run --environment web-build web-build
-pixi run serve-web
-```
-
-Run `pixi run run-worker` in a second terminal. See
-[development from source](docs/development/from-source.md) and
-[contributing](docs/development/contributing.md) for the development workflow
-and focused checks.
-
 ## Help and feedback
 
 Stuck on setup? Start with [troubleshooting](docs/operations/troubleshooting.md).

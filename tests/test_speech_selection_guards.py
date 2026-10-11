@@ -225,6 +225,8 @@ def test_selection_preview_guard_rejects_changed_state_without_new_plan(case, mu
 
 
 def test_locked_selection_requires_unlock_then_preserves_plan_audio_and_other_markup(case):
+    from pandrator.web.speech_selection_sounds import preview_speech_selection
+
     prepared = _prepare_locked_xml_plan(case)
     body = _request(
         case,
@@ -235,7 +237,7 @@ def test_locked_selection_requires_unlock_then_preserves_plan_audio_and_other_ma
         delivery={"emotion": "new"},
     )
     with case["services"]["database"].session() as session:
-        preview = speech_selection.preview_speech_selection(
+        preview = preview_speech_selection(
             case["services"], session, case["session_id"], body
         )
     assert preview["locked"] is True
@@ -243,6 +245,7 @@ def test_locked_selection_requires_unlock_then_preserves_plan_audio_and_other_ma
     assert preview["current_flags"] == {
         "casting_enabled": False,
         "performance_enabled": False,
+        "allow_vocalizations": False,
     }
     assert preview["preview"]["parts"][0]["instructions"] == ""
 
@@ -266,6 +269,7 @@ def test_locked_selection_requires_unlock_then_preserves_plan_audio_and_other_ma
     assert payload["current_flags"] == {
         "casting_enabled": False,
         "performance_enabled": False,
+        "allow_vocalizations": False,
     }
     assert payload["source_performance_plan_id"] == prepared["plan_id"]
 

@@ -370,6 +370,8 @@ class McpArchitectureTests(unittest.TestCase):
             {
                 "pandrator_adopt_performance_plan",
                 "pandrator_apply_speech_selection",
+                "pandrator_apply_speech_selection_batch",
+                "pandrator_create_comparison_export",
                 "pandrator_assemble_generation_run",
                 "pandrator_analyse_performance_plan",
                 "pandrator_attach_existing_source",
@@ -386,6 +388,9 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_configure_voice_setup",
                 "pandrator_configure_speech_optimization",
                 "pandrator_setup_designed_voice",
+                "pandrator_design_google_voice",
+                "pandrator_recast_voices",
+                "pandrator_undo_recast",
                 "pandrator_control_runtime",
                 "pandrator_create_dispatch_run",
                 "pandrator_create_media_edit_dispatch_run",

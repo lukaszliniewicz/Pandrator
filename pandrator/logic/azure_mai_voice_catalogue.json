@@ -1,0 +1,1972 @@
+{
+  "source_url": "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices",
+  "checked_at": "2026-10-09",
+  "models": [
+    "MAI-Voice-2.1",
+    "MAI-Voice-2.1-Flash"
+  ],
+  "rows": [
+    {
+      "voice_id": "cs-CZ-Grant",
+      "locale": "cs-CZ",
+      "language": "Czech",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "cs-CZ-Harper",
+      "locale": "cs-CZ",
+      "language": "Czech",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "da-DK-Grant",
+      "locale": "da-DK",
+      "language": "Danish",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "da-DK-Harper",
+      "locale": "da-DK",
+      "language": "Danish",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "de-DE-Grant",
+      "locale": "de-DE",
+      "language": "German",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "de-DE-Harper",
+      "locale": "de-DE",
+      "language": "German",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "de-DE-Klaus",
+      "locale": "de-DE",
+      "language": "German (Germany)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "de-DE-Mia",
+      "locale": "de-DE",
+      "language": "German (Germany)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "en-AU-Isla",
+      "locale": "en-AU",
+      "language": "English (Australia)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "en-GB-Emily",
+      "locale": "en-GB",
+      "language": "English (United Kingdom)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "angry",
+        "audiobook",
+        "confused",
+        "customer_call_center",
+        "disgusted",
+        "educational",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "jealous",
+        "joyful",
+        "narrator",
+        "neutral",
+        "sad",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "en-GB-Harry",
+      "locale": "en-GB",
+      "language": "English (United Kingdom)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "angry",
+        "audiobook",
+        "customer_call_center",
+        "disgusted",
+        "educational",
+        "fearful",
+        "joyful",
+        "narrator",
+        "neutral",
+        "sad",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "en-IN-Dhruv",
+      "locale": "en-IN",
+      "language": "English (India)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "en-IN-Priya",
+      "locale": "en-IN",
+      "language": "English (India)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "en-US-Ethan",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "en-US-Grant",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "en-US-Harper",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "angry",
+        "audiobook",
+        "confused",
+        "customer_call_center",
+        "determined",
+        "educational",
+        "embarrassed",
+        "excited",
+        "happy",
+        "hopeful",
+        "joyful",
+        "narrator",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "en-US-Iris",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "en-US-Jasper",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "en-US-Olivia",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "en-US-Sage",
+      "locale": "en-US",
+      "language": "English (United States)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "es-ES-Marta",
+      "locale": "es-ES",
+      "language": "Spanish (Spain)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "es-MX-Alejo",
+      "locale": "es-MX",
+      "language": "Spanish (Mexico)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "es-MX-Grant",
+      "locale": "es-MX",
+      "language": "Spanish (Mexico)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "es-MX-Harper",
+      "locale": "es-MX",
+      "language": "Spanish (Mexico)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "es-MX-Valeria",
+      "locale": "es-MX",
+      "language": "Spanish (Mexico)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "fi-FI-Grant",
+      "locale": "fi-FI",
+      "language": "Finnish",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "fi-FI-Harper",
+      "locale": "fi-FI",
+      "language": "Finnish",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "fr-FR-Grant",
+      "locale": "fr-FR",
+      "language": "French",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "fr-FR-Harper",
+      "locale": "fr-FR",
+      "language": "French",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "fr-FR-Marc",
+      "locale": "fr-FR",
+      "language": "French (France)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "fr-FR-Soleil",
+      "locale": "fr-FR",
+      "language": "French (France)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "hi-IN-Arjun",
+      "locale": "hi-IN",
+      "language": "Hindi (India)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "sad",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "hi-IN-Dhruv",
+      "locale": "hi-IN",
+      "language": "Hindi (India)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "hi-IN-Grant",
+      "locale": "hi-IN",
+      "language": "Hindi",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "audiobook",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hi-IN-Harper",
+      "locale": "hi-IN",
+      "language": "Hindi",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hi-IN-Kavya",
+      "locale": "hi-IN",
+      "language": "Hindi (India)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "hi-IN-Priya",
+      "locale": "hi-IN",
+      "language": "Hindi (India)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "hu-HU-Bence",
+      "locale": "hu-HU",
+      "language": "Hungarian (Hungary)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hu-HU-Grant",
+      "locale": "hu-HU",
+      "language": "Hungarian",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hu-HU-Harper",
+      "locale": "hu-HU",
+      "language": "Hungarian",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hu-HU-Levente",
+      "locale": "hu-HU",
+      "language": "Hungarian (Hungary)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hu-HU-Lilla",
+      "locale": "hu-HU",
+      "language": "Hungarian (Hungary)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "hu-HU-Reka",
+      "locale": "hu-HU",
+      "language": "Hungarian (Hungary)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "id-ID-Grant",
+      "locale": "id-ID",
+      "language": "Indonesian",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "id-ID-Harper",
+      "locale": "id-ID",
+      "language": "Indonesian",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "it-IT-Grant",
+      "locale": "it-IT",
+      "language": "Italian",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "audiobook",
+        "educational",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "it-IT-Harper",
+      "locale": "it-IT",
+      "language": "Italian",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "it-IT-Luca",
+      "locale": "it-IT",
+      "language": "Italian (Italy)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "it-IT-Rosa",
+      "locale": "it-IT",
+      "language": "Italian (Italy)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "ko-KR-Grant",
+      "locale": "ko-KR",
+      "language": "Korean",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ko-KR-Haena",
+      "locale": "ko-KR",
+      "language": "Korean (Korea)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "embarrassed",
+        "excited",
+        "happy",
+        "hopeful",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "softvoice",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "ko-KR-Harper",
+      "locale": "ko-KR",
+      "language": "Korean",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ko-KR-Junho",
+      "locale": "ko-KR",
+      "language": "Korean (Korea)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "embarrassed",
+        "excited",
+        "happy",
+        "hopeful",
+        "joyful",
+        "neutral",
+        "relieved",
+        "sad",
+        "softvoice"
+      ]
+    },
+    {
+      "voice_id": "nb-NO-Grant",
+      "locale": "nb-NO",
+      "language": "Norwegian (BokmÃ¥l)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "educational",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "nb-NO-Harper",
+      "locale": "nb-NO",
+      "language": "Norwegian (BokmÃ¥l)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "nl-NL-Grant",
+      "locale": "nl-NL",
+      "language": "Dutch",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "nl-NL-Harper",
+      "locale": "nl-NL",
+      "language": "Dutch",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "nl-NL-Sander",
+      "locale": "nl-NL",
+      "language": "Dutch (Netherlands)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "pl-PL-Grant",
+      "locale": "pl-PL",
+      "language": "Polish",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "pl-PL-Harper",
+      "locale": "pl-PL",
+      "language": "Polish",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "pt-BR-Caio",
+      "locale": "pt-BR",
+      "language": "Portuguese (Brazil)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "pt-BR-Grant",
+      "locale": "pt-BR",
+      "language": "Portuguese (Brazil)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "educational",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "pt-BR-Harper",
+      "locale": "pt-BR",
+      "language": "Portuguese (Brazil)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "audiobook",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "pt-BR-Luana",
+      "locale": "pt-BR",
+      "language": "Portuguese (Brazil)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "pt-BR-Pedro",
+      "locale": "pt-BR",
+      "language": "Portuguese (Brazil)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "confused",
+        "determined",
+        "embarrassed",
+        "excited",
+        "happy",
+        "hopeful",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "softvoice",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "pt-BR-Rafael",
+      "locale": "pt-BR",
+      "language": "Portuguese (Brazil)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "embarrassed",
+        "excited",
+        "happy",
+        "hopeful",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "softvoice",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "pt-PT-Grant",
+      "locale": "pt-PT",
+      "language": "Portuguese (Portugal)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "pt-PT-Harper",
+      "locale": "pt-PT",
+      "language": "Portuguese (Portugal)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "pt-PT-Rui",
+      "locale": "pt-PT",
+      "language": "Portuguese (Portugal)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "embarrassed",
+        "excited",
+        "happy",
+        "hopeful",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "softvoice",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "ro-RO-Andrei",
+      "locale": "ro-RO",
+      "language": "Romanian (Romania)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ro-RO-Elena",
+      "locale": "ro-RO",
+      "language": "Romanian (Romania)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ro-RO-Grant",
+      "locale": "ro-RO",
+      "language": "Romanian",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ro-RO-Harper",
+      "locale": "ro-RO",
+      "language": "Romanian",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "audiobook",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ro-RO-Ioana",
+      "locale": "ro-RO",
+      "language": "Romanian (Romania)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ro-RO-Radu",
+      "locale": "ro-RO",
+      "language": "Romanian (Romania)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ru-RU-Grant",
+      "locale": "ru-RU",
+      "language": "Russian",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ru-RU-Harper",
+      "locale": "ru-RU",
+      "language": "Russian",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "audiobook",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "ru-RU-Lev",
+      "locale": "ru-RU",
+      "language": "Russian (Russia)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "ru-RU-Masha",
+      "locale": "ru-RU",
+      "language": "Russian (Russia)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "sv-SE-Grant",
+      "locale": "sv-SE",
+      "language": "Swedish",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "sv-SE-Harper",
+      "locale": "sv-SE",
+      "language": "Swedish",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "th-TH-Grant",
+      "locale": "th-TH",
+      "language": "Thai",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "th-TH-Harper",
+      "locale": "th-TH",
+      "language": "Thai",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "th-TH-Krit",
+      "locale": "th-TH",
+      "language": "Thai",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "th-TH-Nattapong",
+      "locale": "th-TH",
+      "language": "Thai",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "tr-TR-Aydin",
+      "locale": "tr-TR",
+      "language": "Turkish (TÃ¼rkiye)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "tr-TR-Elif",
+      "locale": "tr-TR",
+      "language": "Turkish (TÃ¼rkiye)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "adventurous",
+        "caringempathy",
+        "curious",
+        "encouraging",
+        "excited",
+        "friendlycheerful",
+        "neutral",
+        "nostalgic",
+        "reflective",
+        "saddisappointed",
+        "serious"
+      ]
+    },
+    {
+      "voice_id": "tr-TR-Grant",
+      "locale": "tr-TR",
+      "language": "Turkish",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "tr-TR-Harper",
+      "locale": "tr-TR",
+      "language": "Turkish",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "vi-VN-Grant",
+      "locale": "vi-VN",
+      "language": "Vietnamese",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "vi-VN-Harper",
+      "locale": "vi-VN",
+      "language": "Vietnamese",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "audiobook",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "zh-CN-Bo",
+      "locale": "zh-CN",
+      "language": "Chinese (Simplified)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "zh-CN-Grant",
+      "locale": "zh-CN",
+      "language": "Chinese (Simplified)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "zh-CN-Harper",
+      "locale": "zh-CN",
+      "language": "Chinese (Simplified)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "agent",
+        "audiobook",
+        "customer_call_center",
+        "educational",
+        "narrator",
+        "neutral"
+      ]
+    },
+    {
+      "voice_id": "zh-CN-Lan",
+      "locale": "zh-CN",
+      "language": "Chinese (Simplified)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "joyful",
+        "neutral",
+        "sad",
+        "surprised"
+      ]
+    },
+    {
+      "voice_id": "zh-CN-Mei",
+      "locale": "zh-CN",
+      "language": "Chinese (Simplified)",
+      "gender": "Female",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "determined",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "relieved",
+        "sad",
+        "shouting",
+        "softvoice",
+        "surprised",
+        "whispering"
+      ]
+    },
+    {
+      "voice_id": "zh-CN-Wei",
+      "locale": "zh-CN",
+      "language": "Chinese (Simplified)",
+      "gender": "Male",
+      "supported_models": [
+        "MAI-Voice-2.1",
+        "MAI-Voice-2.1-Flash"
+      ],
+      "supported_styles": [
+        "angry",
+        "confused",
+        "disgusted",
+        "embarrassed",
+        "excited",
+        "fearful",
+        "happy",
+        "hopeful",
+        "jealous",
+        "joyful",
+        "neutral",
+        "regretful",
+        "sad",
+        "surprised"
+      ]
+    }
+  ]
+}

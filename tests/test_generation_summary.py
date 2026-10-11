@@ -58,6 +58,30 @@ def add_plan(case, *, session_id=None):
         return revision.id, segments[0].id
 
 
+def add_source_artifact(case, session_id, *, role, artifact_id=None):
+    services, _, _ = case
+    with services.database.session() as db:
+        artifact = m.Artifact(
+            id=artifact_id,
+            session_id=session_id,
+            kind="text",
+            role=role,
+            relative_path=f"test/generation-summary/{session_id}/{role}",
+        )
+        db.add(artifact)
+        db.flush()
+        return artifact.id
+
+
+def set_source_reference(case, revision_id, *, value=None, include=True):
+    services, _, _ = case
+    with services.database.session() as db:
+        revision = db.get(m.GenerationPlanRevision, revision_id)
+        revision.settings_json = (
+            {"_source_artifact_id": value} if include else {}
+        )
+
+
 def add_run(case, revision_id, *, status="running", sequence=1, session_id=None):
     services, _, own_session_id = case
     session_id = session_id or own_session_id
@@ -88,7 +112,8 @@ def test_no_plan_and_empty_plan(summary_case):
     services, _, session_id = summary_case
     assert read(summary_case) == {
         "session_id": session_id, "plan_revision_id": None,
-        "total": 0, "included_total": 0, "active_run": None, "assembly": None,
+        "plan_source_role": None, "total": 0, "included_total": 0,
+        "active_run": None, "assembly": None,
     }
     revision_id, _ = add_plan(summary_case)
     with services.database.session() as db:
@@ -96,6 +121,62 @@ def test_no_plan_and_empty_plan(summary_case):
     result = read(summary_case)
     assert result["plan_revision_id"] == revision_id
     assert result["total"] == result["included_total"] == 0
+
+
+@pytest.mark.parametrize("role", ["tts_optimized", "prepared_text"])
+def test_active_plan_source_role_is_resolved_from_same_session_artifact(summary_case, role):
+    services, _, session_id = summary_case
+    revision_id, _ = add_plan(summary_case)
+    artifact_id = add_source_artifact(
+        summary_case, session_id, role=role
+    )
+    set_source_reference(summary_case, revision_id, value=artifact_id)
+
+    result = read(summary_case)
+
+    assert result["plan_revision_id"] == revision_id
+    assert result["plan_source_role"] == role
+    with services.database.session() as db:
+        artifact = db.get(m.Artifact, artifact_id)
+        assert artifact.role == role
+
+
+@pytest.mark.parametrize(
+    "reference_kind", ["missing", "malformed", "unmatched", "cross_session"]
+)
+def test_invalid_or_foreign_active_plan_source_has_no_role(summary_case, reference_kind):
+    services, _, session_id = summary_case
+    revision_id, _ = add_plan(summary_case)
+
+    if reference_kind == "missing":
+        set_source_reference(summary_case, revision_id, include=False)
+    elif reference_kind == "malformed":
+        # A malformed JSON number must not match even a same-session artifact ID.
+        add_source_artifact(
+            summary_case, session_id, role="invalid_numeric_match", artifact_id="123"
+        )
+        set_source_reference(summary_case, revision_id, value=123)
+    elif reference_kind == "unmatched":
+        set_source_reference(
+            summary_case,
+            revision_id,
+            value="00000000-0000-0000-0000-000000000099",
+        )
+    else:
+        with services.database.session() as db:
+            foreign = m.SessionRecord(name="Foreign source")
+            db.add(foreign)
+            db.flush()
+            foreign_session_id = foreign.id
+        artifact_id = add_source_artifact(
+            summary_case,
+            foreign_session_id,
+            role="tts_optimized",
+            artifact_id="00000000-0000-0000-0000-000000000099",
+        )
+        set_source_reference(summary_case, revision_id, value=artifact_id)
+
+    assert read(summary_case)["plan_source_role"] is None
 
 
 def test_active_plan_counts_preserve_segment_total_semantics(summary_case):
@@ -268,7 +349,16 @@ def test_queries_and_model_hydration_are_constant_with_1000_runs_30000_takes(sum
             event.remove(Session, "loaded_as_persistent", loaded)
         assert hydrated == []
         assert len(statements) == 5  # Explicit snapshot BEGIN and four SELECTs.
-        assert all("audio_takes" not in sql and "_json" not in sql for sql in statements)
+        assert all("audio_takes" not in sql for sql in statements)
+        settings_queries = [sql for sql in statements if "settings_json" in sql.lower()]
+        assert len(settings_queries) == 1
+        selected_columns = settings_queries[0].partition("FROM")[0].lower()
+        assert "settings_json" not in selected_columns
+        assert "artifacts.role" in selected_columns
+        assert all(
+            "_json" not in sql or "settings_json" in sql.lower()
+            for sql in statements
+        )
         assert sum("LIMIT" in sql for sql in statements) == 2
         return result, statements
 

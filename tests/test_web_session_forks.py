@@ -158,6 +158,15 @@ class WebSessionForkTests(unittest.TestCase):
         return artifact
 
     def test_translation_fork_copies_the_checkpoint_path_but_not_later_work(self):
+        current = self.client.get(
+            f"/api/v1/sessions/{self.record['id']}"
+        ).get_json()
+        mode_update = self.client.patch(
+            f"/api/v1/sessions/{self.record['id']}",
+            json={"interface_mode": "advanced"},
+            headers={**self.headers, "If-Match": f'"{current["revision"]}"'},
+        )
+        self.assertEqual(200, mode_update.status_code, mode_update.get_json())
         headers = {
             **self.headers,
             "Idempotency-Key": "translation-fork-retry-key",
@@ -172,6 +181,7 @@ class WebSessionForkTests(unittest.TestCase):
         )
         self.assertEqual(201, response.status_code, response.get_json())
         forked = response.get_json()
+        self.assertEqual("advanced", forked["interface_mode"])
         self.assertEqual(
             ["transcription", "correction", "translation"],
             forked["copied_stages"],
@@ -204,6 +214,7 @@ class WebSessionForkTests(unittest.TestCase):
                 self.translation.id,
                 cloned_translation.metadata_json["forked_from_artifact_id"],
             )
+
             self.assertTrue(
                 self.paths.managed_path(cloned_translation.relative_path).is_file()
             )
@@ -263,6 +274,31 @@ class WebSessionForkTests(unittest.TestCase):
         )
         self.assertEqual("completed", stages["translate"]["status"])
         self.assertEqual("ready", stages["generate_audio"]["status"])
+
+    def test_manual_fork_can_choose_an_interface_mode(self):
+        forks = self.app.extensions["pandrator"]["session_forks"]
+        with self.database.session() as session:
+            with self.assertRaisesRegex(ValueError, "Interface mode"):
+                forks.fork_in_session(
+                    session,
+                    self.record["id"],
+                    self.translation.id,
+                    interface_mode="compact",
+                )
+        response = self.client.post(
+            f"/api/v1/sessions/{self.record['id']}/forks",
+            json={
+                "checkpoint_artifact_id": self.translation.id,
+                "name": "Advanced alternative",
+                "interface_mode": "advanced",
+            },
+            headers={
+                **self.headers,
+                "Idempotency-Key": "manual-fork-interface-mode-key",
+            },
+        )
+        self.assertEqual(201, response.status_code, response.get_json())
+        self.assertEqual("advanced", response.get_json()["interface_mode"])
 
     def test_correction_fork_accepts_child_translation(self):
         response = self.client.post(

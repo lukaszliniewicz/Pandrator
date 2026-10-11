@@ -78,6 +78,13 @@ export class TtsCatalogueState {
 
   async discover(service: TtsService | undefined) {
     if (!service?.api_base) return;
+    // Native Google catalogues are refreshed by the catalogue API with their
+    // own credentials and per-model voice metadata.
+    if (
+      ['gemini', 'vertex_ai'].includes(service.id) &&
+      service.supports_dynamic_catalog
+    )
+      return;
     const catalogueRequest = this.request;
     const request = (this.discoveryRequests.get(service.id) ?? 0) + 1;
     this.discoveryRequests.set(service.id, request);

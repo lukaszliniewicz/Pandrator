@@ -1,6 +1,10 @@
 """Pure MCP handler functions, separated from protocol registration."""
 
-from .audiobook import apply_speech_selection, preview_speech_selection
+from .audiobook import (
+    apply_speech_selection,
+    get_speech_selection_context,
+    preview_speech_selection,
+)
 from .dispatch import (
     claim_dispatch_batch,
     create_dispatch_run,
@@ -129,6 +133,7 @@ from .voice_lifecycle import (
     audition_voice,
     create_voice,
     create_voice_collection,
+    design_google_voice,
     get_voice_samples,
     import_voice_reference,
     list_voice_collections,
@@ -156,6 +161,7 @@ from .workflow import (
 __all__ = [
     "inspect_dispatch_split_boundaries",
     "apply_speech_selection",
+    "get_speech_selection_context",
     "assemble_generation_run",
     "attach_existing_source",
     "browse_local_sources",
@@ -273,6 +279,7 @@ __all__ = [
     "audition_voice",
     "create_voice",
     "create_voice_collection",
+    "design_google_voice",
     "get_voice_samples",
     "import_voice_reference",
     "list_voice_collections",

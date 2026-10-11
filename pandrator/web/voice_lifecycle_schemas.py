@@ -7,6 +7,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     StrictInt,
     StrictStr,
     model_validator,
@@ -31,6 +32,8 @@ class VoiceReferenceImportRequest(BaseModel):
     transcript_reviewed: StrictBool = False
     language: StrictStr | None = Field(default=None, max_length=40)
     expected_voice_revision: StrictInt = Field(ge=1)
+    start_seconds: StrictFloat = Field(default=0.0, ge=0, allow_inf_nan=False)
+    end_seconds: StrictFloat | None = Field(default=None, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _reviewed_transcript_is_required(self) -> VoiceReferenceImportRequest:
@@ -38,6 +41,8 @@ class VoiceReferenceImportRequest(BaseModel):
             raise ValueError(
                 "A nonblank transcript is required when transcript_reviewed is true."
             )
+        if self.end_seconds is not None and self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be greater than start_seconds.")
         return self
 
 

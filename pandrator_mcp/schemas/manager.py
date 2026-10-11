@@ -51,6 +51,10 @@ ManagerModelIds = Annotated[
 ManagerOptionValue = str | int | float | bool | None | ManagerModelIds
 
 
+class ManagerStatusInput(ToolInput):
+    detail: Literal["summary", "full"] = "full"
+
+
 class ManagerDesiredComponentInput(ToolInput):
     component_id: str = Field(pattern=_COMPONENT_ID)
     present: bool = True

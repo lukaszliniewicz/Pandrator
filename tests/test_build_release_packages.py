@@ -96,6 +96,10 @@ class BuildReleasePackagesTests(unittest.TestCase):
             "review-notes/fixture.png",
             ".local-notes/qualification.json",
             "release-acceptance.md",
+            "docs/development/from-source.md",
+            "docs/plans/implementation.md",
+            "docs/research/measurements.json",
+            "docs/reports/acceptance.png",
         ):
             with self.subTest(private_path=private_path):
                 with self.assertRaisesRegex(ValueError, "rejected archive members"):
@@ -108,7 +112,7 @@ class BuildReleasePackagesTests(unittest.TestCase):
         audit_python_distributions.validate_members(
             Path("pandrator-0.11.0.tar.gz"),
             [
-                "pandrator-0.11.0/docs/development/cjk-pipeline.md",
+                "pandrator-0.11.0/docs/guides/pronunciation-and-speech.md",
                 "pandrator-0.11.0/docs/release-notes-0.11.0.md",
                 "pandrator-0.11.0/docs/reference/subtitle-pipeline.md",
             ],

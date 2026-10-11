@@ -23,17 +23,24 @@ from .language_capabilities import (
 )
 
 _SOURCE_RECORDS: dict[tuple[str, str], str] = {
+    ("elevenlabs", "eleven_v4"): "eleven_v4_languages",
+    ("elevenlabs", "eleven_v4_turbo"): "eleven_v4_languages",
     ("gemini", "gemini-2.5-flash-preview-tts"): "gemini25_tts_languages",
     ("gemini", "gemini-2.5-pro-preview-tts"): "gemini25_tts_languages",
     ("gemini", "gemini-3.1-flash-tts-preview"): "gemini31_tts_languages",
     ("gemini", "gemini-3.8-flash-tts"): "gemini38_tts_languages",
+    ("gemini", "gemini-3.8-flash-lite-tts"): "gemini38_lite_tts_languages",
     ("vertex_ai", "gemini-3.8-flash-tts"): "vertex_gemini38_tts_languages",
+    ("vertex_ai", "gemini-3.8-flash-lite-tts"): "vertex_gemini38_lite_tts_languages",
     ("fishs2", "fishaudio/s2-pro"): "fish_s2_pro83",
     ("openai", "tts-1"): "openai_tts57",
     ("openai", "tts-1-hd"): "openai_tts57",
     ("openai", "gpt-4o-mini-tts"): "openai_tts57",
+    ("openai", "gpt-4o-mini-tts-2025-12-15"): "openai_tts57",
+    ("openai", "gpt-4o-mini-tts-2025-03-20"): "openai_tts57",
     ("vertex_ai", "gemini-3.1-flash-tts-preview"): "vertex_gemini_tts87",
     ("vertex_ai", "gemini-2.5-flash-tts"): "vertex_gemini_tts87",
+    ("vertex_ai", "gemini-2.5-flash-lite-preview-tts"): "vertex_gemini_tts87",
     ("vertex_ai", "gemini-2.5-pro-tts"): "vertex_gemini_tts87",
     ("elevenlabs", "eleven_multilingual_v2"): "eleven_multilingual_v2_29",
     ("elevenlabs", "eleven_flash_v2_5"): "eleven_multilingual_v2_29",
@@ -317,7 +324,7 @@ def tts_language_support(
     if (
         native_route in {"", "gemini", "gemini_generate_content"}
         and provider_key == "gemini"
-        and model_key == "gemini-3.8-flash-tts"
+        and model_key in {"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"}
     ):
         native_route = "gemini_interactions"
     model_metadata = metadata if isinstance(metadata, Mapping) else {}

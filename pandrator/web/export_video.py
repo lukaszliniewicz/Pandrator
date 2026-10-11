@@ -230,7 +230,10 @@ def _prepare_video_audio(
         audio_video = (
             scratch_dir / f".{record.storage_key}-audio-{new_id()}.mp4"
         )
-        if audio_mode == "dubbed":
+        from .sound_workflow_outputs import has_output_sounds, render_output_sounds
+
+        with_sounds = has_output_sounds(context, session_id, settings)
+        if audio_mode == "dubbed" and not with_sounds:
             command = build_replace_video_audio_command(
                 str(working_video),
                 str(audio_path),
@@ -243,9 +246,15 @@ def _prepare_video_audio(
         else:
             master = ensure_soundtrack_master(
                 context, session_id=session_id, source=upload_media,
-                speech=dubbing_audio, audio_mode="mixed", settings=settings,
+                speech=dubbing_audio, audio_mode=audio_mode, settings=settings,
                 cancel_event=cancel_event,
                 tail_extension_ms=tail_extension_ms,
+            )
+            master = render_output_sounds(
+                context, master, session_id=session_id, settings=settings,
+                timeline_artifact_id=dubbing_audio.id,
+                progress=lambda value, detail: progress(0.4 + value * 0.1, detail),
+                cancel_event=cancel_event,
             )
             _master, master_path = context._resolve_input(master.id)
             audio_parent_ids.append(master.id)
@@ -255,13 +264,38 @@ def _prepare_video_audio(
                 audio_bitrate=video_audio_bitrate,
                 shortest=not preserve_audio_tail,
             )
-            progress(0.4, "Using the selected mixed soundtrack")
+            progress(0.4, "Using the selected soundtrack")
         run_video_command(command, cancel_event)
         progress(0.58, "Media audio track ready")
         working_video = audio_video
         audio_parent_ids.append(dubbing_audio.id)
     else:
         tail_extension_method = None
+        from .sound_workflow_outputs import has_output_sounds, render_output_sounds
+
+        if audio_mode == "source" and has_output_sounds(context, session_id, settings):
+            from .soundtrack_export import ensure_soundtrack_master
+
+            master = ensure_soundtrack_master(
+                context, session_id=session_id, source=upload_media,
+                speech=None, audio_mode="source", settings=settings,
+                cancel_event=cancel_event,
+            )
+            mixed = render_output_sounds(
+                context, master, session_id=session_id, settings=settings,
+                timeline_artifact_id=dubbing_audio.id if dubbing_audio else None,
+                progress=lambda value, detail: progress(0.4 + value * 0.1, detail),
+                cancel_event=cancel_event,
+            )
+            _mixed, mixed_path = context._resolve_input(mixed.id)
+            audio_video = scratch_dir / f".{record.storage_key}-sounds-{new_id()}.mp4"
+            run_video_command(build_replace_video_audio_command(
+                str(working_video), str(mixed_path), str(audio_video),
+                ffmpeg_executable=ffmpeg_executable, audio_bitrate=video_audio_bitrate,
+                shortest=False,
+            ), cancel_event)
+            working_video = audio_video
+            audio_parent_ids.extend([master.id, mixed.id])
     return PreparedVideoAudio(
         working_video, audio_parent_ids, tail_extension_ms, tail_extension_method
     )

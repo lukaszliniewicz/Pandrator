@@ -22,6 +22,7 @@ from pandrator.logic.google_tts_audio import (
 TEXT = "  [whisper] Hello 世界 {control}\n "
 PCM = b"\x00\x00\x40\x00\xc0\xff\x00\x00"
 ENDPOINT = "https://fixture.invalid/speech"
+MODELS = ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts")
 
 
 @pytest.fixture(autouse=True)
@@ -66,15 +67,18 @@ def audio_payload(interactions: bool, data: object, **fields: object) -> dict[st
     return {"candidates": [{"content": {"parts": [{"inlineData": {"data": data, **fields}}]}}]}
 
 
+@pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("style", ("", "  読んでください; calmly [soft]  "))
-def test_complete_request_golden_preserves_transcript_voice_and_style(style: str) -> None:
+def test_complete_request_golden_preserves_transcript_voice_and_style(
+    model: str, style: str
+) -> None:
     gemini_content: dict[str, Any] = {"type": "text", "text": TEXT}
     vertex_part: dict[str, Any] = {"text": TEXT}
     if style:
         gemini_content["annotations"] = [{"type": "speech_metadata", "style": style}]
         vertex_part["speechMetadata"] = {"style": style}
-    assert build_gemini_speech_request(" GEMINI-3.8-FLASH-TTS ", TEXT, " Kore ", style=style) == {
-        "model": " GEMINI-3.8-FLASH-TTS ",
+    assert build_gemini_speech_request(f" {model.upper()} ", TEXT, " Kore ", style=style) == {
+        "model": f" {model.upper()} ",
         "input": [{"type": "user_input", "content": [gemini_content]}],
         "response_format": {"type": "audio", "mime_type": "audio/wav"},
         "generation_config": {"speech_config": [{"voice": " Kore "}]},
@@ -94,6 +98,8 @@ def test_complete_request_golden_preserves_transcript_voice_and_style(style: str
     (
         ("gemini-3.8-flash-tts", True),
         ("  GEMINI-3.8-FLASH-TTS  ", True),
+        ("gemini-3.8-flash-lite-tts", True),
+        ("  GEMINI-3.8-FLASH-LITE-TTS  ", True),
         ("gemini-3.1-flash-tts-preview", False),
         ("gemini-2.5-flash-tts", False),
         ("gemini/gemini-3.8-flash-tts", False),
@@ -103,7 +109,7 @@ def test_complete_request_golden_preserves_transcript_voice_and_style(style: str
     ),
 )
 def test_structured_ids_use_only_exact_normalized_membership(model: str, expected: bool) -> None:
-    assert STRUCTURED_TTS_MODELS == frozenset({"gemini-3.8-flash-tts"})
+    assert STRUCTURED_TTS_MODELS == frozenset(MODELS)
     assert is_structured_tts_model(model) is expected
 
 

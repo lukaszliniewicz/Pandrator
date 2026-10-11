@@ -77,6 +77,10 @@ tts_voices/voice_library.json
 /reviews/
 /review-notes/
 /release-acceptance.md
+/docs/development/
+/docs/plans/
+/docs/research/
+/docs/reports/
 
 # Local development and research scratch files
 /inspect_db.py

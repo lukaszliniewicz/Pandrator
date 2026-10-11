@@ -187,7 +187,11 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         "fish_audio",
         "fish_audio_s2",
     }:
-        return "fish_audio_s2", 200, None, "Fish application policy"
+        return "fish_audio_s2", 300, None, "Fish application policy; inline cues also consume runtime chunk space"
+    if is_audio_cpp and family == "supertonic":
+        language = str(settings.get("language") or "").lower()
+        limit = 120 if language.startswith(("ja", "ko")) else 300
+        return "supertonic", limit, None, "Supertonic language-specific application policy"
     if "kokoro" in model or service in {"kokoro", "kokoro_tts"}:
         return "kokoro", 240, None, "Kokoro application policy"
     if model in {"gpt-4o-mini-tts", "tts-1", "tts-1-hd"} or model.startswith("gpt-4o-mini-tts-"):
@@ -200,6 +204,8 @@ def _provider_profile(settings: Mapping[str, Any]) -> tuple[str, int, int | None
         "google_vertex_ai",
     }:
         return "gemini", 4000, None, "Gemini application policy"
+    if model in {"eleven_v4", "eleven_v4_turbo"}:
+        return "elevenlabs_v4", 1500, 2000, "Eleven v4 dialogue policy; compiled inline tags must also fit the request limit"
     if adapter in {"azure_speech", "native_azure_speech", "nativeazurespeech"} or service in {
         "azure",
         "azure_speech",

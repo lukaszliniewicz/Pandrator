@@ -79,7 +79,7 @@ def mark_provider_registrations_stale(
     changed = False
     for service_id, raw in list(providers.items()):
         registration = dict(raw or {})
-        if registration.get("resource_kind") == "linked_reference":
+        if registration.get("resource_kind") in {"linked_reference", "designed_voice"}:
             # A linked registration follows the local voice.  It is not a
             # provider-side copy that becomes stale when a newer sample or
             # reviewed transcript is added.
@@ -207,7 +207,7 @@ def voice_payload(
     providers = dict(metadata.get("providers") or {})
     for service_id, raw in list(providers.items()):
         registration = dict(raw or {})
-        if registration.get("resource_kind") == "linked_reference":
+        if registration.get("resource_kind") in {"linked_reference", "designed_voice"}:
             providers[service_id] = registration
             continue
         registered_sample = str(registration.get("sample_id") or "")
@@ -238,7 +238,7 @@ def voice_payload(
         "builtin"
         if is_bundled_voice(voice)
         else "designed"
-        if provenance.get("source_kind") == "generated_voice_design"
+        if provenance.get("source_kind") == "generated_voice_design" or metadata.get("google_voice_design")
         else "imported"
         if samples
         else "unknown"
@@ -258,7 +258,7 @@ def voice_payload(
         "sample_count": len(samples),
         "available_sample_count": len(available_ids),
         "preferred_sample_id": newest_available,
-        "preview_artifact_id": preferred_artifact,
+        "preview_artifact_id": preferred_artifact or (metadata.get("google_voice_design") or {}).get("preview_artifact_id"),
         "created_at": voice.created_at.isoformat(),
         "updated_at": voice.updated_at.isoformat(),
         "preferred_sample_transcript_reviewed": bool(

@@ -17,6 +17,8 @@
     type VoiceBinding
   } from './generation-controls';
   import CastVoiceField from './CastVoiceField.svelte';
+  import DeliveryFields from './DeliveryFields.svelte';
+  import { emptyDelivery } from './speech-inspector';
   import CastRecastDialog from './CastRecastDialog.svelte';
   import RecastVoiceAction from './RecastVoiceAction.svelte';
   import { previewRecast, type RecastPreview } from './generation-recast';
@@ -60,6 +62,7 @@
   let unlockIds = $state<string[]>([]);
   let voices = $state<VoiceRecord[]>([]);
   let sourceLabel = $state('');
+  let speakerSearch = $state('');
   let expandedCharacters = $state<string[]>([]);
   let pendingLeave = $state<(() => void) | null>(null);
   let allowLeave = false;
@@ -162,6 +165,15 @@
   const dirty = $derived(
     loaded && JSON.stringify({ characters, cast }) !== baseline
   );
+  const shownCharacters = $derived(
+    characters.filter(
+      (entry) =>
+        expandedCharacters.includes(entry.id) ||
+        `${entry.display_name} ${entry.aliases.join(' ')}`
+          .toLowerCase()
+          .includes(speakerSearch.trim().toLowerCase())
+    )
+  );
   const defaultVoices = $derived(
     loaded ? characters.filter((item) => !cast.characters[item.id]).length : 0
   );
@@ -261,6 +273,7 @@
         display_name: '',
         aliases: [],
         voice_category: 'unspecified',
+        delivery: emptyDelivery(),
         notes: '',
         locked: false,
         status: 'accepted',
@@ -355,7 +368,7 @@
   }}
 >
   <summary data-testid="cast-summary" class="cursor-pointer font-semibold"
-    >Characters and cast <span class="muted ml-2 text-xs"
+    >Speakers &amp; cast voices <span class="muted ml-2 text-xs"
       >{#if !loaded}Open to load the cast{:else}{characters.length}
         {characters.length === 1 ? 'character' : 'characters'} ·
         {narratorStatus}{#if defaultVoices > 0}
@@ -370,9 +383,13 @@
   >
   <div class="mt-4 space-y-4">
     <p class="muted text-sm">
-      A character keeps the same identity across the book. Names and aliases
-      help recognition; casting decides how that character sounds. Unknown is
-      separate from androgynous.
+      A speaker is a person or character in this project; a cast voice is how
+      they sound. Names and aliases keep manual assignments and AI analysis
+      connected to the same identity. Assign speakers to words in
+      <a
+        class="underline"
+        href={`/sessions/${sessionId}/generation?mode=editing`}>Editing</a
+      >.
     </p>
     {#if loaded}
       <div class="grid gap-4 sm:grid-cols-2">
@@ -406,20 +423,28 @@
         class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--line)] pt-4"
       >
         <h4 class="font-semibold">
-          Character roster <span class="muted text-xs"
+          Speakers <span class="muted text-xs"
             >{characters.length}
             {characters.length === 1 ? 'entry' : 'entries'}</span
           >
         </h4>
         <button class="btn" disabled={blocked} onclick={addCharacter}
-          >Add character</button
+          >Add speaker</button
         >
       </div>
       {#if !characters.length}<p class="muted text-sm">
-          Add a named character here, or review characters proposed during
-          speech optimization.
+          Add a speaker here or directly from selected speech text. AI speaker
+          analysis can also propose names; review them here before generation.
         </p>{/if}
-      {#each characters as character (character.id)}
+      {#if characters.length > 5}<label class="block text-sm"
+          >Find speaker<input
+            class="input mt-1 w-full"
+            type="search"
+            bind:value={speakerSearch}
+            placeholder="Name or alias"
+          /></label
+        >{/if}
+      {#each shownCharacters as character (character.id)}
         {@const protectedEntry =
           character.locked && !unlockIds.includes(character.id)}
         <article class="rounded-xl border border-[var(--line)] p-3 space-y-3">
@@ -437,6 +462,32 @@
                 : ''}</span
             >
           </div>
+          <fieldset
+            disabled={blocked || protectedEntry}
+            class="grid gap-3 sm:grid-cols-2"
+          >
+            <label class="text-sm font-medium"
+              >Speaker name<input
+                class="input mt-1 w-full"
+                maxlength="255"
+                bind:value={character.display_name}
+              /></label
+            >
+            <label class="text-sm font-medium"
+              >Voice presentation <span class="muted font-normal text-xs"
+                >optional</span
+              >
+              <select
+                class="input mt-1 w-full"
+                bind:value={character.voice_category}
+                >{#each voiceCategories as category}<option value={category}
+                    >{category === 'unspecified'
+                      ? 'Unspecified'
+                      : category}</option
+                  >{/each}</select
+              ></label
+            >
+          </fieldset>
           <CastVoiceField
             label={`Voice for ${character.display_name || 'this character'}`}
             value={cast.characters[character.id]}
@@ -461,6 +512,34 @@
             disabled={blocked || !draftState().valid}
             onclick={() => void reviewRecast([`character:${character.id}`])}
           />
+          <details class="border-t border-[var(--line)] pt-2">
+            <summary class="cursor-pointer py-2 text-sm"
+              >Character delivery defaults</summary
+            >
+            <div class="mt-2 space-y-3">
+              <p class="muted text-xs">
+                Directions for this character throughout this project. Text
+                directions can add to them. Enable delivery directions in Voice
+                &amp; audio to use them for future audio.
+              </p>
+              <DeliveryFields
+                value={character.delivery ?? {}}
+                label="Character delivery default"
+                disabled={blocked || protectedEntry}
+                onchange={(field, value) => {
+                  character.delivery = {
+                    ...emptyDelivery(),
+                    ...character.delivery,
+                    [field]: value
+                  };
+                }}
+              />
+              {#if protectedEntry}<p class="muted text-xs">
+                  Unlock the character under identity and protection to edit its
+                  defaults.
+                </p>{/if}
+            </div>
+          </details>
           <details
             open={expandedCharacters.includes(character.id)}
             ontoggle={(event) => {
@@ -471,7 +550,7 @@
             class="border-t border-[var(--line)] pt-2"
           >
             <summary class="cursor-pointer py-2 text-sm"
-              >Edit identity, aliases &amp; protection</summary
+              >Aliases, notes &amp; protection</summary
             >
             <div class="mt-3 space-y-3">
               <div class="flex flex-wrap justify-between gap-2">
@@ -496,22 +575,6 @@
                 disabled={blocked || protectedEntry}
                 class="grid gap-3 sm:grid-cols-2"
               >
-                <label class="text-sm"
-                  >Name<input
-                    class="input mt-1 w-full"
-                    maxlength="255"
-                    bind:value={character.display_name}
-                  /></label
-                >
-                <label class="text-sm"
-                  >Voice category<select
-                    class="input mt-1 w-full"
-                    bind:value={character.voice_category}
-                    >{#each voiceCategories as category}<option value={category}
-                        >{category}</option
-                      >{/each}</select
-                  ></label
-                >
                 <label class="text-sm sm:col-span-2"
                   >Aliases <span class="muted text-xs"
                     >Separate with commas</span

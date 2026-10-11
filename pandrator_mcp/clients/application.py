@@ -23,10 +23,14 @@ from ..request_context import correlation_headers
 from ..targets import ResolvedTarget, TargetBinding
 from ..transport import PinnedAddressAdapter
 from .application_dispatch import ApplicationDispatchMethods
+from .application_editor import ApplicationEditorMethods
 from .application_generation import ApplicationGenerationMethods
+from .application_generation_operations import ApplicationGenerationOperationMethods
 from .application_media_edit import ApplicationMediaEditMethods
 from .application_projects import ApplicationProjectMethods
+from .application_pronunciations import ApplicationPronunciationMethods
 from .application_sessions import ApplicationSessionMethods
+from .application_sounds import ApplicationSoundMethods
 from .application_sources import ApplicationSourceMethods
 from .application_voices import ApplicationVoiceMethods
 from .application_work_manager import ApplicationWorkManagerMethods
@@ -37,6 +41,7 @@ LocalBootstrap = Callable[
 ]
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
+_DEFAULT_REQUEST_TIMEOUT_LIMIT_SECONDS = 120.0
 _PASSTHROUGH_ERROR_CODES = frozenset(
     {
         "batch_completed",
@@ -54,6 +59,9 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "invalid_model_response",
         "invalid_annotation_spans",
         "sample_artifact_changed",
+        "invalid_reference_artifact",
+        "unsafe_reference_artifact",
+        "reference_artifact_changed",
         "current_reference_required",
         "invalid_cleanup_result",
         "invalid_output_role",
@@ -72,6 +80,7 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
         "plan_stale",
         "precondition_required",
         "preparation_conflict",
+        "revision_conflict",
         "response_too_large",
         "result_kind_mismatch",
         "result_phase_mismatch",
@@ -124,12 +133,16 @@ _PASSTHROUGH_ERROR_CODES = frozenset(
 
 
 class ApplicationClient(
+    ApplicationEditorMethods,
+    ApplicationSoundMethods,
     ApplicationDispatchMethods,
     ApplicationVoiceMethods,
     ApplicationSessionMethods,
     ApplicationSourceMethods,
     ApplicationGenerationMethods,
+    ApplicationGenerationOperationMethods,
     ApplicationProjectMethods,
+    ApplicationPronunciationMethods,
     ApplicationMediaEditMethods,
     ApplicationWorkManagerMethods,
 ):
@@ -153,7 +166,7 @@ class ApplicationClient(
         self._local_bootstrap = local_bootstrap
         self._local_authenticated_origins: set[str] = set()
         self._local_csrf_tokens: dict[str, str] = {}
-        self.timeout_seconds = max(1.0, min(float(timeout_seconds), 120.0))
+        self.timeout_seconds = max(1.0, min(float(timeout_seconds), 1200.0))
         self.maximum_response_bytes = max(
             64 * 1024,
             min(int(maximum_response_bytes), 16 * 1024 * 1024),
@@ -177,6 +190,7 @@ class ApplicationClient(
         path: str,
         *,
         method: str = "GET",
+        read_only_operation: bool = False,
         authenticated: bool = True,
         parameters: dict[str, Any] | list[tuple[str, Any]] | None = None,
         body: dict[str, Any] | None = None,
@@ -184,9 +198,20 @@ class ApplicationClient(
         if_match_revision: int | str | None = None,
         maximum_body_bytes: int = 512 * 1024,
         request_timeout_seconds: float | None = None,
+        request_timeout_limit_seconds: float = _DEFAULT_REQUEST_TIMEOUT_LIMIT_SECONDS,
         _allow_local_retry: bool = True,
     ) -> dict[str, Any]:
         method = str(method or "GET").upper()
+        is_read = method in {"GET", "HEAD"} or read_only_operation
+        retry_policy = (
+            "safe_to_retry_read" if is_read
+            else "same_request_and_idempotency_key" if idempotency_key is not None
+            else "inspect_state"
+        )
+        retry_details = {
+            "operation_outcome": "not_applicable" if is_read else "unknown",
+            "retry_policy": retry_policy,
+        }
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise ValueError("The application method is not allowlisted.")
         if method in {"GET", "DELETE"} and body is not None:
@@ -210,15 +235,30 @@ class ApplicationClient(
                 raise ValueError("The application request exceeds the bounded body limit.")
         if idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
             raise ValueError("Idempotency keys must contain 8-200 safe ASCII characters.")
+        if isinstance(request_timeout_limit_seconds, bool):
+            raise ValueError("Application request timeout limits must be between 1 and 1200 seconds.")
+        try:
+            request_timeout_limit = float(request_timeout_limit_seconds)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                "Application request timeout limits must be finite numbers between 1 and 1200 seconds."
+            ) from error
+        if (
+            not math.isfinite(request_timeout_limit)
+            or not 1.0 <= request_timeout_limit <= 1200.0
+        ):
+            raise ValueError(
+                "Application request timeout limits must be finite numbers between 1 and 1200 seconds."
+            )
         request_timeout = self.timeout_seconds
         if request_timeout_seconds is not None:
             try:
                 request_timeout = float(request_timeout_seconds)
-            except (TypeError, ValueError) as error:
+            except (TypeError, ValueError, OverflowError) as error:
                 raise ValueError("Application request timeouts must be finite numbers.") from error
             if not math.isfinite(request_timeout):
                 raise ValueError("Application request timeouts must be finite numbers.")
-            request_timeout = max(1.0, min(request_timeout, 120.0))
+        request_timeout = max(1.0, min(request_timeout, request_timeout_limit))
         if if_match_revision is not None:
             if isinstance(if_match_revision, bool):
                 raise ValueError("If-Match revisions must be non-negative integers.")
@@ -353,16 +393,6 @@ class ApplicationClient(
                 "The target's TLS identity could not be validated.",
             ) from error
         except requests.exceptions.Timeout as error:
-            is_read = method in {"GET", "HEAD"}
-            retry_policy = (
-                "safe_to_retry_read"
-                if is_read
-                else (
-                    "same_request_and_idempotency_key"
-                    if idempotency_key is not None
-                    else "inspect_state"
-                )
-            )
             raise PandratorMcpError(
                 "application_response_timeout",
                 (
@@ -372,8 +402,7 @@ class ApplicationClient(
                 ),
                 details={
                     "timeout_seconds": request_timeout,
-                    "operation_outcome": "not_applicable" if is_read else "unknown",
-                    "retry_policy": retry_policy,
+                    **retry_details,
                 },
                 retryable=retry_policy != "inspect_state",
             ) from error
@@ -381,7 +410,8 @@ class ApplicationClient(
             raise PandratorMcpError(
                 "application_unavailable",
                 "The Pandrator application is unavailable.",
-                retryable=True,
+                details=retry_details,
+                retryable=retry_policy != "inspect_state",
             ) from error
         raw = b"".join(chunks)
         try:
@@ -407,6 +437,7 @@ class ApplicationClient(
                 return self._request_json(
                     path,
                     method=method,
+                    read_only_operation=read_only_operation,
                     authenticated=authenticated,
                     parameters=parameters,
                     body=body,
@@ -414,6 +445,7 @@ class ApplicationClient(
                     if_match_revision=if_match_revision,
                     maximum_body_bytes=maximum_body_bytes,
                     request_timeout_seconds=request_timeout_seconds,
+                    request_timeout_limit_seconds=request_timeout_limit_seconds,
                     _allow_local_retry=False,
                 )
             raise PandratorMcpError(
@@ -468,8 +500,8 @@ class ApplicationClient(
             raise PandratorMcpError(
                 "downstream_unavailable",
                 "Pandrator rejected the request.",
-                details={"status": status_code},
-                retryable=status_code >= 500,
+                details={"status": status_code, **retry_details},
+                retryable=status_code >= 500 and retry_policy != "inspect_state",
             )
         if not isinstance(payload, dict):
             raise PandratorMcpError(
@@ -548,7 +580,7 @@ class ApplicationClient(
                         url,
                         data=body,
                         headers=headers,
-                        timeout=max(self.timeout_seconds, 120.0),
+                        timeout=_DEFAULT_REQUEST_TIMEOUT_LIMIT_SECONDS,
                         allow_redirects=False,
                         stream=True,
                         verify=verify,
@@ -855,7 +887,7 @@ class ApplicationClient(
                     response = self.session.get(
                         url,
                         headers=headers,
-                        timeout=max(self.timeout_seconds, 120.0),
+                        timeout=_DEFAULT_REQUEST_TIMEOUT_LIMIT_SECONDS,
                         allow_redirects=False,
                         stream=True,
                         verify=verify,

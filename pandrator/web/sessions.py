@@ -106,6 +106,7 @@ class SessionService:
         name: str,
         *,
         workflow_kind: str = "audiobook",
+        interface_mode: str = "simple",
         source_language: str = "auto",
         target_language: str | None = None,
         workflow_preset: str = "custom",
@@ -119,6 +120,8 @@ class SessionService:
         normalized_name = str(name or "").strip()
         if not normalized_name:
             raise ValueError("Session name is required.")
+        if interface_mode not in ("simple", "advanced"):
+            raise ValueError("Interface mode must be 'simple' or 'advanced'.")
         setup = MultilingualSetup.model_validate(multilingual_setup) if multilingual_setup is not None else None
         stages = list(included_stages or [])
         if setup is not None:
@@ -131,6 +134,7 @@ class SessionService:
             **({"storage_key": storage_key} if storage_key else {}),
             name=normalized_name,
             workflow_kind=workflow_kind,
+            interface_mode=interface_mode,
             source_language=str(source_language or "auto").strip().lower(),
             target_language=str(target_language).strip().lower() if target_language else None,
             workflow_preset=workflow_preset,
@@ -198,7 +202,21 @@ class SessionService:
         revision: int,
         changes: dict,
     ) -> SessionRecord:
-        allowed = {"name", "workflow_kind", "source_language", "target_language", "workflow_preset", "included_stages_json", "status"}
+        allowed = {
+            "name",
+            "workflow_kind",
+            "interface_mode",
+            "source_language",
+            "target_language",
+            "workflow_preset",
+            "included_stages_json",
+            "status",
+        }
+        if "interface_mode" in changes and changes["interface_mode"] not in (
+            "simple",
+            "advanced",
+        ):
+            raise ValueError("Interface mode must be 'simple' or 'advanced'.")
         record = SessionService._locked_current(session, session_id)
         if record.revision != revision:
             raise RevisionConflict(

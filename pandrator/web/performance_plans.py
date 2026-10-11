@@ -11,7 +11,9 @@ import json
 import secrets
 import xml.etree.ElementTree as ET
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import select
@@ -28,6 +30,13 @@ from . import models as m
 from .generation_controls import get_generation_controls, merge_character_proposals
 from .performance_annotations import performance_batches as _batches
 from .performance_annotations import plan_annotations as _annotations
+from .performance_read_projections import (
+    PERFORMANCE_PLAN_VIEWS,
+    annotation_unit,
+    capability_profile_id,
+    frozen_capabilities,
+    summary_settings,
+)
 from .performance_schemas import PerformancePlanCreateRequest, PerformanceResult
 from .settings_policy import RevisionConflict
 from .speech_analysis_policy import assert_pass_result
@@ -237,11 +246,11 @@ def _public_unit(
     plan: m.PerformancePlan,
     unit: dict[str, Any],
     record: dict[str, Any] | None,
+    structure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text = str(unit["spoken_text"])
     xml = record_markup(record) or unit.get("speech_xml")
-    structure = None
-    if isinstance(xml, str):
+    if structure is None and isinstance(xml, str):
         structure = parse_speech_markup(
             xml,
             expected_segment_id=str(unit["id"]),
@@ -547,6 +556,8 @@ def describe_plan(
     limit: int = 50,
     include_units: bool = True,
     filter: str = "all",
+    view: str = "full",
+    segment_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     if not 0 <= offset or not 1 <= limit <= 100:
         raise ValueError("Offset must be nonnegative and limit 1–100.")
@@ -554,20 +565,83 @@ def describe_plan(
         raise ValueError(
             "filter must be one of all, directed, unreviewed, locked, dialogue, unresolved."
         )
-    annotations = _annotations(session, plan)
+    if view not in PERFORMANCE_PLAN_VIEWS:
+        raise ValueError("view must be one of summary, annotations, full.")
+    known_ids = {str(unit["id"]) for unit in plan.units_json}
+    selected_ids: set[str] | None = None
+    if segment_ids is not None:
+        if not segment_ids or len(segment_ids) > 100:
+            raise ValueError("segment_ids must contain between 1 and 100 segment IDs.")
+        if len(set(segment_ids)) != len(segment_ids):
+            raise ValueError("segment_ids must contain unique segment IDs.")
+        unknown_ids = [segment_id for segment_id in segment_ids if segment_id not in known_ids]
+        if unknown_ids:
+            raise ValueError("Unknown segment ID(s) in performance plan: " + ", ".join(unknown_ids[:10]))
+        selected_ids = set(segment_ids)
+
+    # Use one batch read for both annotations and the public batch summary.
     batches = _batches(session, plan.id)
+    annotations: dict[str, dict[str, Any]] = {}
+    for batch in batches:
+        if batch.status == "completed":
+            annotations.update(deepcopy(batch.annotations_json or {}))
+    annotations.update(deepcopy(plan.manual_annotations_json or {}))
     try:
         _assert_current(session, plan)
         stale = False
     except RevisionConflict:
         stale = True
     job = session.get(m.Job, plan.job_id) if plan.job_id else None
-    public_items = []
-    for unit in plan.units_json:
+    candidate_units = [
+        unit
+        for unit in plan.units_json
+        if selected_ids is None or str(unit["id"]) in selected_ids
+    ]
+    structural_filter = filter in {"dialogue", "unresolved"}
+    structures: dict[str, dict[str, Any] | None] = {}
+    filtered_units = []
+    for unit in candidate_units:
         record = annotations.get(str(unit["id"]))
-        public = _public_unit(plan, unit, record)
-        if _matches_filter(filter, unit, record, public.get("speech_structure")):
-            public_items.append(public)
+        structure = None
+        if structural_filter:
+            xml = record_markup(record) or unit.get("speech_xml")
+            if isinstance(xml, str):
+                structure = parse_speech_markup(
+                    xml,
+                    expected_segment_id=str(unit["id"]),
+                    expected_text=str(unit["spoken_text"]),
+                    characters=_characters(plan),
+                ).public()
+            structures[str(unit["id"])] = structure
+        if _matches_filter(filter, unit, record, structure):
+            filtered_units.append(unit)
+
+    filtered_total = len(filtered_units)
+    build_units = include_units and view in {"annotations", "full"}
+    page_units = filtered_units[offset : offset + limit] if build_units else []
+    public_items = []
+    for unit in page_units:
+        key = str(unit["id"])
+        record = annotations.get(key)
+        structure = structures.get(key)
+        if view == "annotations":
+            if structure is None and not structural_filter:
+                xml = record_markup(record) or unit.get("speech_xml")
+                if isinstance(xml, str):
+                    structure = parse_speech_markup(
+                        xml,
+                        expected_segment_id=key,
+                        expected_text=str(unit["spoken_text"]),
+                        characters=_characters(plan),
+                    ).public()
+            public_items.append(
+                annotation_unit(unit, record_annotation(record), structure)
+            )
+        else:
+            public_items.append(_public_unit(plan, unit, record, structure))
+
+    is_full = view == "full"
+    capabilities = frozen_capabilities(plan.settings_json)
     result = {
         "id": plan.id,
         "session_id": plan.session_id,
@@ -577,12 +651,12 @@ def describe_plan(
         "version": plan.version,
         "job_id": plan.job_id,
         "job_status": job.status if job else None,
-        "settings": deepcopy(plan.settings_json),
+        "settings": deepcopy(plan.settings_json) if is_full else summary_settings(plan.settings_json),
         "stale": stale,
         "created_at": plan.created_at.isoformat(),
         "adopted_at": plan.adopted_at.isoformat() if plan.adopted_at else None,
         "total": len(plan.units_json),
-        "filtered_total": len(public_items),
+        "filtered_total": filtered_total,
         "analysed_count": len(annotations),
         "steered_count": sum(
             (record_annotation(a) or {}).get("decision") == "steer"
@@ -602,13 +676,28 @@ def describe_plan(
             for b in batches
         ],
     }
-    if include_units:
+    if not is_full:
+        result.pop("base_signature")
+        profile_id = capability_profile_id(capabilities)
+        result["view"] = view
+        result["capability_profile_id"] = profile_id
+        result["capabilities"] = capabilities
         result.update(
             {
                 "offset": offset,
                 "limit": limit,
                 "filter": filter,
-                "items": public_items[offset : offset + limit],
+            }
+        )
+        if segment_ids is not None:
+            result["segment_ids"] = list(segment_ids)
+    if build_units:
+        result.update(
+            {
+                "offset": offset,
+                "limit": limit,
+                "filter": filter,
+                "items": public_items,
             }
         )
     return result
@@ -1061,6 +1150,33 @@ def speech_markup_for_segment(
     return xml
 
 
+@dataclass(slots=True)
+class _PreviewState:
+    plan: m.PerformancePlan
+    units: dict[str, dict[str, Any]]
+    annotations: dict[str, Any]
+    characters: list[dict[str, Any]]
+    controls: dict[str, Any]
+    contexts: dict[str, Any]
+
+
+def _prepare_previews(session, plan, settings, segment_ids) -> _PreviewState:
+    """Share guarded database/context reads within one compilation-only batch."""
+    _assert_current(session, plan)
+    controls = get_generation_controls(session, plan.session_id)
+    characters = list({
+        item["id"]: item for item in [*_characters(plan), *controls["characters"]]
+    }.values())
+    return _PreviewState(
+        plan, _unit_map(plan), _annotations(session, plan), characters, controls,
+        semantic_context_window(
+            plan.units_json,
+            {**settings, "tts_context_mode": settings.get("tts_context_mode") or "off"},
+            target_ids=set(segment_ids),
+        ),
+    )
+
+
 def preview_segment(
     session,
     plan: m.PerformancePlan,
@@ -1069,16 +1185,32 @@ def preview_segment(
     *,
     annotation: dict[str, Any] | None = None,
     speech_xml: str | None = None,
+    _prepared: _PreviewState | None = None,
 ) -> dict[str, Any]:
-    _assert_current(session, plan)
-    unit = _unit_map(plan).get(segment_id)
+    started = stage_start = perf_counter()
+    timings: dict[str, float] = {}
+
+    def stage(name: str) -> None:
+        nonlocal stage_start
+        now = perf_counter()
+        timings[name] = round((now - stage_start) * 1000, 3)
+        stage_start = now
+
+    if _prepared is not None and _prepared.plan is not plan:
+        raise ValueError("Prepared preview state belongs to another performance plan.")
+    if _prepared is None:
+        _assert_current(session, plan)
+    unit = (_prepared.units if _prepared else _unit_map(plan)).get(segment_id)
     if unit is None:
         raise KeyError(segment_id)
-    saved = _annotations(session, plan).get(segment_id)
-    characters = _characters(plan)
+    saved = (_prepared.annotations if _prepared else _annotations(session, plan)).get(segment_id)
+    characters = _prepared.characters if _prepared else _characters(plan)
+    controls = _prepared.controls if _prepared else None
     if session is not None and speech_xml is not None:
-        current = get_generation_controls(session, plan.session_id)
-        characters = list({item["id"]: item for item in [*characters, *current["characters"]]}.values())
+        if controls is None:
+            controls = get_generation_controls(session, plan.session_id)
+        characters = list({item["id"]: item for item in [*characters, *controls["characters"]]}.values())
+    stage("database_and_cast")
     if annotation is not None or speech_xml is not None:
         selected_record = _normalize_item(
             plan,
@@ -1098,7 +1230,8 @@ def preview_segment(
         )
     else:
         selected_record = {}
-    contexts = semantic_context_window(
+    stage("normalization")
+    contexts = _prepared.contexts if _prepared else semantic_context_window(
         plan.units_json,
         {
             **settings,
@@ -1112,6 +1245,7 @@ def preview_segment(
         "_performance": record_annotation(selected_record) or {},
         "_semantic_context": contexts.get(segment_id, {}),
     }
+    stage("context")
     if unit.get("voice"):
         prepared.update(voice=unit["voice"], speaker=unit["voice"])
     if unit.get("language"):
@@ -1127,8 +1261,10 @@ def preview_segment(
         if isinstance(xml, str)
         else None
     )
+    stage("markup_parse")
     from .generation_cast_runtime import preview_render_parts
-    parts = preview_render_parts(session, plan.session_id, unit["spoken_text"], segment_id, prepared, xml, unit.get("speaker"))
+    parts = preview_render_parts(session, plan.session_id, unit["spoken_text"], segment_id, prepared, xml, unit.get("speaker"), controls=controls)
+    stage("cast_resolution")
     compiled_parts = [
         {"start": part["start"], "end": part["end"], "text": part["text"],
          "voice": part["settings"].get("voice") or part["settings"].get("speaker") or "",
@@ -1144,6 +1280,8 @@ def preview_segment(
         "report": [{**item, "message": f"Part {index + 1}: {item['message']}"} for index, part in enumerate(compiled_parts) for item in part["report"]],
         "fingerprint": content_hash([part.get("fingerprint") for part in compiled_parts]),
     }
+    stage("compilation")
+    timings["total"] = round((perf_counter() - started) * 1000, 3)
     return {
         "plan_id": plan.id,
         "segment_id": segment_id,
@@ -1151,6 +1289,7 @@ def preview_segment(
         "speech_structure": structure,
         **compiled,
         "parts": compiled_parts,
+        "timings_ms": timings,
     }
 
 

@@ -69,6 +69,7 @@ class SessionBundleService:
             session_payload = {
                 "name": record.name,
                 "workflow_kind": record.workflow_kind,
+                "interface_mode": record.interface_mode,
                 "source_language": record.source_language,
                 "target_language": record.target_language,
                 "workflow_preset": record.workflow_preset,
@@ -203,6 +204,7 @@ class SessionBundleService:
             imported = self.sessions.create(
                 str(name or session_data.get("name") or "Imported session"),
                 workflow_kind=str(session_data.get("workflow_kind") or "audiobook"),
+                interface_mode=session_data.get("interface_mode", "advanced"),
                 source_language=str(session_data.get("source_language") or "auto"),
                 target_language=str(session_data.get("target_language") or "") or None,
                 workflow_preset=str(session_data.get("workflow_preset") or "custom"),

@@ -3,13 +3,122 @@
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, TypeAlias
 
+from .audio_cpp_catalogue import package_metadata as _package_metadata
 from .audio_cpp_model_metadata import ModelCatalog as ModelCatalog
 from .audio_cpp_model_metadata import _audio_cpp_model_metadata as _audio_cpp_model_metadata
+from .audio_cpp_parameters import (
+    FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT,
+    request_parameters_for_family,
+    request_parameters_for_model,
+)
 
 ModelMetadataReader: TypeAlias = Callable[[str, dict], dict[str, object]]
 ModelLanguageReader: TypeAlias = Callable[[str, object, dict | None], str]
 ModelOptionsReader: TypeAlias = Callable[[dict[str, Any], str, str], dict[str, Any] | None]
 ModelOptionsValidator: TypeAlias = Callable[[str, Mapping[str, Any]], dict[str, Any]]
+
+_TTS_FORBIDDEN_LEGACY_OPTIONS = {
+    "lfm2_audio": {
+        "audio_chunk_mode",
+        "audio_chunk_seconds",
+        "text_temperature",
+        "text_top_k",
+        "stream_frames_per_event",
+    },
+    "dots_tts": {"use_xvector", "vocoder_merge_steps"},
+}
+_MANAGED_REFERENCE_PATH_OPTIONS = {
+    "voice_samples",
+    "speaker_embedding_file",
+    "reference_codes_file",
+}
+_LINKED_REFERENCE_TRANSCRIPT_FAMILIES = {
+    "f5_tts": "F5-TTS",
+    "glm_tts": "GLM-TTS",
+    "zipvoice": "ZipVoice",
+    "outetts": "OuteTTS",
+    "kitten_tts2": "KittenTTS2",
+}
+_AUK_GENERATOR_MODEL_IDS = frozenset(
+    {
+        "auk_base_f16",
+        "auk_base_f32",
+        "auk_base_q8_0",
+        "auk_flash_f16",
+        "auk_flash_f32",
+        "auk_flash_q8_0",
+    }
+)
+
+
+def _reject_known_unsupported_options(
+    family: str, model_id: str, options: Mapping[str, Any]
+) -> None:
+    normalized = str(family or "").strip().lower()
+    forbidden = _MANAGED_REFERENCE_PATH_OPTIONS | _TTS_FORBIDDEN_LEGACY_OPTIONS.get(
+        normalized, set()
+    )
+    family_parameters = request_parameters_for_family(normalized)
+    model_parameters = request_parameters_for_model(normalized, model_id)
+    forbidden |= family_parameters.keys() - model_parameters.keys()
+    for key in sorted(forbidden.intersection(options)):
+        raise ValueError(f"Unknown audio.cpp option '{key}' for family '{family}'.")
+
+
+def _has_managed_wav_reference(reference: Any) -> bool:
+    if not isinstance(reference, dict) or not reference:
+        return False
+    data = reference.get("data")
+    return (
+        str(reference.get("type") or "").strip().casefold() == "base64"
+        and isinstance(data, str)
+        and data.casefold().startswith("data:audio/wav;base64,")
+    )
+
+
+def _require_auk_duration_without_reference(
+    tts_settings: Mapping[str, Any],
+    model: str,
+    family: str,
+    linked_reference: bool,
+    validate_options: ModelOptionsValidator,
+) -> None:
+    if (
+        family != "auk"
+        or model.casefold() not in _AUK_GENERATOR_MODEL_IDS
+        or linked_reference
+    ):
+        return
+
+    model_settings = tts_settings.get("audio_cpp_model_settings")
+    selected = (
+        model_settings.get(model)
+        if isinstance(model_settings, dict)
+        else None
+    )
+    if isinstance(selected, dict):
+        duration_value = selected.get("duration_sec")
+    else:
+        raw_options = tts_settings.get("audio_cpp_options")
+        if raw_options is None:
+            raw_options = tts_settings.get("options")
+        duration_value = (
+            raw_options.get("duration_sec")
+            if isinstance(raw_options, dict)
+            else None
+        )
+
+    message = (
+        "AuK generation without linked reference audio requires a finite positive "
+        "options.duration_sec."
+    )
+    try:
+        validated = validate_options(family, {"duration_sec": duration_value})
+        duration = validated["duration_sec"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+    if duration <= 0:
+        raise ValueError(message)
 
 
 class CompiledPerformanceProjection(Protocol):
@@ -173,6 +282,10 @@ def _audio_cpp_selected_model_options(
     selected = model_settings.get(model)
     if not isinstance(selected, dict):
         return None
+    model_parameters = request_parameters_for_model(family, model)
+    for key in selected:
+        if key not in model_parameters:
+            raise ValueError(f"Unknown audio.cpp option '{key}' for family '{family}'.")
     return validate_options(family, selected)
 
 
@@ -199,10 +312,68 @@ def _build_audio_cpp_audio_payload(
         raise ValueError("Select one of the model IDs configured in the audio.cpp server.")
 
     metadata = model_metadata(model, endpoint)
+    if metadata.get("entry_role") == "component" or _package_metadata(model).get("entry_role") == "component":
+        raise ValueError(f"audio.cpp package '{model}' is a component, not a speech model.")
     voice_mode = str(metadata.get("voice_mode") or "cloning").lower()
     is_design = voice_mode == "design"
     is_prebuilt = voice_mode == "prebuilt"
     family = str(metadata.get("family") or "").lower()
+    raw_voice_ref = tts_settings.get("audio_cpp_voice_ref")
+    linked_reference = isinstance(raw_voice_ref, dict) and bool(raw_voice_ref)
+    reference_text = str(tts_settings.get("audio_cpp_reference_text") or "").strip()
+    if family == "moss_ttsd" and linked_reference and reference_text and not reference_text.startswith("[S1]"):
+        reference_text = f"[S1] {reference_text}"
+    if family == "index_tts2" and not _has_managed_wav_reference(raw_voice_ref):
+        raise ValueError("IndexTTS2 requires a linked WAV reference audio file.")
+    model_settings = tts_settings.get("audio_cpp_model_settings")
+    has_selected_options = isinstance(model_settings, dict) and isinstance(
+        model_settings.get(model), dict
+    )
+    raw_options_value = tts_settings.get("audio_cpp_options")
+    if raw_options_value is None:
+        raw_options_value = tts_settings.get("options")
+    legacy_options = raw_options_value if isinstance(raw_options_value, dict) else {}
+    legacy_reference_text = (
+        str(legacy_options.get("reference_text") or "").strip()
+        if not has_selected_options
+        else ""
+    )
+    if (
+        linked_reference
+        and not reference_text
+        and not is_design
+        and not is_prebuilt
+        and family in _LINKED_REFERENCE_TRANSCRIPT_FAMILIES
+    ):
+        if family == "kitten_tts2":
+            raise ValueError(
+                "KittenTTS2 voice cloning requires a matching reference transcript."
+            )
+        family_name = _LINKED_REFERENCE_TRANSCRIPT_FAMILIES[family]
+        raise ValueError(
+            f"{family_name} linked voice references require a matching reference transcript."
+        )
+    if family == "moss_tts_nano" and not linked_reference and (
+        reference_text or legacy_reference_text
+    ):
+        raise ValueError(
+            "MOSS-TTS-Nano reference text requires linked reference audio."
+        )
+    _require_auk_duration_without_reference(
+        tts_settings,
+        model,
+        family,
+        linked_reference,
+        validate_options,
+    )
+    if family == "lfm2_audio" and "_jp_" in model.casefold():
+        if any(
+            str(tts_settings.get(key) or "").strip()
+            for key in ("speaker", "voice")
+        ):
+            raise ValueError(
+                "The Japanese LFM checkpoint uses its built-in voice; clear the selected voice."
+            )
     if voice_mode in {"unknown", "none"}:
         raise ValueError(
             f"audio.cpp model '{model}' has no verified speech request contract. "
@@ -235,8 +406,13 @@ def _build_audio_cpp_audio_payload(
         text, {**tts_settings, "xtts_model": model}, {**endpoint, "adapter": "audio_cpp"}
     )
     payload["input"] = compiled.input
+    controls = getattr(compiled, "capabilities", {})
+    transport = str(controls.get("instruction_transport") or "")
+    if controls.get("requires_instruction") and not compiled.instructions.strip():
+        raise ValueError("This audio.cpp model requires a voice description before synthesis.")
     if (
         is_design
+        and not transport
         and not str(
             tts_settings.get("generation_prompt")
             or tts_settings.get("openai_audio_instructions")
@@ -246,13 +422,17 @@ def _build_audio_cpp_audio_payload(
         raise ValueError(
             "audio.cpp VoiceDesign models require instructions: provide a stable voice description in the general direction field."
         )
-    if compiled.instructions:
+    if compiled.instructions and not transport:
         payload["instructions"] = compiled.instructions
 
-    reference_text = str(tts_settings.get("audio_cpp_reference_text") or "").strip()
-    if reference_text and not is_prebuilt and not is_design and family != "pocket_tts":
+    if (
+        reference_text
+        and not is_prebuilt
+        and not is_design
+        and family not in {"pocket_tts", "moss_tts_local"}
+    ):
         payload["reference_text"] = reference_text
-    voice_ref = tts_settings.get("audio_cpp_voice_ref")
+    voice_ref = raw_voice_ref
     if not is_prebuilt and not is_design and isinstance(voice_ref, dict) and voice_ref:
         payload["voice_ref"] = dict(voice_ref)
         # A linked Pandrator ID identifies the local sample, not a voice cached
@@ -297,6 +477,7 @@ def _build_audio_cpp_audio_payload(
         if raw_options is None:
             raw_options = tts_settings.get("options")
         options = dict(raw_options) if isinstance(raw_options, dict) else {}
+        _reject_known_unsupported_options(family, model, options)
         for key in (
             "speed",
             "seed",
@@ -361,6 +542,10 @@ def _build_audio_cpp_audio_payload(
             for key, value in options.items()
             if str(key).strip().casefold() not in cloning_only_options
         }
+    if family == "moss_tts_local":
+        # MOSS-TTS-Local consumes the linked audio prompt but has no
+        # reference-transcript request field.
+        options.pop("reference_text", None)
     if family in {"magpie_tts", "neutts"} and voice and not is_design:
         # Magpie consumes its selected preset as an option, not OpenAI's
         # top-level voice field.  A selected voice is authoritative.
@@ -369,7 +554,6 @@ def _build_audio_cpp_audio_payload(
         # Pocket's reviewed clone transcript is a request option.  It must win
         # over any stale value in a legacy raw option bag.
         options["voice_clone_text"] = reference_text
-    linked_reference = isinstance(voice_ref, dict) and bool(voice_ref)
     if family in {"irodori_tts", "moss_voicegen"} and language:
         options["language"] = payload.pop("language")
     if family == "moss_voicegen":
@@ -397,6 +581,31 @@ def _build_audio_cpp_audio_payload(
     # Compiler-owned transport safeguards take precedence over raw tuning.
     # In particular, Fish's generated bracket controls require tag-aware splits.
     options.update(compiled.request_options)
+    if family in {"fish_audio_s2", "fish_audio"}:
+        options.setdefault(
+            "text_chunk_size", FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT
+        )
+    if family == "moss_ttsd" and linked_reference:
+        option_reference_text = options.get("reference_text")
+        if isinstance(option_reference_text, str) and option_reference_text.strip():
+            normalized_reference_text = option_reference_text.strip()
+            options["reference_text"] = (
+                normalized_reference_text
+                if normalized_reference_text.startswith("[S1]")
+                else f"[S1] {normalized_reference_text}"
+            )
+    if transport in {"options.instruct", "options.instruction"}:
+        for alias in ("instruct", "instruction", "instructions", "caption"):
+            options.pop(alias, None)
+            payload.pop(alias, None)
+        if compiled.instructions:
+            options[transport.split(".", 1)[1]] = compiled.instructions
+    if model.casefold() in {
+        "irodori_tts_500m_v3_f16", "irodori_tts_500m_v3_q8_0",
+        "irodori_tts_600m_v3_voicedesign_f16", "irodori_tts_600m_v3_voicedesign_q8_0",
+        "irodori_tts_v4_small_f16", "irodori_tts_v4_small_q8_0",
+    }:
+        options["no_ref"] = not linked_reference
     if family == "breeze_tts":
         # Breeze rejects even a neutral speed field inherited from global defaults.
         for request_fields in (payload, options):

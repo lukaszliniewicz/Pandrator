@@ -111,6 +111,10 @@ class TtsCatalogInput(ToolInput):
         default="summary",
         description="Summary omits large voice catalogues and metadata; full returns exact voice choices.",
     )
+    include_managed_voices: bool = Field(
+        default=True,
+        description="Include managed voice registrations alongside service choices.",
+    )
     refresh: bool = Field(
         default=False,
         description="Probe configured services for current availability and dynamic catalogs.",
@@ -199,6 +203,7 @@ class ConfigureTtsInput(ToolInput):
 
 class ListGenerationRunsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
+    generation_run_id: str | None = Field(default=None, min_length=1, max_length=80)
     view: Literal["compact", "full"] = "compact"
     limit: int = Field(default=20, ge=1, le=100)
     include_repairs: bool = Field(

@@ -13,6 +13,7 @@
     type GenerationStartMode
   } from './generation-start';
   import type { GenerationRun } from './api-models';
+  import type { AdmissionProgress } from './generation-admission';
 
   let {
     sessionId,
@@ -45,6 +46,8 @@
   let previewError = $state('');
   let acknowledged = $state(false);
   let startBusy = $state(false);
+  let admissionProgress = $state<AdmissionProgress | null>(null);
+  let generationController: AbortController | null = null;
   let startError = $state('');
   let startSucceeded = $state(false);
   let postError = $state('');
@@ -56,6 +59,7 @@
   onMount(() => () => {
     mounted = false;
     retryController?.abort();
+    generationController?.abort();
   });
 
   const reasons = $derived(preview ? nonzeroReasons(preview.reasons) : []);
@@ -76,6 +80,7 @@
       typeof preview.selection_hash === 'string' &&
       preview.selection_hash.trim().length > 0 &&
       !preview.blocked_reason &&
+      !preview.provider_preflight?.configuration_warning &&
       preview.speech_plan_revision_id === planRevisionId &&
       preview.mode === previewModeForStartMode(mode) &&
       (!needsAck || acknowledged)
@@ -269,17 +274,26 @@
   async function submit() {
     if (!canSubmit || !preview || !planRevisionId) return;
     startBusy = true;
+    admissionProgress = null;
+    generationController = new AbortController();
     startError = '';
     postError = '';
     refreshedAfterConflict = false;
     try {
       const flags = startModeFlags(mode);
-      const run = await confirmGenerationStart(sessionId, {
-        speech_plan_revision_id: planRevisionId,
-        settings_source_run_id: settingsSourceRunId || null,
-        ...flags,
-        expected_selection_hash: preview.selection_hash
-      });
+      const run = await confirmGenerationStart(
+        sessionId,
+        {
+          speech_plan_revision_id: planRevisionId,
+          settings_source_run_id: settingsSourceRunId || null,
+          ...flags,
+          expected_selection_hash: preview.selection_hash
+        },
+        (value) => {
+          if (mounted) admissionProgress = value;
+        },
+        generationController.signal
+      );
       if (!mounted) return;
       // The generation run started: a later UI-refresh failure must never
       // offer another start.
@@ -478,10 +492,41 @@
             {preview.settings_summary.voice}
           </p>
         {/if}
+        {#if preview.provider_preflight?.credential_origin}
+          <p
+            class="muted mt-2 text-xs"
+            data-testid="generation-provider-preflight"
+          >
+            {preview.provider_preflight.route_id} · credentials: {preview.provider_preflight.credential_origin.replaceAll(
+              '_',
+              ' '
+            )}
+            {#if preview.provider_preflight.project}
+              · project {preview.provider_preflight
+                .project}{:else if preview.provider_preflight.project_resolution === 'runtime'}
+              · project resolved when generation starts{/if}
+            {#if preview.provider_preflight.location}
+              · location {preview.provider_preflight.location}{/if}
+            · provider access is checked when generation starts
+          </p>
+        {/if}
+        {#if preview.provider_preflight?.configuration_warning}<p
+            role="alert"
+            class="preview-error mt-2 text-sm"
+          >
+            {preview.provider_preflight.configuration_warning}
+          </p>{/if}
         {#if noWork}
           <p class="mt-2 text-sm" data-testid="generation-start-noop">
             {preview.blocked_reason ?? 'Nothing to generate for this choice.'}
           </p>
+          {#if mode === 'continue' && preview.total_count > 0 && preview.preserve_count === preview.total_count}
+            <p class="muted mt-2 text-sm">
+              Every block already has a completed recording. This choice keeps
+              recordings made with other voices or models. Choose Refresh
+              changed audio to apply your current voice and settings.
+            </p>
+          {/if}
         {/if}
         {#if needsAck}
           <p
@@ -496,6 +541,21 @@
           </p>
         {/if}
       </section>
+    {/if}
+
+    {#if startBusy}
+      <p
+        role="status"
+        class="muted text-sm"
+        data-testid="generation-admission-progress"
+      >
+        {admissionProgress
+          ? admissionProgress.detail
+          : 'Submitting generation request'}
+        {#if admissionProgress}<span class="block text-xs"
+            >Work {admissionProgress.jobId}</span
+          >{/if}
+      </p>
     {/if}
 
     {#if startError}

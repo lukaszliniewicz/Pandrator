@@ -14,12 +14,13 @@ import re
 from numbers import Real
 from typing import Any, Mapping
 
-from .audio_cpp_catalogue import family_metadata
+from .audio_cpp_inventory_data import family_metadata
 
 _UINT32_MAX = 2**32 - 1
 _SAFE_INTEGER_MAX = 2**53 - 1
 _CHUNK_MODES = ["default", "tag_aware", "japanese", "endline"]
 _MAX_GENERIC_STRING_LENGTH = 1200
+FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT = 300
 _SAFE_OPTION_NAME = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 _RESERVED_OPTION_NAMES = {
     "instruction",
@@ -32,6 +33,9 @@ _RESERVED_OPTION_NAMES = {
     "voice_id",
     "voice",
     "speaker",
+    "voice_samples",
+    "speaker_embedding_file",
+    "reference_codes_file",
     "language",
     "template_name",
     "no_ref",
@@ -68,6 +72,28 @@ _NATIVE_SCALAR_TYPES = {
     "enum": "string",
     "string": "string",
 }
+
+# ``request_parameters_for_family`` is the TTS request projection.  Some
+# native family specs combine TTS, ASR, and speech-to-speech controls, so keep
+# controls from those other operations out of the TTS option surface.
+_TTS_UNSUPPORTED_NATIVE_OPTIONS = {
+    "lfm2_audio": {
+        "audio_chunk_mode",
+        "audio_chunk_seconds",
+        "text_temperature",
+        "text_top_k",
+        "stream_frames_per_event",
+    },
+    # The edit operation owns this field; the speech request builder must not
+    # expose it as a TTS tuning control.
+    "dots_tts": {"use_xvector", "vocoder_merge_steps"},
+}
+_AUK_FLASH_MODEL_IDS = frozenset(
+    {"auk_flash_f16", "auk_flash_f32", "auk_flash_q8_0"}
+)
+_AUK_FLASH_BASE_ONLY_OPTIONS = frozenset(
+    {"num_inference_steps", "guidance_scale", "sway_sampling_coef"}
+)
 
 
 def _integer(
@@ -167,7 +193,7 @@ AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY: dict[str, dict[str, dict[str, Any]]] = {
     },
     "qwen3_tts": {
         "seed": copy.deepcopy(_UINT32_OPTIONAL),
-        "max_tokens": _integer(default=2048, minimum=1),
+        "max_tokens": _integer(minimum=1),
         "do_sample": _boolean(default=True),
         "temperature": _number(default=0.9, exclusive_minimum=0),
         "top_k": _integer(default=50, minimum=0),
@@ -184,7 +210,15 @@ AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY: dict[str, dict[str, dict[str, Any]]] = {
         "top_p": _number(default=0.8, exclusive_minimum=0, maximum=1),
         "top_k": _integer(default=30, minimum=1),
         "temperature": _number(default=0.8, exclusive_minimum=0, exclusive_maximum=2),
-        "text_chunk_size": _integer(default=200, minimum=1),
+        "text_chunk_size": {
+            **_integer(default=FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT, minimum=1),
+            "native_default": 200,
+            "default_source": "pandrator_policy",
+            "description": (
+                "Pandrator defaults to 300 characters per chunk; the native audio.cpp "
+                "default is 200."
+            ),
+        },
         "text_chunk_mode": {
             "type": "string",
             # ``word_budget`` is the Fish spec's default alias for the
@@ -284,8 +318,8 @@ def request_parameters_for_family(family: str) -> dict[str, dict[str, Any]]:
 
     The generated catalogue describes the upstream request surface, while the
     manual registry remains authoritative for controls already wired through
-    Pandrator.  Unknown or non-scalar catalogue fields are deliberately left
-    out of the returned mapping.
+    Pandrator.  Unknown, non-scalar, and non-TTS catalogue fields are
+    deliberately left out of the returned mapping.
     """
 
     normalized = str(family or "").strip().lower()
@@ -305,11 +339,47 @@ def request_parameters_for_family(family: str) -> dict[str, dict[str, Any]]:
             request_options = []
         if isinstance(request_options, list):
             for option in request_options:
+                if (
+                    isinstance(option, Mapping)
+                    and option.get("name")
+                    in _TTS_UNSUPPORTED_NATIVE_OPTIONS.get(normalized, set())
+                ):
+                    continue
                 descriptor = _descriptor_from_native_option(option)
                 if descriptor is not None:
                     derived[descriptor.pop("_name")] = descriptor
-    derived.update(manual)
+    for name, descriptor in manual.items():
+        merged = dict(descriptor)
+        native = derived.get(name, {})
+        if "default" not in merged and "default" in native and _valid_native_default(
+            native["default"], merged["type"], merged
+        ):
+            merged["default"] = native["default"]
+        derived[name] = merged
+    if normalized == "qwen3_tts":
+        max_tokens = derived.get("max_tokens")
+        if max_tokens is not None:
+            max_tokens.pop("default", None)
+            max_tokens["default_note"] = (
+                "Selected checkpoint generation_config.json; 2048 fallback."
+            )
     return derived
+
+
+def request_parameters_for_model(
+    family: str, model_id: str
+) -> dict[str, dict[str, Any]]:
+    """Return the TTS parameter projection for one exact model package."""
+
+    parameters = request_parameters_for_family(family)
+    normalized_family = str(family or "").strip().lower()
+    if (
+        normalized_family == "auk"
+        and str(model_id or "").strip().casefold() in _AUK_FLASH_MODEL_IDS
+    ):
+        for name in _AUK_FLASH_BASE_ONLY_OPTIONS:
+            parameters.pop(name, None)
+    return parameters
 
 
 def _finite_native_number(value: Any) -> int | float | None:
@@ -349,6 +419,10 @@ def _valid_native_default(
         if minimum is not None and value < minimum:
             return False
         if maximum is not None and value > maximum:
+            return False
+        if descriptor.get("exclusive_minimum") is not None and value <= descriptor["exclusive_minimum"]:
+            return False
+        if descriptor.get("exclusive_maximum") is not None and value >= descriptor["exclusive_maximum"]:
             return False
     return True
 
@@ -426,6 +500,8 @@ def _numeric(value: Any, *, key: str, integer: bool) -> int | float:
 def validate_model_options(
     family: str,
     options: Mapping[str, Any],
+    *,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate and normalize one selected model's scalar option mapping.
 
@@ -436,7 +512,11 @@ def validate_model_options(
 
     if not isinstance(options, Mapping):
         raise ValueError("audio.cpp model settings must be an object.")
-    descriptors = request_parameters_for_family(family)
+    descriptors = (
+        request_parameters_for_model(family, model_id)
+        if model_id is not None
+        else request_parameters_for_family(family)
+    )
     normalized_family = str(family or "").strip().lower()
     if normalized_family == "fish_audio":
         normalized_family = "fish_audio_s2"
@@ -498,16 +578,20 @@ def validate_model_options(
 def validate_audio_cpp_model_options(
     family: str,
     options: Mapping[str, Any],
+    *,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """Compatibility-named entry point for request builders and identity code."""
 
-    return validate_model_options(family, options)
+    return validate_model_options(family, options, model_id=model_id)
 
 
 __all__ = [
     "AUDIO_CPP_PARAMETER_REGISTRY",
     "AUDIO_CPP_REQUEST_PARAMETERS_BY_FAMILY",
+    "FISH_AUDIO_TTS_TEXT_CHUNK_SIZE_DEFAULT",
     "request_parameters_for_family",
+    "request_parameters_for_model",
     "validate_audio_cpp_model_options",
     "validate_model_options",
 ]

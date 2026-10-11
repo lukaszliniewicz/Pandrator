@@ -115,7 +115,7 @@ function trackPageErrors(page: Page) {
 
 async function openGeneration(page: Page, sessionId: string) {
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const table = page.getByTestId('generation-segment-table');
   await expect(table).toBeVisible();
   return table;
@@ -170,14 +170,10 @@ async function loadAll(page: Page, total: number) {
       (await table.getAttribute('data-loaded-count')) ?? '0'
     );
     if (loaded >= total) return;
-    // Let virtual rows mount and measure after scrolling, before pointer-down.
-    const loadMore = page.getByRole('button', { name: 'Load more' });
-    await loadMore.scrollIntoViewIfNeeded();
-    await loadMore.click();
-    await expect(table).toHaveAttribute(
-      'data-loaded-count',
-      String(Math.min(total, loaded + 100))
-    );
+    await scrollHostToBottom(page);
+    await expect
+      .poll(async () => Number(await table.getAttribute('data-loaded-count')))
+      .toBeGreaterThan(loaded);
   }
   await expect(table).toHaveAttribute('data-loaded-count', String(total));
 }

@@ -10,6 +10,7 @@ from .audiobook import (
     SpeechSelectionDeliveryInput,
 )
 from .common import ToolEnvelope, ToolInput, WorkReference
+from .comparison_exports import ComparisonExportInput
 from .dispatch import (
     ClaimDispatchBatchInput,
     CreateDispatchRunInput,
@@ -69,6 +70,7 @@ from .generation_controls import (
     VoiceBinding,
     VoiceCategory,
 )
+from .generation_operations import GetGenerationOperationInput, GetGenerationRunCoverageInput
 from .generation_recast import (
     GENERATION_RECAST_INPUT_MODELS,
     PreviewRecastInput,
@@ -82,6 +84,7 @@ from .manager import (
     ControlRuntimeInput,
     ExecuteComponentPlanInput,
     ManagerDesiredComponentInput,
+    ManagerStatusInput,
     PlanComponentChangeInput,
 )
 from .media_edit import (
@@ -121,6 +124,12 @@ from .performance import (
     RenewPerformanceBatchInput,
     SubmitPerformanceBatchInput,
 )
+from .pronunciations import (
+    CreatePronunciationInput,
+    DeletePronunciationInput,
+    ListPronunciationsInput,
+    UpdatePronunciationInput,
+)
 from .recommendations import RecommendNextStepsInput
 from .session_branches import (
     SESSION_BRANCH_INPUT_MODELS,
@@ -134,6 +143,7 @@ from .session_branches import (
 from .session_purge import (
     SESSION_PURGE_INPUT_MODELS,
     DeleteSessionPermanentlyInput,
+    GetSessionPurgeInspectionInput,
     GetSessionTrashPolicyInput,
     PreviewSessionDeletionInput,
     UpdateSessionTrashPolicyInput,
@@ -173,6 +183,7 @@ from .source_cleaning_dispatch import (
     SourceCleaningDispatchResultInput,
     SubmitSourceCleaningDispatchBatchInput,
 )
+from .speech_editor import ApplySpeechSelectionBatchInput, PreviewSpeechSelectionBatchInput
 from .speech_optimization_dispatch import (
     ClaimSpeechOptimizationDispatchBatchInput,
     CreateSpeechOptimizationDispatchRunInput,
@@ -205,6 +216,7 @@ from .voice_lifecycle import (
     AuditionVoiceInput,
     CatalogVoiceMetadataChanges,
     CreateVoiceCollectionInput,
+    DesignGoogleVoiceInput,
     GetVoiceSamplesInput,
     ImportVoiceReferenceInput,
     ListVoiceCollectionsInput,
@@ -250,6 +262,12 @@ from .workflow_inputs import (
 )
 
 TOOL_INPUT_MODELS = (
+    GetGenerationOperationInput, GetGenerationRunCoverageInput,
+    ListPronunciationsInput, CreatePronunciationInput,
+    UpdatePronunciationInput, DeletePronunciationInput,
+    ComparisonExportInput,
+    ApplySpeechSelectionBatchInput,
+    PreviewSpeechSelectionBatchInput,
     *SESSION_BRANCH_INPUT_MODELS,
     InspectDispatchSplitBoundariesInput,
     *AUDIOBOOK_INPUT_MODELS,
@@ -294,6 +312,7 @@ TOOL_INPUT_MODELS = (
     VoiceCatalogCapabilitiesInput,
     AuditionVoiceInput,
     VoiceCreateInput,
+    DesignGoogleVoiceInput,
     GetVoiceSamplesInput,
     PromoteVoiceDesignInput,
     ImportVoiceReferenceInput,
@@ -335,6 +354,7 @@ TOOL_INPUT_MODELS = (
     ExecuteWorkflowPlanInput,
     CancelWorkInput,
     ManagerDesiredComponentInput,
+    ManagerStatusInput,
     PlanComponentChangeInput,
     ExecuteComponentPlanInput,
     ControlRuntimeInput,
@@ -387,6 +407,13 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "GetGenerationOperationInput", "GetGenerationRunCoverageInput",
+    "ListPronunciationsInput", "CreatePronunciationInput",
+    "UpdatePronunciationInput", "DeletePronunciationInput",
+    "ComparisonExportInput",
+    "ApplySpeechSelectionBatchInput",
+    "PreviewSpeechSelectionBatchInput",
+    "GetSessionPurgeInspectionInput",
     "ForkSessionInput",
     "GetTranslationProjectInput",
     "GetTranslationProjectExportManifestInput",
@@ -507,6 +534,7 @@ __all__ = [
     "ControlRuntimeInput",
     "ExecuteComponentPlanInput",
     "ManagerDesiredComponentInput",
+    "ManagerStatusInput",
     "PatchSubtitleCuesInput",
     "MediaEditKeepRange",
     "PlanComponentChangeInput",
@@ -575,6 +603,7 @@ __all__ = [
     "VoiceCatalogCapabilitiesInput",
     "AuditionVoiceInput",
     "CatalogVoiceMetadataChanges",
+    "DesignGoogleVoiceInput",
     "VoiceCreateInput",
     "GetVoiceSamplesInput",
     "PromoteVoiceDesignInput",

@@ -37,6 +37,7 @@ def frozen_semantic_contexts(snapshot: dict[str, Any]) -> dict[str, dict[str, st
 def freeze_generation_performance_snapshot(
     session, revision_id: str, snapshot: dict[str, Any], _service_config_cache=None,
     *, _settings_copy=None, cast_segment_ids: Collection[str] | None = None,
+    _voice_reference_index: dict[str, list[dict[str, Any]]] | None = None,
 ) -> bool:
     """Bind a new run to current adoption and immutable semantic source text.
 
@@ -75,6 +76,7 @@ def freeze_generation_performance_snapshot(
             session, revision_id, snapshot, settings, _service_config_cache,
             _settings_copy=_settings_copy,
             validate_segment_ids=cast_segment_ids,
+            _voice_reference_index=_voice_reference_index,
         )
     if mode != "off":
         context_settings = {

@@ -102,6 +102,7 @@ class PlanWorkflowInput(ToolInput):
     ] = "generate_audio"
     overrides: dict[str, Any] = Field(default_factory=dict)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
+    continuation: bool = Field(default=True, description="Include prerequisite workflow stages. Use false for export-only planning from existing inputs/audio.")
 
     @field_validator("overrides")
     @classmethod
@@ -133,6 +134,8 @@ class PlanOrchestratedWorkflowInput(DelegationExecutionMixin):
         default=(), max_length=3
     )
     final_stage: Literal["generate_audio", "export"] = "export"
+    generation_run_id: str | None = Field(default=None, min_length=1, max_length=80)
+    audio_version_side: Literal["before", "after"] = "after"
     packet_format: Literal["standard", "compact"] = "compact"
     overrides: dict[str, Any] = Field(default_factory=dict)
     export_mode: Literal["media", "audio", "subtitles", "text", "video_book"] = "media"
@@ -144,6 +147,12 @@ class PlanOrchestratedWorkflowInput(DelegationExecutionMixin):
     filename: str | None = Field(default=None, max_length=255)
     wait_seconds: int = Field(default=0, ge=0, le=3_600)
     expires_in_minutes: int = Field(default=30, ge=1, le=60)
+
+    @model_validator(mode="after")
+    def validate_existing_audio_export(self):
+        if self.generation_run_id and (self.final_stage != "export" or self.passive_stages):
+            raise ValueError("A selected generation run requires export with no upstream passive stages.")
+        return self
 
     @field_validator("goal")
     @classmethod

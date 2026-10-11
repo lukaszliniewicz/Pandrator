@@ -22,6 +22,7 @@
     onnavigate,
     onactivate,
     disabled = false,
+    readOnly = false,
     label = 'editable text',
     onsearch,
     searching = false,
@@ -37,6 +38,7 @@
     onnavigate?: (match: TextSearchMatch) => void | Promise<void>;
     onactivate?: () => void | Promise<void>;
     disabled?: boolean;
+    readOnly?: boolean;
     label?: string;
     onsearch?: (
       query: string,
@@ -159,7 +161,7 @@
 <div
   class="search-replace"
   role="search"
-  aria-label={`Search and replace ${label}`}
+  aria-label={`${readOnly ? 'Search' : 'Search and replace'} ${label}`}
 >
   <div class="find-field">
     <Search class="search-icon" size={15} />
@@ -197,25 +199,25 @@
       aria-label="Next match"><ChevronDown size={15} /></button
     >
   </div>
-  <div class="replace-field">
-    <input
-      bind:value={replacement}
-      onfocus={activate}
-      onkeydown={replaceKeydown}
-      placeholder="Replace with"
-      aria-label={`Replace in ${label}`}
-    />
-    <button
-      onclick={replaceCurrent}
-      disabled={disabled || searching || replacing || !currentMatch}
-      >Replace</button
-    >
-    <button
-      onclick={replaceAll}
-      disabled={disabled || searching || replacing || !matches.length}
-      >Replace all</button
-    >
-  </div>
+  {#if !readOnly}<div class="replace-field">
+      <input
+        bind:value={replacement}
+        onfocus={activate}
+        onkeydown={replaceKeydown}
+        placeholder="Replace with"
+        aria-label={`Replace in ${label}`}
+      />
+      <button
+        onclick={replaceCurrent}
+        disabled={disabled || searching || replacing || !currentMatch}
+        >Replace</button
+      >
+      <button
+        onclick={replaceAll}
+        disabled={disabled || searching || replacing || !matches.length}
+        >Replace all</button
+      >
+    </div>{/if}
   <div class="options">
     {#if showScopeSelector}
       <div class="scope-switch" role="radiogroup" aria-label="Search scope">

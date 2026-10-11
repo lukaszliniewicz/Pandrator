@@ -30,6 +30,81 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                     self.assertLess(len(compact.content[0].text), len(standard.content[0].text) // 5)
                     self.assertEqual("structuredContent", json.loads(compact.content[0].text)["data"])
 
+    async def test_routine_catalogue_and_work_tools_use_standard_or_compact_envelopes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = build_runtime(
+                McpSettings(
+                    target_name="missing", configuration_path=Path(directory) / "missing.json"
+                )
+            )
+            cases = (
+                (
+                    "pandrator_get_tts_catalog",
+                    "pandrator_mcp.server.tts_catalog",
+                    {},
+                    {"services": [{"id": "service-a", "label": "catalog-payload-sentinel"}]},
+                ),
+                (
+                    "pandrator_get_voice_catalog",
+                    "pandrator_mcp.server.voice_catalog",
+                    {
+                        "perceived_age": "adult",
+                        "delivery_preset": "storytelling",
+                        "tag": "Narrator",
+                        "cursor": "cursor-1",
+                    },
+                    {"items": [{"name": "catalog-payload-sentinel"}]},
+                ),
+                (
+                    "pandrator_list_work",
+                    "pandrator_mcp.server.list_work",
+                    {},
+                    {"items": [{"id": "work-payload-sentinel"}]},
+                ),
+                (
+                    "pandrator_get_work",
+                    "pandrator_mcp.server.get_work",
+                    {"work_id": "work-1"},
+                    {"id": "work-payload-sentinel"},
+                ),
+                (
+                    "pandrator_get_work_log",
+                    "pandrator_mcp.server.get_work_log",
+                    {"work_id": "work-1"},
+                    {"events": [{"message": "work-payload-sentinel"}]},
+                ),
+            )
+
+            async with Client(build_server(runtime), mode="auto", raise_exceptions=True) as client:
+                for name, handler, arguments, data in cases:
+                    with self.subTest(tool=name), patch(handler, return_value=data) as handler_mock:
+                        standard = await client.call_tool(name, arguments)
+                        structured = await client.call_tool(
+                            name, {**arguments, "response_mode": "structured"}
+                        )
+
+                        self.assertEqual(
+                            standard.structured_content,
+                            json.loads(standard.content[0].text),
+                        )
+                        self.assertEqual(data, standard.structured_content["result"])
+                        self.assertEqual(data, structured.structured_content["result"])
+                        marker = json.loads(structured.content[0].text)
+                        self.assertEqual("1", marker["schema_version"])
+                        self.assertEqual(
+                            structured.structured_content["request_id"],
+                            marker["request_id"],
+                        )
+                        self.assertEqual("structuredContent", marker["data"])
+                        self.assertNotIn("payload-sentinel", structured.content[0].text)
+                        if name == "pandrator_get_voice_catalog":
+                            voice_input = handler_mock.call_args.args[1]
+                            self.assertEqual("adult", voice_input.perceived_age)
+                            self.assertEqual("storytelling", voice_input.delivery_preset)
+                            self.assertEqual("Narrator", voice_input.tag)
+                            self.assertEqual("cursor-1", voice_input.cursor)
+                            self.assertEqual(30, voice_input.limit)
+
     async def test_nested_capsule_fields_are_discoverable_and_invalid_input_has_path(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = build_runtime(McpSettings(target_name="missing", configuration_path=Path(directory) / "missing.json"))

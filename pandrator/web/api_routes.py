@@ -45,6 +45,7 @@ from .dispatch_routes import register_dispatch_routes
 from .domain_blueprints import DomainBlueprints
 from .generation_routes import register_generation_routes
 from .global_settings import SettingPreconditionError
+from .google_voice_design_routes import register_google_voice_design_routes
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
 from .http_serialization import model_payload as _model_dict
@@ -139,6 +140,7 @@ def _session_payload(record) -> dict[str, Any]:
             "name",
             "storage_key",
             "workflow_kind",
+            "interface_mode",
             "source_language",
             "target_language",
             "workflow_preset",
@@ -318,11 +320,26 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     from .session_purge_routes import register_session_purge_routes
 
     register_session_purge_routes(app, context)
+    from .comparison_export_routes import register_comparison_export_routes
+    from .session_purge_job_routes import register_session_purge_job_routes
+
+    register_session_purge_job_routes(app, context)
+    register_comparison_export_routes(app, context)
     register_speech_selection_routes(app, context)
     from .voice_catalog_routes import register_voice_catalog_routes
 
     register_voice_catalog_routes(app, context)
+    from .audio_import_routes import register_audio_import_routes
+    from .sound_job_routes import register_sound_job_routes
+    from .sound_project_routes import register_project_sound_routes
+    from .sound_routes import register_sound_routes
+
+    register_sound_routes(app, context)
+    register_project_sound_routes(app, context)
+    register_sound_job_routes(app, context)
+    register_audio_import_routes(app, context)
     register_voice_routes(app, context)
+    register_google_voice_design_routes(app, context)
     register_quick_transcription_routes(app, context)
 
     @app.get("/api/v1/health")
@@ -1118,6 +1135,36 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
             return jsonify(work.get(job_id).model_dump(mode="json"))
         except KeyError:
             return error_response("not_found", "Work item not found.", 404)
+
+    @app.get("/api/v1/generation-operations/<operation_id>")
+    @require_auth
+    def generation_operation_get(operation_id: str):
+        from .generation_operations import get_generation_operation
+
+        include = request.args.get("include_coverage", "true")
+        if include not in {"true", "false"}:
+            return error_response("validation_error", "include_coverage must be true or false", 422)
+        try:
+            return jsonify(get_generation_operation(work, operation_id, include_coverage=include == "true"))
+        except KeyError:
+            return error_response("not_found", "Generation operation not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
+
+    @app.get("/api/v1/generation-runs/<run_id>/coverage")
+    @require_auth
+    def generation_run_coverage_get(run_id: str):
+        from .generation_operations import get_generation_run_coverage
+
+        side = request.args.get("audio_version_side", "after")
+        if side not in {"before", "after"}:
+            return error_response("validation_error", "audio_version_side must be before or after", 422)
+        try:
+            return jsonify(get_generation_run_coverage(database, run_id, audio_version_side="before" if side == "before" else "after"))
+        except KeyError:
+            return error_response("not_found", "Generation run not found.", 404)
+        except ValueError as error:
+            return error_response("validation_error", str(error), 422)
 
     @app.get("/api/v1/work/<job_id>/events")
     @require_auth

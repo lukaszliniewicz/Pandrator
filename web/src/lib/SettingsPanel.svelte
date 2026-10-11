@@ -18,6 +18,8 @@
   import { languagesForService, describeVoice } from './voice-catalog';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
+  import ElevenLabsModelSettings from './ElevenLabsModelSettings.svelte';
+  import { elevenLabsVoiceSettingsError } from './elevenlabs-settings';
   import AudioCppModelDetails from './AudioCppModelDetails.svelte';
   import LocalModelPicker from './LocalModelPicker.svelte';
   import SettingField from './SettingField.svelte';
@@ -311,6 +313,8 @@
     };
   });
   const modelTuningError = $derived.by(() => {
+    if (section === 'tts' && elevenV4)
+      return elevenLabsVoiceSettingsError(selectedModel, elevenVoiceSettings);
     if (section !== 'tts' || !audioCpp) return '';
     const values = (
       effectiveTts.audio_cpp_model_settings as
@@ -336,6 +340,15 @@
           return `Choose a valid value for ${label}.`;
         continue;
       }
+      if (spec.type === 'string') {
+        if (
+          typeof current !== 'string' ||
+          current.length > 1200 ||
+          current.includes('\u0000')
+        )
+          return `${label} must be text of at most 1200 characters without null characters.`;
+        continue;
+      }
       const number = Number(current);
       if (
         !Number.isFinite(number) ||
@@ -356,6 +369,14 @@
   const voiceMode = $derived(
     selectedTts?.model_voice_modes?.[selectedModel] ??
       String(modelMetadata?.voice_mode ?? '')
+  );
+  const elevenV4 = $derived(
+    section === 'tts' &&
+      selectedTts?.adapter === 'elevenlabs_native' &&
+      ['eleven_v4', 'eleven_v4_turbo'].includes(selectedModel)
+  );
+  const elevenVoiceSettings = $derived(
+    (effectiveTts.elevenlabs_voice_settings ?? {}) as Record<string, unknown>
   );
   const modelChoices = $derived(
     Array.from(
@@ -518,8 +539,9 @@
       if (key.startsWith('chatterbox_')) return service.includes('chatterbox');
       if (key.startsWith('elevenlabs_'))
         return (
-          selectedTts?.adapter === 'elevenlabs_native' ||
-          service.includes('elevenlabs')
+          !(elevenV4 && key === 'elevenlabs_voice_settings') &&
+          (selectedTts?.adapter === 'elevenlabs_native' ||
+            service.includes('elevenlabs'))
         );
       if (
         key.startsWith('xtts_') ||
@@ -1095,6 +1117,15 @@
           onchange={(map) => set('audio_cpp_model_settings', map)}
         />
       {/if}
+      {#if elevenV4}
+        <div class="mt-4">
+          <ElevenLabsModelSettings
+            model={selectedModel}
+            value={elevenVoiceSettings}
+            onchange={(value) => set('elevenlabs_voice_settings', value)}
+          />
+        </div>
+      {/if}
       {#if section === 'tts'}<p class="muted mt-4 text-xs">
           Speech-block boundaries are configured in the <a
             class="font-semibold text-[var(--accent)]"
@@ -1227,6 +1258,15 @@
           settings={effectiveTts}
           onchange={(map) => set('audio_cpp_model_settings', map)}
         />
+      {/if}
+      {#if elevenV4}
+        <div class="mt-4">
+          <ElevenLabsModelSettings
+            model={selectedModel}
+            value={elevenVoiceSettings}
+            onchange={(value) => set('elevenlabs_voice_settings', value)}
+          />
+        </div>
       {/if}
       {#if section === 'tts'}<p class="muted mt-4 text-xs">
           Speech-block boundaries are configured in the <a

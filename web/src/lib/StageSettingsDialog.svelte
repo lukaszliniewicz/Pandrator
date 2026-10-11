@@ -662,6 +662,25 @@
         ? String(saved.voice ?? saved.voice_name ?? '')
         : String(activeService?.default_voice ?? '');
     draft.generationPrompt = String(saved.generation_prompt ?? '');
+    draft.elevenLabsVoiceSettings =
+      saved.elevenlabs_voice_settings &&
+      typeof saved.elevenlabs_voice_settings === 'object'
+        ? { ...(saved.elevenlabs_voice_settings as Record<string, unknown>) }
+        : {};
+    draft.ttsContextMode = ['off', 'before', 'both'].includes(
+      String(saved.tts_context_mode)
+    )
+      ? (saved.tts_context_mode as 'off' | 'before' | 'both')
+      : 'off';
+    draft.performanceContextBefore = Number(
+      saved.performance_context_before ?? 2
+    );
+    draft.performanceContextAfter = Number(
+      saved.performance_context_after ?? 1
+    );
+    draft.performanceContextMaxChars = Number(
+      saved.performance_context_max_chars ?? 4000
+    );
     draft.ttsBatchSize = Number(saved.tts_batch_size ?? 10);
     draft.ttsConcurrentRequests = Number(saved.tts_concurrent_requests ?? 1);
     draft.subtitleMode = String(saved.subtitle_mode ?? 'soft');
@@ -1284,6 +1303,17 @@
   async function useLibraryVoice(voice: VoiceRecord) {
     const registration =
       voice.metadata_json?.providers?.[ttsSelection.selectedTtsServiceId];
+    if (
+      registration?.resource_kind === 'designed_voice' &&
+      (!ttsSelection.selectedGoogle38Model ||
+        !ttsSelection.selectedTtsService?.managed_google_voice_ids?.includes(
+          String(registration.voice_id)
+        ))
+    ) {
+      error =
+        'This designed voice is not available for the selected Google project and model. Refresh the catalogue and check the provider credentials.';
+      return;
+    }
     if (registration?.status === 'ready' && registration.voice_id) {
       draft.voiceName = String(registration.voice_id);
       return;
@@ -1769,6 +1799,17 @@
           : {}),
         voice: draft.voiceName,
         generation_prompt: draft.generationPrompt,
+        ...(ttsSelection.selectedElevenLabs
+          ? { elevenlabs_voice_settings: draft.elevenLabsVoiceSettings }
+          : {}),
+        ...(ttsSelection.supportsTextContext
+          ? {
+              tts_context_mode: draft.ttsContextMode,
+              performance_context_before: draft.performanceContextBefore,
+              performance_context_after: draft.performanceContextAfter,
+              performance_context_max_chars: draft.performanceContextMaxChars
+            }
+          : {}),
         tts_batch_size: draft.ttsBatchSize,
         tts_concurrent_requests: draft.ttsConcurrentRequests,
         language: draft.targetLanguage,
@@ -1862,6 +1903,15 @@
     }
     if (key === 'generate_audio' && ttsSelection.ttsLanguageIssue) {
       error = ttsSelection.ttsLanguageIssue;
+      return;
+    }
+    if (key === 'generate_audio' && ttsSelection.invalidTextContext) {
+      error =
+        'Use 0–20 context blocks and a context budget of 0–16,000 characters.';
+      return;
+    }
+    if (key === 'generate_audio' && ttsSelection.elevenVoiceSettingsError) {
+      error = ttsSelection.elevenVoiceSettingsError;
       return;
     }
     if (key === 'generate_audio' && !ttsSelection.selectedTtsServiceAvailable) {
@@ -2882,6 +2932,8 @@
                 (!ttsSelection.selectedTtsServiceAvailable ||
                   ttsSelection.selectedVoiceLanguageMismatch ||
                   ttsSelection.invalidTtsConcurrency ||
+                  ttsSelection.invalidTextContext ||
+                  Boolean(ttsSelection.elevenVoiceSettingsError) ||
                   (Boolean(ttsSelection.ttsSwitchSource) &&
                     (!ttsSelection.ttsSwitchReviewed ||
                       !ttsSelection.ttsModels.includes(draft.ttsModel)))))}
@@ -2912,6 +2964,8 @@
                 (!ttsSelection.selectedTtsServiceAvailable ||
                   ttsSelection.selectedVoiceLanguageMismatch ||
                   ttsSelection.invalidTtsConcurrency ||
+                  ttsSelection.invalidTextContext ||
+                  Boolean(ttsSelection.elevenVoiceSettingsError) ||
                   (Boolean(ttsSelection.ttsSwitchSource) &&
                     (!ttsSelection.ttsSwitchReviewed ||
                       !ttsSelection.ttsModels.includes(draft.ttsModel)))))}

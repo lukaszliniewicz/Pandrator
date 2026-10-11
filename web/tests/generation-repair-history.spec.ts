@@ -81,9 +81,16 @@ async function fixture(page: Page) {
     repair_reason: index < 133 ? null : 'added_delay',
     source_block_ordinal: index
   }));
-  await page.route(`**${endpoint}/generation-runs`, (route) =>
+  await page.route(`**${endpoint}/generation-runs*`, (route) =>
     route.fulfill({ json: { items: [...children].reverse().concat(root) } })
   );
+  await page.route('**/api/v1/generation-runs/*', (route) => {
+    const id = new URL(route.request().url()).pathname.split('/').at(-1);
+    const run = [root, ...children].find((item) => item.id === id);
+    return run
+      ? route.fulfill({ json: { ...run, settings_snapshot: {} } })
+      : route.fallback();
+  });
   const segmentRequests: string[] = [];
   await page.route(`**${endpoint}/generation-segments?*`, (route) => {
     const runId =
@@ -133,7 +140,7 @@ test('drawer groups repairs and selects final, original and intermediate audio',
 }, testInfo) => {
   const { session, segmentRequests } = await fixture(page);
   await page.goto(`/sessions/${session.id}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const picker = page.getByRole('combobox', {
     name: 'Audio view',
     exact: true
@@ -224,7 +231,7 @@ test('repair history starts hidden again after reloading the workspace', async (
 }) => {
   const { session } = await fixture(page);
   await page.goto(`/sessions/${session.id}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const history = page.getByRole('region', { name: 'Timing repair history' });
   await expect(history).toHaveCount(0);
   await page
@@ -235,7 +242,7 @@ test('repair history starts hidden again after reloading the workspace', async (
     .click();
   await expect(history).toBeVisible();
   await page.reload();
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(history).toHaveCount(0);
   await expect(
     page.locator('summary').filter({ hasText: 'Split / repair history' })
@@ -248,11 +255,11 @@ test('repair history toggle is unavailable when the selected audio has no repair
   const { session, endpoint, root } = await fixture(page);
   const unrepaired = { ...root };
   delete unrepaired.timing_repair;
-  await page.route(`**${endpoint}/generation-runs`, (route) =>
+  await page.route(`**${endpoint}/generation-runs*`, (route) =>
     route.fulfill({ json: { items: [unrepaired] } })
   );
   await page.goto(`/sessions/${session.id}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Audio view', exact: true })
     .selectOption('root');

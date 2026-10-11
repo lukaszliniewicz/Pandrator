@@ -114,10 +114,25 @@ CASES = [
     ),
     Case(
         "pandrator_generate_speech_plan",
-        {**GUARD, "speech_plan_revision_id": "revision-1", "stale_only": True},
+        {
+            **GUARD,
+            "speech_plan_revision_id": "revision-1",
+            "missing_only": True,
+            "settings_source": "run",
+            "settings_source_run_id": "settings-source-run-1",
+        },
         "start_generation_run",
         (SESSION,),
-        {"speech_plan_revision_id": "revision-1", "stale_only": True, "idempotency_key": KEY, "view": "compact"},
+        {
+            "speech_plan_revision_id": "revision-1",
+            "stale_only": False,
+            "missing_only": True,
+            "idempotency_key": KEY,
+            "view": "compact",
+            "settings_source": "run",
+            "settings_source_run_id": "settings-source-run-1",
+            "admission": True,
+        },
     ),
     Case(
         "pandrator_revise_speech_block_plan",
@@ -200,10 +215,23 @@ CASES = [
     ),
     Case(
         "pandrator_regenerate_segments",
-        {**GUARD, "segment_ids": ["segment-1"]},
+        {
+            **GUARD,
+            "segment_ids": ["segment-1"],
+            "generation_run_id": "audio-origin-run-1",
+            "settings_source": "current",
+        },
         "start_generation_run",
         (SESSION,),
-        {"segment_ids": ["segment-1"], "operation": "regenerate", "idempotency_key": KEY},
+        {
+            "segment_ids": ["segment-1"],
+            "generation_run_id": "audio-origin-run-1",
+            "operation": "regenerate",
+            "idempotency_key": KEY,
+            "settings_source": "current",
+            "settings_source_run_id": None,
+            "admission": True,
+        },
     ),
     Case(
         "pandrator_assemble_generation_run",
@@ -239,10 +267,13 @@ PAYLOADS = {
     "revise_generation_plan_topology_batch": {"plan_revision_id": "revision-2"},
     "revise_generation_plan_topology": {"plan_revision_id": "revision-2"},
     "start_generation_run": {
-        "id": "run-1",
-        "job_id": "job-1",
-        "run_id": "run-1",
+        "id": "admission-job-1",
+        "job_id": "admission-job-1",
+        "session_id": SESSION,
         "status": "queued",
+        "stage": "preparing",
+        "speech_plan_revision_id": "revision-1",
+        "request_id": "request-1",
     },
     "update_generation_segment": SEGMENT,
     "update_generation_segments": {"items": [SEGMENT], "updated_count": 1, "private": "omit"},
@@ -342,8 +373,10 @@ async def invoke_case(
         expected_replay = dict(arguments)
         if case.name == "pandrator_generate_speech_plan":
             # The native SDK fills signature defaults before validated dispatch.
+            expected_replay.setdefault("stale_only", False)
             expected_replay.setdefault("view", "compact")
-        assert value["next_actions"][1]["arguments"] == expected_replay
+            expected_replay.setdefault("admission", True)
+        assert value["next_actions"][-1]["arguments"] == expected_replay
     else:
         value = envelope(result)
         assert isinstance(value["result"], dict)
@@ -353,6 +386,11 @@ async def invoke_case(
             assert value["result"]["updated_count"] == 1
             assert "private" not in value["result"]
             assert "private" not in value["result"]["items"][0]
+        if case.name in {"pandrator_generate_speech_plan", "pandrator_regenerate_segments"}:
+            assert value["work"]["id"] == "admission-job-1"
+            assert value["result"]["generation_operation_id"] == "admission-job-1"
+            assert [action["tool"] for action in value["next_actions"]] == ["pandrator_get_generation_operation"]
+            assert value["next_actions"][0]["arguments"] == {"operation_id": "admission-job-1"}
     assert value["request_id"] == calls[0]["headers"]["X-Request-ID"]
     return {"name": case.name, "calls": calls, "envelope": value, "timeout": timeout}
 
@@ -383,3 +421,31 @@ async def capture_contract(root: Path) -> dict[str, Any]:
     invalid = [await invoke_case(root, case, invalid=True) for case in CASES]
     timeouts = [await invoke_case(root, case, timeout=True) for case in [CASES[6], CASES[7]]]
     return {"metadata": metadata, "records": records, "invalid": invalid, "timeouts": timeouts}
+
+
+def test_registered_generation_admission_schema_defaults_true(tmp_path: Path) -> None:
+    async def capture() -> dict[str, Any]:
+        runtime, _ = fixture_runtime(tmp_path)
+        async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
+            result = await client.list_tools()
+        return result.model_dump(mode="json", by_alias=True)
+
+    metadata = asyncio.run(capture())
+    tools = {tool["name"]: tool for tool in metadata["tools"]}
+    for tool_name in ("pandrator_generate_speech_plan", "pandrator_regenerate_segments"):
+        schema = tools[tool_name]["inputSchema"]
+        properties = schema["properties"]
+        admission = schema["properties"]["admission"]
+        assert admission["type"] == "boolean"
+        assert admission["default"] is True
+        assert properties["settings_source"]["default"] == "current"
+        assert properties["settings_source"]["enum"] == [
+            "current",
+            "matching_run",
+            "run",
+        ]
+        assert "settings_source_run_id" in properties
+        if tool_name == "pandrator_generate_speech_plan":
+            assert properties["missing_only"]["default"] is False
+        else:
+            assert "generation_run_id" in properties

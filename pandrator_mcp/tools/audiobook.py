@@ -13,6 +13,7 @@ from ..schemas.audiobook import (
     GetAudiobookSetupInput,
     PreviewSpeechSegmentInput,
     PreviewSpeechSelectionInput,
+    SpeechSelectionContextInput,
 )
 
 AUDIOBOOK_ACTIONS = (
@@ -38,6 +39,13 @@ AUDIOBOOK_ACTIONS = (
         "read",
     ),
     (
+        "selection_context",
+        "pandrator_get_speech_selection_context",
+        "Inspect speech selection",
+        SpeechSelectionContextInput,
+        "read",
+    ),
+    (
         "selection_preview",
         "pandrator_preview_speech_selection",
         "Preview a speech selection",
@@ -58,15 +66,16 @@ AUDIOBOOK_ACTIONS = (
 # public schema removes this internal default so exact supplied keys survive.
 _OMITTED_SELECTION_FIELD = 0
 _SELECTION_OPTIONAL_FIELDS = frozenset({
-    "speaker", "character_id", "voice", "delivery", "unlock_locked",
-    "enable_casting", "enable_performance",
+    "speaker", "character_id", "voice_category", "voice", "delivery",
+    "speech_xml", "vocal_event", "unlock_locked",
+    "enable_casting", "enable_performance", "enable_vocalizations",
 })
 
 
 def audiobook_action(
     runtime: McpRuntime,
     action: str,
-    arguments: GetAudiobookSetupInput | ConfigureAudiobookInput | PreviewSpeechSegmentInput | PreviewSpeechSelectionInput | ApplySpeechSelectionInput,
+    arguments: GetAudiobookSetupInput | ConfigureAudiobookInput | PreviewSpeechSegmentInput | SpeechSelectionContextInput | PreviewSpeechSelectionInput | ApplySpeechSelectionInput,
 ) -> ToolOutcome:
     """Dispatch one allowlisted audiobook operation to the HTTP client."""
 
@@ -98,6 +107,13 @@ def audiobook_action(
         payload = application.preview_speech_selection(
             arguments.session_id,
             body=arguments.model_dump(mode="json", exclude_unset=True, exclude={"session_id"}),
+        )
+    elif action == "selection_context":
+        if not isinstance(arguments, SpeechSelectionContextInput):
+            raise ValueError("The selection context action requires context input.")
+        payload = application.get_speech_selection_context(
+            arguments.session_id,
+            body=arguments.model_dump(mode="json", exclude={"session_id"}),
         )
     elif action == "selection_apply":
         if not isinstance(arguments, ApplySpeechSelectionInput):
@@ -151,6 +167,15 @@ def preview_speech_selection(
     return audiobook_action(runtime, "selection_preview", arguments)
 
 
+def get_speech_selection_context(
+    runtime: McpRuntime,
+    arguments: SpeechSelectionContextInput,
+) -> ToolOutcome:
+    """Read selection metadata, editable XML, and the parser reference."""
+
+    return audiobook_action(runtime, "selection_context", arguments)
+
+
 def apply_speech_selection(
     runtime: McpRuntime,
     arguments: ApplySpeechSelectionInput,
@@ -186,6 +211,7 @@ def _register_tool(
         ConfigureAudiobookInput: configure_audiobook,
         PreviewSpeechSegmentInput: preview_speech_segment,
         PreviewSpeechSelectionInput: preview_speech_selection,
+        SpeechSelectionContextInput: get_speech_selection_context,
         ApplySpeechSelectionInput: apply_speech_selection,
     }[model]
     parameters = []
@@ -240,10 +266,20 @@ def register_audiobook_tools(
         server,
         runtime,
         validated_call,
+        model=SpeechSelectionContextInput,
+        name="pandrator_get_speech_selection_context",
+        title="Inspect speech selection",
+        description="Inspect a codepoint range or cursor (start=end), current speaker and delivery, capability feedback, editable XML and the allowed XML action reference without generating audio.",
+        annotations=read_only,
+    )
+    _register_tool(
+        server,
+        runtime,
+        validated_call,
         model=PreviewSpeechSelectionInput,
         name="pandrator_preview_speech_selection",
         title="Preview a speech selection",
-        description="Preview an edit to a codepoint range in a speech-plan segment without adopting it.",
+        description="Preview a codepoint-range edit without adopting it. For a cursor (start=end), provide only a vocal_event and optional enable flags; omit voice, speaker, delivery and XML edits.",
         annotations=read_only,
     )
     _register_tool(
@@ -291,6 +327,7 @@ __all__ = [
     "audiobook_action",
     "configure_audiobook",
     "get_audiobook_setup",
+    "get_speech_selection_context",
     "preview_speech_segment",
     "preview_speech_selection",
     "apply_speech_selection",

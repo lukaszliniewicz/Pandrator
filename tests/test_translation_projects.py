@@ -118,6 +118,11 @@ class TranslationProjectServiceTests(unittest.TestCase):
 
     def test_branches_follow_language_defaults_and_allow_custom_mode(self):
         settings = WorkspaceSettingsService(self.database)
+        self.source = self.sessions.update(
+            self.source.id,
+            self.source.revision,
+            {"interface_mode": "advanced"},
+        )
         custom = {"language_defaults": False, "max_chars_per_line": 42,
                   "max_cps": 20, "max_lines": 1, "min_duration_ms": 900}
         settings.update(self.source.id, "subtitles", 0, custom)
@@ -142,6 +147,7 @@ class TranslationProjectServiceTests(unittest.TestCase):
                 self.assertEqual(aliases, db.get(SessionSetting, (self.source.id, "stt")).value_json)
                 child_stt = db.get(SessionSetting, (sid, "stt")).value_json
                 self.assertTrue(set(aliases).isdisjoint(child_stt))
+                self.assertEqual("advanced", db.get(SessionRecord, sid).interface_mode)
         sid = branches[0]["session_id"]
         payload = settings.get(sid, "subtitles")
         settings.patch(sid, "subtitles", payload["revision"], {

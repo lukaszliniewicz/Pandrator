@@ -19,10 +19,12 @@
         "pandrator_delete_session_permanently",
         "pandrator_get_session_trash_policy",
         "pandrator_update_session_trash_policy",
-        "pandrator_delete_output"
+        "pandrator_delete_output",
+        "pandrator_get_session_purge_inspection",
+        "pandrator_create_comparison_export"
       ],
-      "minimum_application_version": "0.8.16",
-      "revision": 3,
+      "minimum_application_version": "0.11.0",
+      "revision": 4,
       "file": "artifacts-and-revisions.md"
     },
     {
@@ -100,11 +102,17 @@
         "pandrator_claim_media_edit_dispatch_batch",
         "pandrator_renew_media_edit_dispatch_batch",
         "pandrator_release_media_edit_dispatch_batch",
-        "pandrator_submit_media_edit_dispatch_batch"
+        "pandrator_submit_media_edit_dispatch_batch",
+        "pandrator_preview_session_deletion",
+        "pandrator_delete_session_permanently",
+        "pandrator_get_session_purge_inspection",
+        "pandrator_create_comparison_export",
+        "pandrator_get_generation_operation",
+        "pandrator_get_generation_run_coverage"
       ],
-      "minimum_application_version": "0.8.17",
+      "minimum_application_version": "0.11.0",
       "minimum_manager_version": "0.9.0",
-      "revision": 6,
+      "revision": 8,
       "file": "durable-work.md"
     },
     {
@@ -160,7 +168,7 @@
         "pandrator_get_voice_catalog"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 3,
+      "revision": 4,
       "file": "providers-and-voices.md"
     },
     {
@@ -284,10 +292,14 @@
         "pandrator_get_workflow",
         "pandrator_list_generation_runs",
         "pandrator_plan_export_variant",
-        "pandrator_download_artifact"
+        "pandrator_download_artifact",
+        "pandrator_list_pronunciations",
+        "pandrator_create_pronunciation",
+        "pandrator_update_pronunciation",
+        "pandrator_delete_pronunciation"
       ],
       "minimum_application_version": "0.8.17",
-      "revision": 3,
+      "revision": 4,
       "file": "workflows.md"
     },
     {
@@ -333,10 +345,13 @@
         "pandrator_preview_performance_plan",
         "pandrator_get_audiobook_setup",
         "pandrator_configure_audiobook",
-        "pandrator_preview_speech_segment"
+        "pandrator_preview_speech_segment",
+        "pandrator_preview_speech_selection_batch",
+        "pandrator_apply_speech_selection_batch",
+        "pandrator_create_comparison_export"
       ],
-      "minimum_application_version": "0.10.0",
-      "revision": 3,
+      "minimum_application_version": "0.11.0",
+      "revision": 4,
       "file": "generation-controls.md"
     },
     {

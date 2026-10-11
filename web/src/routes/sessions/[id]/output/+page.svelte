@@ -49,9 +49,12 @@
     formatBytes
   } from '$lib/artifact-display';
   import OutputSettingsPanel from '$lib/OutputSettingsPanel.svelte';
+  import { useProjectInterface } from '$lib/project-interface.svelte';
   import OutputSettingsSnapshot from '$lib/OutputSettingsSnapshot.svelte';
   import BookExportNotice from '$lib/BookExportNotice.svelte';
   const sessionId = String(page.params.id);
+  const projectInterface = useProjectInterface();
+  const simpleMode = $derived(projectInterface?.mode === 'simple');
   let artifacts = $state<ArtifactRecord[]>([]);
   let runs = $state<GenerationRun[]>([]);
   let exportJobs = $state<JobRecord[]>([]);
@@ -669,14 +672,24 @@
       onSelectVersion={(versionId) => (selectedRunVersionId = versionId)}
     />
   {/if}
-  <OutputSettingsPanel
-    {sessionId}
-    generationRunId={selectedRun?.id ?? ''}
-    {audioVersionSide}
-    onSaveForExportReady={(save) => {
-      saveOutputProfile = save;
-    }}
-  />
+  <details
+    open={!simpleMode}
+    class="rounded-2xl border border-[var(--line)] p-4"
+  >
+    <summary class="cursor-pointer text-sm font-semibold"
+      >Format and export settings</summary
+    >
+    <div class="mt-3">
+      <OutputSettingsPanel
+        {sessionId}
+        generationRunId={selectedRun?.id ?? ''}
+        {audioVersionSide}
+        onSaveForExportReady={(save) => {
+          saveOutputProfile = save;
+        }}
+      />
+    </div>
+  </details>
   <section class="surface rounded-2xl p-5">
     <div class="section-label">Completed outputs</div>
     {#if artifacts.length}<div class="mt-4 space-y-5">

@@ -49,6 +49,10 @@ from .openapi import build_openapi_document
 from .process_guard import WorkerPresence
 from .schemas import TrainingCreateRequest
 from .sessions import SessionService
+from .sound_project_service import ProjectSoundService
+from .sound_registration import register_sound_jobs
+from .sound_resolution_service import SoundResolutionService
+from .sound_service import SoundService
 from .subtitle_review import SubtitleReviewService
 from .training_lifecycle import TrainingService
 from .tts_providers import TtsProviderRegistry
@@ -56,6 +60,7 @@ from .worker_shutdown import worker_termination
 from .workflow_handlers import WorkflowHandlers
 from .workflow_prerequisites import WorkflowPrerequisiteService
 from .workflows import WorkflowService
+from .workspace_settings import WorkspaceSettingsService
 
 
 def _emit(value: Any, json_output: bool = False) -> None:
@@ -530,7 +535,7 @@ def command_worker(args) -> int:
                 domain="artifacts",
             )
             tts_providers = TtsProviderRegistry()
-            workflow_handlers = WorkflowHandlers(database, paths, tts_providers=tts_providers)
+            workflow_handlers = WorkflowHandlers(database, paths, tts_providers=tts_providers, jobs=queue)
             for registration in workflow_handlers.handler_registry.registrations():
                 handler_registry.register(
                     registration.kind,
@@ -538,6 +543,16 @@ def command_worker(args) -> int:
                     domain=registration.domain,
                     payload_contract=registration.payload_contract,
                 )
+            project_sounds = ProjectSoundService(database, artifacts)
+            register_sound_jobs(
+                handler_registry,
+                SoundService(database, paths, artifacts, queue),
+                workflow_handlers.sound_mixes,
+                SoundResolutionService(
+                    database, paths, artifacts, queue,
+                    WorkspaceSettingsService(database), project_sounds,
+                ),
+            )
             worker = Worker(queue, worker_id, handler_registry)
             with worker_termination(worker.stop) as termination_requested:
                 try:

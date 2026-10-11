@@ -14,6 +14,7 @@ import pytest
 from mcp import Client
 from mcp.types import TextContent
 
+from pandrator_mcp.catalog import ACTION_CATALOG
 from pandrator_mcp.context import McpRuntime
 from pandrator_mcp.errors import PandratorMcpError
 from pandrator_mcp.request_context import _REQUEST_ID, _TRACE_ID, correlation_headers
@@ -667,7 +668,9 @@ async def tool_metadata(root: Path) -> dict[str, Any]:
     async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
         metadata = (await client.list_tools()).model_dump(mode="json", by_alias=True)
     assert calls == application.mock_calls == []
-    assert len(metadata["tools"]) == 162
+    assert {action.name for action in ACTION_CATALOG.list() if action.enabled} <= {
+        tool["name"] for tool in metadata["tools"]
+    }
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in metadata["tools"])
     selected = [tool for tool in metadata["tools"] if tool["name"] in {case.name for case in CASES}]
     assert [tool["name"] for tool in selected] == [case.name for case in CASES]
@@ -679,22 +682,13 @@ async def tool_metadata(root: Path) -> dict[str, Any]:
             assert tool["annotations"]["destructiveHint"] is False
             assert tool["annotations"]["idempotentHint"] is True
     create = next(tool for tool in selected if tool["name"] == CASES[2].name)
-    assert create["inputSchema"]["allOf"] == [
-        {
-            "if": {"properties": {"execution_mode": {"const": "serial"}}},
-            "then": {"properties": {"max_parallel_batches": {"const": 1}}},
-        },
-        {
-            "if": {
-                "properties": {"execution_mode": {"const": "parallel"}},
-                "required": ["execution_mode"],
-            },
-            "then": {
-                "properties": {"max_parallel_batches": {"minimum": 2, "maximum": 8}},
-                "required": ["max_parallel_batches"],
-            },
-        },
-    ]
+    assert "allOf" not in create["inputSchema"]
+    assert create["inputSchema"]["x-pandrator-execution-policy"] == {
+        "serial": {"max_parallel_batches": 1},
+        "parallel": {"minimum": 2, "maximum": 8},
+        "enforced": "runtime",
+    }
+    assert "parallel requires 2" in create["inputSchema"]["properties"]["execution_mode"]["description"]
     return metadata
 
 

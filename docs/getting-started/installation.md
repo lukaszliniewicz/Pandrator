@@ -129,7 +129,7 @@ ordinary updates. Keep an independent backup of important projects before a
 major update. More detail is in
 [updates, data, repair, and removal](../operations/updates-data-and-repair.md).
 
-## Python and source installations
+## Python installations
 
 Python packages are intended for advanced installations and automation:
 
@@ -141,8 +141,7 @@ pipx install "pandrator-mcp[credential-stores,manager]"
 
 A Python package installation does not enable autostart, launch a daemon,
 install a component, or request elevation. The native Manager remains the
-simplest complete installation. Contributors should use the
-[source-development guide](../development/from-source.md).
+simplest complete installation.
 
 The `automation` extra places the MCP runtime in the Pandrator environment so
 a current Manager can supervise the local HTTP service. It does not expose a

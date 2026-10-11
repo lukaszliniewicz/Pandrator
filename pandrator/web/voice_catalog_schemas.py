@@ -8,6 +8,16 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+VoiceCompatibilityStatus = Literal[
+    "needs_reference",
+    "needs_link",
+    "scope_mismatch",
+    "unavailable",
+    "ready",
+    "unknown",
+    "model_unavailable",
+]
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -202,6 +212,35 @@ class VoiceReference(_StrictModel):
         return self
 
 
+class VoiceCompatibility(_StrictModel):
+    """Provider compatibility plus independent preparation and health evidence."""
+
+    service_id: str = Field(min_length=1, max_length=160)
+    model: str = Field(min_length=1, max_length=200)
+    status: VoiceCompatibilityStatus
+    ready: bool
+    prepared: bool
+    voice: str | None = Field(default=None, max_length=255)
+    modes: dict[str, Any]
+    supported_languages: list[str]
+    service_available: bool | None = None
+    health_checked_at: str | None = None
+    availability_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_readiness(self) -> VoiceCompatibility:
+        if self.ready != (self.status == "ready"):
+            raise ValueError("Ready must match the compatibility status.")
+        expected_prepared = self.status not in {
+            "needs_reference",
+            "needs_link",
+            "scope_mismatch",
+        }
+        if self.prepared != expected_prepared:
+            raise ValueError("Prepared must reflect reference and scope readiness.")
+        return self
+
+
 def canonical_voice_key(ref: VoiceReference) -> str:
     """Return the stable storage key for a managed or provider voice reference."""
 
@@ -264,6 +303,8 @@ __all__ = [
     "TraitEvidence",
     "VoiceCollectionCreate",
     "VoiceCollectionUpdate",
+    "VoiceCompatibility",
+    "VoiceCompatibilityStatus",
     "VoiceLanguage",
     "VoiceProfile",
     "VoiceReference",

@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, StrictInt, field_validator, model_validator
 
 from .common import ToolInput
+from .generation_fields import GenerationSegmentField
 
 
 class ListGenerationSegmentsInput(ToolInput):
@@ -16,12 +17,26 @@ class ListGenerationSegmentsInput(ToolInput):
     generation_run_id: str | None = Field(default=None, max_length=80)
     plan_revision_id: str | None = Field(default=None, max_length=80)
     view: Literal["full", "compact", "provenance"] = "full"
-    fields: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    fields: list[GenerationSegmentField] | None = Field(default=None, min_length=1, max_length=40)
+    segment_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
     end_ordinal: int | None = Field(default=None, ge=0)
     around_ordinal: int | None = Field(default=None, ge=0)
     source_cue_id: str | None = Field(default=None, min_length=1, max_length=80)
     radius: int = Field(default=2, ge=0, le=25)
     audio_version_side: Literal["before", "after"] = "after"
+
+    @model_validator(mode="after")
+    def validate_projection(self):
+        if self.fields is not None and len(set(self.fields)) != len(self.fields):
+            raise ValueError("Projection fields must be unique.")
+        if self.segment_ids is not None:
+            if len(set(self.segment_ids)) != len(self.segment_ids):
+                raise ValueError("segment_ids must be unique.")
+            if any(not value or len(value) > 80 for value in self.segment_ids):
+                raise ValueError("Each segment ID must contain 1–80 characters.")
+            if self.around_ordinal is not None or self.source_cue_id is not None:
+                raise ValueError("segment_ids cannot be combined with a neighbourhood selector.")
+        return self
 
 
 class GenerationSegmentChangesInput(ToolInput):
@@ -124,6 +139,20 @@ class RegenerateSegmentsInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     segment_ids: list[str] = Field(min_length=1, max_length=100)
     idempotency_key: str = Field(min_length=1, max_length=120)
+    generation_run_id: str | None = Field(default=None, max_length=80)
+    settings_source: Literal["current", "matching_run", "run"] = "current"
+    settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
+    admission: bool = True
+
+    @model_validator(mode="after")
+    def validate_settings_source(self) -> "RegenerateSegmentsInput":
+        if self.settings_source == "run" and not self.settings_source_run_id:
+            raise ValueError("settings_source_run_id is required when settings_source is 'run'.")
+        if self.settings_source in {"current", "matching_run"} and self.settings_source_run_id:
+            raise ValueError(
+                "settings_source_run_id can only be used when settings_source is 'run'."
+            )
+        return self
 
 
 class AssembleGenerationRunInput(ToolInput):
@@ -287,8 +316,24 @@ class GenerateSpeechPlanInput(ToolInput):
     session_id: str = Field(min_length=1, max_length=80)
     speech_plan_revision_id: str = Field(min_length=1, max_length=80)
     stale_only: bool = False
+    missing_only: bool = False
     view: Literal["compact", "full"] = "compact"
     idempotency_key: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$")
+    admission: bool = True
+    settings_source: Literal["current", "matching_run", "run"] = "current"
+    settings_source_run_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_settings_source(self) -> "GenerateSpeechPlanInput":
+        if self.stale_only and self.missing_only:
+            raise ValueError("stale_only and missing_only are mutually exclusive.")
+        if self.settings_source == "run" and not self.settings_source_run_id:
+            raise ValueError("settings_source_run_id is required when settings_source is 'run'.")
+        if self.settings_source in {"current", "matching_run"} and self.settings_source_run_id:
+            raise ValueError(
+                "settings_source_run_id can only be used when settings_source is 'run'."
+            )
+        return self
 
 
 class AdoptSubtitleSourceInput(ToolInput):

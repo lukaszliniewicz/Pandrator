@@ -75,6 +75,10 @@ async function fixture(page: Page) {
               type: 'number',
               minimum: 0,
               maximum: model === 'model-a' ? 1 : 2
+            },
+            dialect: {
+              type: 'string',
+              default: 'UNK'
             }
           }
         }
@@ -173,6 +177,38 @@ test('project settings use compact choices and ignore late metadata from another
   } finally {
     data.releaseFirst();
   }
+});
+
+test('native text controls remain text and are persisted per model', async ({
+  page
+}) => {
+  const data = await fixture(page);
+  await page.goto(`/sessions/${data.sessionId}/voice`);
+  const settings = page.locator('.settings-panel').filter({
+    has: page.getByRole('heading', { name: 'Speech generation', exact: true })
+  });
+  await settings.getByText('More model controls', { exact: false }).click();
+  const dialect = settings.getByRole('textbox', {
+    name: 'dialect',
+    exact: true
+  });
+  await expect(dialect).toHaveAttribute('maxlength', '1200');
+  await dialect.fill('regional pronunciation');
+  const save = settings.getByRole('button', { name: 'Save', exact: true });
+  await expect(save).toBeEnabled();
+  const savedResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/sessions/${data.sessionId}/settings/tts`) &&
+      response.request().method() === 'PUT'
+  );
+  await save.click();
+  expect((await savedResponse).ok()).toBeTruthy();
+  const persisted = await (
+    await page.request.get(`/api/v1/sessions/${data.sessionId}/settings/tts`)
+  ).json();
+  expect(persisted.effective.audio_cpp_model_settings['model-a'].dialect).toBe(
+    'regional pronunciation'
+  );
 });
 
 test('missing selected-model metadata exposes retry and does not silently validate tuning', async ({

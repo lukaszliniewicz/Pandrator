@@ -139,7 +139,7 @@ test('drawer header regenerates all stale without a selection or full-plan regen
   const sessionId = await setupDrawer(page);
   let requestBody: Record<string, unknown> | undefined;
   await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs`,
+    `**/api/v1/sessions/${sessionId}/generation-runs*`,
     async (route) => {
       if (route.request().method() === 'POST') {
         requestBody = route.request().postDataJSON();
@@ -161,6 +161,39 @@ test('drawer header regenerates all stale without a selection or full-plan regen
           body: JSON.stringify({ items: [] })
         });
     }
+  );
+  const admittedRun = {
+    id: 'test-replacement',
+    session_id: sessionId,
+    sequence_number: 1,
+    label: 'Stale replacement',
+    status: 'queued',
+    operation: 'regenerate',
+    plan_revision_id: 'plan-a',
+    progress: 0,
+    settings_snapshot: {}
+  };
+  await page.route(
+    `**/api/v1/sessions/${sessionId}/generation-admissions`,
+    async (route) => {
+      requestBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 202,
+        json: { job_id: 'fixture-stale-admission' }
+      });
+    }
+  );
+  await page.route('**/api/v1/jobs/fixture-stale-admission', (route) =>
+    route.fulfill({
+      json: {
+        id: 'fixture-stale-admission',
+        status: 'succeeded',
+        result_json: { generation_run_id: admittedRun.id }
+      }
+    })
+  );
+  await page.route('**/api/v1/generation-runs/test-replacement', (route) =>
+    route.fulfill({ json: admittedRun })
   );
   const staleQueries: string[] = [];
   await page.route(
@@ -190,7 +223,7 @@ test('drawer header regenerates all stale without a selection or full-plan regen
     }
   );
   await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const options = page.getByRole('button', { name: 'Regeneration options' });
   await expect(options).toBeEnabled();
   await options.click();

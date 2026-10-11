@@ -86,6 +86,11 @@ export class StageSettingsDraft {
   ttsModel = $state('');
   voiceName = $state('');
   generationPrompt = $state('');
+  elevenLabsVoiceSettings = $state<Record<string, unknown>>({});
+  ttsContextMode = $state<'off' | 'before' | 'both'>('off');
+  performanceContextBefore = $state(2);
+  performanceContextAfter = $state(1);
+  performanceContextMaxChars = $state(4000);
   ttsBatchSize = $state(10);
   ttsConcurrentRequests = $state(1);
   subtitleMode = $state('soft');

@@ -715,7 +715,7 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
       .getAttribute('data-generation-layout')) !== 'collapsed'
   ) {
     await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
-    await page.getByRole('button', { name: 'Generation', exact: true }).click();
+    await page.getByRole('link', { name: 'Generation', exact: true }).click();
   }
   // Reopening refreshes the displayed rows. Review must remain disabled until
   // those rows and their matching review status have finished loading.
@@ -751,14 +751,14 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
   await expect(page.getByTestId('drawer-plan-review')).toContainText(
     'Reviewed'
   );
-  await page.getByRole('button', { name: 'Generation', exact: true }).click();
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(planCard.getByTestId('speech-plan-summary')).toContainText(
     'Reviewed'
   );
   await expect(
     planCard.getByRole('button', { name: 'Mark reviewed', exact: true })
   ).toHaveCount(0);
-  await page.route(`**${endpoint}/generation-runs`, async (route) => {
+  await page.route(`**${endpoint}/generation-runs*`, async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     await route.fulfill({
       status: 422,

@@ -191,6 +191,11 @@ class GenerationTopologyService:
             plan.active_revision_id = revision.id
             plan.updated_at = utcnow()
             session.flush()
+            from .sound_project_revisions import rebase_sound_plan
+
+            # Preparing a fresh speech plan has no generation-segment lineage.
+            # Retain sound pins and leave its generation anchors reviewable.
+            rebase_sound_plan(session, session_id, revision.id, {})
             return {
                 "id": plan.id,
                 "active_revision_id": revision.id,
@@ -1286,6 +1291,54 @@ class GenerationTopologyService:
         revision.operation_json = deepcopy(operation_json)
         revision.content_hash = stable_hash({"parent_revision_id": current.id, "operation": operation_json, "segments": persisted_values})
         session.flush()
+        if activate:
+            boundary_mapping: dict[tuple[str, str], str | None] = {}
+            unchanged_resegment_sources = {
+                source_id for source_id, _target_id in take_copy_pairs
+            }
+            split_segment_id = str(operation.get("segment_id") or "").strip()
+            merge_segment_ids = (
+                {merge_pair[0].id, merge_pair[1].id}
+                if merge_pair is not None
+                else set()
+            )
+            for source_id, children in lineage.items():
+                if action == "restore":
+                    # Historical generation IDs are not identities in the new revision.
+                    continue
+                if action == "split" and source_id == split_segment_id:
+                    boundary_mapping[(source_id, "before_segment")] = (
+                        children[0] if children else None
+                    )
+                    boundary_mapping[(source_id, "after_segment")] = (
+                        children[-1] if children else None
+                    )
+                    continue
+                if (
+                    action == "merge"
+                    and merge_pair is not None
+                    and source_id in merge_segment_ids
+                ):
+                    left, right = merge_pair
+                    merged = lineage.get(left.id, [])
+                    target_id = merged[0] if len(merged) == 1 else None
+                    boundary_mapping[(left.id, "before_segment")] = target_id
+                    boundary_mapping[(left.id, "after_segment")] = None
+                    boundary_mapping[(right.id, "before_segment")] = None
+                    boundary_mapping[(right.id, "after_segment")] = target_id
+                    continue
+                if (
+                    action == "resegment"
+                    and source_id in replacement_by_old
+                    and source_id not in unchanged_resegment_sources
+                ):
+                    continue
+                if len(children) == 1:
+                    boundary_mapping[(source_id, "before_segment")] = children[0]
+                    boundary_mapping[(source_id, "after_segment")] = children[0]
+            from .sound_project_revisions import rebase_sound_plan
+
+            rebase_sound_plan(session, session_id, revision.id, boundary_mapping)
         return {
             "id": plan.id,
             "lineage": lineage,

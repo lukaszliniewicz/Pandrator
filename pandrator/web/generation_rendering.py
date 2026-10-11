@@ -19,10 +19,11 @@ from pydub import AudioSegment
 from pandrator.logic.speech_markup import (
     ParsedSpeechMarkup,
     SpeechMarkupSpan,
+    event_in_range,
     markup_to_annotation,
     parse_speech_markup,
 )
-from pandrator.logic.speech_performance import validate_annotation
+from pandrator.logic.speech_performance import Delivery, validate_annotation
 
 from .tts_provider_contracts import TtsSynthesisResult
 
@@ -317,11 +318,7 @@ def _subset(parsed: ParsedSpeechMarkup, start: int, end: int) -> ParsedSpeechMar
     events = tuple(
         replace(event, offset=event.offset - start)
         for event in parsed.events
-        if event.offset >= start
-        and (
-            event.offset < end
-            or (end == len(parsed.transcript) and event.offset == end)
-        )
+        if event_in_range(event, start, end, len(parsed.transcript))
     )
     return replace(
         parsed,
@@ -339,20 +336,65 @@ def _project_performance(
     performance_enabled: bool,
     xml_present: bool,
 ) -> None:
+    settings.pop("_performance_markup_scope", None)
     if not performance_enabled:
         settings.pop("_performance", None)
         settings["performance_enabled"] = False
         return
     if xml_present:
-        settings["_performance"] = markup_to_annotation(
-            _subset(parsed, group.start, group.end)
-        )
+        subset = _subset(parsed, group.start, group.end)
+        settings["_performance"] = markup_to_annotation(subset)
+        settings["_performance_markup_scope"] = {
+            "root_delivery": dict(subset.root_delivery),
+            "spans": [
+                {
+                    "start": span.start,
+                    "end": span.end,
+                    "delivery": dict(span.delivery),
+                }
+                for span in subset.spans
+            ],
+        }
         return
     existing = settings.get("_performance")
     if existing is not None:
         # Validate the legacy full-segment record, but retain its supplied JSON
         # shape because no XML projection is needed for the one synthetic part.
         validate_annotation(parsed.transcript, existing)
+
+
+def _with_character_delivery(
+    parsed: ParsedSpeechMarkup, characters: list[dict[str, Any]]
+) -> ParsedSpeechMarkup:
+    defaults = {
+        item["id"]: Delivery.model_validate(item.get("delivery") or {}).model_dump(mode="json")
+        for item in characters
+        if item.get("id") and item.get("delivery")
+    }
+    if not defaults:
+        return parsed
+    spans: list[SpeechMarkupSpan] = []
+    for span in parsed.spans:
+        character = defaults.get(span.speaker_id)
+        if character is None or not any(character.values()):
+            spans.append(span)
+            continue
+        merged = dict(character)
+        markup = span.delivery
+        for field in ("emotion", "pace", "cadence", "emphasis"):
+            if markup.get(field):
+                merged[field] = markup[field]
+        if markup.get("instruction"):
+            merged["instruction"] = "\n".join(
+                part for part in (character["instruction"], markup["instruction"]) if part
+            )
+            if len(merged["instruction"]) > 1200:
+                raise ValueError(
+                    f"Character {span.speaker_id!r} has a combined direction over 1200 "
+                    "characters; shorten its default or the text direction."
+                )
+        spans.append(replace(span, delivery=merged))
+    return replace(parsed, spans=tuple(spans))
 
 
 def _merge_context(
@@ -456,6 +498,10 @@ def build_render_parts(
             "punctuation-only input cannot be synthesized."
         )
     performance_enabled = bool(settings.get("performance_enabled", True))
+    if performance_enabled and xml_present:
+        parsed = _with_character_delivery(
+            parsed, control_values.get("characters") or []
+        )
     casting_enabled = bool(settings.get("casting_enabled", False))
     strict_single_voice = is_strict_single_voice(settings)
     copy_settings = _settings_copy if _settings_copy is not None else deepcopy

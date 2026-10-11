@@ -34,6 +34,7 @@
     retry_badcase_max_times: 'Abnormal-output retries',
     retry_badcase_ratio_threshold: 'Abnormal-output length ratio',
     exaggeration: 'Expressiveness',
+    emotion_alpha: 'Emotion strength',
     min_p: 'Minimum P',
     s3gen_cfg_rate: 'Audio decoder guidance',
     stop_on_eos: 'Stop at end-of-speech token',
@@ -93,7 +94,9 @@
     'guidance_scale',
     'num_inference_steps',
     'speed',
-    'max_tokens'
+    'max_tokens',
+    'emotion_alpha',
+    'exaggeration'
   ]);
   const common = $derived(
     Object.entries(parameters).filter(([key]) => mainKeys.has(key))
@@ -105,6 +108,12 @@
 
 {#snippet control(key: string, parameter: TtsRequestParameter)}
   {@const setting = current(key)}
+  {@const boundedStrength =
+    ['emotion_alpha', 'exaggeration'].includes(key) &&
+    parameter.type === 'number' &&
+    parameter.minimum != null &&
+    parameter.maximum != null &&
+    parameter.maximum > parameter.minimum}
   <div class="min-w-0">
     <label class="block text-xs font-semibold">
       <span class="flex min-h-6 items-center gap-2"
@@ -135,6 +144,17 @@
                 >{option.replaceAll('_', ' ')}</option
               >{/each}{/if}
         </select>
+      {:else if parameter.type === 'string'}
+        <input
+          class="field"
+          type="text"
+          maxlength="1200"
+          value={setting == null ? '' : String(setting)}
+          placeholder={parameter.default == null
+            ? 'Model default'
+            : `Default: ${parameter.default}`}
+          oninput={(event) => change(key, event.currentTarget.value)}
+        />
       {:else}
         <input
           class="field"
@@ -154,7 +174,32 @@
           }}
         />
       {/if}
+      {#if parameter.default_source === 'pandrator_policy'}
+        <span class="muted text-xs"
+          >Pandrator default: {parameter.default}. audio.cpp native default: {parameter.native_default}.</span
+        >
+      {:else if parameter.default_note}
+        <span class="muted text-xs">{parameter.default_note}</span>
+      {/if}
     </label>
+    {#if boundedStrength}
+      <input
+        class="mt-2 w-full accent-[var(--accent)]"
+        type="range"
+        aria-label={`${labels[key]} slider`}
+        min={parameter.minimum}
+        max={parameter.maximum}
+        step="0.05"
+        value={Number(setting ?? parameter.default ?? parameter.minimum)}
+        oninput={(event) => change(key, event.currentTarget.valueAsNumber)}
+      />
+    {/if}
+    {#if key === 'emotion_alpha'}
+      <p class="muted mt-1 text-xs">
+        Scales emotion conditioning for this model across the project. Each
+        segment can supply its own emotion description.
+      </p>
+    {/if}
     {#if setting != null && setting !== ''}<button
         class="muted mt-1 flex items-center gap-1 text-[.65rem] hover:text-[var(--accent)]"
         onclick={() => change(key, null)}

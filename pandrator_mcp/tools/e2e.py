@@ -26,6 +26,7 @@ from ..schemas.e2e import (
     PlanExportVariantInput,
     TtsCatalogInput,
 )
+from ..workflow_results import workflow_plan_outcome
 
 
 def _current_profile(runtime: McpRuntime):
@@ -518,6 +519,11 @@ def _safe_tts_service(
         "available",
         "online",
         "availability_reason",
+        "health_checked_at",
+        "credential_origin",
+        "credential_configured",
+        "vertex_project",
+        "vertex_location",
         "models",
         "default_model",
         "default_voice",
@@ -650,29 +656,30 @@ def tts_catalog(runtime: McpRuntime, arguments: TtsCatalogInput) -> dict[str, An
             )
         )
     voices = []
-    raw_voices = application.list_voices().get("items")
-    for item in raw_voices or []:
-        if not isinstance(item, dict):
-            continue
-        registrations = {}
-        providers = (item.get("metadata_json") or {}).get("providers")
-        if isinstance(providers, dict):
-            for service_id, registration in list(providers.items())[:40]:
-                if isinstance(registration, dict):
-                    registrations[str(service_id)] = {
-                        key: registration.get(key)
-                        for key in ("status", "voice_id", "stale_reason")
-                        if key in registration
-                    }
-        voices.append(
-            {
-                "id": item.get("id"),
-                "name": item.get("name"),
-                "language": item.get("language"),
-                "registrations": registrations,
-                "revision": item.get("revision"),
-            }
-        )
+    if arguments.include_managed_voices:
+        raw_voices = application.list_voices().get("items")
+        for item in raw_voices or []:
+            if not isinstance(item, dict):
+                continue
+            registrations = {}
+            providers = (item.get("metadata_json") or {}).get("providers")
+            if isinstance(providers, dict):
+                for service_id, registration in list(providers.items())[:40]:
+                    if isinstance(registration, dict):
+                        registrations[str(service_id)] = {
+                            key: registration.get(key)
+                            for key in ("status", "voice_id", "stale_reason")
+                            if key in registration
+                        }
+            voices.append(
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "language": item.get("language"),
+                    "registrations": registrations,
+                    "revision": item.get("revision"),
+                }
+            )
     return {
         "schema_version": "1",
         "default_service": payload.get("default_service"),
@@ -946,9 +953,11 @@ def list_generation_runs(
     arguments: ListGenerationRunsInput,
 ) -> dict[str, Any]:
     # Bound the HTTP response at the application, before the client's byte cap.
+    options = {"generation_run_id": arguments.generation_run_id} if arguments.generation_run_id is not None else {}
     payload = runtime.require_application().list_generation_runs(
         arguments.session_id, limit=arguments.limit, include_repairs=arguments.include_repairs,
         view=arguments.view,
+        **options,
     )
     items = []
     for item in payload.get("items") or []:
@@ -973,7 +982,7 @@ def list_generation_runs(
 def plan_export_variant(
     runtime: McpRuntime,
     arguments: PlanExportVariantInput,
-) -> dict[str, Any]:
+) -> ToolOutcome:
     output: dict[str, Any] = {
         "audio_version_side": arguments.audio_version_side,
         "export_mode": arguments.export_mode,
@@ -984,13 +993,14 @@ def plan_export_variant(
     }
     if arguments.generation_run_id:
         output["generation_run_id"] = arguments.generation_run_id
-    return runtime.require_application().create_workflow_plan(
+    plan = runtime.require_application().create_workflow_plan(
         arguments.session_id,
         target_stage="export",
         overrides={"output": output},
         expires_in_minutes=arguments.expires_in_minutes,
         continuation=False,
     )
+    return workflow_plan_outcome(plan)
 
 
 def _safe_filename(value: str) -> str:

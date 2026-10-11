@@ -147,6 +147,21 @@ class AudiobookSetupTests(unittest.TestCase):
                 ),
             )
 
+    def test_manual_length_keeps_the_automatic_model_default_available(self):
+        self.settings.update(
+            self.record.id,
+            "text",
+            0,
+            {"audiobook_chunking": "manual", "max_sentence_length": 74},
+        )
+        setup = self.read()
+
+        self.assertEqual("manual", setup["segmentation"]["mode"])
+        self.assertEqual(74, setup["segmentation"]["target_chars"])
+        self.assertEqual("model", setup["model_default_segmentation"]["mode"])
+        self.assertGreater(setup["model_default_segmentation"]["target_chars"], 74)
+        self.assertEqual(1, setup["revisions"]["text"])
+
     def test_multi_voice_creates_missing_outcome_from_legacy_projection(self):
         result = self.configure("multi_voice")
 

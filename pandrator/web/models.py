@@ -152,6 +152,9 @@ class SessionRecord(Base):
     workflow_kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="audiobook"
     )
+    interface_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="advanced", server_default="advanced"
+    )
     source_language: Mapped[str] = mapped_column(
         String(40), nullable=False, default="auto"
     )
@@ -720,7 +723,7 @@ class SegmentLineage(Base):
         ForeignKey("segments.id", ondelete="CASCADE"), primary_key=True
     )
     child_segment_id: Mapped[str] = mapped_column(
-        ForeignKey("segments.id", ondelete="CASCADE"), primary_key=True
+        ForeignKey("segments.id", ondelete="CASCADE"), primary_key=True, index=True
     )
     relation: Mapped[str] = mapped_column(String(40), nullable=False, default="derived")
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -2270,3 +2273,62 @@ Index(
     OutputAssembly.created_at.desc(),
     OutputAssembly.id.desc(),
 )
+
+
+class SoundItem(Base):
+    """A reusable, session-independent sound-library entry."""
+
+    __tablename__ = "sound_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    preferred_variant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sound_variants.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_sound_items_archived_created_at_id", "archived", "created_at", "id"),
+    )
+
+
+class SoundVariant(Base):
+    """An immutable generated or imported audio candidate."""
+
+    __tablename__ = "sound_variants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sound_items.id", ondelete="RESTRICT")
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT")
+    )
+    artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT")
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+    provenance_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    sample_rate: Mapped[int | None] = mapped_column(Integer)
+    channels: Mapped[int | None] = mapped_column(Integer)
+    frame_count: Mapped[int | None] = mapped_column(Integer)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_sound_variants_item_created_at_id", "item_id", "created_at", "id"),
+        Index("ix_sound_variants_fingerprint_state", "fingerprint", "state"),
+    )

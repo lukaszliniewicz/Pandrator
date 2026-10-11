@@ -95,6 +95,156 @@ def output_assembly_settings_hash(snapshot: dict[str, Any]) -> str:
     return stable_hash(output_assembly_settings_snapshot(snapshot))
 
 
+def _settings_source_mode(
+    selector: str | None, settings_source_run_id: str | None
+) -> str:
+    if selector is None:
+        return "legacy_run" if settings_source_run_id else "legacy_matching"
+    if selector == "run":
+        if not settings_source_run_id:
+            raise ValueError(
+                "settings_source_run_id is required when settings_source is 'run'."
+            )
+        return "run"
+    if selector in {"current", "matching_run"}:
+        if settings_source_run_id:
+            raise ValueError(
+                "settings_source_run_id can only be used when settings_source is 'run' or omitted."
+            )
+        return selector
+    raise ValueError("Unsupported generation settings source.")
+
+
+def _settings_source_identity(run: GenerationRun) -> tuple[dict[str, Any], dict[str, Any]]:
+    snapshot = deepcopy(run.settings_snapshot_json or {})
+    if not isinstance(snapshot, dict):
+        raise ValueError("The selected settings source generation run has an invalid settings snapshot.")
+    return (
+        {
+            "id": run.id,
+            "session_id": run.session_id,
+            "plan_revision_id": run.plan_revision_id,
+            "operation": run.operation,
+            "sequence_number": run.sequence_number,
+            "settings_hash": run.settings_hash,
+            "settings_snapshot_hash": stable_hash(snapshot),
+        },
+        snapshot,
+    )
+
+
+def _resolve_matching_settings_run(
+    session: Session,
+    session_id: str,
+    plan_revision_id: str,
+    *,
+    generation_run_id: str | None = None,
+    expected_identity: dict[str, Any] | None = None,
+) -> tuple[GenerationRun, dict[str, Any], dict[str, Any]]:
+    """Resolve and validate one frozen settings source for a plan revision."""
+    if expected_identity is not None:
+        run = session.get(GenerationRun, str(expected_identity.get("id") or ""))
+    elif generation_run_id:
+        run = session.get(GenerationRun, generation_run_id)
+        if run is not None and run.output_generation_run_id:
+            output_run = session.get(GenerationRun, run.output_generation_run_id)
+            if (
+                output_run is None
+                or output_run.session_id != session_id
+                or output_run.plan_revision_id != plan_revision_id
+                or output_run.operation == "rvc"
+            ):
+                raise ValueError("The selected output generation run does not match this session and plan.")
+            run = output_run
+    else:
+        run = session.scalar(
+            select(GenerationRun)
+            .where(
+                GenerationRun.session_id == session_id,
+                GenerationRun.plan_revision_id == plan_revision_id,
+                GenerationRun.operation != "rvc",
+                GenerationRun.output_generation_run_id.is_(None),
+            )
+            .order_by(
+                GenerationRun.sequence_number.desc(),
+                GenerationRun.created_at.desc(),
+            )
+        )
+        if run is not None:
+            run = canonical_regeneration_root(
+                session, run, session_id, plan_revision_id
+            )
+    if (
+        run is None
+        or run.session_id != session_id
+        or run.plan_revision_id != plan_revision_id
+        or run.operation == "rvc"
+    ):
+        if expected_identity is not None:
+            raise RevisionConflict(
+                "The settings source generation run changed while generation was being prepared."
+            )
+        raise ValueError(
+            "No compatible generation run is available for settings_source='matching_run'."
+        )
+    revision = session.get(GenerationPlanRevision, run.plan_revision_id)
+    plan = session.scalar(
+        select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+    )
+    if revision is None or plan is None or revision.plan_id != plan.id:
+        raise ValueError(
+            "The selected settings source generation run does not match this session's speech plan."
+        )
+    identity, snapshot = _settings_source_identity(run)
+    if expected_identity is not None and identity != expected_identity:
+        raise RevisionConflict(
+            "The settings source generation run changed while generation was being prepared."
+        )
+    return run, snapshot, identity
+
+
+def _settings_source_receipt(
+    *,
+    prepared: dict[str, Any],
+    snapshot: dict[str, Any],
+    settings_hash: str,
+    source_run: GenerationRun | None,
+) -> dict[str, Any]:
+    mode = str(prepared.get("settings_source_mode") or "legacy_matching")
+    tts_settings = dict(snapshot.get("tts") or {})
+    settings_identity = prepared.get("settings_source_identity")
+    if mode == "current":
+        effective = "current"
+        identity = None
+    elif isinstance(settings_identity, dict):
+        effective = "run"
+        identity = settings_identity
+    elif mode == "legacy_matching" and source_run is not None:
+        effective = "run"
+        identity, _ = _settings_source_identity(source_run)
+    else:
+        effective = "current"
+        identity = None
+    return {
+        "selector": prepared.get("settings_source_selector"),
+        "effective": effective,
+        "settings_source_run_id": identity.get("id") if identity else None,
+        "settings_source_plan_revision_id": identity.get("plan_revision_id") if identity else None,
+        "settings_source_settings_hash": identity.get("settings_hash") if identity else None,
+        "settings_hash": settings_hash,
+        "generation_run_id": prepared.get("generation_run_id"),
+        "source_generation_run_id": source_run.id if source_run else None,
+        "flags": {
+            "performance_enabled": bool(tts_settings.get("performance_enabled")),
+            "casting_enabled": bool(tts_settings.get("casting_enabled")),
+            "performance_allow_vocalizations": bool(
+                tts_settings.get("performance_allow_vocalizations")
+            ),
+            "tts_context_mode": str(tts_settings.get("tts_context_mode") or "off"),
+        },
+    }
+
+
 def expected_output_assembly_snapshot(
     session: Session,
     run: GenerationRun,
@@ -381,9 +531,11 @@ class GenerationService(GenerationHistoryReader):
         verification: str | None = None,
         generation_run_id: str | None = None,
         audio_version_side: str = "after",
+        take_history: str = "full",
         plan_revision_id: str | None = None,
         view: str = "full",
         fields: list[str] | None = None,
+        segment_ids: list[str] | None = None,
         end_ordinal: int | None = None,
         around_ordinal: int | None = None,
         source_cue_id: str | None = None,
@@ -403,9 +555,11 @@ class GenerationService(GenerationHistoryReader):
             verification=verification,
             generation_run_id=generation_run_id,
             audio_version_side=audio_version_side,
+            take_history=take_history,
             plan_revision_id=plan_revision_id,
             view=view,
             fields=fields,
+            segment_ids=segment_ids,
             end_ordinal=end_ordinal,
             around_ordinal=around_ordinal,
             source_cue_id=source_cue_id,
@@ -917,7 +1071,9 @@ class GenerationService(GenerationHistoryReader):
         selected_segment_override: dict[str, Any] | None = None,
         segment_ids: list[str] | None = None,
         generation_run_id: str | None = None,
+        settings_source: str | None = None,
         settings_source_run_id: str | None = None,
+        resolved_settings_source_identity: dict[str, Any] | None = None,
         operation: str = "generate",
         speech_plan_revision_id: str | None = None,
         stale_only: bool = False,
@@ -935,6 +1091,9 @@ class GenerationService(GenerationHistoryReader):
         run_override = dict(run_override or {})
         selected_segment_override = _secret_free(deepcopy(selected_segment_override or {}))
         settings_source_run_id = str(settings_source_run_id) if settings_source_run_id else None
+        settings_source_mode = _settings_source_mode(
+            settings_source, settings_source_run_id
+        )
         if stale_only and missing_only:
             raise ValueError("Stale-only and missing-only generation are mutually exclusive.")
         automatic = stale_only or missing_only
@@ -957,15 +1116,47 @@ class GenerationService(GenerationHistoryReader):
         prepared_source = {
             "run_override": run_override,
             "selected_segment_override": selected_segment_override,
+            "settings_source_selector": settings_source,
+            "settings_source_mode": settings_source_mode,
             "settings_source_run_id": settings_source_run_id,
             "settings_source_snapshot": None,
-            "settings_source_identity": None,
+            "settings_source_identity": deepcopy(resolved_settings_source_identity),
         }
         settings_source_run = None
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
             current_id = plan.active_revision_id if plan else None
             current = session.get(GenerationPlanRevision, current_id) if current_id else None
+            settings_revision_id = speech_plan_revision_id or current_id
+            if requested_segment_ids and not speech_plan_revision_id:
+                selected_rows = list(
+                    session.execute(
+                        select(
+                            GenerationSegment.id,
+                            GenerationSegment.plan_revision_id,
+                        ).where(GenerationSegment.id.in_(requested_segment_ids))
+                    ).all()
+                )
+                selected_revisions = {value for _segment_id, value in selected_rows}
+                if (
+                    len(selected_rows) != len(set(requested_segment_ids))
+                    or len(selected_revisions) != 1
+                ):
+                    raise ValueError(
+                        "Selected generation segments must belong to one available plan revision."
+                    )
+                settings_revision_id = next(iter(selected_revisions))
+                selected_revision = session.get(
+                    GenerationPlanRevision, settings_revision_id
+                )
+                if (
+                    plan is None
+                    or selected_revision is None
+                    or selected_revision.plan_id != plan.id
+                ):
+                    raise ValueError(
+                        "Selected generation segments do not belong to this session."
+                    )
             if settings_source_run_id:
                 settings_source_run = session.get(GenerationRun, settings_source_run_id)
                 if (
@@ -993,6 +1184,36 @@ class GenerationService(GenerationHistoryReader):
                     "settings_hash": settings_source_run.settings_hash,
                     "settings_snapshot_hash": stable_hash(source_snapshot),
                 }
+                if (
+                    resolved_settings_source_identity is not None
+                    and prepared_source["settings_source_identity"]
+                    != resolved_settings_source_identity
+                ):
+                    raise RevisionConflict(
+                        "The settings source generation run changed while generation was being prepared."
+                    )
+                if (
+                    settings_source_mode == "run"
+                    and settings_source_run.plan_revision_id != settings_revision_id
+                ):
+                    raise ValueError(
+                        "The selected settings source generation run does not match the selected speech-plan revision."
+                    )
+            elif settings_source_mode == "matching_run":
+                if settings_revision_id is None:
+                    raise ValueError(
+                        "Create generation segments before selecting matching settings."
+                    )
+                settings_source_run, source_snapshot, source_identity = (
+                    _resolve_matching_settings_run(
+                        session,
+                        session_id,
+                        settings_revision_id,
+                        expected_identity=resolved_settings_source_identity,
+                    )
+                )
+                prepared_source["settings_source_snapshot"] = source_snapshot
+                prepared_source["settings_source_identity"] = source_identity
             reviewed = bool(current and (session.get(SpeechPlanReview, current.id) or current.operation_json or (current.settings_json or {}).get("_prepared_for_review") or session.scalar(
                 select(GenerationSegment.id).where(GenerationSegment.plan_revision_id == current_id, GenerationSegment.revision > 1).limit(1)
             )))
@@ -1009,7 +1230,7 @@ class GenerationService(GenerationHistoryReader):
                     or historical_revision.plan_id != plan.id
                 ):
                     raise RevisionConflict("The selected speech plan changed. Refresh the revision list before generating.")
-        if settings_source_run_id:
+        if settings_source_mode in {"run", "matching_run", "legacy_run"}:
             inherited_snapshot = self._start_snapshot(prepared_source, None)
             resolved_for_new = (inherited_snapshot, stable_hash(inherited_snapshot))
         else:
@@ -1069,6 +1290,8 @@ class GenerationService(GenerationHistoryReader):
             "run_override": run_override,
             "selected_segment_override": selected_segment_override,
             "generation_run_id": generation_run_id,
+            "settings_source_selector": settings_source,
+            "settings_source_mode": settings_source_mode,
             "settings_source_run_id": settings_source_run_id,
             "settings_source_snapshot": prepared_source["settings_source_snapshot"],
             "settings_source_identity": prepared_source["settings_source_identity"],
@@ -1106,6 +1329,16 @@ class GenerationService(GenerationHistoryReader):
             )
             snapshot["generation_audio_identities"] = plan_audio_identities(session, revision_id, snapshot)
             prepared["frozen_snapshot"] = snapshot
+        from .generation_provider_preflight import generation_provider_preflight
+
+        prepared["provider_preflight"] = generation_provider_preflight(
+            self.database, prepared["frozen_snapshot"]
+        )
+        configuration_warning = prepared["provider_preflight"].get(
+            "configuration_warning"
+        )
+        if configuration_warning:
+            raise ValueError(str(configuration_warning))
         return prepared
 
     def start(
@@ -1116,6 +1349,7 @@ class GenerationService(GenerationHistoryReader):
         selected_segment_override: dict[str, Any] | None = None,
         segment_ids: list[str] | None = None,
         generation_run_id: str | None = None,
+        settings_source: str | None = None,
         settings_source_run_id: str | None = None,
         operation: str = "generate",
         speech_plan_revision_id: str | None = None,
@@ -1129,6 +1363,7 @@ class GenerationService(GenerationHistoryReader):
             selected_segment_override=selected_segment_override,
             segment_ids=segment_ids,
             generation_run_id=generation_run_id,
+            settings_source=settings_source,
             settings_source_run_id=settings_source_run_id,
             operation=operation,
             speech_plan_revision_id=speech_plan_revision_id,
@@ -1147,6 +1382,7 @@ class GenerationService(GenerationHistoryReader):
         selected_segment_override: dict[str, Any] | None = None,
         segment_ids: list[str] | None = None,
         generation_run_id: str | None = None,
+        settings_source: str | None = None,
         settings_source_run_id: str | None = None,
         operation: str = "generate",
         speech_plan_revision_id: str | None = None,
@@ -1165,6 +1401,9 @@ class GenerationService(GenerationHistoryReader):
         requested = [str(value) for value in (segment_ids or []) if str(value)]
         selected_override = dict(selected_segment_override or {})
         settings_source_run_id = str(settings_source_run_id) if settings_source_run_id else None
+        settings_source_mode = _settings_source_mode(
+            settings_source, settings_source_run_id
+        )
         if stale_only and missing_only:
             raise ValueError("Stale-only and missing-only generation are mutually exclusive.")
         if requested or generation_run_id or operation != "generate" or selected_override:
@@ -1173,8 +1412,11 @@ class GenerationService(GenerationHistoryReader):
         prepared_source = {
             "run_override": run_override,
             "selected_segment_override": {},
+            "settings_source_selector": settings_source,
+            "settings_source_mode": settings_source_mode,
             "settings_source_run_id": settings_source_run_id,
             "settings_source_snapshot": None,
+            "settings_source_identity": None,
         }
         with self.database.session() as session:
             plan = session.scalar(select(GenerationPlan).where(GenerationPlan.session_id == session_id))
@@ -1194,6 +1436,13 @@ class GenerationService(GenerationHistoryReader):
                 )
                 if source_revision is None or source_revision.plan_id != plan.id:
                     raise ValueError("The selected settings source generation run does not match this session's speech plan.")
+                if (
+                    settings_source_mode == "run"
+                    and settings_source_run.plan_revision_id != bound_revision_id
+                ):
+                    raise ValueError(
+                        "The selected settings source generation run does not match the selected speech-plan revision."
+                    )
                 source_snapshot = deepcopy(settings_source_run.settings_snapshot_json or {})
                 if not isinstance(source_snapshot, dict):
                     raise ValueError("The selected settings source generation run has an invalid settings snapshot.")
@@ -1210,7 +1459,15 @@ class GenerationService(GenerationHistoryReader):
                 ):
                     raise RevisionConflict("The selected speech plan changed. Refresh the revision list before generating.")
                 bound_revision_id = speech_plan_revision_id
-            if settings_source_run_id:
+            if settings_source_mode == "matching_run":
+                settings_source_run, source_snapshot, source_identity = (
+                    _resolve_matching_settings_run(
+                        session, session_id, bound_revision_id
+                    )
+                )
+                prepared_source["settings_source_snapshot"] = source_snapshot
+                prepared_source["settings_source_identity"] = source_identity
+            if settings_source_run_id or settings_source_mode == "matching_run":
                 resolved = self._start_snapshot(prepared_source, None)
             else:
                 resolved, _ = self.settings.resolve(session_id, run_override=run_override)
@@ -1233,6 +1490,11 @@ class GenerationService(GenerationHistoryReader):
         }
         if selection["blocked_reason"] is not None:
             public["blocked_reason"] = selection["blocked_reason"]
+        from .generation_provider_preflight import generation_provider_preflight
+
+        public["provider_preflight"] = generation_provider_preflight(
+            self.database, resolved
+        )
         return public
 
     def _start_source(
@@ -1243,6 +1505,9 @@ class GenerationService(GenerationHistoryReader):
         generation_run_id = prepared["generation_run_id"]
         operation = prepared["operation"]
         settings_source_run_id = prepared.get("settings_source_run_id")
+        settings_source_mode = prepared.get("settings_source_mode") or _settings_source_mode(
+            prepared.get("settings_source_selector"), settings_source_run_id
+        )
         plan = session.scalar(
             select(GenerationPlan).where(GenerationPlan.session_id == session_id)
         )
@@ -1378,6 +1643,22 @@ class GenerationService(GenerationHistoryReader):
                     session_id,
                     plan_revision_id,
                 )
+        if settings_source_mode == "run" and (
+            settings_source_run is None
+            or settings_source_run.plan_revision_id != plan_revision_id
+        ):
+            raise ValueError(
+                "The selected settings source generation run does not match the selected speech-plan revision."
+            )
+        if settings_source_mode == "matching_run":
+            _run, source_snapshot, source_identity = _resolve_matching_settings_run(
+                session,
+                session_id,
+                plan_revision_id,
+                expected_identity=prepared.get("settings_source_identity"),
+            )
+            prepared["settings_source_identity"] = source_identity
+            prepared["settings_source_snapshot"] = source_snapshot
         return plan_revision_id, source_run
 
     @staticmethod
@@ -1386,7 +1667,10 @@ class GenerationService(GenerationHistoryReader):
     ) -> dict[str, Any]:
         run_override = dict(prepared["run_override"])
         selected_segment_override = deepcopy(prepared["selected_segment_override"])
-        if prepared.get("settings_source_run_id"):
+        settings_source_mode = prepared.get("settings_source_mode") or _settings_source_mode(
+            None, prepared.get("settings_source_run_id")
+        )
+        if settings_source_mode in {"run", "matching_run", "legacy_run"}:
             snapshot = deepcopy(prepared.get("settings_source_snapshot") or {})
             for key in (
                 "selected_segment_override",
@@ -1409,7 +1693,7 @@ class GenerationService(GenerationHistoryReader):
             ):
                 snapshot.pop(key, None)
             snapshot = _merge(snapshot, run_override)
-        elif source_run is not None:
+        elif source_run is not None and settings_source_mode != "current":
             source_snapshot = dict(source_run.settings_snapshot_json or {})
             # A previous alternate take is a useful source for ordinary
             # settings, but its *selected-only* precedence must not leak
@@ -1435,7 +1719,8 @@ class GenerationService(GenerationHistoryReader):
         return snapshot
 
     def start_in_session(
-        self, session: Session, session_id: str, *, prepared: dict[str, Any]
+        self, session: Session, session_id: str, *, prepared: dict[str, Any],
+        include_history: bool = True,
     ) -> dict[str, Any]:
         """Create the durable run and its queued job in one caller transaction."""
         requested_segment_ids = list(prepared["requested_segment_ids"])
@@ -1456,10 +1741,16 @@ class GenerationService(GenerationHistoryReader):
             # (voices, cast, performance) is covered by the snapshot guard.
             from .generation_selection import collect_row_state
 
-            if prepared.get("settings_source_run_id"):
+            if prepared.get("settings_source_mode") in {
+                "run",
+                "matching_run",
+                "legacy_run",
+            }:
                 fresh_resolved = self._start_snapshot(prepared, source_run)
             else:
-                fresh_resolved, _ = self.settings.resolve(session_id, run_override=dict(prepared["run_override"]))
+                fresh_resolved, _ = self.settings.resolve_in_session(
+                    session, session_id, run_override=dict(prepared["run_override"])
+                )
             if stable_hash(fresh_resolved) != prepared["selection_settings_hash"]:
                 raise RevisionConflict("The speech plan, audio selection, or settings changed while generation was being prepared. Refresh and try again.")
             if collect_row_state(session, plan_revision_id) != prepared["selection_state"]:
@@ -1493,6 +1784,12 @@ class GenerationService(GenerationHistoryReader):
         if prepared.get("missing_only"):
             snapshot["missing_only"] = True
         settings_hash = stable_hash(snapshot)
+        settings_source_receipt = _settings_source_receipt(
+            prepared=prepared,
+            snapshot=snapshot,
+            settings_hash=settings_hash,
+            source_run=source_run,
+        )
         sequence_number = (
             int(
                 session.scalar(
@@ -1576,9 +1873,22 @@ class GenerationService(GenerationHistoryReader):
         run.job_id = job.id
         run.updated_at = utcnow()
         session.flush()
+        if not include_history:
+            return {
+                "id": run.id,
+                "job_id": run.job_id,
+                "session_id": run.session_id,
+                "plan_revision_id": run.plan_revision_id,
+                "status": run.status,
+                "reused_run": False,
+                "settings_hash": run.settings_hash,
+                "source_generation_run_id": run.source_generation_run_id,
+                "settings_source_receipt": settings_source_receipt,
+            }
         result = self._run_payload(session, run)
         # Kept for compatibility with clients that used the old response flag.
         result["reused_run"] = False
+        result["settings_source_receipt"] = settings_source_receipt
         return result
 
     def request_pause(self, run_id: str) -> dict[str, Any]:
