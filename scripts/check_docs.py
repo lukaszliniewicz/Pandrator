@@ -18,6 +18,7 @@ _INLINE_LINK_RE = re.compile(r"!?\[([^\]]+)\]\([^)]+\)")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _FORBIDDEN_PUBLIC_DOCUMENTS = frozenset(
     {
+        "AGENTS.md",
         "PASSIVE_DISPATCHER_FIELD_NOTES.md",
         "SUBTITLE_PIPELINE_REVIEW.md",
         "release-acceptance.md",

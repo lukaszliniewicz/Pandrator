@@ -26,6 +26,7 @@ def documentation_repository(tmp_path: Path) -> Path:
 @pytest.mark.parametrize(
     "relative",
     [
+        "AGENTS.md",
         "reviews/audit.md",
         "review-notes/screenshot.png",
         ".local-notes/result.json",

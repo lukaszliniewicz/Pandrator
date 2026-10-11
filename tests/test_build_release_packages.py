@@ -92,6 +92,7 @@ class BuildReleasePackagesTests(unittest.TestCase):
 
     def test_distribution_audit_rejects_private_notes_and_screenshots(self):
         for private_path in (
+            "AGENTS.md",
             "reviews/pre-release.md",
             "review-notes/fixture.png",
             ".local-notes/qualification.json",

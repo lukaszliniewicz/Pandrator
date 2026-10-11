@@ -73,6 +73,7 @@ tts_voices/voice_library.json
 !.env.example
 
 # Local planning, architecture, research, and qualification notes
+/AGENTS.md
 /.local-notes/
 /reviews/
 /review-notes/

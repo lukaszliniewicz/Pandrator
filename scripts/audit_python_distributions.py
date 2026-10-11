@@ -81,6 +81,7 @@ def validate_members(path: Path, names: list[str]) -> None:
             or "tmp" in lowered_parts
             or any(part in {".local-notes", "review-notes", "reviews"} for part in lowered_parts)
             or lowered_name == "release-acceptance.md"
+            or lowered_name == "agents.md"
             or "__pycache__" in lowered_parts
             or lowered_name.endswith((".pyc", ".pyo"))
         )
