@@ -36,7 +36,8 @@ class _WindowsSocketOwner(Protocol):
 
     def fileno(self) -> int: ...
 
-    def makefile(self, mode: str, buffering: int) -> Any: ...
+    # Keep socket.makefile's keyword name in this structural interface.
+    def makefile(self, mode: str, buffering: int) -> Any: ...  # noqa: F841
 
 
 def _prepare_windows_receive_timeout(
