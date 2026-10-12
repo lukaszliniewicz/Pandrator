@@ -11,7 +11,7 @@ import pytest
 import requests
 from pydub import AudioSegment
 
-from pandrator.logic import tts_handler
+from pandrator.logic import kobold_qwen_http, tts_handler
 
 BASE_URL = "http://qwen.invalid:8042"
 
@@ -196,6 +196,47 @@ def test_http_batch_resolves_each_callback_when_it_is_used(monkeypatch):
         ("first-decode", (b"controlled encoded audio",), {"format_hint": "wav"}),
         ("second-decode", (b"controlled encoded audio",), {"format_hint": "wav"}),
     ]
+    assert response.close_count == 1
+
+
+@pytest.mark.parametrize("fail_clear", [False, True])
+def test_http_batch_clears_response_before_close_on_exception(monkeypatch, fail_clear):
+    response = _response(status=500, payload={})
+    response.raw = io.BytesIO()
+    events = []
+    original_close = response.close
+
+    def observed_close():
+        events.append(("close", response.close_count))
+        original_close()
+
+    def response_callback(admitted):
+        if admitted is None:
+            events.append(("clear", response.close_count))
+            if fail_clear:
+                raise RuntimeError("response restoration failed")
+            return
+        events.append(("admit", response.close_count))
+
+    monkeypatch.setattr(response, "close", observed_close)
+    monkeypatch.setattr(kobold_qwen_http.requests, "post", lambda *_args, **_kwargs: response)
+    batch = kobold_qwen_http._iter_kobold_qwen_batch_audio_http(
+        [{"id": "0", "text": "Text.", "settings": {}}],
+        base_url=BASE_URL,
+        response_callback=response_callback,
+        resolve_api_key=lambda _settings: "fixture-key",
+        build_payload=lambda text, _settings: {"input": text},
+        decode_audio=lambda *_args, **_kwargs: AudioSegment.silent(duration=1),
+    )
+
+    if fail_clear:
+        with pytest.raises(RuntimeError, match="response restoration failed"):
+            list(batch)
+    else:
+        with pytest.raises(requests.HTTPError):
+            list(batch)
+
+    assert events == [("admit", 0), ("clear", 0), ("close", 0)]
     assert response.close_count == 1
 
 

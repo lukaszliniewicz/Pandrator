@@ -213,8 +213,8 @@ def _iter_kobold_qwen_batch_audio_http(
             stream=True,
             timeout=(10, KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS),
         )
-        try:
-            with response:
+        with response:
+            try:
                 if response_callback is not None:
                     response_callback(response)
                 if _should_try_next_openai_candidate(response.status_code):
@@ -274,9 +274,9 @@ def _iter_kobold_qwen_batch_audio_http(
                     }
                     if cancel_event is not None and cancel_event.is_set():
                         return
-        finally:
-            if response_callback is not None:
-                response_callback(None)
+            finally:
+                if response_callback is not None:
+                    response_callback(None)
         return
 
     if last_response is not None:

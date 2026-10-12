@@ -1,14 +1,16 @@
 """Owned read-ahead lifecycle for Kobold Qwen batch audio streams."""
 
+import ctypes
 import logging
 import math
 import socket
 import struct
 import sys
 from collections.abc import Callable, Iterator
+from ctypes import wintypes
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import requests
 
@@ -16,6 +18,11 @@ from .kobold_qwen_contracts import KoboldQwenBatchAudioEvent, KoboldQwenBatchMes
 
 logger = logging.getLogger(__name__)
 _IS_WINDOWS = sys.platform == "win32"
+_CANCEL_IO_EX_ERROR_NOT_FOUND = 1168
+_WindowsCancelIoEx = Callable[
+    [wintypes.HANDLE, ctypes.c_void_p | None], wintypes.BOOL
+]
+_windows_cancel_io_ex: _WindowsCancelIoEx | None = None
 
 
 class _WindowsSocketOwner(Protocol):
@@ -28,6 +35,8 @@ class _WindowsSocketOwner(Protocol):
     def settimeout(self, value: float | None) -> None: ...
 
     def fileno(self) -> int: ...
+
+    def makefile(self, mode: str, buffering: int) -> Any: ...
 
 
 def _prepare_windows_receive_timeout(
@@ -47,9 +56,17 @@ def _prepare_windows_receive_timeout(
     set_socket_option = getattr(owner, "setsockopt", None)
     set_timeout = getattr(owner, "settimeout", None)
     get_fileno = getattr(owner, "fileno", None)
+    makefile = getattr(owner, "makefile", None)
     if not all(
         callable(method)
-        for method in (get_timeout, get_socket_option, set_socket_option, set_timeout, get_fileno)
+        for method in (
+            get_timeout,
+            get_socket_option,
+            set_socket_option,
+            set_timeout,
+            get_fileno,
+            makefile,
+        )
     ):
         return None
     owner = cast(_WindowsSocketOwner, owner)
@@ -63,14 +80,21 @@ def _prepare_windows_receive_timeout(
         return None
 
     receive_timeout = struct.pack("I", math.ceil(original_timeout * 1000))
+    lease = owner.makefile("rb", buffering=0)
 
     def restore() -> None:
-        if owner.fileno() < 0:
-            return
         try:
-            owner.settimeout(original_timeout)
+            if owner.fileno() >= 0:
+                try:
+                    owner.settimeout(original_timeout)
+                finally:
+                    owner.setsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_RCVTIMEO,
+                        original_socket_timeout,
+                    )
         finally:
-            owner.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, original_socket_timeout)
+            lease.close()
 
     try:
         owner.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, receive_timeout)
@@ -82,6 +106,49 @@ def _prepare_windows_receive_timeout(
             raise restore_error from setup_error
         raise
     return restore
+
+
+def _get_windows_cancel_io_ex() -> _WindowsCancelIoEx:
+    """Load and cache the typed Windows cancellation API on first use."""
+    global _windows_cancel_io_ex
+    if _windows_cancel_io_ex is None:
+        load_library = getattr(ctypes, "WinDLL", None)
+        if not callable(load_library):
+            raise OSError("CancelIoEx is unavailable on this platform")
+        kernel32 = cast(Any, load_library("kernel32", use_last_error=True))
+        cancel_io_ex = kernel32.CancelIoEx
+        cancel_io_ex.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+        cancel_io_ex.restype = wintypes.BOOL
+        _windows_cancel_io_ex = cast(_WindowsCancelIoEx, cancel_io_ex)
+    return _windows_cancel_io_ex
+
+
+def _cancel_windows_response_io(response: requests.Response) -> bool | None:
+    """Cancel pending I/O on an admitted response's owned socket, if available."""
+    if not _IS_WINDOWS:
+        return None
+
+    shutdown = getattr(response.raw, "_sock_shutdown", None)
+    owner = getattr(shutdown, "__self__", None)
+    get_fileno = getattr(owner, "fileno", None)
+    if not callable(get_fileno):
+        return None
+
+    socket_handle = cast(int, get_fileno())
+    if socket_handle <= 0:
+        return None
+
+    cancel_io_ex = _get_windows_cancel_io_ex()
+    if cancel_io_ex(wintypes.HANDLE(socket_handle), None):
+        return True
+
+    get_last_error = getattr(ctypes, "get_last_error", None)
+    if not callable(get_last_error):
+        raise OSError("CancelIoEx failed and GetLastError is unavailable")
+    error = get_last_error()
+    if error == _CANCEL_IO_EX_ERROR_NOT_FOUND:
+        return False
+    raise OSError(error, f"CancelIoEx failed with Windows error {error}")
 
 
 def iter_read_ahead_batch(
@@ -97,9 +164,12 @@ def iter_read_ahead_batch(
     """Read ahead while retaining ownership until the reader has stopped.
 
     Prefer full-duplex owner-socket shutdown for an admitted response, retaining
-    public raw shutdown as a fallback. Before response admission, or when neither
-    shutdown path is available, cleanup waits for the existing transport timeout.
-    Response close remains the producer reader's responsibility.
+    public raw shutdown as a fallback. On Windows, translate its receive timeout
+    and retain an unread SocketIO lease; CancelIoEx borrows that lease-pinned
+    socket handle only while response_lock protects the active response. Before
+    response admission, or when neither shutdown path is available, cleanup waits
+    for the existing transport timeout. Response close remains the producer
+    reader's responsibility.
     """
     if items_count <= 0:
         return
@@ -145,8 +215,12 @@ def iter_read_ahead_batch(
         with response_lock:
             if active_response is not None:
                 # Keep the producer from releasing the response back to its pool
-                # until the owner-socket interruption has finished.
+                # until owner-socket shutdown finishes. The restore closure owns
+                # an unread SocketIO lease; while this lock is held, that lease
+                # pins the borrowed native handle through CancelIoEx.
                 interrupt(active_response)
+                if active_response_restore is not None:
+                    _cancel_windows_response_io(active_response)
 
     def put_message(message: KoboldQwenBatchMessage) -> bool:
         while not stop_event.is_set():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import io
 import json
 import queue
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 import wave
+from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -117,6 +119,23 @@ def native_interruptions(monkeypatch):
     """Retain socket retirement details when a native lifetime assertion fails."""
     observations = []
     original = tts_handler._iter_kobold_qwen_batch_audio_http
+    original_cancel = kobold_qwen_stream._cancel_windows_response_io
+
+    def observe_cancel(response):
+        record = observations[-1] if observations else None
+        if record is not None:
+            record["cancel_io_calls"] += 1
+        try:
+            result = original_cancel(response)
+        except BaseException as error:
+            if record is not None:
+                record["cancel_io_error_count"] += 1
+                if len(record["cancel_io_errors"]) < 3:
+                    record["cancel_io_errors"].append(repr(error))
+            raise
+        if record is not None and len(record["cancel_io_results"]) < 8:
+            record["cancel_io_results"].append(result)
+        return result
 
     def observed_http(*args, **kwargs):
         admit = kwargs.get("response_callback")
@@ -131,6 +150,10 @@ def native_interruptions(monkeypatch):
                     "owner_timeout": owner.gettimeout() if owner is not None else None,
                     "owner_fileno": owner.fileno() if owner is not None else None,
                     "calls": [],
+                    "cancel_io_calls": 0,
+                    "cancel_io_error_count": 0,
+                    "cancel_io_errors": [],
+                    "cancel_io_results": [],
                 }
                 observations.append(record)
                 if callable(shutdown):
@@ -158,6 +181,11 @@ def native_interruptions(monkeypatch):
 
         yield from original(*args, **{**kwargs, "response_callback": observe_response})
 
+    monkeypatch.setattr(
+        kobold_qwen_stream,
+        "_cancel_windows_response_io",
+        observe_cancel,
+    )
     monkeypatch.setattr(tts_handler, "_iter_kobold_qwen_batch_audio_http", observed_http)
     return observations
 
@@ -210,13 +238,23 @@ def cleanup(server, readers, consumer=None):
 
 
 class FakeReceiveOwner:
-    def __init__(self, *, timeout=1800.0, socket_timeout=b"\x01\x02\x03\x04", fileno=42):
+    def __init__(
+        self,
+        *,
+        timeout=1800.0,
+        socket_timeout=b"\x01\x02\x03\x04",
+        fileno=42,
+        provide_makefile=True,
+    ):
         self.timeout = timeout
         self.socket_timeout = socket_timeout
         self.descriptor = fileno
         self.fail_blocking_timeout = False
+        self.fail_restore_timeout = False
         self.calls = []
         self.release_body = threading.Event()
+        if not provide_makefile:
+            self.makefile = None
 
     def _sock_shutdown(self, how):
         self.calls.append(("shutdown", how))
@@ -239,11 +277,28 @@ class FakeReceiveOwner:
         self.calls.append(("settimeout", value))
         if value is None and self.fail_blocking_timeout:
             raise RuntimeError("settimeout(None) failed")
+        if value == 1800.0 and self.fail_restore_timeout:
+            raise RuntimeError("settimeout(1800.0) failed")
         self.timeout = value
 
     def fileno(self):
         self.calls.append(("fileno",))
         return self.descriptor
+
+    def makefile(self, mode, *, buffering):
+        self.calls.append(("makefile", mode, buffering))
+        return FakeReceiveLease(self.calls)
+
+
+class FakeReceiveLease:
+    def __init__(self, calls):
+        self.calls = calls
+        self.closed = False
+
+    def close(self):
+        if not self.closed:
+            self.calls.append(("lease_close",))
+            self.closed = True
 
 
 class FakeReceiveResponse:
@@ -252,6 +307,28 @@ class FakeReceiveResponse:
 
     def close(self):
         self.raw.calls.append(("response_close",))
+
+
+def install_fake_cancel_io_ex(monkeypatch, *, result):
+    calls = []
+    loads = []
+
+    def cancel_io_ex(handle, overlapped):
+        calls.append((handle.value, overlapped))
+        return result
+
+    cancel_io_ex.argtypes = None
+    cancel_io_ex.restype = None
+    kernel32 = SimpleNamespace(CancelIoEx=cancel_io_ex)
+
+    def load_library(name, *, use_last_error):
+        loads.append((name, use_last_error))
+        return kernel32
+
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_cancel_io_ex", None)
+    monkeypatch.setattr(ctypes, "WinDLL", load_library, raising=False)
+    return cancel_io_ex, calls, loads
 
 
 def test_close_after_first_result_retires_stalled_native_reader(
@@ -453,7 +530,7 @@ def test_windows_receive_timeout_maps_and_restores_owner_socket(monkeypatch):
     response = FakeReceiveResponse(owner)
     body_started = threading.Event()
     producer_cleared = threading.Event()
-    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+    _cancel_io_ex, cancel_calls, loads = install_fake_cancel_io_ex(monkeypatch, result=True)
 
     def producer(_stop_event, set_response):
         set_response(response)
@@ -480,6 +557,7 @@ def test_windows_receive_timeout_maps_and_restores_owner_socket(monkeypatch):
         assert owner.calls == [
             ("gettimeout",),
             ("getsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, 4),
+            ("makefile", "rb", 0),
             (
                 "setsockopt",
                 socket.SOL_SOCKET,
@@ -490,10 +568,14 @@ def test_windows_receive_timeout_maps_and_restores_owner_socket(monkeypatch):
             ("body_read",),
             ("shutdown", socket.SHUT_RDWR),
             ("fileno",),
+            ("fileno",),
             ("settimeout", 1800.0),
             ("setsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, original_socket_timeout),
+            ("lease_close",),
             ("response_close",),
         ]
+        assert loads == [("kernel32", True)]
+        assert cancel_calls == [(42, None)]
     finally:
         owner.release_body.set()
         stream.close()
@@ -547,7 +629,7 @@ def test_windows_receive_timeout_skips_restore_for_closed_owner(monkeypatch):
     owner.calls.clear()
     restore()
 
-    assert owner.calls == [("fileno",)]
+    assert owner.calls == [("fileno",), ("lease_close",)]
     assert owner.timeout is None
     assert owner.socket_timeout == struct.pack("I", 1_800_000)
 
@@ -566,6 +648,7 @@ def test_windows_receive_timeout_restores_socket_option_when_setup_fails(monkeyp
     assert owner.calls == [
         ("gettimeout",),
         ("getsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, 4),
+        ("makefile", "rb", 0),
         (
             "setsockopt",
             socket.SOL_SOCKET,
@@ -576,7 +659,153 @@ def test_windows_receive_timeout_restores_socket_option_when_setup_fails(monkeyp
         ("fileno",),
         ("settimeout", 1800.0),
         ("setsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, original_socket_timeout),
+        ("lease_close",),
     ]
+
+
+def test_windows_receive_timeout_releases_lease_when_restore_fails(monkeypatch):
+    owner = FakeReceiveOwner()
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+    restore = kobold_qwen_stream._prepare_windows_receive_timeout(FakeReceiveResponse(owner))
+    assert restore is not None
+    owner.fail_restore_timeout = True
+
+    with pytest.raises(RuntimeError, match=r"settimeout\(1800\.0\) failed"):
+        restore()
+
+    assert owner.calls[-3:] == [
+        ("settimeout", 1800.0),
+        ("setsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, b"\x01\x02\x03\x04"),
+        ("lease_close",),
+    ]
+
+
+def test_windows_cancel_io_ex_keeps_shutdown_fallback_without_socket_lease(monkeypatch):
+    owner = FakeReceiveOwner(provide_makefile=False)
+    response = FakeReceiveResponse(owner)
+    _cancel_io_ex, calls, loads = install_fake_cancel_io_ex(monkeypatch, result=True)
+
+    def producer(_stop_event, set_response):
+        set_response(response)
+        try:
+            yield {"id": "0", "audio": None, "error": None}
+            owner.release_body.wait()
+        finally:
+            set_response(None)
+            response.close()
+
+    stream = kobold_qwen_stream.iter_read_ahead_batch(1, producer=producer)
+    try:
+        assert next(stream)["id"] == "0"
+        stream.close()
+
+        assert owner.calls == [
+            ("shutdown", socket.SHUT_RDWR),
+            ("response_close",),
+        ]
+        assert calls == []
+        assert loads == []
+    finally:
+        owner.release_body.set()
+        stream.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires native Winsock socket lifetime")
+def test_windows_receive_timeout_lease_pins_native_socket_until_cleanup():
+    owner, peer = socket.socketpair()
+    owner.settimeout(1.8)
+    response = SimpleNamespace(raw=SimpleNamespace(_sock_shutdown=owner.shutdown))
+    restore = None
+    try:
+        restore = kobold_qwen_stream._prepare_windows_receive_timeout(response)
+        assert restore is not None
+        assert owner.gettimeout() is None
+        assert owner.fileno() > 0
+
+        owner.close()
+
+        assert owner.fileno() > 0, "SocketIO lease must defer physical handle close"
+        restore()
+        restore = None
+        assert owner.fileno() == -1, "Releasing the lease must close the native handle"
+    finally:
+        if restore is not None:
+            restore()
+        owner.close()
+        peer.close()
+
+
+def test_windows_cancel_io_ex_uses_cached_typed_api_and_owned_socket_handle(monkeypatch):
+    owner = FakeReceiveOwner()
+    response = FakeReceiveResponse(owner)
+    cancel_io_ex, calls, loads = install_fake_cancel_io_ex(monkeypatch, result=True)
+
+    assert kobold_qwen_stream._cancel_windows_response_io(response) is True
+    assert kobold_qwen_stream._cancel_windows_response_io(response) is True
+
+    assert loads == [("kernel32", True)]
+    assert cancel_io_ex.argtypes == [wintypes.HANDLE, ctypes.c_void_p]
+    assert cancel_io_ex.restype is wintypes.BOOL
+    assert calls == [(42, None), (42, None)]
+    assert owner.calls == [("fileno",), ("fileno",)]
+
+
+@pytest.mark.parametrize(
+    ("is_windows", "descriptor", "has_owner"),
+    [
+        (False, 42, True),
+        (True, -1, True),
+        (True, 0, True),
+        (True, 42, False),
+    ],
+)
+def test_windows_cancel_io_ex_skips_unowned_or_unusable_sockets(
+    monkeypatch, is_windows, descriptor, has_owner
+):
+    owner = FakeReceiveOwner(fileno=descriptor)
+    if has_owner:
+        response = FakeReceiveResponse(owner)
+    else:
+        response = SimpleNamespace(raw=SimpleNamespace(_sock_shutdown=lambda *_args: None))
+    _cancel_io_ex, calls, loads = install_fake_cancel_io_ex(monkeypatch, result=True)
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", is_windows)
+
+    assert kobold_qwen_stream._cancel_windows_response_io(response) is None
+    assert calls == []
+    assert loads == []
+    assert ("response_close",) not in owner.calls
+    expected_owner_calls = [("fileno",)] if is_windows and has_owner else []
+    assert owner.calls == expected_owner_calls
+
+
+def test_windows_cancel_io_ex_ignores_completed_operation_race(monkeypatch):
+    owner = FakeReceiveOwner()
+    response = FakeReceiveResponse(owner)
+    _cancel_io_ex, calls, loads = install_fake_cancel_io_ex(monkeypatch, result=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 1168, raising=False)
+
+    assert kobold_qwen_stream._cancel_windows_response_io(response) is False
+
+    assert loads == [("kernel32", True)]
+    assert calls == [(42, None)]
+    assert owner.calls == [("fileno",)]
+    assert ("response_close",) not in owner.calls
+
+
+def test_windows_cancel_io_ex_propagates_other_api_errors(monkeypatch):
+    owner = FakeReceiveOwner()
+    response = FakeReceiveResponse(owner)
+    _cancel_io_ex, calls, loads = install_fake_cancel_io_ex(monkeypatch, result=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+
+    with pytest.raises(OSError, match="Windows error 5") as raised:
+        kobold_qwen_stream._cancel_windows_response_io(response)
+
+    assert raised.value.errno == 5
+    assert loads == [("kernel32", True)]
+    assert calls == [(42, None)]
+    assert owner.calls == [("fileno",)]
+    assert ("response_close",) not in owner.calls
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires native Winsock receive timeouts")
