@@ -57,11 +57,17 @@ def create_database_engine(path: Path) -> Engine:
 
     @event.listens_for(engine, "connect")
     def _configure_sqlite(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys = ON")
-        cursor.execute("PRAGMA journal_mode = WAL")
-        cursor.execute("PRAGMA busy_timeout = 30000")
-        cursor.close()
+        try:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys = ON")
+                cursor.execute("PRAGMA journal_mode = WAL")
+                cursor.execute("PRAGMA busy_timeout = 30000")
+            finally:
+                cursor.close()
+        except BaseException:
+            dbapi_connection.close()
+            raise
 
     return engine
 
