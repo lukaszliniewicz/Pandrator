@@ -137,11 +137,11 @@ class AudioCppManagerTests(unittest.TestCase):
         self.assertIn("commercial use requires", breeze.usage_note)
 
     def test_server_config_is_local_lazy_and_covers_every_supported_package(self):
-        config = server_config(ComputeVariant.VULKAN, list(SUPPORTED_MODEL_IDS))
+        config = server_config(ComputeVariant.CUDA, list(SUPPORTED_MODEL_IDS))
 
         self.assertEqual("127.0.0.1", config["host"])
         self.assertEqual(AUDIO_CPP_PORT, config["port"])
-        self.assertEqual("vulkan", config["backend"])
+        self.assertEqual("cuda", config["backend"])
         self.assertEqual(0, config["device"])
         self.assertEqual(4, config["threads"])
         self.assertFalse(config["ui"])
@@ -164,6 +164,23 @@ class AudioCppManagerTests(unittest.TestCase):
         )
         self.assertEqual("breeze_tts", breeze["family"])
         self.assertEqual("tts", breeze["task"])
+
+    def test_server_config_vulkan_excludes_cuda_only_package(self):
+        cuda_only_id = "minimax_h3_q4_k_int8_dit"
+        self.assertIn(cuda_only_id, SUPPORTED_MODEL_IDS)
+        vulkan_model_ids = [
+            package_id for package_id in SUPPORTED_MODEL_IDS if package_id != cuda_only_id
+        ]
+
+        config = server_config(ComputeVariant.VULKAN, vulkan_model_ids)
+
+        self.assertEqual("vulkan", config["backend"])
+        self.assertEqual(vulkan_model_ids, [item["id"] for item in config["models"]])
+
+        for backend in (ComputeVariant.CPU, ComputeVariant.VULKAN):
+            with self.subTest(backend=backend):
+                with self.assertRaisesRegex(ValueError, "requires the CUDA backend"):
+                    server_config(backend, [cuda_only_id])
 
     def test_linux_cuda_resolves_to_the_upstream_colab_asset_best_effort(self):
         with tempfile.TemporaryDirectory() as directory:

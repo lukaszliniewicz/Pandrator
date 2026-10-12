@@ -15,6 +15,10 @@ Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
+The [quick model guide](#choosing-your-first-speech-model) and
+[broader model and language matrix](#models-and-providers) help you choose a
+voice, language, and setup that suit your computer.
+
 Pandrator Manager installs the application and the engines you choose, then
 opens Pandrator in your browser. Older workspace data can still be imported.
 For the retired Qt desktop interface, use an
@@ -49,10 +53,9 @@ See the [0.12.0 release notes](https://github.com/lukaszliniewicz/Pandrator/rele
 1. **Download and run Pandrator Manager.** On Linux, make the AppImage
    executable first. Choose a parent folder; the Manager creates a `Pandrator`
    workspace inside it and opens the setup interface in your browser.
-2. **Install Pandrator and the engine you need.** Try **Kokoro** for ready-made
-   narration voices, or **CrispASR** for transcription. You can add voice
-   cloning and other engines later. Docker, WSL, and a separate Python
-   installation are not required.
+2. **Install Pandrator and the engine you need.** Start with one of the speech
+   models below, or **CrispASR** for transcription. You can add other engines
+   later. Docker, WSL, and a separate Python installation are not required.
 3. **Make something small.** Choose **Generate an audiobook** and paste a
    short passage, or open **Quick Transcribe** to upload a clip or record your
    microphone. Listen, review, and save the result.
@@ -62,6 +65,35 @@ vary by engine and hardware. The Manager shows the available compute options.
 The Windows launcher is currently unsigned, so Windows may show an unknown
 publisher warning; the [installation guide](docs/getting-started/installation.md)
 explains this and the release checksums.
+
+### Choosing your first speech model
+
+Choose a model that supports your text's language, then the voice controls and
+hardware you need. These are useful starting points:
+
+| Model | Recommended for | Documented speech languages |
+| --- | --- | --- |
+| [Kokoro 82M](https://huggingface.co/hexgrad/Kokoro-82M) | Fast generation and modest computers. CPU-friendly, with ready-made voices. | English (American and British), Mandarin Chinese, Japanese, Spanish, French, Hindi, Italian, Brazilian Portuguese |
+| [Qwen3 TTS](https://github.com/QwenLM/Qwen3-TTS) through audio.cpp | Voice cloning with **Base**, or creating a voice from a description with **VoiceDesign**. A useful next step on modest hardware. | Mandarin Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian |
+| [BreezeTTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2) through audio.cpp | Voice design, expressive generation, and cloning from reference recordings for non-commercial projects. | English, Mandarin Chinese |
+
+For AMD cards such as the **RX 480**, choose audio.cpp's **Vulkan** backend for
+Qwen. Use a model package that fits your available memory and try a short passage
+before a long book. CPU generation is also available; speed depends on the model,
+package, and computer.
+
+To reuse a designed voice, **describe it → audition candidates → save the chosen
+sample in the Voice Library → select it for narration**. With Qwen, use
+VoiceDesign to create the sample and Base to generate from that reference.
+Breeze can design a voice, save it for later generation, or clone a voice from
+a recording and its transcript. Record or upload your own clean reference samples
+when you already have the voice you want.
+
+Breeze's open weights and self-hosted outputs are for research and non-commercial
+use. For other languages or voice options, compare the
+[broader matrix](#models-and-providers), then filter the application's **Audio models**
+catalogue by language and capability. See [providers and voices](docs/guides/providers-and-voices.md)
+for setup and voice references.
 
 ## What would you like to make?
 
@@ -183,6 +215,13 @@ See [sounds and mixing](docs/reference/sounds-and-mixing.md) and
 
 ## Models and providers
 
+This broader matrix covers the main speech models and providers. Language lists
+can differ between checkpoints, voices, and cloud models. “Listed” coverage means
+languages described in Pandrator's catalogue; a model can have broader upstream
+claims, and pronunciation quality still varies. Open **Audio models** for the full
+list and filter by the language and voice controls you need. Speech recognition
+and word alignment have separate language coverage.
+
 ### Local speech generation
 
 **audio.cpp is a local speech provider with several models to choose from,
@@ -190,31 +229,31 @@ and the default for new workspaces.** Select the model packages you want to
 install in the Manager, then choose an installed model in **Generate audio**
 settings. You can switch models or add more later. Available families include:
 
-| audio.cpp model family | Voice options |
-| --- | --- |
-| **Qwen3 TTS 1.7B** | Base for reference-voice cloning; CustomVoice for built-in speakers; VoiceDesign to describe a new voice in any of ten supported languages. |
-| **Fish Audio S2 Pro** | Expressive reference-voice cloning. |
-| **VoxCPM2** | Multilingual reference-voice cloning. |
-| **Chatterbox** | Reference-voice cloning. |
-| **MagpieTTS** | Preset multilingual voices. |
-| **OmniVoice** | Multilingual reference-voice cloning. |
-| **PocketTTS English** | English speech generation. |
-| **FireRedTTS3 Base** | Experimental multilingual reference-voice cloning. |
-| **BreezeTTS 2** | Instruction-based voice design and optional reference cloning in English and Mandarin Chinese. |
+| audio.cpp model family | Voice options | Speech language coverage |
+| --- | --- | --- |
+| **Qwen3 TTS** | Base for cloning; CustomVoice for built-in speakers; VoiceDesign for a described voice. | Ten languages; see the quick guide above. Choose the appropriate Base, CustomVoice, or VoiceDesign package. |
+| **Fish Audio S2 Pro** | Expressive reference-voice cloning. | 83 languages reported by the model, including English, Mandarin Chinese, French, German, Spanish, Polish, and Dutch. |
+| **VoxCPM2** | Reference-voice cloning and described voices on supported packages. | 30 listed languages, including English, Mandarin Chinese, Japanese, Korean, French, German, Polish, and Dutch. |
+| **Chatterbox** | Reference-voice cloning; Turbo has its own voice and vocal-event controls. | 19 listed languages in the multilingual package; Turbo is English-only. |
+| **MagpieTTS** | Preset multilingual voices. | English, Arabic, Mandarin Chinese, French, German, Spanish, Hindi, Italian, Korean, Brazilian Portuguese, and Vietnamese; choices depend on the voice. |
+| **OmniVoice** | Reference-voice cloning and described voices on supported packages. | Hundreds of languages; the main package lists 646 language entries. Related checkpoints can have narrower coverage. |
+| **PocketTTS** | Preset voices and reference-voice cloning. | Separate English, German, Italian, Portuguese, and Spanish checkpoints; choose the one for your text. |
+| **FireRedTTS3 Base** | Experimental reference-voice cloning. | 24 listed languages, including English, Mandarin Chinese, Cantonese, Japanese, Korean, Polish, and Dutch. |
+| **BreezeTTS 2** | Voice design, generation from saved designs, and reference-voice cloning. | English and Mandarin Chinese; open weights and self-hosted outputs are for non-commercial use. |
 
 The Manager supplies model packages with their supported compute options.
 CPU, Vulkan, and CUDA builds are available; the Linux CUDA build is currently
-best-effort and has not been verified on NVIDIA hardware. Available voices and languages depend on the
-selected model.
+best-effort and has not been verified on NVIDIA hardware. Available voices and
+languages depend on the selected model.
 
 These dedicated providers also remain available:
 
-| Provider | Voice options and capabilities |
-| --- | --- |
-| **Kokoro-82M v1.0** | Lightweight, CPU-friendly preset voices; a useful first narration engine. |
-| **Silero** | CPU-friendly language-specific voice packs; licence terms differ by pack. |
-| **XTTS v2** | Multilingual and cross-language voice cloning; import fine-tuned model bundles or use the optional XTTS training component. |
-| **Voxtral** | Preset voices; requires a supported GPU/WGPU backend. |
+| Provider | Voice options and capabilities | Speech language coverage |
+| --- | --- | --- |
+| **Kokoro-82M v1.0** | Lightweight, CPU-friendly preset voices; a useful first narration engine. | Eight documented languages; see the quick guide above. |
+| **Silero** | CPU-friendly language-specific voice packs; licence terms differ by pack. | Choose a pack for the required language or accent. |
+| **XTTS v2** | Multilingual and cross-language voice cloning; optional fine-tuned model imports and training. | 17 languages, including English, Mandarin Chinese, Japanese, French, German, Spanish, Polish, and Dutch. |
+| **Voxtral** | Preset voices; requires a supported GPU/WGPU backend. | Arabic, English, French, German, Hindi, Italian, Dutch, Portuguese, and Spanish. |
 
 Existing workspaces keep their saved defaults and provider selections.
 Standalone Qwen3 TTS, Fish S2 Pro, VoxCPM2, Chatterbox, and Magpie providers
@@ -239,17 +278,17 @@ XTTS training benefits strongly from an NVIDIA GPU.
 
 ### Cloud speech and external servers
 
-- **OpenAI:** `gpt-4o-mini-tts`, `tts-1`, and `tts-1-hd`.
-- **Google Gemini / Vertex AI:** speech generation and custom voice creation
-  on supported models.
-- **ElevenLabs:** native API integration with live model and voice discovery.
-- **Azure Speech:** MAI Voice 2 and MAI Voice 2 Flash preset voices.
-- **External servers:** OpenAI-compatible and generic JSON endpoints, with
-  profiles for services such as Piper, StyleTTS2, Matcha-TTS, and
-  Open Unified TTS, plus Azure OpenAI TTS deployments. These are connections
-  to separately operated services; they are not all Manager-installable engines.
+| Provider | Voice options | Speech language coverage |
+| --- | --- | --- |
+| **OpenAI** | Preset voices with `gpt-4o-mini-tts`, `tts-1`, and `tts-1-hd`. | 57 listed languages, including English, Mandarin Chinese, French, German, Japanese, Polish, and Dutch. |
+| **Google Gemini / Vertex AI** | Preset voices and custom voice creation on supported models. | Multilingual, including English, Mandarin Chinese, French, German, Spanish, Polish, and Dutch; the full list depends on the model and route. |
+| **ElevenLabs** | Account voices, cloning, and voice design through the native integration. | Depends on the model; Multilingual v2 lists 29 languages, while newer models offer broader coverage. |
+| **Azure Speech** | MAI Voice 2.1 and MAI Voice 2.1 Flash preset voices. | Depends on the selected model and voice; the catalogue shows the available languages and locales. |
+| **External servers** | OpenAI-compatible or generic JSON endpoints, with profiles for Piper, StyleTTS2, Matcha-TTS, Open Unified TTS, and Azure OpenAI deployments. | Determined by the model and voices served by that endpoint. |
 
-Cloud access depends on your provider account and available models.
+Cloud access depends on your provider account and available models. External
+servers are connections to separately operated services; they are not all
+Manager-installable engines.
 
 ### Language models and translation
 
