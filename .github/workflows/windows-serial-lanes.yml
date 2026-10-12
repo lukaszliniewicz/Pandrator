@@ -1,0 +1,55 @@
+name: Windows serial test groups
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-lanes:
+    name: Python tests (${{ matrix.lane }})
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        lane:
+          - web-03-serial
+          - web-07-serial
+          - web-17-serial
+          - web-18-serial
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            pandrator_installer/pyproject.toml
+            pandrator_manager/pyproject.toml
+            pandrator_mcp/pyproject.toml
+      - name: Install Python lane dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -e ".[dev]"
+          -e "./pandrator_installer"
+          -e "./pandrator_manager[dev]"
+          -e "./pandrator_mcp[dev]"
+      - name: Check Python test lanes
+        run: python scripts/test_lanes.py check
+      - name: Prepare JUnit result directory
+        run: python -c "from pathlib import Path; Path('test-results').mkdir(exist_ok=True)"
+      - name: Run Python test lane
+        run: >-
+          python scripts/test_lanes.py run ${{ matrix.lane }}
+          --junitxml test-results/${{ matrix.lane }}.xml
+      - name: Upload Python lane JUnit result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-serial-${{ matrix.lane }}
+          path: test-results/${{ matrix.lane }}.xml
+          if-no-files-found: warn

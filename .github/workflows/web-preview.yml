@@ -139,6 +139,18 @@ jobs:
             os: windows-latest
             lanes: >-
               installer-serial manager-serial mcp-serial system-media-serial
+          - name: ubuntu-web-17
+            os: ubuntu-latest
+            lanes: web-17-serial
+          - name: ubuntu-web-18
+            os: ubuntu-latest
+            lanes: web-18-serial
+          - name: windows-web-17
+            os: windows-latest
+            lanes: web-17-serial
+          - name: windows-web-18
+            os: windows-latest
+            lanes: web-18-serial
 
     steps:
       - uses: actions/checkout@v4
