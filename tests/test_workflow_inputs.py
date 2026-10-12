@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 import uuid
+from copy import deepcopy
 
 from sqlalchemy import select
 
@@ -14,6 +15,9 @@ from pandrator.web.artifact_selection import choose_artifact
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
     Artifact,
+    GenerationPlan,
+    GenerationPlanRevision,
+    GenerationRun,
     Job,
     MediaEditPlan,
     MediaEditPlanRevision,
@@ -590,6 +594,238 @@ class WorkflowInputTests(unittest.TestCase):
         path.write_text(json.dumps([{"processed_sentence": "Hello, world.", "language": "en"}]), encoding="utf-8")
         return self.services["artifacts"].register(path, kind="json", role=role, session_id=session_id)
 
+    def _plain_text_artifact(self, session_id, role):
+        path = self.services["paths"].uploads / f"{uuid.uuid4().hex}.txt"
+        path.write_text("Audiobook source text.", encoding="utf-8")
+        return self.services["artifacts"].register(path, kind="text", role=role, session_id=session_id)
+
+    def _select_audiobook_text(self, session_id, artifact, role):
+        manifest = get_workflow_inputs(self.services, session_id)
+        stage = {"prepared_text": "prepare_text", "tts_optimized": "optimize_tts"}[role]
+        return select_workflow_input(
+            self.services,
+            session_id,
+            "generation",
+            role,
+            artifact.id,
+            expected_outcome_revision=manifest["outcome_revision"],
+            expected_text_settings_revision=manifest["text_settings_revision"],
+            expected_selection_revision=self._expected_selection_revision(session_id, stage),
+        )
+
+    def _bind_audiobook_plan(self, session_id, source_artifact_id):
+        with self.database.immediate_session() as session:
+            plan = GenerationPlan(session_id=session_id)
+            session.add(plan)
+            session.flush()
+            settings = (
+                {"_source_artifact_id": source_artifact_id}
+                if source_artifact_id is not None
+                else {}
+            )
+            revision = GenerationPlanRevision(
+                plan_id=plan.id,
+                revision_number=1,
+                settings_json=settings,
+                content_hash=f"workflow-input-{uuid.uuid4().hex}",
+            )
+            session.add(revision)
+            session.flush()
+            plan.active_revision_id = revision.id
+            session.flush()
+            return plan.id, revision.id
+
+    def _audiobook_plan_snapshot(self, session_id):
+        with self.database.snapshot_session() as session:
+            plan = session.scalar(
+                select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+            )
+            if plan is None:
+                return None
+            revisions = list(
+                session.scalars(
+                    select(GenerationPlanRevision)
+                    .where(GenerationPlanRevision.plan_id == plan.id)
+                    .order_by(GenerationPlanRevision.revision_number)
+                ).all()
+            )
+            return (
+                plan.id,
+                plan.active_revision_id,
+                tuple(
+                    (
+                        revision.id,
+                        revision.revision_number,
+                        dict(revision.settings_json or {}),
+                        revision.content_hash,
+                    )
+                    for revision in revisions
+                ),
+            )
+
+    def _generation_rows(self, session_id):
+        with self.database.snapshot_session() as session:
+            runs = tuple(
+                session.scalars(
+                    select(GenerationRun.id)
+                    .where(GenerationRun.session_id == session_id)
+                    .order_by(GenerationRun.id)
+                ).all()
+            )
+            jobs = tuple(
+                session.scalars(
+                    select(Job.id).where(Job.session_id == session_id).order_by(Job.id)
+                ).all()
+            )
+            return runs, jobs
+
+    def test_audiobook_refresh_rejects_selected_source_mismatches_without_mutation(self):
+        handlers = self.services["workflow_handlers"]
+        message = (
+            "The selected audiobook text differs from the speech plan. "
+            "Prepare the speech plan again before generating."
+        )
+        cases = (
+            ("tts_optimized", "prepared_text"),
+            ("prepared_text", "tts_optimized"),
+            ("prepared_text", None),
+        )
+        for selected_role, bound_role in cases:
+            with self.subTest(selected_role=selected_role, bound_role=bound_role):
+                session_id = self._session("audiobook")
+                prepared = self._text_artifact(session_id, "prepared_text")
+                optimized = self._text_artifact(session_id, "tts_optimized")
+                selected = {"prepared_text": prepared, "tts_optimized": optimized}[
+                    selected_role
+                ]
+                bound = (
+                    {"prepared_text": prepared, "tts_optimized": optimized}[bound_role]
+                    if bound_role is not None
+                    else None
+                )
+                self._select_audiobook_text(session_id, selected, selected_role)
+                self._bind_audiobook_plan(session_id, bound.id if bound else None)
+
+                self.assertEqual(
+                    selected.id,
+                    handlers._generation_source_for_plan_refresh(session_id).id,
+                )
+                resolved_snapshot = {"source_artifact_id": "keep", "text": {"keep": True}}
+                original_snapshot = deepcopy(resolved_snapshot)
+                input_state = self._speech_snapshot(session_id)
+                plan_state = self._audiobook_plan_snapshot(session_id)
+
+                with self.assertRaises(RevisionConflict) as raised:
+                    handlers.refresh_generation_plan(session_id, resolved_snapshot)
+
+                self.assertEqual(message, str(raised.exception))
+                self.assertEqual(original_snapshot, resolved_snapshot)
+                self.assertEqual(input_state, self._speech_snapshot(session_id))
+                self.assertEqual(plan_state, self._audiobook_plan_snapshot(session_id))
+
+    def test_audiobook_source_mismatch_guard_covers_non_json_text_artifacts(self):
+        session_id = self._session("audiobook")
+        prepared_text = self._plain_text_artifact(session_id, "prepared_text")
+        optimized = self._text_artifact(session_id, "tts_optimized")
+        self._select_audiobook_text(session_id, prepared_text, "prepared_text")
+        self._bind_audiobook_plan(session_id, optimized.id)
+        resolved_snapshot = {"text": {"keep": True}}
+        input_state = self._speech_snapshot(session_id)
+        plan_state = self._audiobook_plan_snapshot(session_id)
+
+        with self.assertRaisesRegex(
+            RevisionConflict,
+            "The selected audiobook text differs from the speech plan",
+        ):
+            self.services["workflow_handlers"].refresh_generation_plan(
+                session_id, resolved_snapshot
+            )
+
+        self.assertEqual({"text": {"keep": True}}, resolved_snapshot)
+        self.assertEqual(input_state, self._speech_snapshot(session_id))
+        self.assertEqual(plan_state, self._audiobook_plan_snapshot(session_id))
+
+    def test_audiobook_refresh_source_resolution_honors_older_same_role_selection(self):
+        handlers = self.services["workflow_handlers"]
+        for role in ("prepared_text", "tts_optimized"):
+            with self.subTest(role=role):
+                session_id = self._session("audiobook")
+                selected = self._text_artifact(session_id, role)
+                newer_unselected = self._text_artifact(session_id, role)
+                self._select_audiobook_text(session_id, selected, role)
+
+                if role == "tts_optimized":
+                    manifest = get_workflow_inputs(self.services, session_id)
+                    self.assertTrue(
+                        manifest["transformations"]["llm_tts_document_optimization"]
+                    )
+                    self.services["workspace_settings"].patch(
+                        session_id,
+                        "text",
+                        manifest["text_settings_revision"],
+                        {"llm_tts_document_optimization": False},
+                    )
+
+                resolved = handlers._generation_source_for_plan_refresh(session_id)
+                self.assertNotEqual(selected.id, newer_unselected.id)
+                self.assertEqual(selected.id, resolved.id)
+
+    def test_audiobook_refresh_accepts_matching_source_and_sets_speech_plan_reuse_flag(self):
+        handlers = self.services["workflow_handlers"]
+        for role, expected_reuse in (("prepared_text", False), ("tts_optimized", True)):
+            with self.subTest(role=role):
+                session_id = self._session("audiobook")
+                selected = self._text_artifact(session_id, role)
+                self._select_audiobook_text(session_id, selected, role)
+                self._bind_audiobook_plan(session_id, selected.id)
+                resolved_snapshot = {"text": {"keep": True}}
+
+                self.assertIsNone(
+                    handlers.refresh_generation_plan(session_id, resolved_snapshot)
+                )
+
+                self.assertEqual(selected.id, resolved_snapshot["source_artifact_id"])
+                self.assertEqual(
+                    {
+                        "keep": True,
+                        "use_existing_speech_plans": expected_reuse,
+                    },
+                    resolved_snapshot["text"],
+                )
+
+    def test_audiobook_refresh_keeps_legacy_stored_source_fallback(self):
+        handlers = self.services["workflow_handlers"]
+        session_id = self._session("audiobook")
+        legacy_source = self._text_artifact(session_id, "upload")
+        self._bind_audiobook_plan(session_id, legacy_source.id)
+
+        resolved = handlers._generation_source_for_plan_refresh(session_id)
+        self.assertEqual(legacy_source.id, resolved.id)
+        resolved_snapshot = {"text": {}}
+        self.assertIsNone(handlers.refresh_generation_plan(session_id, resolved_snapshot))
+        self.assertEqual(legacy_source.id, resolved_snapshot["source_artifact_id"])
+        self.assertFalse(resolved_snapshot["text"]["use_existing_speech_plans"])
+
+    def test_generation_prepare_start_rejects_audiobook_source_mismatch_before_admission(self):
+        session_id = self._session("audiobook")
+        prepared = self._text_artifact(session_id, "prepared_text")
+        optimized = self._text_artifact(session_id, "tts_optimized")
+        self._select_audiobook_text(session_id, optimized, "tts_optimized")
+        self._bind_audiobook_plan(session_id, prepared.id)
+        input_state = self._speech_snapshot(session_id)
+        plan_state = self._audiobook_plan_snapshot(session_id)
+        generation_rows = self._generation_rows(session_id)
+
+        with self.assertRaisesRegex(
+            RevisionConflict,
+            "The selected audiobook text differs from the speech plan",
+        ):
+            self.services["generation"].prepare_start(session_id)
+
+        self.assertEqual(input_state, self._speech_snapshot(session_id))
+        self.assertEqual(plan_state, self._audiobook_plan_snapshot(session_id))
+        self.assertEqual(generation_rows, self._generation_rows(session_id))
+
     def test_configure_synchronizes_flags_preserves_fields_and_is_noop(self):
         sid = self._session("audiobook")
         self.services["workspace_settings"].patch(sid, "text", 0, {"unrelated": "keep"})
@@ -778,10 +1014,6 @@ class WorkflowInputTests(unittest.TestCase):
         self.assertEqual(stable, self._speech_snapshot(sid))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
     def test_http_input_selection_replays_atomically_and_rejects_stale_fences(self):
         session_id = self._session()
         source = self._upload(session_id)
@@ -806,3 +1038,7 @@ if __name__ == "__main__":
                 headers={**headers, "Idempotency-Key": "input-http-select-2"})
         self.assertEqual(409, fresh.status_code, fresh.get_json())
         self.assertEqual(snapshot, self._snapshot(session_id))
+
+
+if __name__ == "__main__":
+    unittest.main()

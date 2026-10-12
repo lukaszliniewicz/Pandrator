@@ -18,6 +18,11 @@ FAST_LANE = "fast-xdist"
 TEST_LANES: dict[str, tuple[str, ...]] = {
     FAST_LANE: (
         "tests/test_audio_cpp_assets.py",
+        "tests/test_audio_cpp_generation_assets.py",
+        "tests/test_audio_cpp_generation_metadata.py",
+        "tests/test_audio_cpp_generation_models.py",
+        "tests/test_audio_cpp_generation_payload.py",
+        "tests/test_audio_cpp_generation_registry.py",
         "tests/test_audio_cpp_language_support.py",
         "tests/test_audio_cpp_091_speech.py",
         "tests/test_audio_cpp_metadata_projection.py",
@@ -153,6 +158,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_audiocpp_release_assets.py",
         "tests/test_audio_cpp_managed_inventory.py",
         "tests/test_audio_cpp_package_roles.py",
+        "tests/test_audio_cpp_generation_packages.py",
         "tests/test_audiocpp_expanded_packages.py",
         "tests/test_manager_audiocpp.py",
         "tests/test_manager_activation.py",
@@ -220,6 +226,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_preview_and_generation.py",
         "tests/test_mcp_generation_batch_contract.py",
         "tests/test_mcp_generation_registration.py",
+        "tests/test_mcp_enhancements.py",
         "tests/test_mcp_editor_comparison.py",
         "tests/test_mcp_sounds.py",
         "tests/test_mcp_quick_transcription.py",
@@ -233,6 +240,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_voice_setup.py",
         "tests/test_mcp_voice_catalog.py",
         "tests/test_mcp_voice_metadata.py",
+        "tests/test_mcp_pronunciations.py",
         "tests/test_mcp_voice_lifecycle.py",
         "tests/test_mcp_google_voice_design.py",
         "tests/test_mcp_designed_voice_setup.py",
@@ -259,6 +267,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_mcp_targets_cli.py",
         "tests/test_mcp_tts_provider_switch.py",
         "tests/test_mcp_generation_recast.py",
+        "tests/test_mcp_generation_operations.py",
     ),
     "system-media-serial": (
         "tests/test_export_assembly_plan_selection.py",
@@ -496,6 +505,8 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_generation_recast.py",
         "tests/test_generation_recast_routes.py",
         "tests/test_generation_admission.py",
+        "tests/test_generation_operations.py",
+        "tests/test_speech_plan_audio_reuse.py",
         "tests/test_generation_provider_preflight.py",
     ),
     "web-07-serial": (

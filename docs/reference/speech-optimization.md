@@ -29,6 +29,10 @@ delivery annotations. Preparation rejects simultaneous document and final-unit
 optimization, or an already document-optimized input, to prevent duplicate rewriting.
 Cancellation, failure, or changed inputs leave the previous plan selected.
 
+After switching an audiobook between prepared and optimized text, prepare and
+review a new speech plan before generating from that input. An existing plan
+keeps the wording it was prepared from.
+
 Legacy automatic/direct generation can still optimize unannotated text inline.
 Frozen reviewed plans use their accepted wording. Inline optimization refuses
 anchored XML and duplicate document optimization; prepare a new speech plan

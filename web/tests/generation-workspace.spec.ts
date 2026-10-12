@@ -1,5 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
 
+async function displayFilter(page: Page) {
+  const filter = page.getByRole('combobox', { name: 'Segments to display' });
+  if (!(await filter.isVisible()))
+    await page
+      .getByRole('button', { name: 'Display options', exact: true })
+      .click();
+  await expect(filter).toBeVisible();
+  return filter;
+}
+
 async function fixture(page: Page, total = 2000) {
   await page.goto('/');
   await page.getByLabel('Owner password').fill('pandrator-e2e');
@@ -301,24 +311,14 @@ test('a pending text save settles before navigation and the editor restores filt
   await expect(row.locator('.speech-editing-text')).toHaveText(
     'This edit must survive changing tabs.'
   );
-  await page
-    .getByRole('button', { name: 'Display options', exact: true })
-    .click();
-  await page
-    .getByRole('combobox', { name: 'Segments to display' })
-    .selectOption('marked');
+  await (await displayFilter(page)).selectOption('marked');
   await expect(page.getByTestId('generation-segment-table')).toHaveAttribute(
     'data-loaded-count',
     '20'
   );
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Display options', exact: true })
-    .click();
-  await expect(
-    page.getByRole('combobox', { name: 'Segments to display' })
-  ).toHaveValue('marked');
+  await expect(await displayFilter(page)).toHaveValue('marked');
   expect(f.errors).toEqual([]);
 });
 
@@ -502,6 +502,9 @@ test('multiple voices opens voice autocomplete while XML stays in the block', as
   await expect(
     voice.getByRole('combobox', { name: 'Voice override', exact: true })
   ).not.toBeVisible();
+  await voice
+    .getByRole('combobox', { name: 'Speaker', exact: true })
+    .press('Escape');
   await voice
     .getByText('Override voice for this segment (optional)', { exact: true })
     .click();
@@ -736,7 +739,7 @@ test('phrase directions appear on hover without a selection API read or contamin
   );
   await expect(f.words).toHaveText(f.wording);
   const phrase = f.words.getByRole('button', {
-    name: /calmer · Emphasize this/
+    name: /calmer.*Emphasize this/
   });
   await f.words.evaluate((node) => {
     const range = document.createRange();
@@ -783,7 +786,12 @@ test('Gemini emotion suggestions retain custom text and separate model support f
   });
   await f.words.evaluate((node) => {
     const text = document
-      .createTreeWalker(node, NodeFilter.SHOW_TEXT)
+      .createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+        acceptNode: (entry) =>
+          entry.textContent === node.textContent
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_SKIP
+      })
       .nextNode();
     if (!text) throw new Error('Missing spoken text');
     const range = document.createRange();
@@ -953,16 +961,12 @@ test('a delayed page cannot reappear after changing the segment filter', async (
   );
   await scrollBottom(page);
   await expect.poll(() => waiting).toBe(true);
-  await page
-    .getByRole('combobox', { name: 'Segments to display' })
-    .selectOption('marked');
+  await (await displayFilter(page)).selectOption('marked');
   await expect
     .poll(() => f.segmentRequests.some((url) => url.searchParams.has('marked')))
     .toBe(true);
   release?.();
-  await expect(
-    page.getByRole('combobox', { name: 'Segments to display' })
-  ).toHaveValue('marked');
+  await expect(await displayFilter(page)).toHaveValue('marked');
   await expect(page.locator('[data-segment-id="late-all-row"]')).toHaveCount(0);
   expect(f.errors).toEqual([]);
 });
@@ -978,9 +982,9 @@ test('Simple Generation is read-only and switching restores Advanced controls wi
   const before = await (
     await page.request.get(`${f.base}/generation-segments`)
   ).json();
-  await modes.getByRole('button', { name: 'Simple', exact: true }).click();
+  await modes.getByRole('button', { name: /^simple$/i }).click();
   await expect(
-    modes.getByRole('button', { name: 'Simple', exact: true })
+    modes.getByRole('button', { name: /^simple$/i })
   ).toHaveAttribute('aria-pressed', 'true');
   await expect(
     page.getByRole('button', { name: 'Edit words for segment 1', exact: true })
@@ -1007,7 +1011,7 @@ test('Simple Generation is read-only and switching restores Advanced controls wi
     (await (await page.request.get(`${f.base}/generation-segments`)).json())
       .plan_revision_id
   ).toBe(before.plan_revision_id);
-  await modes.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await modes.getByRole('button', { name: /^advanced$/i }).click();
   await expect(
     page.getByRole('button', { name: 'Edit words for segment 1', exact: true })
   ).toBeVisible();
@@ -1035,7 +1039,7 @@ test('a pending interface switch pauses project input until it finishes', async 
   });
   const simple = page
     .getByRole('group', { name: 'Project interface', exact: true })
-    .getByRole('button', { name: 'Simple', exact: true });
+    .getByRole('button', { name: /^simple$/i });
   await simple.click();
   try {
     await patchEntered;
@@ -1064,7 +1068,7 @@ test('switching to Simple does not discard an unfinished instruction editor', as
     .fill('An unfinished direction');
   await page
     .getByRole('group', { name: 'Project interface', exact: true })
-    .getByRole('button', { name: 'Simple', exact: true })
+    .getByRole('button', { name: /^simple$/i })
     .click();
   await expect(page.getByRole('alert')).toContainText(
     'Finish or close the open editor'

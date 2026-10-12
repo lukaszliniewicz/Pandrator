@@ -51,7 +51,7 @@ def sound_project():
             session.flush()
             speech_plan.active_revision_id = revision.id
             segment = GenerationSegment(plan_revision_id=revision.id, ordinal=0, text="Hello world")
-            artifact = Artifact(kind="audio", relative_path="sound.wav", content_hash="sha256-test")
+            artifact = Artifact(kind="audio", role="sound.original", relative_path="sound.wav", content_hash="sha256-test")
             session.add_all([segment, artifact])
             session.flush()
             variant = SoundVariant(

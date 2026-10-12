@@ -15,7 +15,13 @@ from sqlalchemy.exc import OperationalError
 from pandrator.logic import tts_handler
 from pandrator.web.database import Database
 from pandrator.web.job_execution import current_job_lease
-from pandrator.web.jobs import JobQueue, Worker, noop_handler
+from pandrator.web.jobs import (
+    WORKER_LEASE_SAFETY_SECONDS,
+    WORKER_LEASE_SECONDS,
+    JobQueue,
+    Worker,
+    noop_handler,
+)
 from pandrator.web.models import Job, ResourceClaim, utcnow
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -442,6 +448,26 @@ class AtomicJobQueueTests(unittest.TestCase):
 
 
 class WorkerResilienceTests(unittest.TestCase):
+    class _FakeClock:
+        def __init__(self, start_utc):
+            self.start_utc = start_utc
+            self.seconds = 0.0
+
+        def monotonic(self):
+            return self.seconds
+
+        def utcnow(self):
+            return self.start_utc + timedelta(seconds=self.seconds)
+
+        def advance_to(self, seconds):
+            self.seconds = seconds
+
+    @staticmethod
+    def _raise_sqlite_busy(*_args, **_kwargs):
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        raise error
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.database_path = prepare_web_test_data_root(self.temporary.name).database
@@ -480,6 +506,134 @@ class WorkerResilienceTests(unittest.TestCase):
         self.assertTrue(
             self.queue.heartbeat(job.id, "worker", lease_generation=generation)
         )
+
+    def test_resource_contention_cancels_before_resource_claim_expires(self):
+        job = self.queue.enqueue("resource_contention", resource_keys=["gpu:0"])
+        competing_job = self.queue.enqueue("noop", resource_keys=["gpu:0"])
+        clock = self._FakeClock(utcnow())
+        heartbeat_successes = 0
+        original_heartbeat = self.queue.heartbeat
+        safety_boundary = WORKER_LEASE_SECONDS - WORKER_LEASE_SAFETY_SECONDS
+        elapsed_points = (2, 7, 12, 17, 22, 27, safety_boundary)
+
+        def count_successful_heartbeat(*args, **kwargs):
+            nonlocal heartbeat_successes
+            result = original_heartbeat(*args, **kwargs)
+            heartbeat_successes += bool(result)
+            return result
+
+        def hold_resource_claim(_payload, progress, cancel_event):
+            for index, elapsed in enumerate(elapsed_points, start=1):
+                clock.advance_to(elapsed)
+                progress(index / len(elapsed_points), "renewing")
+                if elapsed < safety_boundary:
+                    self.assertFalse(cancel_event.is_set())
+
+            self.assertTrue(cancel_event.is_set())
+            self.assertEqual(len(elapsed_points), heartbeat_successes)
+            second_claim = self.queue.claim("second-worker")
+            self.assertIsNotNone(second_claim)
+            self.assertEqual(competing_job.id, second_claim.id)
+            with self.database.session() as session:
+                resource_claim = session.get(ResourceClaim, "gpu:0")
+                self.assertIsNotNone(resource_claim)
+                self.assertEqual(job.id, resource_claim.job_id)
+                self.assertEqual("worker", resource_claim.lease_owner)
+                self.assertGreater(
+                    resource_claim.expires_at,
+                    clock.utcnow().replace(tzinfo=None),
+                )
+            self.assertFalse(
+                self.queue.acquire_resources(
+                    competing_job.id,
+                    "second-worker",
+                    ["gpu:0"],
+                    lease_generation=second_claim.lease_generation,
+                )
+            )
+            return {"must_not_succeed": True}
+
+        worker = Worker(
+            self.queue,
+            "worker",
+            {"resource_contention": hold_resource_claim, "noop": noop_handler},
+        )
+        with (
+            patch("pandrator.web.jobs.time", clock),
+            patch("pandrator.web.jobs.utcnow", side_effect=clock.utcnow),
+            patch("pandrator.web.jobs.threading.Thread"),
+            patch.object(
+                self.queue,
+                "heartbeat",
+                side_effect=count_successful_heartbeat,
+            ),
+            patch.object(
+                self.queue,
+                "heartbeat_resources",
+                side_effect=self._raise_sqlite_busy,
+            ) as resource_heartbeats,
+        ):
+            self.assertTrue(worker.run_once())
+
+        self.assertEqual(len(elapsed_points), resource_heartbeats.call_count)
+        self.assertLess(
+            clock.seconds,
+            WORKER_LEASE_SECONDS,
+        )
+        self.assertEqual("failed", self.queue.get(job.id).status)
+        self.assertEqual("worker_lease_lost", self.queue.get(job.id).error_code)
+
+    def test_resource_contention_recovers_with_a_fresh_grace_period(self):
+        job = self.queue.enqueue("resource_recovery", resource_keys=["gpu:0"])
+        clock = self._FakeClock(utcnow())
+        original_heartbeat_resources = self.queue.heartbeat_resources
+        resource_outcomes = []
+        renewed_grace_seconds = (
+            WORKER_LEASE_SECONDS - WORKER_LEASE_SAFETY_SECONDS
+        )
+        elapsed_points = (
+            10,
+            20,
+            20 + renewed_grace_seconds - 0.1,
+            20 + renewed_grace_seconds,
+        )
+
+        def contend_then_recover(*args, **kwargs):
+            if len(resource_outcomes) in {0, 2}:
+                resource_outcomes.append("busy")
+                return self._raise_sqlite_busy()
+            renewed = original_heartbeat_resources(*args, **kwargs)
+            resource_outcomes.append(renewed)
+            return renewed
+
+        def finish_after_recovery(_payload, progress, cancel_event):
+            for index, elapsed in enumerate(elapsed_points, start=1):
+                clock.advance_to(elapsed)
+                progress(index / len(elapsed_points), "renewing")
+                self.assertFalse(cancel_event.is_set())
+            return {"renewed": True}
+
+        worker = Worker(
+            self.queue,
+            "worker",
+            {"resource_recovery": finish_after_recovery},
+        )
+        with (
+            patch("pandrator.web.jobs.time", clock),
+            patch("pandrator.web.jobs.utcnow", side_effect=clock.utcnow),
+            patch("pandrator.web.jobs.threading.Thread"),
+            patch.object(
+                self.queue,
+                "heartbeat_resources",
+                side_effect=contend_then_recover,
+            ),
+        ):
+            self.assertTrue(worker.run_once())
+
+        self.assertEqual(["busy", True, "busy", True], resource_outcomes)
+        self.assertLess(elapsed_points[-2] - elapsed_points[1], renewed_grace_seconds)
+        self.assertEqual(renewed_grace_seconds, elapsed_points[-1] - elapsed_points[1])
+        self.assertEqual("succeeded", self.queue.get(job.id).status)
 
     def test_tts_provider_failure_reaches_job_error_with_secrets_redacted(self):
         job = self.queue.enqueue("test.synthesize")

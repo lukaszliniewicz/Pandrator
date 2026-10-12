@@ -646,6 +646,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/generation-operations/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getGenerationOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/generation-runs/{runId}": {
         parameters: {
             query?: never;
@@ -706,6 +722,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["cancelGenerationRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/generation-runs/{runId}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getGenerationRunCoverage"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -10999,6 +11031,26 @@ export interface operations {
             };
         };
     };
+    getGenerationOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                operationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stable preparation/synthesis state with optional terminal audio coverage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getGenerationRun: {
         parameters: {
             query?: {
@@ -11150,6 +11202,26 @@ export interface operations {
         responses: {
             /** @description Cancellation requested */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getGenerationRunCoverage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available selected audio and whole-plan readiness counts */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

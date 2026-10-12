@@ -107,9 +107,31 @@ def test_unknown_model_does_not_silently_gain_cloning():
 
 def test_catalogue_covers_inventory_without_claiming_editing_or_installation():
     assert len(inventory()["families"]) == 112
-    # Four compatibility package aliases are excluded from canonical rows.
-    assert len(inventory()["packages"]) == 362
-    assert catalogue_page(limit=100)["total"] == 358
+    packages = inventory()["packages"]
+    assert len(packages) == 362
+
+    # Component rows are excluded from the ordinary paginated catalogue.
+    component_ids = {
+        item["id"] for item in catalogue_page(category="component", limit=100)["items"]
+    }
+    assert component_ids == {
+        "auk_qwen_bf16",
+        "auk_qwen_q8_0",
+        "auk_vae_f32",
+        "vocos_mel_24khz",
+        "yue2_vae_f16",
+        "yue2_vae_f32",
+    }
+
+    ordinary_page = catalogue_page(limit=100, offset=0)
+    ordinary_rows = list(ordinary_page["items"])
+    for offset in range(100, ordinary_page["total"], 100):
+        ordinary_rows.extend(catalogue_page(limit=100, offset=offset)["items"])
+    ordinary_ids = {item["id"] for item in ordinary_rows}
+    inventory_ids = {package["id"] for package in packages}
+    assert ordinary_page["total"] == 356
+    assert ordinary_ids == inventory_ids - component_ids
+    assert ordinary_ids.isdisjoint(component_ids)
     qwen = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")
     assert qwen["reference_audio"] == "not_used"
     assert not qwen["upstream_features"]["voice_cloning"]

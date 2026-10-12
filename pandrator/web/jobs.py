@@ -1264,13 +1264,14 @@ class Worker:
                     lease_lost_event.set()
                     cancel_event.set()
                     return False
-                last_successful_heartbeat = time.monotonic()
                 self.queue.heartbeat_resources(
                     job.id,
                     self.worker_id,
                     lease_generation=lease_generation,
                     lease_seconds=WORKER_LEASE_SECONDS,
                 )
+                # Keep the grace clock aligned with the full job and resource lease.
+                last_successful_heartbeat = time.monotonic()
                 return True
             except Exception as error:
                 if is_sqlite_busy(error):

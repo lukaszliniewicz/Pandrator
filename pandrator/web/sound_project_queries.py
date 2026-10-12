@@ -32,7 +32,7 @@ def current_header(
     ).one_or_none()
     if row is None:
         raise KeyError(session_id)
-    return row
+    return (row[0], row[1], row[2])
 
 
 def cue_rows(
@@ -62,7 +62,9 @@ def cue_rows(
     statement = statement.order_by(ProjectSoundCue.logical_id)
     if limit is not None:
         statement = statement.limit(limit)
-    return list(session.execute(statement).all())
+    return [
+        (row[0], row[1], row[2], row[3]) for row in session.execute(statement).all()
+    ]
 
 
 def cue_summary(row: tuple[Any, ...]) -> dict[str, Any]:

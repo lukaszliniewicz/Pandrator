@@ -72,7 +72,7 @@
     ) ?? []
   );
   const selectedModel = $derived(
-    catalogue?.models.find((model) => model.id === modelId)
+    availableModels.find((model) => model.id === modelId)
   );
   const candidateRows = $derived(
     candidate && !recent.some((item) => item.id === candidate?.id)
@@ -135,13 +135,16 @@
 
   function selectModel(id: string) {
     modelId = id;
-    const model = catalogue?.models.find((entry) => entry.id === id);
-    if (!model) return;
+    parameters = {};
+    const model = availableModels.find((entry) => entry.id === id);
+    if (!model) {
+      seed = undefined;
+      return;
+    }
     duration = model.duration.default;
     backend = model.backends.includes(backend)
       ? backend
       : (model.backends[0] ?? 'cpu');
-    parameters = {};
     if (seed !== undefined && seed > model.seed_maximum) {
       seed = undefined;
     }
@@ -162,7 +165,7 @@
             : 'stable_audio_3_small_sfx_q8_0')
       ) ??
       choices[0];
-    if (preferred) selectModel(preferred.id);
+    selectModel(preferred?.id ?? '');
   }
   function restoreRequest(result: SoundCandidate, reuseSeed = false) {
     const provenance = result.provenance;
@@ -506,6 +509,15 @@
         threads = result.defaults.threads;
         duration = result.defaults.duration_seconds;
         modelId = result.defaults.model_id;
+        if (
+          !result.models.some(
+            (model) =>
+              model.id === modelId &&
+              model.available !== false &&
+              model.kinds.includes(kind)
+          )
+        )
+          selectKind(kind);
         if (item?.preferred_variant) restoreRequest(item.preferred_variant);
         if (recent[0]) expand(recent[0].id);
       })
@@ -563,6 +575,13 @@
             onchange={(event) => selectModel(event.currentTarget.value)}
             disabled={!availableModels.length}
           >
+            {#if !selectedModel}
+              <option value="" disabled
+                >{availableModels.length
+                  ? 'Choose a model'
+                  : 'No models available'}</option
+              >
+            {/if}
             {#each availableModels as model (model.id)}
               <option value={model.id}
                 >{model.label}{model.cached ? ' · Installed' : ''}</option
@@ -571,6 +590,13 @@
           </select>
         </label>
       </div>
+      {#if catalogue && !availableModels.length}
+        <p role="status" class="text-sm">
+          No models are available for {kind === 'music'
+            ? 'music'
+            : 'sound effects'}.
+        </p>
+      {/if}
       {#if selectedModel}
         <p class="muted text-sm">
           {selectedModel.requires_lyrics
@@ -638,6 +664,7 @@
             min={selectedModel?.duration.minimum ?? 1}
             max={selectedModel?.duration.maximum ?? 30}
             step="0.1"
+            disabled={!selectedModel}
             required
           /></label
         >
@@ -657,7 +684,7 @@
           <select
             class="sound-field mt-1"
             bind:value={backend}
-            disabled={selectedModel?.available === false}
+            disabled={!selectedModel}
           >
             {#if selectedModel && !selectedModel.backends.includes(backend)}
               <option value={backend} disabled

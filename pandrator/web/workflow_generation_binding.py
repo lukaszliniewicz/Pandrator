@@ -26,6 +26,7 @@ from .models import (
     SpeechPlanReview,
 )
 from .outcome_plans import resolve_workflow_inputs
+from .settings_policy import RevisionConflict
 from .workflow_inputs import workflow_transformations
 
 
@@ -557,6 +558,16 @@ def generation_source_for_plan_refresh(
         )
         source_revision_id = str((active.source_revision_id if active else "") or "")
 
+    if record.workflow_kind == "audiobook":
+        roles = (
+            ("tts_optimized",)
+            if transformations.get("llm_tts_document_optimization")
+            else ("prepared_text",)
+        )
+        selected = context._latest_stage_input(session_id, roles)
+        if selected is not None:
+            return selected
+
     if stored_source_id and not has_explicit_source_choice:
         try:
             source, _path = context._resolve_input(stored_source_id)
@@ -618,6 +629,27 @@ def refresh_generation_plan(
     if source_artifact is None:
         return None
     source_artifact, source_path = context._resolve_input(source_artifact.id)
+
+    if source_path.suffix.lower() != ".srt":
+        with context.database.session() as session:
+            record = session.get(SessionRecord, session_id)
+            if record is None:
+                raise KeyError(session_id)
+            if record.workflow_kind == "audiobook":
+                plan = session.scalar(
+                    select(GenerationPlan).where(GenerationPlan.session_id == session_id)
+                )
+                active_revision_id = plan.active_revision_id if plan else None
+                if active_revision_id:
+                    active = session.get(GenerationPlanRevision, active_revision_id)
+                    settings = (active.settings_json if active is not None else {}) or {}
+                    bound_source_id = str(settings.get("_source_artifact_id") or "")
+                    if bound_source_id != source_artifact.id:
+                        raise RevisionConflict(
+                            "The selected audiobook text differs from the speech plan. "
+                            "Prepare the speech plan again before generating."
+                        )
+
     resolved_snapshot["source_artifact_id"] = source_artifact.id
     resolved_snapshot["text"] = {
         **dict(resolved_snapshot.get("text") or {}),

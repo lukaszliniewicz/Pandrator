@@ -8,6 +8,7 @@ import {
   type UploadTransferCompleteCallback
 } from './api';
 import type { SpeechPreview } from './speech-annotations';
+import type { GenerationControls } from './generation-controls';
 import { admitGeneration } from './generation-admission';
 import type {
   AgentRun,
@@ -1227,6 +1228,14 @@ export type SpeechBlockTopologyOperation = {
 };
 
 export const generationApi = {
+  controls: (sessionId: string) =>
+    typedApiJson<
+      '/api/v1/sessions/{sessionId}/generation-controls',
+      'get',
+      GenerationControls
+    >('/api/v1/sessions/{sessionId}/generation-controls', 'get', {
+      path: { sessionId }
+    }),
   summary: (sessionId: string, signal?: AbortSignal) =>
     typedApiJson<
       '/api/v1/sessions/{sessionId}/generation/summary',

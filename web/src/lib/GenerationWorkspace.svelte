@@ -11,8 +11,6 @@
   } from './generation-history';
   import { errorMessage } from './errors';
   import { useProjectInterface } from './project-interface.svelte';
-  import { apiJson } from './api';
-  import type { GenerationControls } from './generation-controls';
   import { invalidationBus, invalidates } from './invalidation';
   import PassageSplitDialog from './PassageSplitDialog.svelte';
   import PassageActionsPopover from './PassageActionsPopover.svelte';
@@ -903,9 +901,7 @@
       return;
     }
     try {
-      const controls = await apiJson<GenerationControls>(
-        `/sessions/${encodeURIComponent(scope)}/generation-controls`
-      );
+      const controls = await generationApi.controls(scope);
       if (request !== speakerNamesRequest || scope !== sessionId) return;
       speakerNames = Object.fromEntries(
         controls.characters.map((entry) => [entry.id, entry.display_name])

@@ -23,7 +23,8 @@ for (const width of [1280, 390]) {
         headers,
         data: {
           name: `Eleven v4 ${crypto.randomUUID()}`,
-          workflow_kind: 'voiceover'
+          workflow_kind: 'voiceover',
+          interface_mode: 'advanced'
         }
       })
     ).json();

@@ -25,7 +25,8 @@ for (const provider of ['gemini', 'vertex_ai']) {
           headers,
           data: {
             name: `Google TTS ${crypto.randomUUID()}`,
-            workflow_kind: 'voiceover'
+            workflow_kind: 'voiceover',
+            interface_mode: 'advanced'
           }
         })
       ).json();
