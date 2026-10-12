@@ -1,5 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
+  editGenerationWords,
+  showGenerationTextLayer
+} from './fixtures/generation-editing';
+import {
   passagePieces,
   type PassageBoundary,
   type PassageLayer
@@ -83,6 +87,7 @@ async function setup(page: Page, item = segment()) {
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Passage markers ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -120,6 +125,7 @@ async function setup(page: Page, item = segment()) {
   );
   await page.goto(`/sessions/${id}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await showGenerationTextLayer(page, 'display');
   return { getSplit: () => splitBody, sessionId: id };
 }
 
@@ -159,18 +165,14 @@ test('reading view shares markers; Escape restores focus and native editing neve
   page
 }, info) => {
   await setup(page);
-  await page
-    .getByRole('button', { name: 'Edit text for segment 54', exact: true })
-    .click();
+  await editGenerationWords(page, 54);
   await expect(
     page.getByRole('textbox', {
       name: 'Script text for segment 54',
       exact: true
     })
   ).toHaveValue(text);
-  await page
-    .getByRole('button', { name: 'Return to annotated text', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Done editing', exact: true }).click();
   await page
     .getByRole('button', { name: 'Display options', exact: true })
     .click();
@@ -245,6 +247,7 @@ test('a single passage stays left-aligned and directly editable without an extra
   for (const mapping of Object.values(item.passage_structure!.layers))
     mapping.boundaries = [];
   await setup(page, item);
+  await editGenerationWords(page, 54);
   const editor = page.getByRole('textbox', {
     name: 'Script text for segment 54',
     exact: true
@@ -260,7 +263,7 @@ test('a single passage stays left-aligned and directly editable without an extra
     })
   ).toHaveCount(0);
   await expect(
-    page.getByRole('button', { name: 'Edit text for segment 54', exact: true })
+    page.getByRole('button', { name: /Passages 173 \/ 174/ })
   ).toHaveCount(0);
 });
 

@@ -1,3 +1,4 @@
+import { mockGenerationRuns } from './fixtures/generation-admission';
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
@@ -62,6 +63,7 @@ async function setup(page: Page) {
   const created = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Session flow ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover'
     }
@@ -158,7 +160,7 @@ test('early voiceover repair is optional and persists in block settings', async 
   const { session, endpoint } = await setup(page);
   await page.goto(`/sessions/${session.id}`);
   await page
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   const dialog = page.getByRole('dialog', { name: 'Speech-block settings' });
   await expect(
@@ -203,7 +205,7 @@ test('early voiceover repair is optional and persists in block settings', async 
   );
   await page.reload();
   await page
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await expect(
     dialog.getByRole('radio', { name: /Legacy grouping/ })
@@ -274,7 +276,7 @@ test('closing unsaved block settings offers save, discard, and continued editing
   const { session, endpoint } = await setup(page);
   await page.goto(`/sessions/${session.id}`);
   const open = page.getByRole('button', {
-    name: 'Block settings',
+    name: 'Timing & block settings',
     exact: true
   });
   const edit = page.getByRole('dialog', {
@@ -361,7 +363,7 @@ test('saved block-building changes offer keeping or preparing a plan, with retry
   await page.goto(`/sessions/${session.id}`);
   const card = page.getByRole('region', { name: 'Speech plan', exact: true });
   await expect(
-    card.getByRole('button', { name: 'Review plan', exact: true })
+    card.getByRole('button', { name: 'Open Generation', exact: true })
   ).toBeEnabled();
   const original = await speechState(page, endpoint);
   const edit = page.getByRole('dialog', {
@@ -372,7 +374,7 @@ test('saved block-building changes offer keeping or preparing a plan, with retry
     name: 'Prepare a new speech plan?'
   });
   await card
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await edit
     .getByRole('spinbutton', { name: /^Maximum characters/ })
@@ -403,11 +405,11 @@ test('saved block-building changes offer keeping or preparing a plan, with retry
   );
   await page.reload();
   await expect(
-    card.getByRole('button', { name: 'Block settings', exact: true })
+    card.getByRole('button', { name: 'Timing & block settings', exact: true })
   ).toBeDisabled();
   releasePlanStatus();
   await card
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await expect(
     edit.getByRole('spinbutton', { name: /^Maximum characters/ })
@@ -491,7 +493,7 @@ test('repair-only changes save without prompting to rebuild an existing plan', a
   // Establish legacy grouping before the plan exists so the later repair
   // edit is repair-only (no topology change) and must not prompt.
   await card
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await dialog.getByRole('radio', { name: /Legacy grouping/ }).check();
   await dialog.getByRole('button', { name: 'Save block settings' }).click();
@@ -502,11 +504,11 @@ test('repair-only changes save without prompting to rebuild an existing plan', a
   await prepareInitialPlan(page, endpoint, headers);
   await page.goto(`/sessions/${session.id}`);
   await expect(
-    card.getByRole('button', { name: 'Review plan', exact: true })
+    card.getByRole('button', { name: 'Open Generation', exact: true })
   ).toBeEnabled();
   const original = await speechState(page, endpoint);
   await card
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await expect(
     dialog.getByRole('radio', { name: /Legacy grouping/ })
@@ -551,7 +553,7 @@ test('generation mode change prompts for a new plan while regroup toggle does no
   const original = await speechState(page, endpoint);
   // Default is separate passages; second pass is off.
   await card
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await expect(
     dialog.getByRole('radio', { name: /Separate passages/ })
@@ -591,7 +593,7 @@ test('generation mode change prompts for a new plan while regroup toggle does no
   );
   // Switching first-pass topology must offer preparation without rebuilding.
   await card
-    .getByRole('button', { name: 'Block settings', exact: true })
+    .getByRole('button', { name: 'Timing & block settings', exact: true })
     .click();
   await dialog.getByRole('radio', { name: /Legacy grouping/ }).check();
   await page.screenshot({
@@ -699,7 +701,7 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
   });
   await planCard.getByRole('button', { name: 'Prepare speech plan' }).click();
   await expect(
-    planCard.getByRole('button', { name: 'Review plan', exact: true })
+    planCard.getByRole('button', { name: 'Open Generation', exact: true })
   ).toBeEnabled();
   const plans = await speechState(page, endpoint);
   expect(plans.total).toBe(1);
@@ -707,16 +709,7 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
     await page.request.get(`${endpoint}/generation-runs`)
   ).json();
   expect(runs.items).toHaveLength(0);
-  // Preparing a plan can reveal its drawer automatically. Return to the card
-  // before exercising its explicit Review action.
-  if (
-    (await page
-      .locator('[data-generation-layout]')
-      .getAttribute('data-generation-layout')) !== 'collapsed'
-  ) {
-    await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
-    await page.getByRole('link', { name: 'Generation', exact: true }).click();
-  }
+  // Review opens the dedicated Generation page.
   // Reopening refreshes the displayed rows. Review must remain disabled until
   // those rows and their matching review status have finished loading.
   let releaseRows!: () => void;
@@ -731,7 +724,7 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
     await route.fulfill({ response });
   });
   await planCard
-    .getByRole('button', { name: 'Review plan', exact: true })
+    .getByRole('button', { name: 'Open Generation', exact: true })
     .click();
   await expect(
     page.getByRole('button', { name: 'Speech plans', exact: true })
@@ -739,26 +732,30 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
   await rowRequest;
   try {
     await expect(
+      page.getByRole('button', { name: 'Speech plans', exact: true })
+    ).toBeDisabled();
+    await expect(
       page.locator('[data-testid="drawer-mark-reviewed"]:enabled')
     ).toHaveCount(0);
   } finally {
     releaseRows();
   }
-  // Complete the review where the text is being inspected, without returning
-  // to the overview to approve it.
+  // Complete the review where the text is being inspected.
+  await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
   await page.getByTestId('drawer-mark-reviewed').click();
   await page.unroute(rowsUrl);
   await expect(page.getByTestId('drawer-plan-review')).toContainText(
     'Reviewed'
   );
-  await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await page.getByRole('button', { name: 'Close menu', exact: true }).click();
+  await page.getByRole('link', { name: 'Overview', exact: true }).click();
   await expect(planCard.getByTestId('speech-plan-summary')).toContainText(
     'Reviewed'
   );
   await expect(
     planCard.getByRole('button', { name: 'Mark reviewed', exact: true })
   ).toHaveCount(0);
-  await page.route(`**${endpoint}/generation-runs*`, async (route) => {
+  await mockGenerationRuns(page, session.id, async (route) => {
     if (route.request().method() !== 'POST') return route.continue();
     await route.fulfill({
       status: 422,
@@ -771,12 +768,11 @@ test('preparing and reviewing a speech plan does not start TTS; Generate pins th
   const request = page.waitForRequest(
     (item) =>
       item.method() === 'POST' &&
-      item.url().endsWith(`${endpoint}/generation-runs`)
+      item.url().endsWith(`${endpoint}/generation-admissions`)
   );
-  await expect(page.locator('[data-generation-layout]')).toHaveAttribute(
-    'data-generation-layout',
-    'collapsed'
-  );
+  await expect(
+    page.getByRole('region', { name: 'Generation workspace' })
+  ).toHaveCount(0);
   await generationCard(page)
     .getByRole('button', { name: 'Generate audio…', exact: true })
     .click();
@@ -859,16 +855,8 @@ test('source reset cancellation preserves work, while confirmation removes only 
   });
   await planCard.getByRole('button', { name: 'Prepare speech plan' }).click();
   await expect(
-    planCard.getByRole('button', { name: 'Review plan', exact: true })
+    planCard.getByRole('button', { name: 'Open Generation', exact: true })
   ).toBeEnabled();
-  const drawerToggle = page.getByRole('button', {
-    name: 'Generation',
-    exact: true
-  });
-  // Preparation may reveal the drawer; source reset works in either layout.
-  if ((await drawerToggle.getAttribute('aria-expanded')) === 'true') {
-    await drawerToggle.click();
-  }
   const card = page.getByRole('region', { name: 'Project source' });
   await card.getByRole('button', { name: 'Remove source' }).click();
   const confirmation = page.getByRole('dialog', {

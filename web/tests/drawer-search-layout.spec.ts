@@ -27,7 +27,11 @@ async function createSession(
   const token = await csrf(page);
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': token },
-    data: { name: `${prefix} ${crypto.randomUUID()}`, workflow_kind: kind }
+    data: {
+      interface_mode: 'advanced',
+      name: `${prefix} ${crypto.randomUUID()}`,
+      workflow_kind: kind
+    }
   });
   expect(response.ok()).toBeTruthy();
   return (await response.json()).id as string;
@@ -79,9 +83,9 @@ type Box = {
 
 async function measure(page: Page): Promise<Box> {
   const box = await page.evaluate(() => {
-    const drawer = document.querySelector('aside.generation-drawer');
+    const drawer = document.querySelector('.generation-workspace');
     const header = document.querySelector('.generation-header');
-    const table = document.querySelector('aside.generation-drawer table');
+    const table = document.querySelector('.generation-workspace table');
     const search = document.querySelector(
       '#generation-search-panel .search-replace'
     );
@@ -110,13 +114,17 @@ async function measure(page: Page): Promise<Box> {
     };
   });
   const newRun = await page
-    .getByRole('button', { name: 'Generate audio…' })
-    .boundingBox()
-    .catch(() => null);
+    .getByRole('button', { name: 'Generate', exact: true })
+    .boundingBox();
   return { ...box, newRunRight: newRun ? newRun.x + newRun.width : null };
 }
 
 function expectContained(box: Box) {
+  expect(box.drawerClient, 'Generation workspace must exist').toBeGreaterThan(
+    0
+  );
+  expect(box.tableClient, 'Segment table must exist').not.toBeNull();
+  expect(box.newRunRight, 'Generation control must exist').not.toBeNull();
   expect(box.playRight, 'Playback control must exist').not.toBeNull();
   expect(box.toggleRight, 'Search control must exist').not.toBeNull();
   expect(
@@ -180,13 +188,13 @@ test.describe('drawer search layout @ narrow desktop', () => {
     await find.fill('cat');
     await page.getByLabel('Replace in generation segments').fill(LONG_UNBROKEN);
     await page.getByRole('button', { name: 'Replace all' }).click();
-    const fields = page.locator('textarea[data-generation-search-index]');
+    const fields = page.locator('tr[data-segment-id] .speech-editing-text');
     // "cat" also matches inside "catfish": replace-all rewrites every hit.
-    await expect(fields.nth(0)).toHaveValue(`A ${LONG_UNBROKEN} naps quietly.`);
-    await expect(fields.nth(1)).toHaveValue(
+    await expect(fields.nth(0)).toHaveText(`A ${LONG_UNBROKEN} naps quietly.`);
+    await expect(fields.nth(1)).toHaveText(
       `A ${LONG_UNBROKEN}fish and ${LONG_UNBROKEN} wander.`
     );
-    await expect(fields.nth(2)).toHaveValue(
+    await expect(fields.nth(2)).toHaveText(
       `A calm ${LONG_UNBROKEN} stretches.`
     );
 
@@ -242,15 +250,29 @@ test.describe('drawer search layout @ laptop', () => {
     console.log('VOICEOVER-AFTER-TTS-REPLACE', JSON.stringify(box));
     expectContained(box);
     await page.getByRole('button', { name: 'Search and replace' }).click();
+    await page
+      .getByRole('button', { name: 'Display options', exact: true })
+      .click();
+    await page
+      .getByRole('button', { name: 'Script / subtitle text', exact: true })
+      .click();
     await expect(
-      page.locator('textarea[data-generation-search-index]')
+      page.locator('tr[data-segment-id] .speech-editing-text')
     ).toHaveCount(2);
-    await expect(page.getByLabel('Script text for segment 1')).toHaveValue(
-      'Cueword opens the scene.'
-    );
     await expect(
-      page.locator('.narrative-cell p[title^="Spoken:"]').first()
-    ).toHaveAttribute('title', `Spoken: Cueword ${LONG_UNBROKEN} the scene.`);
+      page.getByRole('textbox', {
+        name: 'Subtitle text for segment 1',
+        exact: true
+      })
+    ).toHaveText('Cueword opens the scene.');
+    const rows = await (
+      await page.request.get(
+        `/api/v1/sessions/${sessionId}/generation-segments`
+      )
+    ).json();
+    expect(rows.items[0].optimized_text).toBe(
+      `Cueword ${LONG_UNBROKEN} the scene.`
+    );
     expectContained(await measure(page));
     await page.screenshot({
       path: test.info().outputPath('drawer-layout-laptop-voiceover.png')
@@ -349,6 +371,9 @@ test.describe('drawer search Ctrl+K', () => {
 
     // From a cue editor textarea the shortcut must still reach search.
     await page
+      .getByRole('button', { name: 'Edit words for segment 1', exact: true })
+      .click();
+    await page
       .locator('textarea[data-generation-search-index]')
       .first()
       .click();
@@ -403,7 +428,7 @@ for (const workflowKind of ['audiobook', 'voiceover'] as const) {
     ]);
     await openDrawer(page, sessionId);
 
-    const table = page.locator('aside.generation-drawer table');
+    const table = page.locator('.generation-workspace table');
     const row = table.locator('tr[data-segment-id]').first();
     const narrative = row.locator('td.narrative-cell');
     const actions = narrative.getByRole('group', {
@@ -442,13 +467,20 @@ for (const workflowKind of ['audiobook', 'voiceover'] as const) {
       name: 'Options for segment 1',
       exact: true
     });
-    await expect(optionsPanel.getByRole('combobox')).toHaveCount(3);
+    await expect(optionsPanel.getByRole('combobox')).toHaveCount(2);
     await expect(optionsPanel.getByLabel('Segment role')).toBeVisible();
+    await expect(
+      optionsPanel.getByLabel('Language for segment 1')
+    ).toBeVisible();
+    await expect(optionsPanel.getByLabel('Voice for segment 1')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(optionsPanel).toBeHidden();
     await expect(options).toBeFocused();
 
     // Moving the controls must preserve the text-cursor guard and menu access.
+    await actions
+      .getByRole('button', { name: 'Edit words for segment 1', exact: true })
+      .click();
     const text = narrative.locator('textarea').first();
     await text.focus();
     await text.evaluate((node: HTMLTextAreaElement) => {

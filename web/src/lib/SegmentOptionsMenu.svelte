@@ -1,6 +1,6 @@
 <script lang="ts">
   import { EllipsisVertical } from '@lucide/svelte';
-  import type { Snippet } from 'svelte';
+  import { tick, type Snippet } from 'svelte';
 
   let {
     segmentNumber,
@@ -10,12 +10,16 @@
   let trigger: HTMLButtonElement;
   let panel: HTMLDivElement;
   let expanded = $state(false);
-  function toggle(event: MouseEvent) {
+  let contentReady = $state(false);
+  async function toggle(event: MouseEvent) {
     event.stopPropagation();
     if (panel.matches(':popover-open')) {
       panel.hidePopover();
       return;
     }
+    contentReady = true;
+    await tick();
+    if (!panel.isConnected || !trigger.isConnected) return;
     const rect = trigger.getBoundingClientRect();
     const width = Math.min(320, window.innerWidth - 16);
     panel.style.width = `${width}px`;
@@ -63,7 +67,7 @@
   }}
 >
   <strong>Segment {segmentNumber}</strong>
-  {@render children()}
+  {#if contentReady}{@render children()}{/if}
 </div>
 
 <style>

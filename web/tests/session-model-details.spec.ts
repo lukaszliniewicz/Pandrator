@@ -11,6 +11,7 @@ async function fixture(page: Page) {
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Model details ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }

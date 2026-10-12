@@ -15,7 +15,11 @@ async function editor(
   const auth = await (await page.request.get('/api/v1/auth/status')).json();
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
-    data: { name: `Edit completion ${Date.now()}`, workflow_kind: 'media_edit' }
+    data: {
+      interface_mode: 'advanced',
+      name: `Edit completion ${Date.now()}`,
+      workflow_kind: 'media_edit'
+    }
   });
   expect(created.ok()).toBeTruthy();
   const session = await created.json();

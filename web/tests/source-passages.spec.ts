@@ -84,6 +84,7 @@ async function createIsolatedSession(page: Page) {
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Source passages ${crypto.randomUUID()}`,
       workflow_kind: 'subtitles'
     }

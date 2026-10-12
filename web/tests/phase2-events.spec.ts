@@ -136,13 +136,40 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Phase 2 event regression ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
   });
   expect(created.ok()).toBeTruthy();
   const session = await created.json();
-  await page.goto(`/sessions/${session.id}`);
+  const plan = await page.request.post(
+    `/api/v1/sessions/${session.id}/generation-plan`,
+    {
+      headers: { 'X-CSRF-Token': csrfToken },
+      data: { segments: [{ text: 'A controlled event fixture.' }] }
+    }
+  );
+  expect(plan.ok()).toBeTruthy();
+  const selectedPlan = await (
+    await page.request.get(`/api/v1/sessions/${session.id}/generation-segments`)
+  ).json();
+  const liveRun = {
+    id: 'phase2-live-run',
+    session_id: session.id,
+    plan_revision_id: selectedPlan.plan_revision_id,
+    sequence_number: 1,
+    operation: 'generate',
+    label: 'Controlled live run',
+    job_id: 'phase2-live-generation',
+    status: 'running',
+    progress: 0.1
+  };
+  await page.route(
+    `**/api/v1/sessions/${session.id}/generation-runs*`,
+    (route) => route.fulfill({ json: { items: [liveRun] } })
+  );
+  await page.goto(`/sessions/${session.id}/generation`);
   await expect(page.getByRole('heading', { name: session.name })).toBeVisible();
   await page.waitForTimeout(800);
   requests.length = 0;
@@ -173,7 +200,7 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
     exactPath(`/api/v1/sessions/${session.id}/outcome-plan`)
   ).toBeLessThanOrEqual(1);
   expect(
-    exactPath(`/api/v1/sessions/${session.id}/generation-runs*`)
+    exactPath(`/api/v1/sessions/${session.id}/generation-runs`)
   ).toBeLessThanOrEqual(1);
   expect(
     exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)
@@ -199,12 +226,16 @@ test('event cursor and batched invalidation avoid progress fan-out', async ({
   }, session.id);
   await page.waitForTimeout(1100);
 
-  expect(exactPath(`/api/v1/sessions/${session.id}/generation-runs*`)).toBe(1);
+  await expect(
+    page.getByRole('progressbar', { name: 'Generation progress', exact: true })
+  ).toHaveAttribute('aria-valuenow', '50');
+  // Live progress patches the known run directly without reloading its rows.
+  expect(exactPath(`/api/v1/sessions/${session.id}/generation-runs`)).toBe(0);
   expect(
     exactPath(`/api/v1/sessions/${session.id}/output-assemblies/latest`)
-  ).toBe(1);
+  ).toBe(0);
   expect(exactPath(`/api/v1/sessions/${session.id}/generation-segments`)).toBe(
-    1
+    0
   );
 });
 

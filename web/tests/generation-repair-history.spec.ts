@@ -14,6 +14,7 @@ async function fixture(page: Page) {
   const response = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Repair history ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover'
     }
@@ -258,8 +259,11 @@ test('repair history toggle is unavailable when the selected audio has no repair
   await page.route(`**${endpoint}/generation-runs*`, (route) =>
     route.fulfill({ json: { items: [unrepaired] } })
   );
-  await page.goto(`/sessions/${session.id}`);
-  await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await page.route('**/api/v1/generation-runs/root', (route) =>
+    route.fulfill({ json: unrepaired })
+  );
+  await page.goto(`/sessions/${session.id}/generation`);
+  await page.reload();
   await page
     .getByRole('combobox', { name: 'Audio view', exact: true })
     .selectOption('root');

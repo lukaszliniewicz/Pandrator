@@ -1,3 +1,4 @@
+import { mockGenerationRuns } from './fixtures/generation-admission';
 import { expect, test } from '@playwright/test';
 
 // Deterministic drawer regression for the edit-copy/regenerate race:
@@ -21,6 +22,7 @@ test('tts save adopts the edit-copy revision before first regenerate', async ({
     await page.request.post('/api/v1/sessions', {
       headers,
       data: {
+        interface_mode: 'advanced',
         name: `Regen revision ${crypto.randomUUID()}`,
         workflow_kind: 'voiceover'
       }
@@ -175,7 +177,7 @@ test('tts save adopts the edit-copy revision before first regenerate', async ({
   );
 
   const captured: { body: unknown } = { body: null };
-  await page.route('**/api/v1/sessions/*/generation-runs*', async (route) => {
+  await mockGenerationRuns(page, '*', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.continue();
       return;

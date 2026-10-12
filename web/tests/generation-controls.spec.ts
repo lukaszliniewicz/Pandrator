@@ -13,6 +13,7 @@ async function setup(page: Page) {
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrf },
     data: {
+      interface_mode: 'advanced',
       name: `Cast test ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -356,9 +357,9 @@ async function openAudiobookCast(page: Page) {
   const card = page.getByRole('region', { name: 'Voices', exact: true });
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   const cast = card.getByTestId('cast-disclosure');
-  await cast.getByTestId('cast-summary').click();
+  await expect(cast).toHaveJSProperty('open', true);
   await expect(
-    cast.getByRole('button', { name: 'Add character', exact: true })
+    cast.getByRole('button', { name: 'Add speaker', exact: true })
   ).toBeVisible();
   return card;
 }
@@ -375,11 +376,9 @@ test('catalog selection assigns a managed reference to a character', async ({
   });
   expect(created.ok()).toBeTruthy();
   const voice = await created.json();
-  await panel
-    .getByRole('button', { name: 'Add character', exact: true })
-    .click();
+  await panel.getByRole('button', { name: 'Add speaker', exact: true }).click();
   const character = panel.locator('article');
-  await character.getByLabel('Name', { exact: true }).fill('Scrooge');
+  await character.getByLabel('Speaker name', { exact: true }).fill('Scrooge');
   await character
     .getByRole('button', { name: 'Choose Voice for Scrooge', exact: true })
     .click();
@@ -419,13 +418,11 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   page.on('pageerror', (error) => errors.push(error.message));
   const { sid } = await setup(page);
   const panel = await openAudiobookCast(page);
-  await panel
-    .getByRole('button', { name: 'Add character', exact: true })
-    .click();
+  await panel.getByRole('button', { name: 'Add speaker', exact: true }).click();
   const character = panel.locator('article');
-  await character.getByLabel('Name', { exact: true }).fill('Scrooge');
+  await character.getByLabel('Speaker name', { exact: true }).fill('Scrooge');
   await character
-    .getByRole('combobox', { name: 'Voice category', exact: true })
+    .getByRole('combobox', { name: /^Voice presentation/ })
     .selectOption('male');
   await character
     .getByLabel('Aliases', { exact: false })
@@ -449,7 +446,7 @@ test('character dictionary and cast remain usable on mobile without synthesis', 
   expect(saved.characters[0].voice_category).toBe('male');
   expect(saved.cast.characters[saved.characters[0].id].voice).toBe('Charon');
   const fieldWidth = await character
-    .getByLabel('Name', { exact: true })
+    .getByLabel('Speaker name', { exact: true })
     .evaluate((node) => node.getBoundingClientRect().width);
   expect(fieldWidth).toBeGreaterThan(290);
   await character.scrollIntoViewIfNeeded();
@@ -558,12 +555,10 @@ test('leaving a section can save character, direction and generation-default dra
   await page.setViewportSize({ width: 390, height: 844 });
   const { panel, sid, writes } = await setup(page);
   const cast = await openAudiobookCast(page);
-  await cast
-    .getByRole('button', { name: 'Add character', exact: true })
-    .click();
+  await cast.getByRole('button', { name: 'Add speaker', exact: true }).click();
   await cast
     .locator('article')
-    .getByLabel('Name', { exact: true })
+    .getByLabel('Speaker name', { exact: true })
     .fill('Alice');
   await panel
     .getByLabel('General speech direction', { exact: true })

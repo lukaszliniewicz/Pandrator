@@ -32,6 +32,7 @@ async function fixture(page: Page, publication = false) {
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `TTS lifetime ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover'
     }

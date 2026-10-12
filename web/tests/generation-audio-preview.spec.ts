@@ -20,6 +20,7 @@ async function createAudiobookSession(page: Page) {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Audio preview ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }

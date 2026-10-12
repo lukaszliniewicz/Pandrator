@@ -288,7 +288,7 @@ test('source scope, filters and model variants remain explicit', async ({
     page.getByRole('button', { name: 'Achernar', exact: true })
   ).toHaveCount(1);
   const model = page.getByRole('combobox', { name: /^Model for Achernar/ });
-  await expect(model.locator('option')).toHaveCount(6);
+  await expect(model.locator('option')).toHaveCount(11);
   const proVariant = await model
     .locator('option')
     .filter({ hasText: 'gemini-2.5-pro-preview-tts' })
@@ -497,6 +497,7 @@ test('voice page exposes a compact cast, inheritance and a navigation guard', as
     await page.request.post('/api/v1/sessions', {
       headers,
       data: {
+        interface_mode: 'advanced',
         name: `Christmas Carol UI review ${crypto.randomUUID().slice(0, 8)}`,
         workflow_kind: 'audiobook'
       }
@@ -545,16 +546,16 @@ test('voice page exposes a compact cast, inheritance and a navigation guard', as
   await expect(
     cast.getByText('Inherited · Narrator', { exact: true }).first()
   ).toBeVisible();
-  await expect(cast.getByLabel('Name', { exact: true })).toBeHidden();
+  await expect(cast.getByLabel('Speaker name', { exact: true })).toBeVisible();
+  await expect(cast.getByLabel('Identity notes')).toBeHidden();
   await cast
-    .getByText('Edit identity, aliases & protection', { exact: true })
-    .click();
-  await cast.getByLabel('Name', { exact: true }).fill('Ebenezer Scrooge');
+    .getByLabel('Speaker name', { exact: true })
+    .fill('Ebenezer Scrooge');
   await page.getByRole('link', { name: 'Voices', exact: true }).click();
   const guard = page.getByRole('dialog', { name: 'Keep your cast changes?' });
   await expect(guard).toBeVisible();
   await guard.getByRole('button', { name: 'Keep editing' }).click();
-  await expect(cast.getByLabel('Name', { exact: true })).toHaveValue(
+  await expect(cast.getByLabel('Speaker name', { exact: true })).toHaveValue(
     'Ebenezer Scrooge'
   );
   await cast
@@ -573,9 +574,8 @@ test('voice page exposes a compact cast, inheritance and a navigation guard', as
         .analyze()
     ).violations
   ).toEqual([]);
-  await cast
-    .getByText('Edit identity, aliases & protection', { exact: true })
-    .click();
+  await cast.getByText('Aliases, notes & protection', { exact: true }).click();
+  await expect(cast.getByLabel('Identity notes')).toBeVisible();
   for (const width of [390, 800, 1440]) {
     await page.setViewportSize({ width, height: 960 });
     await cast.screenshot({
@@ -637,6 +637,7 @@ test('phone generation controls and output actions stay inside their cards', asy
     await page.request.post('/api/v1/sessions', {
       headers,
       data: {
+        interface_mode: 'advanced',
         name: `A Christmas Carol — chapter one ${crypto.randomUUID().slice(0, 8)}`,
         workflow_kind: 'audiobook'
       }
@@ -678,9 +679,8 @@ test('phone generation controls and output actions stay inside their cards', asy
     });
   });
   await page.goto(`/sessions/${session.id}/output`);
-  const drawer = page.locator('[data-generation-layout="collapsed"]');
   await expect(
-    drawer.getByText('132 segments · Active mix', { exact: true })
+    page.getByRole('link', { name: 'Generation', exact: true })
   ).toBeVisible();
   const output = page.locator('article').filter({
     has: page.getByRole('button', {
@@ -690,19 +690,6 @@ test('phone generation controls and output actions stay inside their cards', asy
   });
   for (const width of [360, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
-    await expect(drawer).toBeVisible();
-    const bounds = await drawer.boundingBox();
-    for (const name of ['Generation', 'Play playlist', 'Generate audio…']) {
-      const button = await drawer
-        .getByRole('button', { name, exact: true })
-        .boundingBox();
-      expect(button!.height).toBeGreaterThanOrEqual(44);
-      expect(button!.y).toBeGreaterThanOrEqual(bounds!.y);
-      expect(button!.y + button!.height).toBeLessThanOrEqual(
-        bounds!.y + bounds!.height
-      );
-      expect(button!.x + button!.width).toBeLessThanOrEqual(width);
-    }
     await output.scrollIntoViewIfNeeded();
     const title = await output.locator('strong').boundingBox();
     expect(title!.width).toBeGreaterThan(width - 170);
@@ -726,6 +713,30 @@ test('phone generation controls and output actions stay inside their cards', asy
       path: test.info().outputPath(`pandrator-polish-output-${width}.png`),
       fullPage: true
     });
+  }
+  await page
+    .getByRole('combobox', { name: 'Project section' })
+    .selectOption(`/sessions/${session.id}/generation`);
+  const workspace = page.getByRole('region', {
+    name: 'Generation workspace',
+    exact: true
+  });
+  for (const width of [360, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(workspace).toBeVisible();
+    for (const name of ['Play playlist', 'Generate']) {
+      const button = await workspace
+        .getByRole('button', { name, exact: true })
+        .boundingBox();
+      expect(button!.height).toBeGreaterThanOrEqual(44);
+      expect(button!.x).toBeGreaterThanOrEqual(0);
+      expect(button!.x + button!.width).toBeLessThanOrEqual(width);
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth
+      )
+    ).toBeTruthy();
   }
 });
 

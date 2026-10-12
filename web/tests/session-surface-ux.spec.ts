@@ -14,6 +14,7 @@ async function fixture(page: Page, reviewed = false) {
   const response = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Session clarity ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -103,7 +104,9 @@ test('workflow mode labels describe selection and do not start generation', asyn
   page.on('request', (request) => {
     if (
       request.method() === 'POST' &&
-      /\/(generation-runs|jobs)$/.test(new URL(request.url()).pathname)
+      /\/(generation-runs|generation-admissions|jobs)$/.test(
+        new URL(request.url()).pathname
+      )
     )
       starts++;
   });
@@ -141,7 +144,7 @@ test('plan summary avoids false audio counts and keeps warnings visible', async 
     '2 included blocks'
   );
   await expect(card.getByTestId('speech-plan-next-action')).toContainText(
-    'Open Review plan'
+    'Open Generation'
   );
   const details = card.getByTestId('speech-plan-details');
   await expect(details).not.toHaveAttribute('open');
@@ -175,7 +178,7 @@ test('reviewed plan avoids a redundant disabled Reviewed button', async ({
     card.getByRole('button', { name: 'Reviewed', exact: true })
   ).toHaveCount(0);
   await expect(
-    card.getByRole('button', { name: 'Review plan', exact: true })
+    card.getByRole('button', { name: 'Open Generation', exact: true })
   ).toBeVisible();
   expect(errors).toEqual([]);
 });

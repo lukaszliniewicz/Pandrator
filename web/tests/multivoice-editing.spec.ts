@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { editGenerationWords } from './fixtures/generation-editing';
 
 const text = '😀 Bah! said Scrooge. Humbug!';
 const xml =
@@ -93,6 +94,7 @@ async function login(page: Page) {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Multivoice editing ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -107,10 +109,11 @@ async function setup(
 ) {
   const id = await login(page);
   const bodies: {
+    contexts: Record<string, unknown>[];
     previews: Record<string, unknown>[];
     applies: Record<string, unknown>[];
     compiles: Record<string, unknown>[];
-  } = { previews: [], applies: [], compiles: [] };
+  } = { contexts: [], previews: [], applies: [], compiles: [] };
   const item = {
     id: 'speech-a',
     ordinal: 0,
@@ -182,6 +185,83 @@ async function setup(
       }
     })
   );
+  const service = {
+    id: 'audio_cpp',
+    name: 'audio.cpp',
+    online: true,
+    available: true,
+    models: [preview.model],
+    default_model: preview.model,
+    model_catalog: [
+      { id: preview.model, family: 'qwen3_tts', voice_mode: 'cloning' }
+    ]
+  };
+  await page.route(
+    /\/api\/v1\/services\/tts(?:\/audio_cpp)?(?:\?.*)?$/,
+    (route) =>
+      route.fulfill({
+        json: {
+          default_service: 'audio_cpp',
+          services: [service],
+          service,
+          selected_models: [preview.model]
+        }
+      })
+  );
+  await page.route('**/api/v1/voices', (route) =>
+    route.fulfill({ json: { items: [] } })
+  );
+  await page.route(
+    `**/api/v1/sessions/${id}/speech-plan/selection-context`,
+    (route) => {
+      const request = route.request().postDataJSON();
+      bodies.contexts.push(request);
+      return route.fulfill({
+        json: {
+          revision_id: 'plan-a',
+          segment_id: 'speech-a',
+          segment_revision: 2,
+          selection: {
+            start: request.start,
+            end: request.end,
+            text: Array.from(options.optimized ?? text)
+              .slice(request.start, request.end)
+              .join('')
+          },
+          service: preview.service,
+          model: preview.model,
+          editable: true,
+          locked: true,
+          edit_blocked_reason: null,
+          speech_xml: options.plain ? null : xml,
+          current: {
+            speaker: 'mixed',
+            character_id: null,
+            voice: null,
+            voice_category: null,
+            delivery: {},
+            mixed_fields: ['speaker']
+          },
+          inherited: { general_direction: '', characters: [] },
+          current_flags: {
+            casting_enabled: true,
+            performance_enabled: false,
+            allow_vocalizations: true
+          },
+          capabilities: { instructions: 'unsupported' },
+          preview,
+          markup_reference: {
+            element_tags: ['segment', 'speaker', 'narrator', 'ins'],
+            element_attributes: {},
+            control_tags: { instruction: 'ins' },
+            delivery_schema: { properties: {} },
+            vocal_event_schema: { properties: {} },
+            limits: {}
+          }
+        }
+      });
+    }
+  );
   await page.route(`**/api/v1/sessions/${id}/speech-plan/preview`, (route) => {
     expect(route.request().headers()['content-type']).toBe('application/json');
     bodies.compiles.push(route.request().postDataJSON());
@@ -223,12 +303,24 @@ async function setup(
     }
   );
   await page.goto(`/sessions/${id}`);
-  await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await page
+    .getByRole('region', { name: 'Voices', exact: true })
+    .getByRole('radio', { name: /Multiple voices/ })
+    .check();
+  await page.goto(`/sessions/${id}/generation`);
+  await expect(
+    page.getByRole('link', { name: 'Multiple voices', exact: true })
+  ).toBeVisible();
   return { id, bodies };
 }
 
-async function selectPhrase(page: Page, start: number, end: number) {
-  const root = page.locator('[data-speech-annotations="speech-a"]');
+async function selectPhrase(
+  page: Page,
+  start: number,
+  end: number,
+  action = 'Speaker & voice'
+) {
+  const root = page.locator('[data-speech-editing="speech-a"]');
   await expect(root).toBeVisible();
   await root.evaluate(
     (node, offsets) => {
@@ -261,8 +353,9 @@ async function selectPhrase(page: Page, start: number, end: number) {
     },
     { start, end }
   );
+  await page.getByRole('button', { name: action, exact: true }).click();
   return page.getByRole('dialog', {
-    name: 'Edit selected speech',
+    name: action === 'Speaker & voice' ? 'Speaker and voice' : 'Delivery',
     exact: true
   });
 }
@@ -271,19 +364,22 @@ test('speaker inspection preserves exact text and reports unsupported acting dir
   page
 }, info) => {
   const { bodies } = await setup(page);
-  const root = page.locator('[data-speech-annotations="speech-a"]');
+  const root = page.locator('[data-speech-editing="speech-a"]');
   await expect(root).toHaveText(text);
+  await expect(root.locator('.hint-text')).toHaveCount(3);
   const underlineStyles = await root
-    .locator('.speech-span')
+    .locator('.hint-text')
     .evaluateAll((nodes) =>
       nodes.map((node) => ({
-        color: getComputedStyle(node).textDecorationColor,
+        color: getComputedStyle(node).getPropertyValue('--speaker-color'),
+        direction: getComputedStyle(node).textDecorationStyle,
         width: getComputedStyle(node).textDecorationThickness
       }))
     );
   expect(underlineStyles[0].color).not.toBe(underlineStyles[1].color);
   expect(underlineStyles[0].color).toBe(underlineStyles[2].color);
   expect(parseFloat(underlineStyles[0].width)).toBeGreaterThanOrEqual(2);
+  expect(underlineStyles[2].direction).toBe('double');
   await expect(page.getByText('Show waveform', { exact: true })).toHaveCount(0);
   const optionsButton = page.getByRole('button', {
     name: 'Options for segment 1',
@@ -300,29 +396,39 @@ test('speaker inspection preserves exact text and reports unsupported acting dir
   await page.keyboard.press('Escape');
   await expect(options).toBeHidden();
   await expect(optionsButton).toBeFocused();
-  await root.getByRole('button', { name: /phrase 2/ }).click();
+  await root.locator('.hint-text').nth(1).focus();
+  await page.keyboard.press('Enter');
   const inspector = page.getByRole('dialog', {
-    name: 'Voices and delivery for segment 1'
+    name: 'Speaker and voice',
+    exact: true
   });
   await expect(inspector).toContainText('Narrator');
   await expect(inspector).toContainText('narrator-reference');
-  await expect(inspector).toContainText('Scrooge → Narrator → Scrooge');
+  await page.keyboard.press('Escape');
+  await inspector
+    .getByText('Effective instructions and voice sequence', { exact: true })
+    .click();
   await expect(inspector).toContainText(
     'does not support delivery instructions'
   );
-  expect(bodies.compiles[0]).toEqual({
+  expect(bodies.contexts[0]).toMatchObject({
     revision_id: 'plan-a',
-    segment_id: 'speech-a'
+    segment_id: 'speech-a',
+    expected_segment_revision: 2,
+    start: 6,
+    end: 21
   });
   await inspector.screenshot({
     path: `../tmp/speech-inspector-${info.project.name}.png`
   });
-  await page.keyboard.press('Escape');
+  await inspector
+    .getByRole('button', { name: 'Close speaker and voice editor' })
+    .click();
   await expect(inspector).toBeHidden();
   await expect(root).toHaveText(text);
 });
 
-test('a Unicode selection across speakers requires preview and deliberate unlock before apply', async ({
+test('a Unicode selection across speakers previews an assignment before explicit save', async ({
   page
 }, info) => {
   const { bodies } = await setup(page);
@@ -333,28 +439,19 @@ test('a Unicode selection across speakers requires preview and deliberate unlock
   );
   await editor
     .getByRole('combobox', { name: 'Speaker', exact: true })
-    .selectOption('scrooge');
+    .fill('Scrooge');
+  await editor.getByRole('option', { name: 'Scrooge', exact: true }).click();
   await editor
-    .getByRole('combobox', { name: 'Voice', exact: true })
-    .selectOption({ label: 'Fresh British voice' });
+    .getByText('Override voice for these words (optional)', { exact: true })
+    .click();
   await editor
-    .getByLabel('Delivery instruction', { exact: true })
-    .fill('Quietly, with dry amusement.');
+    .getByRole('combobox', { name: 'Voice override', exact: true })
+    .fill('Fresh British voice');
   await editor
-    .getByRole('combobox', { name: 'Pace', exact: true })
-    .selectOption('slower');
-  await editor.getByText('More delivery controls', { exact: true }).click();
-  await editor
-    .getByRole('combobox', { name: 'Cadence', exact: true })
-    .selectOption('contrast');
-  await editor
-    .getByRole('combobox', { name: 'Emphasis', exact: true })
-    .selectOption('light');
-  await editor
-    .getByLabel('Enable delivery instructions for future audio')
-    .check();
-  await editor.getByRole('button', { name: 'Preview change' }).click();
-  await expect(editor).toContainText('Review before applying');
+    .getByRole('option', { name: 'Fresh British voice', exact: true })
+    .click();
+  await editor.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(editor).toContainText('Review change');
   expect(bodies.previews[0]).toMatchObject({
     revision_id: 'plan-a',
     segment_id: 'speech-a',
@@ -364,6 +461,56 @@ test('a Unicode selection across speakers requires preview and deliberate unlock
     speaker: 'character',
     character_id: 'scrooge',
     voice: 'published-reference',
+    enable_performance: false
+  });
+  expect(bodies.applies).toHaveLength(0);
+  await editor.screenshot({
+    path: info.outputPath('speech-selection-review.png')
+  });
+  await editor
+    .getByRole('button', { name: 'Save assignment', exact: true })
+    .click();
+  await expect(editor).toContainText('Saved for future audio.');
+  expect(bodies.applies[0]).toMatchObject({
+    ...bodies.previews[0],
+    unlock_locked: true,
+    expected_preview_revision: 'a'.repeat(64)
+  });
+  await editor
+    .getByRole('button', { name: 'Close speaker and voice editor' })
+    .click();
+  await expect(editor).toBeHidden();
+  await expect(page.locator('[data-speech-editing="speech-a"]')).toHaveText(
+    text
+  );
+});
+
+test('Unicode delivery edits retain precise boundaries and optional model directions', async ({
+  page
+}) => {
+  const { bodies } = await setup(page);
+  const editor = await selectPhrase(page, 0, 21, 'More delivery controls');
+  await expect(editor).toBeVisible();
+  await editor
+    .getByLabel('Delivery instruction', { exact: true })
+    .fill('Quietly, with dry amusement.');
+  await editor.getByRole('combobox', { name: /^Pace/ }).selectOption('slower');
+  await editor
+    .getByRole('combobox', { name: /^Cadence/ })
+    .selectOption('contrast');
+  await editor
+    .getByRole('combobox', { name: /^Emphasis/ })
+    .selectOption('light');
+  await editor.getByLabel('Use delivery directions for future audio').check();
+  await editor.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(editor).toContainText('Review change');
+  expect(bodies.previews[0]).toMatchObject({
+    revision_id: 'plan-a',
+    segment_id: 'speech-a',
+    expected_segment_revision: 2,
+    start: 0,
+    end: 21,
+    speaker: 'unchanged',
     delivery: {
       instruction: 'Quietly, with dry amusement.',
       pace: 'slower',
@@ -372,25 +519,14 @@ test('a Unicode selection across speakers requires preview and deliberate unlock
     },
     enable_performance: true
   });
-  const apply = editor.getByRole('button', { name: 'Apply reviewed change' });
-  await expect(apply).toBeDisabled();
   expect(bodies.applies).toHaveLength(0);
-  await editor.screenshot({
-    path: `../tmp/speech-selection-review-${info.project.name}.png`
-  });
-  await editor
-    .getByLabel('Unlock and replace the protected phrase settings')
-    .check();
-  await apply.click();
-  await expect(editor).toBeHidden();
+  await editor.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(editor).toContainText('Saved for future audio.');
   expect(bodies.applies[0]).toMatchObject({
     ...bodies.previews[0],
     unlock_locked: true,
     expected_preview_revision: 'a'.repeat(64)
   });
-  await expect(page.locator('[data-speech-annotations="speech-a"]')).toHaveText(
-    text
-  );
 });
 
 test('selection review stays open on a revision conflict and fits a phone', async ({
@@ -401,29 +537,34 @@ test('selection review stays open on a revision conflict and fits a phone', asyn
   const editor = await selectPhrase(page, 0, 6);
   await editor
     .getByRole('combobox', { name: 'Speaker', exact: true })
-    .selectOption('narrator');
-  await editor.getByRole('button', { name: 'Preview change' }).click();
+    .fill('Narrator');
+  await editor.getByRole('option', { name: 'Narrator', exact: true }).click();
+  await editor.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(editor).toContainText('Review change');
   await editor
-    .getByLabel('Unlock and replace the protected phrase settings')
-    .check();
-  await editor.getByRole('button', { name: 'Apply reviewed change' }).click();
+    .getByRole('button', { name: 'Save assignment', exact: true })
+    .click();
   await expect(editor.getByRole('alert')).toContainText('changed');
   const box = (await editor.boundingBox())!;
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(390);
   expect(box.height).toBeLessThanOrEqual(844);
   await editor.screenshot({
-    path: `../tmp/speech-selection-phone-${info.project.name}.png`
+    path: info.outputPath('speech-selection-phone.png')
   });
   const accessibility = await new AxeBuilder({ page })
-    .include('[aria-label="Edit selected speech"]')
+    .include('.speech-inspector')
     .analyze();
   expect(accessibility.violations).toEqual([]);
-  await editor.getByRole('button', { name: 'Back to edit' }).click();
   await expect(
     editor.getByRole('combobox', { name: 'Speaker', exact: true })
-  ).toHaveValue('narrator');
-  await page.keyboard.press('Escape');
+  ).toHaveValue('Narrator');
+  await editor
+    .getByRole('button', { name: 'Close speaker and voice editor' })
+    .click();
+  const guard = page.getByRole('dialog', { name: 'Keep your speech changes?' });
+  await expect(guard).toBeVisible();
+  await guard.getByRole('button', { name: 'Discard and continue' }).click();
   await expect(editor).toBeHidden();
 });
 
@@ -431,8 +572,9 @@ test('keyboard selection works for plain speech and restores focus', async ({
   page
 }) => {
   await setup(page, { plain: true });
+  await editGenerationWords(page, 1);
   const input = page.getByRole('textbox', {
-    name: 'Script text for segment 1',
+    name: 'Spoken override for segment 1',
     exact: true
   });
   await input.focus();
@@ -442,13 +584,20 @@ test('keyboard selection works for plain speech and restores focus', async ({
   await page.keyboard.press('ArrowRight');
   await page.keyboard.press('ArrowRight');
   await page.keyboard.up('Shift');
+  await page
+    .getByRole('button', { name: 'Speaker & voice', exact: true })
+    .click();
   const editor = page.getByRole('dialog', {
-    name: 'Edit selected speech',
+    name: 'Speaker and voice',
     exact: true
   });
   await expect(editor).toBeVisible();
   await expect(editor.locator('blockquote')).toContainText('😀');
+  // Escape first closes the autocomplete, then the enclosing editor.
   await page.keyboard.press('Escape');
+  await expect(editor).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(editor).toBeHidden();
   await expect(input).toBeFocused();
 });
 
@@ -462,7 +611,13 @@ test('audiobook voice mode is an atomic choice and exposes model-aware narration
   const textBeforeMode = await (
     await page.request.get(`/api/v1/sessions/${id}/settings/text`)
   ).json();
+  const modeSaved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/sessions/${id}/voice-setup`) &&
+      response.request().method() === 'PATCH'
+  );
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
+  expect((await modeSaved).ok()).toBeTruthy();
   await card.getByTestId('cast-help-summary').click();
   await expect(
     card.getByRole('list', { name: 'Multiple-voice steps' })
@@ -483,7 +638,9 @@ test('audiobook voice mode is an atomic choice and exposes model-aware narration
   await card.screenshot({
     path: `../tmp/audiobook-casting-${info.project.name}.png`
   });
-  await card.getByRole('button', { name: 'Narration settings' }).click();
+  await page
+    .getByRole('button', { name: 'Narration settings', exact: true })
+    .click();
   await expect(
     page.getByText('Model-aware', { exact: false }).first()
   ).toBeVisible();

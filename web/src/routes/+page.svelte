@@ -108,8 +108,8 @@
     >
     <ChevronRight size={18} class="ml-auto shrink-0" />
   </a>
-  <div class="mt-10 grid gap-7 xl:grid-cols-[1.4fr_.8fr]">
-    <section>
+  <div class="mt-10 grid grid-cols-1 gap-7 xl:grid-cols-[1.4fr_.8fr]">
+    <section class="min-w-0">
       <div class="mb-3 flex items-center justify-between">
         <div class="section-label">Recent projects</div>
         <a
@@ -151,7 +151,7 @@
             </div>{/each}{/if}
       </div>
     </section>
-    <aside>
+    <aside class="min-w-0">
       <div class="section-label mb-3">Readiness</div>
       <div class="surface rounded-2xl p-5">
         <div class="space-y-4">

@@ -20,7 +20,8 @@ async function project(
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
-      name,
+      interface_mode: 'advanced',
+      name: `${name} ${crypto.randomUUID()}`,
       workflow_kind: kind,
       source_language: 'en',
       target_language: language
@@ -74,7 +75,7 @@ test('language versions form one project and switch output controls while linkin
     page.getByText('One corrected source · 1 language version')
   ).toBeVisible();
   await expect(
-    page.getByRole('link', { name: 'Library navigation Japanese', exact: true })
+    page.getByRole('link', { name: branch.name, exact: true })
   ).toHaveCount(0);
   await page
     .getByRole('combobox', { name: 'Workflow', exact: true })
@@ -94,7 +95,7 @@ test('language versions form one project and switch output controls while linkin
     .selectOption(branch.id);
   await expect(page).toHaveURL(`/sessions/${branch.id}/output`);
   await expect(
-    page.getByText(/uses a pinned copy of the corrected source/)
+    page.getByText(/uses a pinned copy of the shared source/)
   ).toBeVisible();
   await expect(page.getByLabel('Project language')).toHaveValue(branch.id);
   const nav = page.getByRole('navigation', { name: 'Project sections' });
@@ -396,6 +397,16 @@ test('generation shell is visible while its segment request is pending', async (
 }) => {
   await signIn(page);
   const item = await project(page, 'Drawer loading feedback', 'audiobook');
+  const auth = await (await page.request.get('/api/v1/auth/status')).json();
+  const plan = await page.request.post(
+    `/api/v1/sessions/${item.id}/generation-plan`,
+    {
+      headers: { 'X-CSRF-Token': auth.csrf_token },
+      data: { segments: [{ text: 'The loaded generation row.' }] }
+    }
+  );
+  expect(plan.ok()).toBeTruthy();
+  let requested = false;
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -403,24 +414,27 @@ test('generation shell is visible while its segment request is pending', async (
   await page.route(
     `**/api/v1/sessions/${item.id}/generation-segments?**`,
     async (route) => {
+      requested = true;
       await gate;
-      await route.fulfill({
-        json: { items: [], total: 0, next_cursor: null, plan_revision_id: null }
-      });
+      await route.continue();
     }
   );
-  await page.goto(`/sessions/${item.id}`);
+  await page.goto(`/sessions/${item.id}/generation`);
   try {
+    await expect.poll(() => requested).toBe(true);
     await expect(
-      page.getByText('Loading speech plan…', { exact: true })
+      page.getByRole('status').filter({ hasText: 'Loading segments…' })
     ).toBeVisible();
     await expect(
-      page.getByRole('link', { name: 'Generation', exact: true })
+      page.getByRole('region', { name: 'Generation workspace', exact: true })
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Generate', exact: true })
     ).toBeDisabled();
   } finally {
     release();
   }
-  await expect(
-    page.getByText('Loading speech plan…', { exact: true })
-  ).toHaveCount(0);
+  await expect(page.locator('.speech-editing-text')).toHaveText(
+    'The loaded generation row.'
+  );
 });

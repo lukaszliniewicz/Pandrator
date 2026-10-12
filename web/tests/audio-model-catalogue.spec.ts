@@ -291,8 +291,12 @@ test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', a
   await provider.selectOption('openai');
   await capability.selectOption('instructions');
   await apply.click();
-  await expect(page.locator('article')).toHaveCount(1);
-  await expect(page.locator('article')).toContainText('gpt-4o-mini-tts');
+  await expect(page.locator('article')).toHaveCount(3);
+  await expect(page.locator('article').getByRole('heading')).toHaveText([
+    'gpt-4o-mini-tts',
+    'gpt-4o-mini-tts-2025-03-20',
+    'gpt-4o-mini-tts-2025-12-15'
+  ]);
   await provider.selectOption('gemini');
   await apply.click();
   await expect(page.locator('article')).toHaveCount(5);
@@ -300,7 +304,10 @@ test('provider filters distinguish OpenAI, Gemini and Azure MAI capabilities', a
   await capability.selectOption('emotion_control');
   await apply.click();
   await expect(page.locator('article')).toHaveCount(2);
-  await expect(page.locator('article').first()).toContainText('MAI');
+  await expect(page.locator('article').getByRole('heading')).toHaveText([
+    'MAI Voice 2.1',
+    'MAI Voice 2.1 Flash'
+  ]);
   await page
     .locator('article')
     .first()

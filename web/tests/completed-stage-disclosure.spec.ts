@@ -17,7 +17,11 @@ async function createSession(page: Page, name: string) {
   const headers = { 'X-CSRF-Token': auth.csrf_token };
   const response = await page.request.post('/api/v1/sessions', {
     headers,
-    data: { name: `${name} ${crypto.randomUUID()}`, workflow_kind: 'audiobook' }
+    data: {
+      interface_mode: 'advanced',
+      name: `${name} ${crypto.randomUUID()}`,
+      workflow_kind: 'audiobook'
+    }
   });
   expect(response.ok()).toBeTruthy();
   const id = (await response.json()).id as string;

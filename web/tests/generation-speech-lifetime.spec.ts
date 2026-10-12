@@ -13,7 +13,8 @@ async function fixture(page: Page, discovery = false) {
     headers,
     data: {
       name: `Drawer speech lifetime ${crypto.randomUUID()}`,
-      workflow_kind: 'audiobook'
+      workflow_kind: 'audiobook',
+      interface_mode: 'advanced'
     }
   });
   expect(created.ok()).toBeTruthy();
@@ -34,7 +35,8 @@ async function fixture(page: Page, discovery = false) {
     xtts_model: old ? 'old-model' : 'current-model',
     voice: old ? 'old-voice' : 'current-voice',
     speaker: old ? 'old-voice' : 'current-voice',
-    language: 'en'
+    language: 'en',
+    casting_enabled: true
   });
   let providerBase = 'http://old-speech.invalid';
   let heldDiscovery: Route | undefined;
@@ -109,7 +111,11 @@ async function fixture(page: Page, discovery = false) {
     name: 'Voice for segment 1',
     exact: true
   });
-  await expect(voice).toBeDisabled();
+  const loadingField = page.getByRole('combobox', {
+    name: 'Language for segment 1',
+    exact: true
+  });
+  await expect(loadingField).toBeDisabled();
   const settle = async (route: Route, fail: boolean, old: boolean) => {
     const response = page.waitForResponse(
       (candidate) => candidate.request() === route.request(),
@@ -133,6 +139,7 @@ async function fixture(page: Page, discovery = false) {
   };
   return {
     voice,
+    loadingField,
     async waitForDiscovery() {
       await expect.poll(() => Boolean(heldDiscovery)).toBe(true);
     },
@@ -160,6 +167,7 @@ async function fixture(page: Page, discovery = false) {
       );
     },
     async reload(hold = false) {
+      await page.keyboard.press('Escape');
       holdSecond = hold;
       providerBase = 'http://current-speech.invalid';
       await page
@@ -224,7 +232,7 @@ test('an older drawer speech completion cannot clear a newer loading state', asy
   try {
     await data.reload(true);
     await data.releaseFirst();
-    await expect(data.voice).toBeDisabled();
+    await expect(data.loadingField).toBeDisabled();
     await data.releaseSecond();
     await expect(data.voice).toBeEnabled();
     await expect(
@@ -260,6 +268,7 @@ test('a failed current drawer speech refresh keeps usable options and can be ret
     await page.screenshot({
       path: info.outputPath('drawer-speech-refresh-failure.png')
     });
+    await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 390, height: 844 });
     const retry = page.getByRole('button', {
       name: 'Retry speech options',

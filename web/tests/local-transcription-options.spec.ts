@@ -49,6 +49,7 @@ async function fixture(
   const created = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Local transcription ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover',
       source_language: sourceLanguage

@@ -18,6 +18,8 @@ test('generation and voice controls expose resolved selection semantics', () => 
   const stageCard = source('WorkflowStageCard.svelte');
   const runDialogs = source('WorkflowRunDialogs.svelte');
   const workspace = source('SessionWorkspace.svelte');
+  const ttsSettings = source('GenerationStageSettings.svelte');
+  const ttsSelection = source('tts-settings-selection.svelte.ts');
   const voiceLibrary = source('VoiceLibraryModal.svelte');
   const voiceManager = source('VoiceManager.svelte');
 
@@ -41,18 +43,18 @@ test('generation and voice controls expose resolved selection semantics', () => 
   expect(workspace).toContain('pending.mismatches.map((item) => item.stage)');
 
   expect(voiceLibrary).toContain('class="modal-scroll min-h-0 flex-1');
-  expect(workspace).toContain('availableTtsServices');
-  expect(workspace).toContain('unavailableTtsServices');
-  expect(workspace).toContain('label="Available"');
-  expect(workspace).toContain('label="Unavailable"');
-  expect(workspace).toContain('class="text-[var(--muted)]"');
-  expect(workspace).toContain('available: true');
-  expect(workspace).toContain('clonedVoiceGroups');
-  expect(workspace).toContain('Multilingual / language not set');
-  expect(workspace).toContain('audioCppLinkedReferences');
-  expect(workspace).toContain('pandrator-ordered-serial-v1');
-  expect(workspace).toContain("protocol: 'pandrator-linked-voices-v1'");
-  expect(workspace).toContain('Qwen benefits from a reviewed transcript');
+  expect(ttsSettings).toContain('availableTtsServices');
+  expect(ttsSettings).toContain('unavailableTtsServices');
+  expect(ttsSettings).toContain('label="Available"');
+  expect(ttsSettings).toContain('label="Unavailable"');
+  expect(ttsSettings).toContain('class="text-[var(--muted)]"');
+  expect(ttsSelection).toContain('service.available === true');
+  expect(ttsSettings).toContain('clonedVoiceGroups');
+  expect(ttsSelection).toContain('Multilingual / language not set');
+  expect(ttsSettings).toContain('audioCppLinkedReferences');
+  expect(ttsSelection).toContain('pandrator-ordered-serial-v1');
+  expect(ttsSelection).toContain("selectedTtsService?.adapter === 'audio_cpp'");
+  expect(ttsSettings).toContain('Qwen benefits from a reviewed transcript');
   expect(voiceManager).toContain("resource_kind === 'linked_reference'");
   expect(voiceManager).toContain('Link to ${providerTarget.name}');
   expect(voiceManager).toContain('Provider links and copies');
@@ -72,7 +74,7 @@ test('generation workspace exposes the compact review controls', () => {
   expect(drawer).toContain('Different settings / provider…');
   expect(drawer).toContain('aria-labelledby="rvc-conversion-title"');
   expect(drawer).not.toContain('RVC speech-to-speech {showRvc');
-  expect(drawer).toContain('Spoken override (TTS only)');
+  expect(segmentTable).toContain('Spoken override (TTS only)');
   expect(segmentTable).toContain(
     'Starts from the script; edits affect speech only.'
   );
@@ -192,6 +194,7 @@ test('generation settings preserve provider availability and voice language choi
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Generation controls ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover'
     }
@@ -388,6 +391,7 @@ test('XTTS model management lists, installs, selects, removes, and guides legacy
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `XTTS lifecycle ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover'
     }

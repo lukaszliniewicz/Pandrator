@@ -15,6 +15,7 @@ async function createPlan(page: Page) {
   const created = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Drawer review ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -41,13 +42,13 @@ async function createPlan(page: Page) {
 }
 
 async function openDrawer(page: Page, id: string) {
-  await page.goto(`/sessions/${id}`);
+  await page.goto(`/sessions/${id}/generation`);
   const drawer = page.locator('[data-generation-layout]');
-  // Wait for cold page hydration before testing the drawer interactions.
+  // Wait for cold page hydration before testing the plan review controls.
   await expect(drawer).toBeVisible({ timeout: 20_000 });
-  if ((await drawer.getAttribute('data-generation-layout')) === 'collapsed') {
-    await page.getByRole('link', { name: 'Generation', exact: true }).click();
-  }
+  await drawer
+    .getByRole('button', { name: 'Speech plans', exact: true })
+    .click();
   const bar = drawer.getByTestId('drawer-plan-review');
   await expect(bar).toBeVisible();
   return { drawer, bar };
@@ -91,12 +92,9 @@ test('review completes inside the drawer without generation or leaving the plan'
       ).json()
     ).items
   ).toHaveLength(0);
-  await expect(drawer).not.toHaveAttribute(
-    'data-generation-layout',
-    'collapsed'
-  );
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
   await expect(
-    drawer.getByRole('button', { name: 'Generate audio…', exact: true })
+    drawer.getByRole('button', { name: 'Generate', exact: true })
   ).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -242,11 +240,12 @@ test('a failed pending text save cannot mark the old wording reviewed', async ({
     });
   });
   const { drawer, bar } = await openDrawer(page, id);
-  const editor = drawer
-    .locator('tr[data-segment-id]')
-    .first()
-    .locator('textarea')
-    .first();
+  await page.getByRole('button', { name: 'Close menu', exact: true }).click();
+  const row = drawer.locator('tr[data-segment-id]').first();
+  await row
+    .getByRole('button', { name: 'Edit words for segment 1', exact: true })
+    .click();
+  const editor = row.locator('textarea.segment-text');
   await editor.fill('A draft that has not been saved.');
   const failedSave = page.waitForResponse(
     (response) =>
@@ -255,6 +254,9 @@ test('a failed pending text save cannot mark the old wording reviewed', async ({
   );
   await editor.press('Tab');
   await failedSave;
+  await drawer
+    .getByRole('button', { name: 'Speech plans', exact: true })
+    .click();
   await expect(bar.getByTestId('drawer-mark-reviewed')).toBeEnabled();
   await bar.getByTestId('drawer-mark-reviewed').click();
   await expect(bar.getByRole('alert')).toContainText('could not be saved');

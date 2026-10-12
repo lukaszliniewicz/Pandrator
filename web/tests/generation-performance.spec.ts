@@ -1,3 +1,4 @@
+import { showGenerationTextLayer } from './fixtures/generation-editing';
 import { Buffer } from 'node:buffer';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -16,6 +17,7 @@ async function createAudiobookSession(page: Page) {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Generation performance ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -118,6 +120,7 @@ test('generation search queries the complete plan only after input', async ({
   const table = page.getByTestId('generation-segment-table');
   await expect(table).toHaveAttribute('data-loaded-count', '100');
   await expect(table).toHaveAttribute('data-virtualized', 'true');
+  await showGenerationTextLayer(page, 'display');
   await page.getByRole('button', { name: 'Search and replace' }).click();
   const find = page.getByLabel('Find in generation segments');
   await expect(find).toBeFocused();
@@ -126,9 +129,9 @@ test('generation search queries the complete plan only after input', async ({
   await expect(
     page.getByText('1 matching segments across the complete plan · script text')
   ).toBeVisible();
-  await expect(
-    page.locator('textarea[data-generation-search-index]')
-  ).toHaveValue('Performance segment 101.');
+  await expect(page.locator('.speech-editing-text')).toHaveText(
+    'Performance segment 101.'
+  );
   expect(
     requests.some(
       (url) => url.searchParams.get('q') === 'Performance segment 101.'

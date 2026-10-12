@@ -1,3 +1,8 @@
+import {
+  editGenerationWords,
+  showGenerationTextLayer
+} from './fixtures/generation-editing';
+import { mockGenerationRuns } from './fixtures/generation-admission';
 import { Buffer } from 'node:buffer';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -101,6 +106,7 @@ test('media-edit wizard attaches a reused recording and uploaded captions with c
     .getByRole('button', { name: /Edit a recording/ })
     .first()
     .click();
+  await page.getByRole('radio', { name: /^Advanced/ }).check();
   await page.getByRole('button', { name: 'Reuse' }).click();
   await page.getByLabel('Source library').selectOption(videoSourceId);
   await page.getByLabel(/Zoom or other captions/).setInputFiles({
@@ -204,6 +210,7 @@ test('correction and translation cards expose independent reasoning levels', asy
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
       name: uniqueName('Task reasoning controls'),
+      interface_mode: 'advanced',
       workflow_kind: 'voiceover',
       included_stages: ['correct', 'translate']
     }
@@ -374,6 +381,7 @@ test('workflow history and subtitle review load exact revisions on demand', asyn
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
       name: uniqueName('Paginated workflow history'),
+      interface_mode: 'advanced',
       workflow_kind: 'voiceover'
     }
   });
@@ -743,6 +751,7 @@ test('a selected correction checkpoint can fork a clean project branch', async (
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
       name: uniqueName('Fork checkpoint'),
+      interface_mode: 'advanced',
       workflow_kind: 'voiceover',
       included_stages: ['correct']
     }
@@ -839,6 +848,7 @@ test('a selected correction checkpoint can fork a clean project branch', async (
     checkpoint_artifact_id: artifact.id,
     name: 'Polish alternate',
     expected_revision: session.revision,
+    interface_mode: 'advanced',
     carry_media_assets: true
   });
 });
@@ -966,6 +976,7 @@ test('voiceover output settings follow the video source and default to a control
     headers,
     data: {
       name: uniqueName('Video output profile'),
+      interface_mode: 'advanced',
       workflow_kind: 'voiceover'
     }
   });
@@ -1129,6 +1140,9 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Details & versions…', exact: true })
+    .click();
   const dialog = page.getByRole('dialog', { name: 'Versioned speech plans' });
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate((element) => element.matches(':modal'))).toBe(
@@ -1175,7 +1189,7 @@ test('speech-plan history shows repair outcomes in a full dialog without changin
   await expect(dialog).toBeHidden();
 });
 
-test('narrow screens use the full viewport for dialogs and the generation drawer', async ({
+test('narrow screens keep dialogs and Generation controls within the viewport', async ({
   page
 }, testInfo) => {
   await signIn(page);
@@ -1194,54 +1208,52 @@ test('narrow screens use the full viewport for dialogs and the generation drawer
   await dialog.getByRole('button', { name: 'Close', exact: true }).click();
 
   const sessionId = await createGenerationPlan(page, [
-    { text: 'The generation drawer should use the available screen space.' },
+    { text: 'Generation should use the available screen space.' },
     { text: 'Its controls and speech blocks must remain reachable.' }
   ]);
-  await page.goto(`/sessions/${sessionId}`);
-  const drawer = page.locator('.generation-workspace');
-  await drawer.getByRole('link', { name: 'Generation', exact: true }).click();
+  await page.goto(`/sessions/${sessionId}/generation`);
+  const workspace = page.getByRole('region', {
+    name: 'Generation workspace',
+    exact: true
+  });
   for (const viewport of [
     { width: 390, height: 844 },
     { width: 700, height: 600 },
     { width: 700, height: 390 }
   ]) {
     await page.setViewportSize(viewport);
-    await expect(drawer).toHaveCSS('width', `${viewport.width}px`);
-    await expect(drawer).toHaveCSS('height', `${viewport.height}px`);
-    expect(await drawer.boundingBox()).toMatchObject({ x: 0, y: 0 });
+    await expect(workspace).toHaveAttribute('data-generation-layout', 'full');
+    await expect(workspace.locator('tbody tr[data-segment-id]')).toHaveCount(2);
+    const bounds = await workspace.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+    await workspace
+      .getByRole('button', { name: 'Play playlist', exact: true })
+      .scrollIntoViewIfNeeded();
     await expect(
-      drawer.getByRole('button', { name: 'Use half height' })
-    ).toBeHidden();
-    await expect(
-      drawer.getByRole('link', { name: 'Generation', exact: true })
+      workspace.getByRole('button', { name: 'Play playlist', exact: true })
     ).toBeInViewport();
-    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+    await expect(
+      workspace.getByRole('button', { name: 'Display options', exact: true })
+    ).toBeVisible();
+    expect(
+      await page
+        .locator('body')
+        .evaluate((body) => body.scrollWidth <= window.innerWidth)
+    ).toBe(true);
     await page.screenshot({
       path: testInfo.outputPath(
-        `drawer-${viewport.width}-${viewport.height}.png`
+        `generation-${viewport.width}-${viewport.height}.png`
       )
     });
   }
-  await drawer.getByRole('link', { name: 'Generation', exact: true }).click();
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
-  await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+  await page.goto(`/sessions/${sessionId}`);
+  await expect(workspace).toHaveCount(0);
   await page.setViewportSize({ width: 1280, height: 720 });
-  await drawer.getByRole('link', { name: 'Generation', exact: true }).click();
-  await drawer.getByRole('button', { name: 'Use half height' }).click();
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
-  await expect
-    .poll(async () => Math.round((await drawer.boundingBox())!.height))
-    .toBe(374);
-  await page.setViewportSize({ width: 700, height: 600 });
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
-  await expect(drawer).toHaveCSS('height', '600px');
-  await expect(
-    drawer.getByRole('button', { name: 'Use full height' })
-  ).toBeHidden();
-  await page.setViewportSize({ width: 1280, height: 720 });
-  await expect
-    .poll(async () => Math.round((await drawer.boundingBox())!.height))
-    .toBe(374);
+  await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await expect(workspace).toHaveAttribute('data-generation-layout', 'full');
+  await expect(workspace.locator('tbody tr[data-segment-id]')).toHaveCount(2);
 });
 
 test('speech-block boundaries expose evidence and cursor edits are reversible', async ({
@@ -1271,6 +1283,8 @@ test('speech-block boundaries expose evidence and cursor edits are reversible', 
   const rows = page.locator('tbody tr[data-segment-id]');
   await expect(rows).toHaveCount(2);
 
+  await showGenerationTextLayer(page, 'display');
+  await editGenerationWords(page, 1);
   const text = rows.nth(0).locator('textarea').first();
   await text.evaluate((node: HTMLTextAreaElement) => {
     // Browser offsets are UTF-16 code units; this lands after the emoji.
@@ -1396,7 +1410,7 @@ test('running generation controls stay on one drawer header row', async ({
   await expect(page.getByText('Stop safely', { exact: true })).toHaveCount(0);
 
   const rowCenters = await page
-    .locator('aside.generation-drawer > header')
+    .locator('.generation-workspace > header')
     .evaluate((header) =>
       Array.from(header.children, (element) => {
         const bounds = element.getBoundingClientRect();
@@ -1421,11 +1435,15 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
 
   const rows = page.locator('tbody tr[data-segment-id]');
-  await rows.nth(0).locator('td').nth(1).click();
+  await rows
+    .nth(0)
+    .locator('td')
+    .nth(2)
+    .click({ position: { x: 2, y: 2 } });
   await rows
     .nth(2)
     .locator('td')
-    .nth(1)
+    .nth(2)
     .dispatchEvent('click', { ctrlKey: true });
   await expect(page.locator('tbody tr[data-segment-id].selected')).toHaveCount(
     2
@@ -1433,7 +1451,7 @@ test('generation segments support Ctrl and Shift multi-selection in both review 
   await rows
     .nth(3)
     .locator('td')
-    .nth(1)
+    .nth(2)
     .dispatchEvent('click', { shiftKey: true });
   await expect(rows.nth(0)).not.toHaveClass(/selected/);
   await expect(rows.nth(1)).not.toHaveClass(/selected/);
@@ -1494,6 +1512,7 @@ test('generation segment search and replace preserves partial words and saves ev
 
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await showGenerationTextLayer(page, 'display');
   await page.getByRole('button', { name: 'Search and replace' }).click();
   await page.getByLabel('Find in generation segments').fill('cat');
   await page.getByLabel('Replace in generation segments').fill('dog');
@@ -1501,9 +1520,9 @@ test('generation segment search and replace preserves partial words and saves ev
   await expect(page.getByText('1 / 2', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Replace all' }).click();
 
-  const fields = page.locator('textarea[data-generation-search-index]');
-  await expect(fields.nth(0)).toHaveValue('A dog waits.');
-  await expect(fields.nth(1)).toHaveValue('A catfish and dog.');
+  const fields = page.locator('tbody tr[data-segment-id] .speech-editing-text');
+  await expect(fields.nth(0)).toHaveText('A dog waits.');
+  await expect(fields.nth(1)).toHaveText('A catfish and dog.');
   const saved = await page.request.get(
     `/api/v1/sessions/${sessionId}/generation-segments`
   );
@@ -1514,7 +1533,7 @@ test('generation segment search and replace preserves partial words and saves ev
   ]);
 });
 
-test('generation drawer layout survives segment regeneration refreshes', async ({
+test('Generation layout and menus survive segment regeneration refreshes', async ({
   page
 }) => {
   let phase: 'completed' | 'running' = 'completed';
@@ -1537,36 +1556,33 @@ test('generation drawer layout survives segment regeneration refreshes', async (
     status: phase,
     progress: phase === 'completed' ? 1 : 0.5
   });
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs*`,
-    async (route) => {
-      if (route.request().method() === 'POST') {
-        if (failNextRegeneration) {
-          failNextRegeneration = false;
-          await route.fulfill({
-            status: 500,
-            contentType: 'application/json',
-            body: JSON.stringify({ detail: 'Synthetic regeneration failure.' })
-          });
-          return;
-        }
-        phase = 'running';
+  await mockGenerationRuns(page, sessionId, async (route) => {
+    if (route.request().method() === 'POST') {
+      if (failNextRegeneration) {
+        failNextRegeneration = false;
         await route.fulfill({
+          status: 500,
           contentType: 'application/json',
-          body: JSON.stringify(run())
+          body: JSON.stringify({ detail: 'Synthetic regeneration failure.' })
         });
-        setTimeout(() => {
-          revision += 1;
-          phase = 'completed';
-        }, 100);
         return;
       }
+      phase = 'running';
       await route.fulfill({
         contentType: 'application/json',
-        body: JSON.stringify({ items: [run()] })
+        body: JSON.stringify(run())
       });
+      setTimeout(() => {
+        revision += 1;
+        phase = 'completed';
+      }, 100);
+      return;
     }
-  );
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [run()] })
+    });
+  });
   await page.route(
     `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
     (route) =>
@@ -1608,7 +1624,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
 
   await page.goto(`/sessions/${sessionId}`);
   const drawer = page.locator('[data-generation-layout]');
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await expect(drawer).toHaveCount(0);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
@@ -1617,7 +1633,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
     exact: true
   });
   const segmentText = page.locator(
-    'tr[data-segment-id="synthetic-segment"] textarea'
+    'tr[data-segment-id="synthetic-segment"] .speech-editing-text'
   );
   await regenerate.click();
   const regenerateAction = page.getByRole('menuitem', {
@@ -1640,34 +1656,33 @@ test('generation drawer layout survives segment regeneration refreshes', async (
   await expect(regenerateAction).toBeHidden();
   await expect(regenerate).toBeFocused();
   await regenerate.click();
-  await page.getByRole('button', { name: 'Use half height' }).click();
+  await page.keyboard.press('Escape');
   await expect(regenerateAction).toBeHidden();
-  await page.getByRole('button', { name: 'Use full height' }).click();
   await regenerate.click();
   await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
-  await expect(segmentText).toHaveValue(
+  await expect(segmentText).toHaveText(
     'Synthetic generation segment revision 1.',
     { timeout: 10_000 }
   );
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
-  await page.getByRole('button', { name: 'Use half height' }).click();
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await page.setViewportSize({ width: 900, height: 700 });
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
   await regenerate.click();
   await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
-  await expect(segmentText).toHaveValue(
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
+  await expect(segmentText).toHaveText(
     'Synthetic generation segment revision 2.',
     { timeout: 10_000 }
   );
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'half');
+  await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
-  await page.getByRole('button', { name: 'Use full height' }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
   failNextRegeneration = true;
   await regenerate.click();
   await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
-  expect(failNextRegeneration).toBeFalsy();
+  await expect.poll(() => failNextRegeneration).toBeFalsy();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 
   await page
@@ -1707,7 +1722,7 @@ test('generation drawer layout survives segment regeneration refreshes', async (
     { text: 'Unrelated synthetic segment.' }
   ]);
   await page.goto(`/sessions/${unrelatedSessionId}`);
-  await expect(drawer).toHaveAttribute('data-generation-layout', 'collapsed');
+  await expect(drawer).toHaveCount(0);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await expect(drawer).toHaveAttribute('data-generation-layout', 'full');
 });
@@ -1874,6 +1889,12 @@ test('selecting a take from history returns to Active mix without changing anoth
   await page.route(
     `**/api/v1/generation-runs/${secondRunId}`,
     async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          json: runs.find((run) => run.id === secondRunId)
+        });
+        return;
+      }
       expect(route.request().method()).toBe('DELETE');
       deletedRuns.push(secondRunId);
       for (let index = runs.length - 1; index >= 0; index -= 1) {
@@ -1990,23 +2011,24 @@ test('generated segments return to the current filtered page after repeated rege
   const sessionId = await createGenerationPlan(page, [
     { text: 'Placeholder.' }
   ]);
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs*`,
-    async (route) => {
-      if (route.request().method() === 'POST') {
-        phase = 'running';
-        await route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify(run())
-        });
-        return;
-      }
+  await mockGenerationRuns(page, sessionId, async (route) => {
+    if (route.request().method() === 'POST') {
+      phase = 'running';
       await route.fulfill({
         contentType: 'application/json',
-        body: JSON.stringify({ items: [run()] })
+        body: JSON.stringify(run())
       });
+      return;
     }
-  );
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [run()] })
+    });
+  });
+  await page.route(`**/api/v1/generation-runs/${runId}`, async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await route.fulfill({ json: run() });
+  });
   await page.route(
     `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
     (route) =>
@@ -2073,17 +2095,32 @@ test('generated segments return to the current filtered page after repeated rege
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const filter = page.getByLabel('Segments to display');
+  const displayOptions = page.getByRole('button', {
+    name: 'Display options',
+    exact: true
+  });
+  const assertFilter = async (value: string) => {
+    await displayOptions.click();
+    await expect(filter).toHaveValue(value);
+    await page.getByRole('button', { name: 'Close menu', exact: true }).click();
+  };
+  await expect(
+    page.getByRole('button', { name: 'Speech plans', exact: true })
+  ).toBeEnabled();
   const regeneratedRow = page.locator('tr[data-segment-id="segment-100"]');
   const regenerateSegment101 = regeneratedRow.locator(
     'button[aria-label="Regenerate segment 101"]'
   );
   const waitForRegeneratedSegment = async () => {
+    await page.getByTestId('generation-scroll-root').evaluate((root) => {
+      root.scrollTop = root.scrollHeight;
+    });
     await regeneratedRow.waitFor({ state: 'attached', timeout: 30_000 });
     await expect(regenerateSegment101).toBeVisible({ timeout: 10_000 });
   };
   const loadMore = page.getByRole('button', { name: 'Load more' });
-  await loadMore.scrollIntoViewIfNeeded();
-  await loadMore.click();
+  // Scrolling to the next-page sentinel now loads more rows automatically.
+  if (await loadMore.count()) await loadMore.scrollIntoViewIfNeeded();
   await waitForRegeneratedSegment();
   await expect(
     regeneratedRow.getByRole('button', { name: 'Play' })
@@ -2091,25 +2128,26 @@ test('generated segments return to the current filtered page after repeated rege
   await regenerateSegment101.click();
   await page.getByRole('menuitem', { name: 'Regenerate', exact: true }).click();
   await waitForRegeneratedSegment();
-  await expect(filter).toHaveValue('all');
+  await assertFilter('all');
   regeneratedRevision += 1;
   phase = 'completed';
-  await expect(regeneratedRow.locator('textarea')).toHaveValue(
+  await expect(regeneratedRow.locator('.speech-editing-text')).toHaveText(
     `Regenerated segment 101 · revision ${regeneratedRevision}.`,
     { timeout: 30_000 }
   );
   await expect(
     regeneratedRow.getByRole('button', { name: 'Play' })
   ).toBeVisible();
-  await expect(filter).toHaveValue('all');
+  await assertFilter('all');
 
   const completedRefreshesBeforeFilter = generatedRefreshes;
+  await displayOptions.click();
   await filter.selectOption('completed');
   await expect
     .poll(() => generatedRefreshes)
     .toBeGreaterThan(completedRefreshesBeforeFilter);
-  await loadMore.scrollIntoViewIfNeeded();
-  await loadMore.click();
+  if (await loadMore.count()) await loadMore.scrollIntoViewIfNeeded();
+  await waitForRegeneratedSegment();
   await expect
     .poll(() => generatedRefreshes)
     .toBeGreaterThan(completedRefreshesBeforeFilter + 1);
@@ -2130,11 +2168,11 @@ test('generated segments return to the current filtered page after repeated rege
       .poll(() => generatedRefreshes, { timeout: 30_000 })
       .toBeGreaterThan(completedRefreshesBeforeReconciliation);
     await waitForRegeneratedSegment();
-    await expect(regeneratedRow.locator('textarea')).toHaveValue(
+    await expect(regeneratedRow.locator('.speech-editing-text')).toHaveText(
       `Regenerated segment 101 · revision ${regeneratedRevision}.`,
       { timeout: 20_000 }
     );
-    await expect(filter).toHaveValue('completed');
+    await assertFilter('completed');
     await expect(versionPicker).toHaveValue('');
     await expect(regenerateSegment101).toHaveCount(1);
     await expect(
@@ -2289,29 +2327,26 @@ test('alternate regeneration sends one selected-only setting set and returns to 
       body: JSON.stringify({ available: true, items: ['alternate-rvc'] })
     })
   );
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs*`,
-    async (route) => {
-      if (route.request().method() === 'POST') {
-        posted.push(route.request().postDataJSON() as Record<string, unknown>);
-        generationStarted = true;
-        await route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify({
-            ...sourceRun,
-            id: 'alternate-run',
-            sequence_number: 2,
-            status: 'running'
-          })
-        });
-        return;
-      }
+  await mockGenerationRuns(page, sessionId, async (route) => {
+    if (route.request().method() === 'POST') {
+      posted.push(route.request().postDataJSON() as Record<string, unknown>);
+      generationStarted = true;
       await route.fulfill({
         contentType: 'application/json',
-        body: JSON.stringify({ items: [sourceRun] })
+        body: JSON.stringify({
+          ...sourceRun,
+          id: 'alternate-run',
+          sequence_number: 2,
+          status: 'running'
+        })
       });
+      return;
     }
-  );
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [sourceRun] })
+    });
+  });
   await page.route(
     `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
     (route) =>
@@ -2353,7 +2388,9 @@ test('alternate regeneration sends one selected-only setting set and returns to 
   });
   // The arriving plan review bar shifts the rows. Wait for initial plan/row
   // loading to finish before clicking a row action.
-  await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Speech plans', exact: true })
+  ).toBeEnabled();
   await page
     .getByRole('button', { name: 'Regenerate segment 1', exact: true })
     .click();
@@ -2458,14 +2495,37 @@ test('alternate regeneration sends one selected-only setting set and returns to 
 });
 
 test('editorial workspace visual smoke', async ({ page }) => {
-  const isWindows = await page.evaluate(() =>
-    navigator.userAgent.includes('Windows')
-  );
+  const isWindows = process.platform === 'win32';
   test.skip(
     isWindows,
     'The visual baseline is captured on Linux to avoid platform font-metric differences.'
   );
+  await page.route('**/api/v1/events/snapshot*', (route) =>
+    route.fulfill({
+      json: {
+        cursor: 0,
+        retained_after: 0,
+        sessions: {
+          items: [
+            {
+              id: 'visual-project',
+              name: 'A sample audiobook',
+              workflow_kind: 'audiobook',
+              status: 'idle'
+            }
+          ],
+          total: 1
+        },
+        jobs: { items: [], total: 0 },
+        capabilities: { application: { version: '0.12.0' } }
+      }
+    })
+  );
+  await page.route('**/api/v1/events?after=*', (route) => route.abort());
   await signIn(page);
+  await expect(
+    page.getByText('A sample audiobook', { exact: true })
+  ).toBeVisible();
   await expect(page).toHaveScreenshot('workspace.png', {
     fullPage: true,
     animations: 'disabled',

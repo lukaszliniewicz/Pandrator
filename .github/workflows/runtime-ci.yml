@@ -47,11 +47,11 @@ jobs:
       - name: Import the Manager-launched application runtime
         run: pixi run --locked python -m pandrator --help
 
+      - name: Check streamed speech cancellation
+        run: pixi run --locked python -m pytest -q tests/test_kobold_qwen_stream_lifetime.py
+
       - name: Check database contention and application startup ownership
         run: >-
           pixi run --locked python -m pytest -q
           tests/test_audit_contention.py
           tests/test_web_application_construction_lifetime.py
-
-      - name: Check streamed speech cancellation
-        run: pixi run --locked python -m pytest -q tests/test_kobold_qwen_stream_lifetime.py

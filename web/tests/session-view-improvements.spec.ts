@@ -15,6 +15,7 @@ async function createSession(page: Page, workflowKind: string) {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Session view ${crypto.randomUUID()}`,
       workflow_kind: workflowKind
     }
@@ -45,9 +46,10 @@ test('audiobook rows expose compact options and merge adjacent segments', async 
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const table = page.getByTestId('generation-segment-table');
   await expect(table.locator('tbody tr[data-segment-id]')).toHaveCount(2);
-  // Initial review metadata expands the bar above these rows. Wait for it
-  // before measuring or clicking a row that would otherwise move mid-click.
+  // Wait for the selected plan's review metadata before measuring the rows.
+  await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
   await expect(page.getByTestId('drawer-mark-reviewed')).toBeEnabled();
+  await page.getByRole('button', { name: 'Close menu', exact: true }).click();
   await expect(table.locator('.boundary-row')).toHaveCount(0);
   await expect(
     page.locator('.session-shell > a[href="/sessions"]')
@@ -84,12 +86,9 @@ test('audiobook rows expose compact options and merge adjacent segments', async 
     .getByRole('button', { name: 'Merge segment 1 with next', exact: true })
     .click();
   await expect(table.locator('tbody tr[data-segment-id]')).toHaveCount(1);
-  await expect(
-    table.getByRole('button', {
-      name: 'Narrator. Inspect voice and delivery for segment 1, phrase 1',
-      exact: true
-    })
-  ).toHaveText('First passage. Second passage.');
+  await expect(table.locator('.speech-editing-text')).toHaveText(
+    'First passage. Second passage.'
+  );
 });
 
 test('project tabs sit above the title and stay sticky', async ({ page }) => {

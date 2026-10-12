@@ -14,6 +14,7 @@ async function fixture(
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Repair batches ${crypto.randomUUID()}`,
       workflow_kind: 'voiceover'
     }
@@ -204,6 +205,9 @@ async function fixture(
   await page.goto(`/sessions/${sid}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   await page.getByRole('button', { name: 'Speech plans', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Details & versions…', exact: true })
+    .click();
   const dialog = page.getByRole('dialog', { name: 'Versioned speech plans' });
   await expect(dialog).toBeVisible();
   return {

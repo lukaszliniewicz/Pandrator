@@ -125,6 +125,7 @@ async function setupDrawer(page: Page) {
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Regeneration menu ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }

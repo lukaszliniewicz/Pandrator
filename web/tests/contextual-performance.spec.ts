@@ -14,6 +14,7 @@ test('contextual performance opens lazily, saves a draft and previews without sy
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrf },
     data: {
+      interface_mode: 'advanced',
       name: `Contextual performance ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }

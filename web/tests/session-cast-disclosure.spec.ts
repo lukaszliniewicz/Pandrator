@@ -14,6 +14,7 @@ async function createAudiobookSession(page: Page) {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Cast disclosure ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -30,7 +31,7 @@ async function openSessionMultiVoice(page: Page, id: string) {
   return card;
 }
 
-test('multi-voice cast details stay collapsed until opened and keep drafts across refresh', async ({
+test('multi-voice cast can be collapsed and keeps drafts across refresh', async ({
   page
 }) => {
   await signIn(page);
@@ -39,14 +40,16 @@ test('multi-voice cast details stay collapsed until opened and keep drafts acros
   const disclosure = card.getByTestId('cast-disclosure');
   const summary = card.getByTestId('cast-summary');
 
-  await expect(summary).toContainText('Characters and cast');
+  await expect(summary).toContainText('Speakers & cast voices');
+  await expect(disclosure).toHaveAttribute('open');
+  await summary.click();
   await expect
     .poll(() =>
       disclosure.evaluate((node) => (node as HTMLDetailsElement).open)
     )
     .toBe(false);
   await expect(
-    card.getByRole('button', { name: 'Add character', exact: true })
+    card.getByRole('button', { name: 'Add speaker', exact: true })
   ).toBeHidden();
   await expect
     .poll(() =>
@@ -62,11 +65,11 @@ test('multi-voice cast details stay collapsed until opened and keep drafts acros
       disclosure.evaluate((node) => (node as HTMLDetailsElement).open)
     )
     .toBe(true);
-  const add = card.getByRole('button', { name: 'Add character', exact: true });
+  const add = card.getByRole('button', { name: 'Add speaker', exact: true });
   await expect(add).toBeVisible();
   await add.click();
   const character = card.locator('article').first();
-  await character.getByLabel('Name', { exact: true }).fill('Alice');
+  await character.getByLabel('Speaker name', { exact: true }).fill('Alice');
   await expect(summary).toContainText('unsaved changes');
   await expect(summary).toContainText('1 uses a default voice');
   await expect(
@@ -81,9 +84,9 @@ test('multi-voice cast details stay collapsed until opened and keep drafts acros
       disclosure.evaluate((node) => (node as HTMLDetailsElement).open)
     )
     .toBe(true);
-  await expect(character.getByLabel('Name', { exact: true })).toHaveValue(
-    'Alice'
-  );
+  await expect(
+    character.getByLabel('Speaker name', { exact: true })
+  ).toHaveValue('Alice');
 
   await summary.click();
   await expect
@@ -126,13 +129,12 @@ test('multi-voice cast details stay collapsed until opened and keep drafts acros
   await expect(summary).toContainText('1 uses a default voice');
   await page.reload();
   await expect(summary).toContainText('1 uses a default voice');
-  await expect(disclosure).not.toHaveAttribute('open');
-  // The dedicated editing page stays expanded; its preference must not
-  // leak back to the compact overview.
+  await expect(disclosure).toHaveAttribute('open');
+  // Multiple-voice projects open the cast on each page; collapsing it is local.
   await page.goto(`/sessions/${id}/voice`);
   await expect(page.getByTestId('cast-disclosure')).toHaveAttribute('open');
   await page.goto(`/sessions/${id}`);
-  await expect(disclosure).not.toHaveAttribute('open');
+  await expect(disclosure).toHaveAttribute('open');
 });
 
 test('cast load errors stay visible while collapsed and retry succeeds', async ({
@@ -154,6 +156,8 @@ test('cast load errors stay visible while collapsed and retry succeeds', async (
   await expect(card).toBeVisible();
   await card.getByRole('radio', { name: /Multiple voices/ }).check();
   const disclosure = card.getByTestId('cast-disclosure');
+  await expect(disclosure).toHaveAttribute('open');
+  await card.getByTestId('cast-summary').click();
   await expect
     .poll(() =>
       disclosure.evaluate((node) => (node as HTMLDetailsElement).open)
@@ -185,10 +189,7 @@ test('unsaved cast draft guards navigation and keeps warnings visible', async ({
   await signIn(page);
   const id = await createAudiobookSession(page);
   const card = await openSessionMultiVoice(page, id);
-  await card.getByTestId('cast-summary').click();
-  await card
-    .getByRole('button', { name: 'Add character', exact: true })
-    .click();
+  await card.getByRole('button', { name: 'Add speaker', exact: true }).click();
   await card
     .locator('article')
     .first()

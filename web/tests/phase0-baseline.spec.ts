@@ -159,6 +159,7 @@ test('records API request fan-out caused by one job event', async ({
   const created = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Phase 0 event baseline ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }

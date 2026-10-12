@@ -1,5 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { expect, test, type Page } from '@playwright/test';
+import {
+  editGenerationWords,
+  showGenerationTextLayer
+} from './fixtures/generation-editing';
 
 async function signIn(page: Page) {
   await page.goto('/');
@@ -16,6 +20,7 @@ async function createAudiobookSession(page: Page, kind = 'audiobook') {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': csrfToken },
     data: {
+      interface_mode: 'advanced',
       name: `Segment virtualization ${crypto.randomUUID()}`,
       workflow_kind: kind
     }
@@ -231,8 +236,7 @@ test('scroll reaches the last row with correct boundary neighbors', async ({
   const lastRow = page.locator('tbody tr[data-segment-id="virt-segment-599"]');
   await expect(lastRow).toBeAttached({ timeout: 8000 });
   await lastRow.scrollIntoViewIfNeeded();
-  // Editable script text lives in the textarea value, not innerText.
-  await expect(lastRow.locator('textarea')).toHaveValue(
+  await expect(lastRow.locator('.speech-editing-text')).toHaveText(
     /Virtualization segment 600\./
   );
   // The boundary row travels with its right-hand segment and references
@@ -285,6 +289,8 @@ test('editing, selection, and playback survive scrolling away', async ({
   // before focusing the editor in row 2.
   await scrollHostTo(page, 0);
   // Unsaved draft plus a live textarea selection in row 2.
+  await showGenerationTextLayer(page, 'display');
+  await editGenerationWords(page, 3);
   const editor = page.getByLabel('Script text for segment 3');
   await expect(editor).toBeVisible({ timeout: 8000 });
   await editor.click();
@@ -348,7 +354,10 @@ test('rapid keyboard navigation settles on the newest target', async ({
   await scrollHostTo(page, 0);
   const first = page.locator('tbody tr[data-segment-id="virt-segment-0"]');
   await expect(first).toBeAttached({ timeout: 8000 });
-  await first.locator('td').nth(1).click();
+  await first
+    .locator('td')
+    .nth(2)
+    .click({ position: { x: 2, y: 2 } });
   for (let press = 0; press < 25; press += 1) {
     await page.keyboard.press('ArrowDown');
   }
@@ -357,8 +366,7 @@ test('rapid keyboard navigation settles on the newest target', async ({
   );
   await expect(target).toBeAttached({ timeout: 10000 });
   await expect(target).toBeInViewport({ timeout: 10000 });
-  // Script text lives in the textarea value, not innerText.
-  await expect(target.locator('textarea')).toHaveValue(
+  await expect(target.locator('.speech-editing-text')).toHaveText(
     /Virtualization segment 26\./
   );
   expect(pageErrors).toEqual([]);

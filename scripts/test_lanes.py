@@ -484,19 +484,29 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_comparison_exports.py",
         "tests/test_web_session_lifecycle.py",
         "tests/test_session_source_paths.py",
+    ),
+    "web-12-serial": (
         "tests/test_session_output_storage.py",
         "tests/test_session_view_performance.py",
         "tests/test_subtitle_first_workflow.py",
         "tests/test_tts_parallel_generation.py",
+    ),
+    "web-13-serial": (
         "tests/test_web_generation_regeneration.py",
         "tests/test_generation_edit_audio.py",
+    ),
+    "web-14-serial": (
         "tests/test_generation_queue_visibility.py",
         "tests/test_generation_settings_source.py",
         "tests/test_generation_audio_version_assembly.py",
         "tests/test_generation_audio_versions.py",
+    ),
+    "web-15-serial": (
         "tests/test_generation_recast.py",
         "tests/test_generation_recast_routes.py",
         "tests/test_generation_admission.py",
+    ),
+    "web-16-serial": (
         "tests/test_generation_operations.py",
         "tests/test_speech_plan_audio_reuse.py",
         "tests/test_generation_provider_preflight.py",

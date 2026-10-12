@@ -62,6 +62,7 @@ for (const saveAsDefaults of [false, true]) {
       await page.request.post('/api/v1/sessions', {
         headers,
         data: {
+          interface_mode: 'advanced',
           name: `Provider switch ${crypto.randomUUID()}`,
           workflow_kind: 'voiceover'
         }
@@ -101,7 +102,7 @@ for (const saveAsDefaults of [false, true]) {
     const card = page
       .getByRole('heading', { name: 'Generate audio', exact: true })
       .locator('xpath=ancestor::article');
-    await card.getByRole('button', { name: 'Settings' }).click();
+    await card.getByRole('button', { name: 'Settings', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByLabel('TTS service')).toHaveValue('kobold_qwen');
     await expect(

@@ -23,7 +23,11 @@ async function createSession(
   const token = await csrf(page);
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': token },
-    data: { name: `${prefix} ${crypto.randomUUID()}`, workflow_kind: kind }
+    data: {
+      interface_mode: 'advanced',
+      name: `${prefix} ${crypto.randomUUID()}`,
+      workflow_kind: kind
+    }
   });
   expect(response.ok()).toBeTruthy();
   return (await response.json()).id as string;
@@ -127,9 +131,9 @@ test('audiobook search hides behind a toggle and keeps single-text behavior', as
   await page.getByRole('button', { name: 'Match whole word' }).click();
   await expect(page.getByText('1 / 2', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Replace all' }).click();
-  const fields = page.locator('textarea[data-generation-search-index]');
-  await expect(fields.nth(0)).toHaveValue('A dog waits.');
-  await expect(fields.nth(1)).toHaveValue('A catfish and dog.');
+  const fields = page.locator('.speech-editing-text');
+  await expect(fields.nth(0)).toHaveText('A dog waits.');
+  await expect(fields.nth(1)).toHaveText('A catfish and dog.');
   await page.screenshot({
     path: test.info().outputPath('audiobook-no-scope.png')
   });

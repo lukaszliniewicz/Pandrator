@@ -3215,7 +3215,10 @@
       {:else if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
         <button
           onclick={() => openGenerationStart(selectedRun ? 'all' : 'refresh')}
-          disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
+          disabled={loading ||
+            generationStore.loading ||
+            topologyBusy ||
+            pendingSegmentUpdates > 0}
           class="action primary"
           title={settingsSourceRunId
             ? 'Generate using the selected run’s saved voice and settings'
@@ -3594,6 +3597,13 @@
           >
         </div>
       {/if}
+
+      {#if generationStore.loading}<p
+          class="muted px-4 py-3 text-sm"
+          role="status"
+        >
+          Loading segments…
+        </p>{/if}
 
       {#if error}<p class="p-3 text-sm text-red-500" role="alert">
           {error}

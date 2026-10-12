@@ -13,6 +13,7 @@ async function fixture(page: Page) {
   const response = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Alternate draft ${crypto.randomUUID()}`,
       workflow_kind: 'audiobook'
     }
@@ -167,6 +168,13 @@ async function fixture(page: Page) {
   let holdSubmission = false;
   let heldSubmission: Route | undefined;
   let refreshFailure = false;
+  const jobId = `alternate-admission-${sessionId}`;
+  const queuedRun = {
+    ...root,
+    id: 'queued',
+    status: 'queued',
+    timing_repair: undefined
+  };
   const finishSubmission = (route: Route) =>
     route.fulfill(
       submissionFailure
@@ -175,29 +183,38 @@ async function fixture(page: Page) {
             json: { error: { message: 'Controlled generation conflict' } }
           }
         : {
-            json: {
-              ...root,
-              id: 'queued',
-              status: 'queued',
-              timing_repair: undefined
-            }
+            status: 202,
+            json: { job_id: jobId }
           }
     );
-  await page.route(`**${endpoint}/generation-runs*`, (route) => {
-    if (route.request().method() === 'POST') {
-      posts.push(route.request().postDataJSON());
-      const key = route.request().headers()['idempotency-key'];
-      keys.push(key);
-      if (loseAcceptedResponse) {
-        acceptedKeys.add(key);
-        if (posts.length === 1) return route.abort('failed');
-      }
-      if (holdSubmission) {
-        heldSubmission = route;
-        return;
-      }
-      return finishSubmission(route);
+  await page.route(`**${endpoint}/generation-admissions`, (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posts.push(route.request().postDataJSON());
+    const key = route.request().headers()['idempotency-key'];
+    keys.push(key);
+    if (loseAcceptedResponse) {
+      acceptedKeys.add(key);
+      if (posts.length === 1) return route.abort('failed');
     }
+    if (holdSubmission) {
+      heldSubmission = route;
+      return;
+    }
+    return finishSubmission(route);
+  });
+  await page.route(`**/api/v1/jobs/${jobId}`, (route) =>
+    route.fulfill({
+      json: {
+        id: jobId,
+        status: 'succeeded',
+        result_json: { generation_run_id: 'queued' }
+      }
+    })
+  );
+  await page.route('**/api/v1/generation-runs/queued', (route) =>
+    route.fulfill({ json: queuedRun })
+  );
+  await page.route(`**${endpoint}/generation-runs*`, (route) => {
     return route.fulfill(
       refreshFailure && posts.length
         ? {
@@ -207,7 +224,25 @@ async function fixture(page: Page) {
         : { json: { items: [repair, root] } }
     );
   });
+  await page.route(`**${endpoint}/generation/summary*`, (route) =>
+    route.fulfill({
+      json: {
+        session_id: sessionId,
+        plan_revision_id:
+          activeId === 'segment-edited' ? 'edited-plan' : 'active-plan',
+        total: 1,
+        included_total: 1,
+        active_run: null,
+        assembly: null
+      }
+    })
+  );
   await page.route(`**${endpoint}/generation-segments?*`, (route) => {
+    if (refreshFailure && posts.length)
+      return route.fulfill({
+        status: 503,
+        json: { error: { message: 'Controlled refresh failure' } }
+      });
     const runId = new URL(route.request().url()).searchParams.get(
       'generation_run_id'
     );
@@ -230,6 +265,15 @@ async function fixture(page: Page) {
   });
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Display options', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Script / subtitle text', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Edit words for segment 1', exact: true })
+    .click();
   await expect(
     page.getByRole('textbox', {
       name: 'Script text for segment 1',
@@ -601,7 +645,7 @@ test('pending alternate submission freezes the draft and cannot be dismissed unt
   await expect(data.dialog).toHaveCount(0);
 });
 
-test('an accepted alternate is closed even when its following history refresh fails', async ({
+test('an accepted alternate is closed even when its following workspace refresh fails', async ({
   page
 }) => {
   const data = await fixture(page);
@@ -674,6 +718,9 @@ test('leaving history through an edit retains and names the saved settings sourc
     'data-segment-id',
     'segment-repair'
   );
+  await page
+    .getByRole('button', { name: 'Edit words for segment 1', exact: true })
+    .click();
   await page
     .getByRole('textbox', { name: 'Script text for segment 1', exact: true })
     .fill('Edited historical narration.');

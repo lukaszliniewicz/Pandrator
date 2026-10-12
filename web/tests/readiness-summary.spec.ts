@@ -109,11 +109,23 @@ for (const width of [1280, 390]) {
             )
           )
         ).toBeVisible();
-        expect(
-          await page.evaluate(
-            () => document.documentElement.scrollWidth <= window.innerWidth
-          )
-        ).toBeTruthy();
+        const geometry = await page.evaluate(() => ({
+          fits: document.documentElement.scrollWidth <= window.innerWidth,
+          viewport: window.innerWidth,
+          width: document.documentElement.scrollWidth,
+          offenders: Array.from(document.querySelectorAll('body *'))
+            .map((node) => ({
+              tag: node.tagName,
+              classes: node.className,
+              right: node.getBoundingClientRect().right,
+              text: node.textContent?.trim().slice(0, 100)
+            }))
+            .filter((node) => node.right > window.innerWidth + 1)
+            .slice(-15)
+        }));
+        expect(geometry, JSON.stringify(geometry)).toMatchObject({
+          fits: true
+        });
         if (fixture === fixtures[0]) {
           await page.screenshot({
             path: info.outputPath('home-readiness.png'),

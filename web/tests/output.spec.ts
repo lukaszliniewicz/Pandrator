@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { expect, test, type Page } from '@playwright/test';
+import { mockExportJobs } from './fixtures/export-jobs';
 
 async function signIn(page: Page) {
   await page.goto('/');
@@ -17,6 +18,7 @@ async function createSession(page: Page, workflowKind: string) {
   const response = await page.request.post('/api/v1/sessions', {
     headers,
     data: {
+      interface_mode: 'advanced',
       name: `Output regression ${crypto.randomUUID()}`,
       workflow_kind: workflowKind
     }
@@ -31,24 +33,17 @@ for (const kind of ['export.create', 'export.variant']) {
   }) => {
     await signIn(page);
     const { session } = await createSession(page, 'voiceover');
-    await page.route('**/api/v1/jobs?limit=500', async (route) => {
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          items: [
-            {
-              id: '12345678-running-export-job',
-              kind,
-              session_id: session.id,
-              status: 'running',
-              progress: 0.42,
-              progress_detail: 'Prepared subtitle track 1 of 2',
-              created_at: new Date().toISOString()
-            }
-          ]
-        })
-      });
-    });
+    await mockExportJobs(page, session.id, () => [
+      {
+        id: '12345678-running-export-job',
+        kind,
+        session_id: session.id,
+        status: 'running',
+        progress: 0.42,
+        progress_detail: 'Prepared subtitle track 1 of 2',
+        created_at: new Date().toISOString()
+      }
+    ]);
     await page.goto(`/sessions/${session.id}/output`);
     await expect(page.getByText('Export activity')).toBeVisible();
     await expect(page.getByText('Running export')).toBeVisible();
@@ -445,7 +440,8 @@ test('Create export keeps the selected audio version when saved effective defaul
       audio_mode: 'mixed',
       video_tail_extension_policy: 'ask'
     },
-    generation_run_id: 'selected-completed-run'
+    generation_run_id: 'selected-completed-run',
+    audio_version_side: 'after'
   });
   expect(selectedAssemblyCalls).toBe(0);
   expect(selectedExportCalls).toBe(1);
@@ -674,7 +670,8 @@ test('Create export sends an explicit voiceover-only contract when no source is 
       export_mode: 'media',
       audio_mode: 'dubbing_only'
     },
-    generation_run_id: 'voiceover-only-run'
+    generation_run_id: 'voiceover-only-run',
+    audio_version_side: 'after'
   });
   expect(voiceoverAssemblyCalls).toBe(0);
   expect(voiceoverExportCalls).toBe(1);
@@ -773,7 +770,8 @@ test('Create export submits ONE durable export request with the pinned run', asy
       audio_mode: 'mixed',
       video_tail_extension_policy: 'ask'
     },
-    generation_run_id: 'completed-run'
+    generation_run_id: 'completed-run',
+    audio_version_side: 'after'
   });
 });
 
@@ -1164,12 +1162,7 @@ for (const action of ['stop', 'extend'] as const) {
     let jobs: object[] = [warning];
     let decisions = 0;
     let newExportRequests = 0;
-    await page.route('**/api/v1/jobs?limit=500', (route) =>
-      route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ items: jobs })
-      })
-    );
+    await mockExportJobs(page, session.id, () => jobs);
     await page.route(
       `**/api/v1/sessions/${session.id}/stages/export/run`,
       (route) => {

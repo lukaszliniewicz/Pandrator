@@ -41,11 +41,45 @@ jobs:
           - name: ubuntu-web-04
             os: ubuntu-latest
             lanes: web-04-serial
-          - name: ubuntu-remainder
+          - name: ubuntu-web-05
+            os: ubuntu-latest
+            lanes: web-05-serial
+          - name: ubuntu-web-06
+            os: ubuntu-latest
+            lanes: web-06-serial
+          - name: ubuntu-web-07
+            os: ubuntu-latest
+            lanes: web-07-serial
+          - name: ubuntu-web-08
+            os: ubuntu-latest
+            lanes: web-08-serial
+          - name: ubuntu-web-09
+            os: ubuntu-latest
+            lanes: web-09-serial
+          - name: ubuntu-web-10
+            os: ubuntu-latest
+            lanes: web-10-serial
+          - name: ubuntu-web-11
+            os: ubuntu-latest
+            lanes: web-11-serial
+          - name: ubuntu-web-12
+            os: ubuntu-latest
+            lanes: web-12-serial
+          - name: ubuntu-web-13
+            os: ubuntu-latest
+            lanes: web-13-serial
+          - name: ubuntu-web-14
+            os: ubuntu-latest
+            lanes: web-14-serial
+          - name: ubuntu-web-15
+            os: ubuntu-latest
+            lanes: web-15-serial
+          - name: ubuntu-web-16
+            os: ubuntu-latest
+            lanes: web-16-serial
+          - name: ubuntu-services
             os: ubuntu-latest
             lanes: >-
-              web-05-serial web-06-serial web-07-serial web-08-serial
-              web-09-serial web-10-serial web-11-serial
               installer-serial manager-serial mcp-serial
               system-media-serial
           - name: windows-fast-xdist
@@ -86,6 +120,21 @@ jobs:
           - name: windows-web-11
             os: windows-latest
             lanes: web-11-serial
+          - name: windows-web-12
+            os: windows-latest
+            lanes: web-12-serial
+          - name: windows-web-13
+            os: windows-latest
+            lanes: web-13-serial
+          - name: windows-web-14
+            os: windows-latest
+            lanes: web-14-serial
+          - name: windows-web-15
+            os: windows-latest
+            lanes: web-15-serial
+          - name: windows-web-16
+            os: windows-latest
+            lanes: web-16-serial
           - name: windows-services
             os: windows-latest
             lanes: >-

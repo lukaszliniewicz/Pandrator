@@ -65,12 +65,32 @@ async function sessionFixture(page: Page, workflowKind = 'voiceover') {
   const response = await page.request.post('/api/v1/sessions', {
     headers: { 'X-CSRF-Token': auth.csrf_token },
     data: {
+      interface_mode: 'advanced',
       name: `Export visibility ${crypto.randomUUID()}`,
       workflow_kind: workflowKind
     }
   });
   expect(response.ok()).toBeTruthy();
   return response.json();
+}
+
+async function mockExportJobs(
+  page: Page,
+  sessionId: string,
+  loadItems: () =>
+    Record<string, unknown>[] | Promise<Record<string, unknown>[]>
+) {
+  await page.route('**/api/v1/jobs?**', async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('session_id') !== sessionId) return route.continue();
+    expect(query.get('limit')).toBe('8');
+    const kind = query.get('kind');
+    expect(['export.create', 'export.variant']).toContain(kind);
+    const items = await loadItems();
+    return route.fulfill({
+      json: { items: items.filter((item) => item.kind === kind) }
+    });
+  });
 }
 
 test('an older HTTP snapshot preserves newer live export progress and other jobs', async ({
@@ -85,24 +105,20 @@ test('an older HTTP snapshot preserves newer live export progress and other jobs
   const snapshotRequest = new Promise<void>(
     (resolve) => (snapshotRequested = resolve)
   );
-  await page.route('**/api/v1/jobs?limit=500', async (route) => {
+  await mockExportJobs(page, session.id, async () => {
     snapshotRequested();
     await heldSnapshot;
-    await route.fulfill({
-      json: {
-        items: [
-          {
-            id: 'historical-export',
-            kind: 'export.variant',
-            session_id: session.id,
-            status: 'succeeded',
-            progress: 1,
-            progress_detail: 'Earlier export complete',
-            created_at: new Date().toISOString()
-          }
-        ]
+    return [
+      {
+        id: 'historical-export',
+        kind: 'export.variant',
+        session_id: session.id,
+        status: 'succeeded',
+        progress: 1,
+        progress_detail: 'Earlier export complete',
+        created_at: new Date().toISOString()
       }
-    });
+    ];
   });
   await page.goto(`/sessions/${session.id}/output`);
   await snapshotRequest;
@@ -148,12 +164,7 @@ for (const kind of ['export.create', 'export.variant']) {
       created_at: new Date().toISOString()
     };
     let items: Record<string, unknown>[] = [];
-    await page.route('**/api/v1/jobs?limit=500', (route) =>
-      route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ items })
-      })
-    );
+    await mockExportJobs(page, session.id, () => items);
     await page.goto(`/sessions/${session.id}/output`);
     await expect(
       page.getByRole('button', { name: 'Create export' })
@@ -271,12 +282,7 @@ test('durable export completion remains visible and exposes its finished video',
     created_at: new Date().toISOString()
   };
   let artifacts: Record<string, unknown>[] = [];
-  await page.route('**/api/v1/jobs?limit=500', (route) =>
-    route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify({ items: [job] })
-    })
-  );
+  await mockExportJobs(page, session.id, () => [job]);
   await page.route('**/api/v1/artifacts?**', async (route) => {
     const query = new URL(route.request().url()).searchParams;
     if (query.get('session_id') !== session.id) {

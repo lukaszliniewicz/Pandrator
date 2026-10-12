@@ -16,20 +16,21 @@ test('project TTS settings filter MAI voices by model and language and retain mu
     await page.request.post('/api/v1/sessions', {
       headers,
       data: {
+        interface_mode: 'advanced',
         name: `Commercial voices ${crypto.randomUUID()}`,
         workflow_kind: 'voiceover'
       }
     })
   ).json();
-  const mai = 'MAI-Voice-2';
-  const flash = 'MAI-Voice-2-Flash';
+  const mai = 'MAI-Voice-2.1';
+  const flash = 'MAI-Voice-2.1-Flash';
   const klaus = `de-DE-Klaus:${mai}`;
   const mia = `de-DE-Mia:${mai}`;
   const ethan = `en-US-Ethan:${mai}`;
   const services = [
     {
       id: 'mai',
-      name: 'MAI Voice 2',
+      name: 'MAI Voice 2.1',
       available: true,
       supports_prebuilt_voices: true,
       supports_parallel_synthesis: true,
