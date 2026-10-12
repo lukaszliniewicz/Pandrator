@@ -55,3 +55,4 @@ jobs:
           pixi run --locked python -m pytest -q
           tests/test_audit_contention.py
           tests/test_web_application_construction_lifetime.py
+          tests/test_web_database_bootstrap_lifetime.py

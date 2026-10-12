@@ -5,26 +5,34 @@ from __future__ import annotations
 import base64
 import ctypes
 import io
+import ipaddress
 import json
 import queue
 import socket
+import ssl
 import struct
 import sys
 import threading
 import time
 import wave
 from ctypes import wintypes
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
 import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from pandrator.logic import kobold_qwen_stream, tts_handler
 
 
 @pytest.fixture
-def stalled_server():
+def stalled_server(request):
+    protocol = getattr(request, "param", "http")
     entered = threading.Event()
     allow_headers = threading.Event()
     headers_sent = threading.Event()
@@ -78,13 +86,73 @@ def stalled_server():
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+    context = None
+    certificate_path = None
+    if protocol == "https":
+        tmp_path = request.getfixturevalue("tmp_path")
+        monkeypatch = request.getfixturevalue("monkeypatch")
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        now = datetime.now(timezone.utc)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+        certificate = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(private_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before((now - timedelta(minutes=1)).replace(tzinfo=None))
+            .not_valid_after((now + timedelta(days=1)).replace(tzinfo=None))
+            .add_extension(
+                x509.SubjectAlternativeName(
+                    [
+                        x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+                        x509.DNSName("localhost"),
+                    ]
+                ),
+                critical=False,
+            )
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                critical=False,
+            )
+            .sign(private_key, hashes.SHA256())
+        )
+        certificate_path = tmp_path / "localhost-cert.pem"
+        private_key_path = tmp_path / "localhost-key.pem"
+        certificate_path.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+        private_key_path.write_bytes(
+            private_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate_path, private_key_path)
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
+    if context is not None:
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+
+    base_url = f"{protocol}://127.0.0.1:{server.server_port}"
+    if protocol == "https":
+        original_post = requests.post
+        fixture_request_url = f"{base_url}/v1/audio/speech/batch"
+
+        def post_with_fixture_certificate(url, *args, **kwargs):
+            if url == fixture_request_url:
+                kwargs["verify"] = str(certificate_path)
+            return original_post(url, *args, **kwargs)
+
+        monkeypatch.setattr(requests, "post", post_with_fixture_certificate)
+
     worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     worker.start()
     try:
         yield (
-            f"http://127.0.0.1:{server.server_port}",
+            base_url,
             configuration,
             entered,
             allow_headers,
@@ -331,6 +399,7 @@ def install_fake_cancel_io_ex(monkeypatch, *, result):
     return cancel_io_ex, calls, loads
 
 
+@pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_close_after_first_result_retires_stalled_native_reader(
     stalled_server, readers, native_interruptions
 ):
@@ -351,6 +420,7 @@ def test_close_after_first_result_retires_stalled_native_reader(
 
 
 @pytest.mark.parametrize("after_first", [False, True])
+@pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_cancel_while_waiting_retires_stalled_native_reader(
     stalled_server, readers, after_first, native_interruptions
 ):
@@ -372,6 +442,7 @@ def test_cancel_while_waiting_retires_stalled_native_reader(
         stream.close()
 
 
+@pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_cancel_before_headers_keeps_owner_until_transport_can_be_retired(stalled_server, readers):
     cancel = threading.Event()
     stream = stream_for(stalled_server, cancel)
@@ -809,6 +880,7 @@ def test_windows_cancel_io_ex_propagates_other_api_errors(monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires native Winsock receive timeouts")
+@pytest.mark.parametrize("stalled_server", ["http", "https"], indirect=True, ids=["http", "https"])
 def test_windows_short_receive_timeout_raises_once_after_partial_body(
     stalled_server, readers, monkeypatch, native_interruptions
 ):
