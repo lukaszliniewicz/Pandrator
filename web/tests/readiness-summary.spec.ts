@@ -77,14 +77,17 @@ for (const width of [1280, 390]) {
     await page.route('**/api/v1/capabilities*', (route) =>
       route.fulfill({ json: capabilities })
     );
-    await page.route('**/api/v1/events/snapshot*', async (route) => {
-      const response = await route.fetch();
-      const snapshot = await response.json();
-      await route.fulfill({
-        response,
-        json: { ...snapshot, capabilities }
-      });
-    });
+    await page.route('**/api/v1/events/snapshot*', (route) =>
+      route.fulfill({
+        json: {
+          cursor: 0,
+          retained_after: 0,
+          sessions: { items: [], total: 0 },
+          jobs: { items: [], total: 0 },
+          capabilities
+        }
+      })
+    );
     await page.goto('/');
     await page.getByLabel('Owner password').fill('pandrator-e2e');
     await page.getByRole('button', { name: 'Sign in' }).click();

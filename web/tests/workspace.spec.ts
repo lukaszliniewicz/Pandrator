@@ -1583,6 +1583,10 @@ test('Generation layout and menus survive segment regeneration refreshes', async
       body: JSON.stringify({ items: [run()] })
     });
   });
+  await page.route('**/api/v1/generation-runs/layout-run', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await route.fulfill({ json: run() });
+  });
   await page.route(
     `**/api/v1/sessions/${sessionId}/output-assemblies/latest`,
     (route) =>
@@ -2112,15 +2116,20 @@ test('generated segments return to the current filtered page after repeated rege
     'button[aria-label="Regenerate segment 101"]'
   );
   const waitForRegeneratedSegment = async () => {
-    await page.getByTestId('generation-scroll-root').evaluate((root) => {
-      root.scrollTop = root.scrollHeight;
-    });
-    await regeneratedRow.waitFor({ state: 'attached', timeout: 30_000 });
+    await expect
+      .poll(
+        async () => {
+          await page.getByTestId('generation-scroll-root').evaluate((root) => {
+            root.scrollTop = root.scrollHeight;
+          });
+          return regeneratedRow.count();
+        },
+        { timeout: 30_000 }
+      )
+      .toBe(1);
     await expect(regenerateSegment101).toBeVisible({ timeout: 10_000 });
   };
-  const loadMore = page.getByRole('button', { name: 'Load more' });
   // Scrolling to the next-page sentinel now loads more rows automatically.
-  if (await loadMore.count()) await loadMore.scrollIntoViewIfNeeded();
   await waitForRegeneratedSegment();
   await expect(
     regeneratedRow.getByRole('button', { name: 'Play' })
@@ -2146,7 +2155,6 @@ test('generated segments return to the current filtered page after repeated rege
   await expect
     .poll(() => generatedRefreshes)
     .toBeGreaterThan(completedRefreshesBeforeFilter);
-  if (await loadMore.count()) await loadMore.scrollIntoViewIfNeeded();
   await waitForRegeneratedSegment();
   await expect
     .poll(() => generatedRefreshes)

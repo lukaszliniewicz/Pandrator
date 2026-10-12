@@ -759,16 +759,18 @@ test('phrase directions appear on hover without a selection API read or contamin
     window.getSelection()?.removeAllRanges();
     window.getSelection()?.addRange(range);
     const data = new DataTransfer();
-    node.dispatchEvent(
-      new ClipboardEvent('copy', {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: data
-      })
-    );
-    return data.getData('text/plain');
+    const event = new ClipboardEvent('copy', {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: data
+    });
+    node.dispatchEvent(event);
+    return {
+      text: event.clipboardData?.getData('text/plain'),
+      prevented: event.defaultPrevented
+    };
   });
-  expect(copied).toBe(f.wording);
+  expect(copied).toEqual({ text: f.wording, prevented: true });
   expect(f.errors).toEqual([]);
 });
 

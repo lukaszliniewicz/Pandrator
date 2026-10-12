@@ -218,7 +218,10 @@ test('rapid keyboard playback replacement remains stoppable', async ({
   await page.goto(`/sessions/${sessionId}`);
   await page.getByRole('link', { name: 'Generation', exact: true }).click();
   const row = await revealSegment(page, 'preview-segment-0', 0);
-  await row.locator('td').nth(1).click();
+  await row
+    .locator('td')
+    .nth(2)
+    .click({ position: { x: 2, y: 2 } });
 
   const playback = await page.evaluate(async () => {
     const OriginalAudio = window.Audio;
@@ -408,7 +411,10 @@ test('hundreds of playable rows mount a single audio element on demand', async (
   // Drawer shortcut: selecting another row, then Enter, plays via the
   // playlist controller and unmounts the row preview (no stacked audio).
   const row10 = await revealSegment(page, 'preview-segment-10', 10);
-  await row10.locator('td').nth(1).click();
+  await row10
+    .locator('td')
+    .nth(2)
+    .click({ position: { x: 2, y: 2 } });
   await page.keyboard.press('Enter');
   await expect(players).toHaveCount(0);
   expect(pageErrors).toEqual([]);
