@@ -39,6 +39,7 @@
     Download,
     CircleHelp,
     Eye,
+    Flag,
     ListMusic,
     Pause,
     PencilLine,
@@ -90,6 +91,7 @@
   import {
     describeVoice,
     languagesForService,
+    voiceSupportsLanguage,
     type VoiceDescriptor
   } from './voice-catalog';
   import { GenerationSpeechOptionsState } from './generation-speech-options.svelte';
@@ -1075,7 +1077,11 @@
     mode === 'collapsed' ? summary?.assembly : selectedAssembly
   );
   const selectedRunUsage = $derived(
-    selectedHistoryRun?.timing_repair?.usage ?? selectedRun?.usage
+    selectedHistoryRun?.timing_repair?.usage ??
+      (summary?.active_run?.id === selectedRun?.id ||
+      (!selectedRun && !selectedRunId)
+        ? (summary?.active_run?.usage ?? selectedRun?.usage)
+        : selectedRun?.usage)
   );
   const selectedRunCost = $derived.by(() => {
     const value = selectedRunUsage?.total_cost_usd;
@@ -1152,10 +1158,8 @@
 
   function voiceOptionsFor(item: GenerationSegment) {
     const effectiveLanguage = String(item.language || inheritedLanguage);
-    const options = modelVoiceDescriptors.filter(
-      (voice) =>
-        !voice.languageCode ||
-        normalizeId(voice.languageCode) === normalizeId(effectiveLanguage)
+    const options = modelVoiceDescriptors.filter((voice) =>
+      voiceSupportsLanguage(voice, effectiveLanguage)
     );
     const current = String(item.voice ?? '').trim();
     if (
@@ -1184,8 +1188,7 @@
       (voice) => normalizeId(voice.id) === normalizeId(currentVoice)
     );
     const voiceIsIncompatible = Boolean(
-      descriptor?.languageCode &&
-      normalizeId(descriptor.languageCode) !== normalizeId(effectiveLanguage)
+      descriptor && !voiceSupportsLanguage(descriptor, effectiveLanguage)
     );
     await patchSegment(item, {
       language,
@@ -2799,466 +2802,478 @@
   class="generation-workspace overflow-hidden rounded-2xl"
 >
   <header
-    class="generation-header flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3 lg:flex-nowrap"
+    class="generation-header flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--line)] px-4 py-3"
   >
-    <h2 class="flex min-h-11 items-center gap-2 font-semibold">Generation</h2>
-    <span
-      class="drawer-summary muted min-w-0 text-xs lg:flex-1 lg:truncate"
-      title={`${headerTotal} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${headerAssembly ? ` · output ${headerAssembly.status}` : ''}`}
-      >{#if summaryStore.status === 'loading' && !summary}Loading generation
-        summary…{:else if summaryStore.status === 'failed' && !headerPlanId}Could
-        not load generation controls{:else}{headerTotal} segments · {selectedHistoryRun?.label ??
-          'Active mix'}{#if headerAssembly}
-          · output {headerAssembly.status}{/if}{/if}</span
-    >
-    {#if selectedRunUsage?.commercial}<span class="cost-pill"
-        >{selectedRunUsage.estimated ? 'Est.' : ''}
-        {selectedRunCost}{selectedRunUsage.has_unpriced_usage
-          ? ' + unpriced usage'
-          : ''}</span
-      >{/if}
-    {#if headerRun && ['queued', 'running', 'pausing', 'pause_requested', 'cancel_requested'].includes(headerRun.status)}
-      <div
-        class="run-progress"
-        role="progressbar"
-        aria-label="Generation progress"
-        aria-valuemin="0"
-        aria-valuemax="100"
-        aria-valuenow={progressPercent(headerRun.progress)}
+    <div class="generation-heading flex min-w-0 items-center gap-2">
+      <h2 class="flex min-h-11 items-center gap-2 font-semibold">Generation</h2>
+      <span
+        class="drawer-summary muted min-w-0 whitespace-nowrap text-xs"
+        title={`${headerTotal} segments · ${selectedHistoryRun?.label ?? 'Active mix'}${headerAssembly ? ` · output ${headerAssembly.status}` : ''}`}
+        >{#if summaryStore.status === 'loading' && !summary}Loading generation
+          summary…{:else if summaryStore.status === 'failed' && !headerPlanId}Could
+          not load generation controls{:else}{headerTotal} segments · {selectedHistoryRun?.label ??
+            'Active mix'}{#if headerAssembly}
+            · output {headerAssembly.status}{/if}{/if}</span
       >
-        <span style={`width:${progressPercent(headerRun.progress)}%`}></span>
-      </div>
-      <span class="muted text-[.65rem] tabular-nums"
-        >{progressPercent(headerRun.progress)}%</span
-      >
-      {#if headerRun.progress_detail || ['queued', 'running'].includes(headerRun.status)}
-        <span
-          class="muted max-w-64 truncate text-[.65rem]"
-          title={headerRun.progress_detail ?? ''}
-          >{headerRun.progress_detail ??
-            (headerRun.status === 'queued'
-              ? 'Waiting for an available worker'
-              : 'Preparing generation…')}</span
-        >
-      {/if}
-    {/if}
-    {#if headerAssembly && ['queued', 'running'].includes(headerAssembly.status)}
-      <div
-        class="run-progress"
-        role="progressbar"
-        aria-label="Output assembly progress"
-        aria-valuemin="0"
-        aria-valuemax="100"
-        aria-valuenow={progressPercent(headerAssembly.progress)}
-      >
-        <span style={`width:${progressPercent(headerAssembly.progress)}%`}
-        ></span>
-      </div>
-      <span class="muted text-[.65rem] tabular-nums"
-        >{progressPercent(headerAssembly.progress)}%</span
-      >
-      {#if headerAssembly.progress_detail || headerAssembly.status === 'queued'}
-        <span
-          class="muted max-w-64 truncate text-[.65rem]"
-          title={headerAssembly.progress_detail ?? ''}
-          >{headerAssembly.progress_detail ??
-            'Waiting for an available worker'}</span
-        >
-      {/if}
-    {/if}
-    <div class="header-playback flex items-center gap-1">
-      <button
-        onclick={togglePlaylistPlayback}
-        class:active={playlistActive}
-        class="action"
-        title={playlistActive
-          ? playlistPaused
-            ? 'Resume playlist'
-            : 'Pause playlist'
-          : 'Play playlist from the selected segment'}
-        aria-label={playlistActive
-          ? playlistPaused
-            ? 'Resume playlist'
-            : 'Pause playlist'
-          : 'Play playlist'}
-      >
-        {#if playlistActive && !playlistPaused}<Pause size={14} />{:else}<Play
-            size={14}
-          />{/if}
-        {playlistActive
-          ? playlistPaused
-            ? 'Resume'
-            : 'Pause'
-          : mixedAssemblyArtifactId
-            ? 'Play speech'
-            : 'Play'}
-      </button>
-      {#if playlistActive}
-        <button
-          onclick={stopPlayback}
-          class="action icon-action"
-          title="Stop playlist"
-          aria-label="Stop playlist"><Square size={14} /></button
-        >
-      {/if}
-    </div>
-    <ProjectSoundControls
-      bind:this={soundControls}
-      {sessionId}
-      {workflowKind}
-      editable={!simpleMode && !selectedRunId}
-      baseArtifactId={selectedAssembly?.artifact_id}
-      onmixchange={(mix) => {
-        mixedAssemblyArtifactId =
-          mix &&
-          ['ready', 'completed'].includes(mix.status) &&
-          mix.base_artifact_id === selectedAssembly?.artifact_id
-            ? mix.artifact_id
-            : null;
-      }}
-    />
-    {#if mode !== 'collapsed'}
-      <button
-        type="button"
-        data-generation-search-toggle
-        onclick={() => (searchOpen ? closeSearch() : openSearch())}
-        class="action icon-action"
-        class:active={searchOpen}
-        title={simpleMode ? 'Search (Ctrl+K)' : 'Search and replace (Ctrl+K)'}
-        aria-label={simpleMode ? 'Search' : 'Search and replace'}
-        aria-keyshortcuts="Control+k Meta+k"
-        aria-expanded={searchOpen}
-        aria-controls="generation-search-panel"
-      >
-        <Search size={14} />
-      </button>
-      {#if !simpleMode}
-        <div class="dropdown-wrapper">
-          <button
-            onclick={() => {
-              displayMenuOpen = !displayMenuOpen;
-              settingsMenuOpen = false;
-              regenerateMenuOpen = false;
-              planMenuOpen = false;
-            }}
-            class="action icon-action"
-            class:active={displayMenuOpen}
-            title={`Display options · ${activeFilterLabel}`}
-            aria-label="Display options"
-            aria-expanded={displayMenuOpen}
-          >
-            <Eye size={14} />
-          </button>
-          {#if displayMenuOpen}
-            <div class="dropdown-menu left">
-              <span class="dropdown-section-title">Show segments</span>
-              <label class="dropdown-item"
-                >Filter<select
-                  aria-label="Segments to display"
-                  bind:value={filter}
-                  onchange={() => (displayMenuOpen = false)}
-                  class="mini"
-                  >{#each SEGMENT_FILTER_OPTIONS as option}<option
-                      value={option.value}>{option.label}</option
-                    >{/each}</select
-                ></label
-              >
-              <span class="dropdown-section-title">View Mode</span>
-              <button
-                type="button"
-                class="dropdown-item"
-                class:active={viewMode === 'segments'}
-                onclick={() => {
-                  viewMode = 'segments';
-                  displayMenuOpen = false;
-                }}
-              >
-                <ListMusic size={13} /> Segments table
-              </button>
-              <button
-                type="button"
-                class="dropdown-item"
-                class:active={viewMode === 'reading'}
-                onclick={() => {
-                  viewMode = 'reading';
-                  displayMenuOpen = false;
-                }}
-              >
-                <BookOpenText size={13} /> Reading view
-              </button>
-              <div class="dropdown-divider"></div>
-              <button
-                type="button"
-                class="dropdown-item"
-                aria-pressed={showAudioColumns}
-                onclick={() => {
-                  showAudioColumns = !showAudioColumns;
-                  displayMenuOpen = false;
-                }}
-              >
-                {showAudioColumns ? 'Hide audio columns' : 'Show audio columns'}
-              </button>
-              <button
-                type="button"
-                class="dropdown-item"
-                aria-pressed={showDirectionDetails}
-                onclick={() => {
-                  showDirectionDetails = !showDirectionDetails;
-                  displayMenuOpen = false;
-                }}
-              >
-                {showDirectionDetails
-                  ? 'Hide direction details'
-                  : 'Show direction details'}
-              </button>
-              <div class="dropdown-divider"></div>
-              <span class="dropdown-section-title">Text layer</span>
-              <button
-                type="button"
-                class="dropdown-item"
-                class:active={textMode === 'display'}
-                onclick={() => {
-                  changeTextMode('display');
-                  displayMenuOpen = false;
-                }}
-              >
-                Script / subtitle text
-              </button>
-              <button
-                type="button"
-                class="dropdown-item"
-                class:active={textMode === 'speech'}
-                onclick={() => {
-                  changeTextMode('speech');
-                  displayMenuOpen = false;
-                }}
-              >
-                Speech text · optimized where available
-              </button>
-              <div class="dropdown-divider"></div>
-              <button
-                type="button"
-                class="dropdown-item"
-                aria-pressed={showSpeechAnnotations}
-                onclick={() => {
-                  showSpeechAnnotations = !showSpeechAnnotations;
-                  if (showSpeechAnnotations) showPassageBoundaries = false;
-                  displayMenuOpen = false;
-                }}
-                >{showSpeechAnnotations
-                  ? 'Hide voices and delivery'
-                  : 'Show voices and delivery'}</button
-              >
-              <button
-                type="button"
-                class="dropdown-item"
-                aria-pressed={showPassageBoundaries}
-                onclick={() => {
-                  showPassageBoundaries = !showPassageBoundaries;
-                  if (showPassageBoundaries) showSpeechAnnotations = false;
-                  savePassageVisibility(showPassageBoundaries);
-                  passageActions = null;
-                  displayMenuOpen = false;
-                }}
-              >
-                {showPassageBoundaries
-                  ? 'Hide passage boundaries'
-                  : 'Show passage boundaries'}
-              </button>
-              <button
-                type="button"
-                class="dropdown-item"
-                aria-pressed={showRepairHistory}
-                disabled={!repairHistoryRun?.timing_repair}
-                title={repairHistoryRun?.timing_repair
-                  ? 'Show or hide automatic split and timing-repair history'
-                  : 'No timing-repair history is available for this audio view'}
-                onclick={() => {
-                  showRepairHistory = !showRepairHistory;
-                  displayMenuOpen = false;
-                }}
-              >
-                {showRepairHistory
-                  ? 'Hide split / repair history'
-                  : 'Show split / repair history'}
-              </button>
-            </div>
-          {/if}
-        </div>
-        {#if boundaryRiskCount > 0}
-          <button
-            class="rounded-full border border-amber-500/25 bg-amber-500/12 px-2.5 py-1 text-[.62rem] font-semibold text-amber-700 hover:bg-amber-500/20"
-            aria-pressed={filter === 'boundary_flags'}
-            onclick={() => {
-              filter = filter === 'boundary_flags' ? 'all' : 'boundary_flags';
-              viewMode = 'segments';
-              mode = 'full';
-            }}
-            title="Show only speech blocks with boundary review flags"
-          >
-            {boundaryRiskCount} block {boundaryRiskCount === 1
-              ? 'flag'
-              : 'flags'}
-          </button>
-        {/if}
-        <div class="dropdown-wrapper">
-          <button
-            type="button"
-            class="action"
-            aria-expanded={planMenuOpen}
-            disabled={!payload.plan_revision_id}
-            onclick={() => {
-              planMenuOpen = !planMenuOpen;
-              displayMenuOpen = false;
-              settingsMenuOpen = false;
-              regenerateMenuOpen = false;
-            }}>Speech plans</button
-          >
-          {#if planMenuOpen}<div
-              class="dropdown-menu plan-menu left"
-              use:positionPlanMenu
-            >
-              {#if payload.plan_revision_id}{#key `${sessionId}:${payload.plan_revision_id}:${selectedRunId}`}<GenerationPlanReviewBar
-                    {sessionId}
-                    revisionId={payload.plan_revision_id}
-                    current={!selectedRunId &&
-                      payload.is_active_revision !== false}
-                    refreshKey={payload.plan_revision_id}
-                    blocked={loading ||
-                      generationStore.status === 'loading' ||
-                      generationStore.status === 'stale' ||
-                      topologyBusy ||
-                      inspectorDirty ||
-                      inspectorPending ||
-                      pendingSegmentUpdates > 0 ||
-                      [
-                        'queued',
-                        'running',
-                        'pausing',
-                        'cancel_requested'
-                      ].includes(run?.status ?? '')}
-                    beforeReview={settlePlanReviewEdits}
-                    onrefresh={() => load(true, false)}
-                  />{/key}{/if}
-              <button
-                type="button"
-                class="dropdown-item"
-                onclick={() => {
-                  planMenuOpen = false;
-                  openCurrentPlan();
-                }}><PencilLine size={14} />Edit current plan</button
-              >
-              <button
-                type="button"
-                class="dropdown-item"
-                disabled={Boolean(selectedRunId)}
-                onclick={() => {
-                  planMenuOpen = false;
-                  planHistory?.openHistory();
-                }}>Details &amp; versions…</button
-              >
-            </div>{/if}
-        </div>
-        <SpeechPlanHistory
-          bind:this={planHistory}
-          showTrigger={false}
-          {sessionId}
-          activeRevisionId={selectedRunId
-            ? null
-            : payload.plan_revision_id || null}
-          disabled={loading ||
-            topologyBusy ||
-            inspectorDirty ||
-            inspectorPending ||
-            pendingSegmentUpdates > 0 ||
-            ['queued', 'running', 'pausing', 'cancel_requested'].includes(
-              run?.status ?? ''
-            )}
-          onselect={async (revisionId) => {
-            await sessionFlowAction(sessionId, 'generation-plan/select', {
-              revision_id: revisionId,
-              expected_plan_revision_id: payload.plan_revision_id
-            });
-            selectedRunId = '';
-            settingsSourceRunId = '';
-            await load(true, false);
-          }}
-          onrestore={(revisionId) =>
-            reviseSpeechBlocks({
-              action: 'restore',
-              target_revision_id: revisionId
-            })}
-          ongenerate={async (staleOnly) => {
-            openGenerationStart(staleOnly ? 'refresh' : 'all');
-          }}
-        />
-        {#if payload.parent_revision_id && !selectedRunId}
-          <button
-            type="button"
-            onclick={undoSpeechBlockRevision}
-            disabled={topologyDisabled}
-            class="action icon-action"
-            title={topologyUndoLabel}
-            aria-label={topologyUndoLabel}
-          >
-            <Undo2 size={14} />
-          </button>
-        {/if}
-      {/if}
-    {/if}
-    <div class="drawer-actions ml-auto flex flex-wrap gap-2">
-      {#if simpleMode}<a class="action" href={`/sessions/${sessionId}/output`}
-          >Output</a
+      {#if selectedRunUsage?.commercial}<span class="cost-pill"
+          >{selectedRunUsage.estimated ? 'Est.' : ''}
+          {selectedRunCost}{selectedRunUsage.has_unpriced_usage
+            ? ' + unpriced usage'
+            : ''}</span
         >{/if}
-      {#if mode === 'collapsed' && headerRun}
-        <button class="action" onclick={() => (mode = 'full')}
-          >Open generation controls</button
+    </div>
+    <div class="generation-activity flex min-w-0 flex-wrap items-center gap-2">
+      {#if headerRun && ['queued', 'running', 'pausing', 'pause_requested', 'cancel_requested'].includes(headerRun.status)}
+        <div
+          class="run-progress"
+          role="progressbar"
+          aria-label="Generation progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={progressPercent(headerRun.progress)}
         >
-      {:else if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
-        <button
-          onclick={() => openGenerationStart(selectedRun ? 'all' : 'refresh')}
-          disabled={loading ||
-            generationStore.loading ||
-            topologyBusy ||
-            pendingSegmentUpdates > 0}
-          class="action primary"
-          title={settingsSourceRunId
-            ? 'Generate using the selected run’s saved voice and settings'
-            : 'Generate using the current voice and settings'}
-          ><Play size={14} /> Generate</button
+          <span style={`width:${progressPercent(headerRun.progress)}%`}></span>
+        </div>
+        <span class="muted text-[.65rem] tabular-nums"
+          >{progressPercent(headerRun.progress)}%</span
         >
+        {#if headerRun.progress_detail || ['queued', 'running'].includes(headerRun.status)}
+          <span
+            class="activity-detail muted text-[.65rem]"
+            title={headerRun.progress_detail ?? ''}
+            >{headerRun.progress_detail ??
+              (headerRun.status === 'queued'
+                ? 'Waiting for an available worker'
+                : 'Preparing generation…')}</span
+          >
+        {/if}
       {/if}
-      {#if mode !== 'collapsed' && run?.status === 'paused'}
-        <button
-          onclick={() => action('resume')}
-          class="action"
-          title="Continue the paused run with its saved voice and settings"
-          ><Play size={14} /> Resume previous run</button
+      {#if headerAssembly && ['queued', 'running'].includes(headerAssembly.status)}
+        <div
+          class="run-progress"
+          role="progressbar"
+          aria-label="Output assembly progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={progressPercent(headerAssembly.progress)}
         >
-      {:else if mode !== 'collapsed' && run && ['queued', 'running'].includes(run.status)}
-        <button
-          onclick={() => action('pause')}
-          class="action icon-action"
-          title="Stop safely after the current segment"
-          aria-label="Stop safely after the current segment"
-          ><Pause size={14} /></button
+          <span style={`width:${progressPercent(headerAssembly.progress)}%`}
+          ></span>
+        </div>
+        <span class="muted text-[.65rem] tabular-nums"
+          >{progressPercent(headerAssembly.progress)}%</span
         >
+        {#if headerAssembly.progress_detail || headerAssembly.status === 'queued'}
+          <span
+            class="activity-detail muted text-[.65rem]"
+            title={headerAssembly.progress_detail ?? ''}
+            >{headerAssembly.progress_detail ??
+              'Waiting for an available worker'}</span
+          >
+        {/if}
+      {/if}
+      {#if !simpleMode && mode !== 'collapsed' && boundaryRiskCount > 0}
         <button
-          onclick={() => action('cancel')}
-          class="action icon-action text-red-500"
-          title="Cancel generation run immediately"
-          aria-label="Cancel generation run immediately"
-          ><Square size={14} /></button
+          class="boundary-flags inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-amber-500/25 bg-amber-500/12 px-2.5 py-1 text-[.62rem] font-semibold text-[var(--ink)] hover:bg-amber-500/20"
+          aria-pressed={filter === 'boundary_flags'}
+          aria-label={`Show ${boundaryRiskCount} flagged speech blocks`}
+          onclick={() => {
+            filter = filter === 'boundary_flags' ? 'all' : 'boundary_flags';
+            viewMode = 'segments';
+            mode = 'full';
+          }}
+          title="Show only speech blocks with boundary review flags"
         >
+          <Flag size={12} />
+          {boundaryRiskCount}
+          {boundaryRiskCount === 1 ? 'flag' : 'flags'}
+        </button>
       {/if}
     </div>
-    {#if !simpleMode}<button
-        type="button"
-        class="action icon-action"
-        title="Editing and generation help"
-        aria-label="Editing and generation help"
-        onclick={() => (helpOpen = true)}><CircleHelp size={16} /></button
-      >{/if}
+    <div
+      class="header-controls ml-auto flex max-w-full flex-wrap items-center gap-2"
+    >
+      <div class="header-playback flex items-center gap-1">
+        <button
+          onclick={togglePlaylistPlayback}
+          class:active={playlistActive}
+          class="action"
+          title={playlistActive
+            ? playlistPaused
+              ? 'Resume playlist'
+              : 'Pause playlist'
+            : 'Play playlist from the selected segment'}
+          aria-label={playlistActive
+            ? playlistPaused
+              ? 'Resume playlist'
+              : 'Pause playlist'
+            : 'Play playlist'}
+        >
+          {#if playlistActive && !playlistPaused}<Pause size={14} />{:else}<Play
+              size={14}
+            />{/if}
+          {playlistActive
+            ? playlistPaused
+              ? 'Resume'
+              : 'Pause'
+            : mixedAssemblyArtifactId
+              ? 'Play speech'
+              : 'Play'}
+        </button>
+        {#if playlistActive}
+          <button
+            onclick={stopPlayback}
+            class="action icon-action"
+            title="Stop playlist"
+            aria-label="Stop playlist"><Square size={14} /></button
+          >
+        {/if}
+      </div>
+      <ProjectSoundControls
+        compact
+        bind:this={soundControls}
+        {sessionId}
+        {workflowKind}
+        editable={!simpleMode && !selectedRunId}
+        baseArtifactId={selectedAssembly?.artifact_id}
+        onmixchange={(mix) => {
+          mixedAssemblyArtifactId =
+            mix &&
+            ['ready', 'completed'].includes(mix.status) &&
+            mix.base_artifact_id === selectedAssembly?.artifact_id
+              ? mix.artifact_id
+              : null;
+        }}
+      />
+      {#if mode !== 'collapsed'}
+        <button
+          type="button"
+          data-generation-search-toggle
+          onclick={() => (searchOpen ? closeSearch() : openSearch())}
+          class="action icon-action"
+          class:active={searchOpen}
+          title={simpleMode ? 'Search (Ctrl+K)' : 'Search and replace (Ctrl+K)'}
+          aria-label={simpleMode ? 'Search' : 'Search and replace'}
+          aria-keyshortcuts="Control+k Meta+k"
+          aria-expanded={searchOpen}
+          aria-controls="generation-search-panel"
+        >
+          <Search size={14} />
+        </button>
+        {#if !simpleMode}
+          <div class="dropdown-wrapper">
+            <button
+              onclick={() => {
+                displayMenuOpen = !displayMenuOpen;
+                settingsMenuOpen = false;
+                regenerateMenuOpen = false;
+                planMenuOpen = false;
+              }}
+              class="action icon-action"
+              class:active={displayMenuOpen}
+              title={`Display options · ${activeFilterLabel}`}
+              aria-label="Display options"
+              aria-expanded={displayMenuOpen}
+            >
+              <Eye size={14} />
+            </button>
+            {#if displayMenuOpen}
+              <div class="dropdown-menu left">
+                <span class="dropdown-section-title">Show segments</span>
+                <label class="dropdown-item"
+                  >Filter<select
+                    aria-label="Segments to display"
+                    bind:value={filter}
+                    onchange={() => (displayMenuOpen = false)}
+                    class="mini"
+                    >{#each SEGMENT_FILTER_OPTIONS as option}<option
+                        value={option.value}>{option.label}</option
+                      >{/each}</select
+                  ></label
+                >
+                <span class="dropdown-section-title">View Mode</span>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  class:active={viewMode === 'segments'}
+                  onclick={() => {
+                    viewMode = 'segments';
+                    displayMenuOpen = false;
+                  }}
+                >
+                  <ListMusic size={13} /> Segments table
+                </button>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  class:active={viewMode === 'reading'}
+                  onclick={() => {
+                    viewMode = 'reading';
+                    displayMenuOpen = false;
+                  }}
+                >
+                  <BookOpenText size={13} /> Reading view
+                </button>
+                <div class="dropdown-divider"></div>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  aria-pressed={showAudioColumns}
+                  onclick={() => {
+                    showAudioColumns = !showAudioColumns;
+                    displayMenuOpen = false;
+                  }}
+                >
+                  {showAudioColumns
+                    ? 'Hide audio columns'
+                    : 'Show audio columns'}
+                </button>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  aria-pressed={showDirectionDetails}
+                  onclick={() => {
+                    showDirectionDetails = !showDirectionDetails;
+                    displayMenuOpen = false;
+                  }}
+                >
+                  {showDirectionDetails
+                    ? 'Hide direction details'
+                    : 'Show direction details'}
+                </button>
+                <div class="dropdown-divider"></div>
+                <span class="dropdown-section-title">Text layer</span>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  class:active={textMode === 'display'}
+                  onclick={() => {
+                    changeTextMode('display');
+                    displayMenuOpen = false;
+                  }}
+                >
+                  Script / subtitle text
+                </button>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  class:active={textMode === 'speech'}
+                  onclick={() => {
+                    changeTextMode('speech');
+                    displayMenuOpen = false;
+                  }}
+                >
+                  Speech text · optimized where available
+                </button>
+                <div class="dropdown-divider"></div>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  aria-pressed={showSpeechAnnotations}
+                  onclick={() => {
+                    showSpeechAnnotations = !showSpeechAnnotations;
+                    if (showSpeechAnnotations) showPassageBoundaries = false;
+                    displayMenuOpen = false;
+                  }}
+                  >{showSpeechAnnotations
+                    ? 'Hide voices and delivery'
+                    : 'Show voices and delivery'}</button
+                >
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  aria-pressed={showPassageBoundaries}
+                  onclick={() => {
+                    showPassageBoundaries = !showPassageBoundaries;
+                    if (showPassageBoundaries) showSpeechAnnotations = false;
+                    savePassageVisibility(showPassageBoundaries);
+                    passageActions = null;
+                    displayMenuOpen = false;
+                  }}
+                >
+                  {showPassageBoundaries
+                    ? 'Hide passage boundaries'
+                    : 'Show passage boundaries'}
+                </button>
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  aria-pressed={showRepairHistory}
+                  disabled={!repairHistoryRun?.timing_repair}
+                  title={repairHistoryRun?.timing_repair
+                    ? 'Show or hide automatic split and timing-repair history'
+                    : 'No timing-repair history is available for this audio view'}
+                  onclick={() => {
+                    showRepairHistory = !showRepairHistory;
+                    displayMenuOpen = false;
+                  }}
+                >
+                  {showRepairHistory
+                    ? 'Hide split / repair history'
+                    : 'Show split / repair history'}
+                </button>
+              </div>
+            {/if}
+          </div>
+          <div class="dropdown-wrapper">
+            <button
+              type="button"
+              class="action"
+              aria-expanded={planMenuOpen}
+              disabled={!payload.plan_revision_id}
+              onclick={() => {
+                planMenuOpen = !planMenuOpen;
+                displayMenuOpen = false;
+                settingsMenuOpen = false;
+                regenerateMenuOpen = false;
+              }}>Plans</button
+            >
+            {#if planMenuOpen}<div
+                class="dropdown-menu plan-menu left"
+                use:positionPlanMenu
+              >
+                {#if payload.plan_revision_id}{#key `${sessionId}:${payload.plan_revision_id}:${selectedRunId}`}<GenerationPlanReviewBar
+                      {sessionId}
+                      revisionId={payload.plan_revision_id}
+                      current={!selectedRunId &&
+                        payload.is_active_revision !== false}
+                      refreshKey={payload.plan_revision_id}
+                      blocked={loading ||
+                        generationStore.status === 'loading' ||
+                        generationStore.status === 'stale' ||
+                        topologyBusy ||
+                        inspectorDirty ||
+                        inspectorPending ||
+                        pendingSegmentUpdates > 0 ||
+                        [
+                          'queued',
+                          'running',
+                          'pausing',
+                          'cancel_requested'
+                        ].includes(run?.status ?? '')}
+                      beforeReview={settlePlanReviewEdits}
+                      onrefresh={() => load(true, false)}
+                    />{/key}{/if}
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  onclick={() => {
+                    planMenuOpen = false;
+                    openCurrentPlan();
+                  }}><PencilLine size={14} />Edit current plan</button
+                >
+                <button
+                  type="button"
+                  class="dropdown-item"
+                  disabled={Boolean(selectedRunId)}
+                  onclick={() => {
+                    planMenuOpen = false;
+                    planHistory?.openHistory();
+                  }}>Details &amp; versions…</button
+                >
+              </div>{/if}
+          </div>
+          <SpeechPlanHistory
+            bind:this={planHistory}
+            showTrigger={false}
+            {sessionId}
+            activeRevisionId={selectedRunId
+              ? null
+              : payload.plan_revision_id || null}
+            disabled={loading ||
+              topologyBusy ||
+              inspectorDirty ||
+              inspectorPending ||
+              pendingSegmentUpdates > 0 ||
+              ['queued', 'running', 'pausing', 'cancel_requested'].includes(
+                run?.status ?? ''
+              )}
+            onselect={async (revisionId) => {
+              await sessionFlowAction(sessionId, 'generation-plan/select', {
+                revision_id: revisionId,
+                expected_plan_revision_id: payload.plan_revision_id
+              });
+              selectedRunId = '';
+              settingsSourceRunId = '';
+              await load(true, false);
+            }}
+            onrestore={(revisionId) =>
+              reviseSpeechBlocks({
+                action: 'restore',
+                target_revision_id: revisionId
+              })}
+            ongenerate={async (staleOnly) => {
+              openGenerationStart(staleOnly ? 'refresh' : 'all');
+            }}
+          />
+          {#if payload.parent_revision_id && !selectedRunId}
+            <button
+              type="button"
+              onclick={undoSpeechBlockRevision}
+              disabled={topologyDisabled}
+              class="action icon-action"
+              title={topologyUndoLabel}
+              aria-label={topologyUndoLabel}
+            >
+              <Undo2 size={14} />
+            </button>
+          {/if}
+        {/if}
+      {/if}
+      <div class="drawer-actions ml-auto flex flex-wrap gap-2">
+        {#if simpleMode}<a class="action" href={`/sessions/${sessionId}/output`}
+            >Output</a
+          >{/if}
+        {#if mode === 'collapsed' && headerRun}
+          <button class="action" onclick={() => (mode = 'full')}
+            >Open generation controls</button
+          >
+        {:else if !run || ['completed', 'partial', 'failed', 'canceled', 'paused'].includes(run.status)}
+          <button
+            onclick={() => openGenerationStart(selectedRun ? 'all' : 'refresh')}
+            disabled={loading ||
+              generationStore.loading ||
+              topologyBusy ||
+              pendingSegmentUpdates > 0}
+            class="action primary"
+            title={settingsSourceRunId
+              ? 'Generate using the selected run’s saved voice and settings'
+              : 'Generate using the current voice and settings'}
+            ><Play size={14} /> Generate</button
+          >
+        {/if}
+        {#if mode !== 'collapsed' && run?.status === 'paused'}
+          <button
+            onclick={() => action('resume')}
+            class="action"
+            title="Continue the paused run with its saved voice and settings"
+            ><Play size={14} /> Resume previous run</button
+          >
+        {:else if mode !== 'collapsed' && run && ['queued', 'running'].includes(run.status)}
+          <button
+            onclick={() => action('pause')}
+            class="action icon-action"
+            title="Stop safely after the current segment"
+            aria-label="Stop safely after the current segment"
+            ><Pause size={14} /></button
+          >
+          <button
+            onclick={() => action('cancel')}
+            class="action icon-action text-red-500"
+            title="Cancel generation run immediately"
+            aria-label="Cancel generation run immediately"
+            ><Square size={14} /></button
+          >
+        {/if}
+      </div>
+      {#if !simpleMode}<button
+          type="button"
+          class="action icon-action"
+          title="Editing and generation help"
+          aria-label="Editing and generation help"
+          onclick={() => (helpOpen = true)}><CircleHelp size={16} /></button
+        >{/if}
+    </div>
   </header>
 
   {#if mode !== 'collapsed'}
@@ -4026,7 +4041,7 @@
   .generation-workspace {
     display: flex;
     flex-direction: column;
-    height: max(36rem, calc(100dvh - 13rem));
+    height: max(36rem, calc(100dvh - 6rem));
     min-height: 32rem;
     border: 1px solid var(--line);
     background: var(--paper-strong);
@@ -4053,7 +4068,7 @@
   }
   .run-progress {
     height: 0.34rem;
-    width: min(9rem, 18vw);
+    width: clamp(3rem, 7vw, 6rem);
     overflow: hidden;
     border-radius: 999px;
     background: var(--line);
@@ -4065,7 +4080,13 @@
     background: var(--accent);
     transition: width 0.2s ease;
   }
+  .activity-detail {
+    max-width: 26rem;
+    overflow-wrap: anywhere;
+  }
   .cost-pill {
+    white-space: nowrap;
+    flex-shrink: 0;
     border: 1px solid var(--line);
     border-radius: 999px;
     background: var(--accent-soft);

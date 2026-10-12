@@ -601,9 +601,12 @@
                 {/if}
                 {#if stage.usage || (costAware && stage.run_metrics)}
                   <span class="muted"
-                    >Cost <strong class="text-[var(--ink)]"
+                    >{stage.usage?.estimated ? 'Est. cost' : 'Cost'}
+                    <strong class="text-[var(--ink)]"
                       >{formatCost(stage.usage?.cost_usd ?? null)}</strong
-                    ></span
+                    >{stage.usage?.has_unpriced_usage
+                      ? ' + unpriced usage'
+                      : ''}</span
                   >
                 {/if}
               </div>

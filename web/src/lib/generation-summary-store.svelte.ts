@@ -35,20 +35,36 @@ export class GenerationSummaryStore {
     this.connected = true;
     void this.load().catch(() => undefined);
     const disconnect = invalidationBus.subscribe((batch) => {
+      const progressForCurrentRun = batch.events.some(
+        (event) =>
+          event.type === 'job.progress' &&
+          event.session_id === this.sessionId &&
+          ((event.generation_run_id &&
+            event.generation_run_id === this.value?.active_run?.id) ||
+            (event.job_id && event.job_id === this.value?.active_run?.job_id))
+      );
       if (
         !invalidates(batch, 'generation', this.sessionId) &&
-        !invalidates(batch, 'output', this.sessionId)
+        !invalidates(batch, 'output', this.sessionId) &&
+        !progressForCurrentRun
       )
         return;
       this.resource.markStale();
-      // Progress-only events are reconciled by the lightweight activity timer.
+      // Throttle progress bursts; refresh compact usage/counts without rows or history.
       if (
         batch.events.length &&
         batch.events.every((event) => event.type === 'job.progress')
-      )
+      ) {
+        if (this.timer === undefined)
+          this.timer = window.setTimeout(() => {
+            this.timer = undefined;
+            void this.refresh();
+          }, 1_000);
         return;
+      }
       if (this.timer !== undefined) window.clearTimeout(this.timer);
       this.timer = window.setTimeout(() => {
+        this.timer = undefined;
         void this.refresh();
       }, 600);
     });
@@ -57,14 +73,16 @@ export class GenerationSummaryStore {
       disconnect();
       this.controller?.abort();
       if (this.timer !== undefined) window.clearTimeout(this.timer);
+      this.timer = undefined;
     };
   }
 
   private async refresh() {
     if (!this.connected) return;
     await this.load().catch(() => undefined);
-    if (this.connected && this.status === 'stale')
+    if (this.connected && this.status === 'stale' && this.timer === undefined)
       this.timer = window.setTimeout(() => {
+        this.timer = undefined;
         void this.refresh();
       }, 600);
   }

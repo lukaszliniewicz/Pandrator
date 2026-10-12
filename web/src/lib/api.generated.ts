@@ -5638,12 +5638,24 @@ export interface components {
         GenerationActivitySummary: {
             /** Id */
             id: string;
+            /**
+             * Job Id
+             * @default null
+             */
+            job_id?: string | null;
             /** Progress */
             progress: number;
             /** Progress Detail */
             progress_detail: string | null;
             /** Status */
             status: string;
+            /**
+             * Usage
+             * @default null
+             */
+            usage?: {
+                [key: string]: unknown;
+            } | null;
         };
         GenerationAdmissionReceipt: {
             cancellable: boolean;

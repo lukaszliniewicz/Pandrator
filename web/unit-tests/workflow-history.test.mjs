@@ -176,3 +176,70 @@ for (const change of ['selection', 'session', 'server-revision', 'failure']) {
   assert.equal(store.historyLoading.transcribe, false);
 }
 console.log('workflow-history: 7 current-store/selection/session cases passed');
+
+for (const cost of [0, 0.025, null]) {
+  const store = new WorkflowStore('a');
+  const initial = snapshot();
+  initial.stages[0] = {
+    ...initial.stages[0],
+    key: 'generate_audio',
+    job_id: 'generation-job',
+    status: 'running',
+    progress: 0.4,
+    artifacts: [
+      { id: 'latest', version: 2 },
+      { id: 'older', version: 1 }
+    ]
+  };
+  store.replace(initial);
+  transport.workflow = () => {
+    throw new Error('Live usage must not reload the workflow');
+  };
+  const activity = {
+    id: 'generation-run',
+    job_id: 'generation-job',
+    usage: {
+      total_cost_usd: cost,
+      commercial: true,
+      estimated: true,
+      has_unpriced_usage: cost === null,
+      input_tokens: 50,
+      cached_input_tokens: 10,
+      output_tokens: 250,
+      total_tokens: 300,
+      event_count: 2,
+      model_ids: ['gemini-3.8-flash-tts']
+    }
+  };
+  store.applyGenerationUsage(activity);
+  const stage = store.snapshot.stages[0];
+  assert.equal(stage.usage.cost_usd, cost);
+  assert.equal(stage.usage.estimated, true);
+  assert.equal(stage.usage.has_unpriced_usage, cost === null);
+  assert.equal(stage.usage.total_tokens, 300);
+  assert.equal(stage.status, 'running');
+  assert.equal(stage.progress, 0.4);
+  assert.equal(stage.artifacts.length, 2);
+  const current = store.snapshot;
+  store.applyGenerationUsage(activity);
+  assert.equal(
+    store.snapshot,
+    current,
+    'identical totals do not cause render churn'
+  );
+  store.applyGenerationUsage({
+    ...activity,
+    job_id: 'another-job',
+    usage: { total_cost_usd: 99 }
+  });
+  store.applyGenerationUsage({ ...activity, job_id: null });
+  store.applyGenerationUsage({ ...activity, usage: null });
+  assert.equal(
+    store.snapshot,
+    current,
+    'unrelated or incomplete usage cannot replace the visible job'
+  );
+}
+console.log(
+  'workflow-history: 3 live usage, identity and history preservation cases passed'
+);

@@ -298,11 +298,13 @@ export type MultilingualSetup = {
   carry_source_subtitle_settings?: boolean;
 };
 
-type GenerationActivitySummary = {
+export type GenerationActivitySummary = {
   id: string;
   status: string;
   progress: number;
   progress_detail: string | null;
+  job_id?: string | null;
+  usage?: UsageSummary | null;
 };
 
 export type GenerationSummary = {
@@ -457,6 +459,8 @@ type WorkflowUsage = {
   model_id: string;
   model_ids?: string[];
   event_count?: number;
+  estimated?: boolean;
+  has_unpriced_usage?: boolean;
   created_at: string | null;
 };
 

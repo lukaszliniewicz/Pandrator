@@ -22,6 +22,7 @@
   import {
     describeVoice,
     languagesForService,
+    voiceSupportsLanguage,
     type VoiceDescriptor
   } from './voice-catalog';
   import type { GenerationSpeechOptionsState } from './generation-speech-options.svelte';
@@ -124,7 +125,18 @@
         String(service.default_voices_by_language?.[model]?.[language] ?? ''),
         String(service.default_voices?.[model] ?? service.default_voice ?? '')
       ])
-    ).filter(Boolean);
+    ).filter(
+      (voice) =>
+        voice &&
+        voiceSupportsLanguage(
+          describeVoice(
+            service.id,
+            voice,
+            service.voice_metadata?.[`${model}:${voice}`]
+          ),
+          language
+        )
+    );
   }
   function preferredAlternateVoice(
     service: TtsCatalogue['services'][number],
@@ -158,10 +170,7 @@
       candidate,
       service.voice_metadata?.[`${model}:${candidate}`]
     );
-    return (
-      !descriptor.languageCode ||
-      normalizeId(descriptor.languageCode) === normalizeId(language)
-    );
+    return voiceSupportsLanguage(descriptor, language);
   }
   function setAlternateVoiceFor(
     service: TtsCatalogue['services'][number],

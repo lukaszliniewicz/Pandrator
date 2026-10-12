@@ -15,7 +15,11 @@
   import { onMount } from 'svelte';
   import { voiceApi } from './admin-api';
   import { serviceMatches } from './tts-provider-policy';
-  import { languagesForService, describeVoice } from './voice-catalog';
+  import {
+    languagesForService,
+    describeVoice,
+    voiceSupportsLanguage
+  } from './voice-catalog';
   import { LANGUAGE_OPTIONS } from './settings-fields';
   import AudioCppModelSettings from './AudioCppModelSettings.svelte';
   import ElevenLabsModelSettings from './ElevenLabsModelSettings.svelte';
@@ -418,16 +422,29 @@
       )
         names.set(id, voice.name);
     }
-    return Array.from(new Set([...catalog, ...names.keys()])).map((id) => ({
-      value: id,
-      label:
-        names.get(id) ??
-        describeVoice(
-          provider,
-          id,
-          selectedTts?.voice_metadata?.[`${selectedModel}:${id}`]
-        ).name
-    }));
+    return Array.from(new Set([...catalog, ...names.keys()]))
+      .filter(
+        (id) =>
+          !['gemini', 'vertex_ai'].includes(provider) ||
+          voiceSupportsLanguage(
+            describeVoice(
+              provider,
+              id,
+              selectedTts?.voice_metadata?.[`${selectedModel}:${id}`]
+            ),
+            String(effectiveTts.language ?? effectiveTts.target_language ?? '')
+          )
+      )
+      .map((id) => ({
+        value: id,
+        label:
+          names.get(id) ??
+          describeVoice(
+            provider,
+            id,
+            selectedTts?.voice_metadata?.[`${selectedModel}:${id}`]
+          ).name
+      }));
   });
   const speechLanguages = $derived.by(() => {
     const options = languagesForService(selectedTts?.id ?? '', [], {

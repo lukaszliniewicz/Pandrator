@@ -5,11 +5,17 @@
   import { generationApi } from './domain-api';
   import { errorMessage } from './errors';
   import { useGenerationWorkspace } from './generation-workspace-state.svelte';
+  import type { GenerationActivitySummary } from './api-models';
 
   let {
     sessionId,
-    workspaceVisible
-  }: { sessionId: string; workspaceVisible: boolean } = $props();
+    workspaceVisible,
+    onusage
+  }: {
+    sessionId: string;
+    workspaceVisible: boolean;
+    onusage?: (activity: GenerationActivitySummary) => void;
+  } = $props();
   const workspaceState = useGenerationWorkspace(untrack(() => sessionId));
   const store = workspaceState.summary;
   const summary = $derived(store.value);
@@ -33,6 +39,11 @@
   );
   let busy = $state(false);
   let error = $state('');
+
+  $effect(() => {
+    const activity = run;
+    if (activity?.usage) untrack(() => onusage?.(activity));
+  });
 
   async function action(kind: 'pause' | 'resume' | 'cancel') {
     if (!run || busy) return;

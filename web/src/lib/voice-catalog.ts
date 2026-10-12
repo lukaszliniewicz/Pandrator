@@ -326,13 +326,26 @@ export function describeVoice(
     };
   }
   if (['gemini', 'vertex_ai'].includes(service)) {
+    const primaryLanguage = String(
+      metadata?.language_code ?? metadata?.languageCode ?? ''
+    ).trim();
+    const languageCode =
+      metadata?.multilingual === true ||
+      ['mul', 'multilingual', 'und', 'auto'].includes(
+        primaryLanguage.toLowerCase()
+      )
+        ? ''
+        : canonicalLanguageTag(primaryLanguage);
+    const label = languageCode ? languageLabel(languageCode) : 'Multilingual';
+    const accent = String(metadata?.accent ?? '').trim();
     return {
       id: voiceId,
       name: String(metadata?.display_name ?? metadata?.name ?? voiceId),
-      languageCode: '',
-      language: metadata?.accent
-        ? `Multilingual · ${metadata.accent}`
-        : 'Multilingual',
+      languageCode,
+      language:
+        accent && !label.toLowerCase().includes(accent.toLowerCase())
+          ? `${label} · ${accent}`
+          : label,
       gender: String(metadata?.gender ?? '')
     };
   }

@@ -28,13 +28,15 @@
     workflowKind,
     editable,
     baseArtifactId,
-    onmixchange
+    onmixchange,
+    compact = false
   }: {
     sessionId: string;
     workflowKind: string;
     editable: boolean;
     baseArtifactId?: string | null;
     onmixchange?: (status: SoundMixStatus | null) => void;
+    compact?: boolean;
   } = $props();
   export const store = new ProjectSoundsStore(untrack(() => sessionId));
   let opened = $state(false),
@@ -223,12 +225,15 @@
 </script>
 
 <button
-  class="btn btn-secondary"
+  class="sound-trigger btn btn-secondary"
+  class:compact
   aria-label="Project sounds and music"
+  title="Sounds & Music"
   onclick={() => {
     opened = true;
     void load();
-  }}><Bell size={14} />Sounds & Music</button
+  }}
+  ><Bell size={14} />{#if !compact}Sounds & Music{/if}</button
 >
 {#if opened}<div
     class="fixed inset-0 z-[95] grid place-items-center bg-black/45 p-3"
@@ -367,3 +372,21 @@
       onclose={() => (target = null)}
       onchanged={refresh}
     />{/key}{/if}
+
+<style>
+  .sound-trigger.compact {
+    width: 1.875rem;
+    height: 1.875rem;
+    min-width: 1.875rem;
+    min-height: 1.875rem;
+    padding: 0.42rem;
+    border-radius: 0.55rem;
+    justify-content: center;
+  }
+  @media (width < 48rem) {
+    .sound-trigger.compact {
+      width: 2.75rem;
+      height: 2.75rem;
+    }
+  }
+</style>

@@ -6,7 +6,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import event, insert
+from sqlalchemy import event, insert, select
 from sqlalchemy.orm import Session
 
 from pandrator.web import models as m
@@ -14,6 +14,7 @@ from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.generation_summary import get_generation_summary
 from pandrator.web.openapi import build_openapi_document
+from pandrator.web.usage import usage_summary
 from tests.web_test_support import prepare_web_test_data_root
 
 
@@ -99,6 +100,47 @@ def add_run(case, revision_id, *, status="running", sequence=1, session_id=None)
         db.add(run)
         db.flush()
         return run.id
+
+
+def run_job_id(case, run_id):
+    services, _, _ = case
+    with services.database.session() as db:
+        return db.scalar(
+            select(m.GenerationRun.job_id).where(m.GenerationRun.id == run_id)
+        )
+
+
+def add_usage_event(
+    case,
+    *,
+    session_id,
+    generation_run_id,
+    stage,
+    model_id,
+    cost_usd,
+    input_tokens,
+    cached_input_tokens,
+    output_tokens,
+    commercial,
+    estimated,
+):
+    services, _, _ = case
+    with services.database.session() as db:
+        event = m.UsageEvent(
+            session_id=session_id,
+            generation_run_id=generation_run_id,
+            stage=stage,
+            provider_key="test-provider",
+            model_id=model_id,
+            cost_usd=cost_usd,
+            input_tokens=input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            output_tokens=output_tokens,
+            raw_usage_json={"commercial": commercial, "estimated": estimated},
+        )
+        db.add(event)
+        db.flush()
+        return event.id
 
 
 def read(case):
@@ -207,6 +249,8 @@ def test_worker_run_precedes_newer_queued_run(summary_case, status):
     assert read(summary_case)["active_run"] == {
         "id": worker_id, "status": status, "progress": 0.4,
         "progress_detail": "Generating block 2",
+        "job_id": run_job_id(summary_case, worker_id),
+        "usage": None,
     }
 
 
@@ -222,6 +266,280 @@ def test_status_priority_then_newest_sequence_and_paused_fallback(summary_case):
         db.get(m.GenerationRun, queued_id).status = "completed"
         db.get(m.GenerationRun, newest_id).status = "failed"
     assert read(summary_case)["active_run"]["status"] == "paused"
+
+
+def test_zero_event_active_run_usage_is_none(summary_case):
+    revision_id, _ = add_plan(summary_case)
+    run_id = add_run(summary_case, revision_id)
+
+    active_run = read(summary_case)["active_run"]
+
+    assert active_run["id"] == run_id
+    assert active_run["job_id"] == run_job_id(summary_case, run_id)
+    assert active_run["usage"] is None
+
+
+def test_active_run_usage_matches_usage_summary_and_refreshes(summary_case):
+    services, _, session_id = summary_case
+    revision_id, _ = add_plan(summary_case)
+    run_id = add_run(summary_case, revision_id)
+    active_job_id = run_job_id(summary_case, run_id)
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=run_id,
+        stage="tts",
+        model_id="model-z",
+        cost_usd=0.12,
+        input_tokens=100,
+        cached_input_tokens=20,
+        output_tokens=25,
+        commercial=True,
+        estimated=False,
+    )
+    first = read(summary_case)["active_run"]
+    with services.database.session() as db:
+        first_events = list(
+            db.scalars(
+                select(m.UsageEvent).where(
+                    m.UsageEvent.session_id == session_id,
+                    m.UsageEvent.generation_run_id == run_id,
+                )
+            )
+        )
+    assert first["job_id"] == active_job_id
+    assert first["usage"] == usage_summary(first_events)
+    assert first["usage"]["total_cost_usd"] == pytest.approx(0.12)
+    assert first["usage"]["event_count"] == 1
+
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=run_id,
+        stage="tts",
+        model_id="model-a",
+        cost_usd=0.0,
+        input_tokens=50,
+        cached_input_tokens=10,
+        output_tokens=10,
+        commercial=True,
+        estimated=True,
+    )
+    second = read(summary_case)["active_run"]
+    with services.database.session() as db:
+        second_events = list(
+            db.scalars(
+                select(m.UsageEvent).where(
+                    m.UsageEvent.session_id == session_id,
+                    m.UsageEvent.generation_run_id == run_id,
+                )
+            )
+        )
+    assert second["usage"] == usage_summary(second_events)
+    assert second["usage"] != first["usage"]
+    assert second["usage"]["priced_event_count"] == 2
+    assert second["usage"]["total_cost_usd"] == pytest.approx(0.12)
+
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=run_id,
+        stage="optimization",
+        model_id="model-z",
+        cost_usd=None,
+        input_tokens=7,
+        cached_input_tokens=0,
+        output_tokens=3,
+        commercial=True,
+        estimated=True,
+    )
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=run_id,
+        stage=None,
+        model_id="",
+        cost_usd=0.03,
+        input_tokens=10,
+        cached_input_tokens=2,
+        output_tokens=2,
+        commercial=False,
+        estimated=False,
+    )
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=run_id,
+        stage="",
+        model_id="   ",
+        cost_usd=None,
+        input_tokens=0,
+        cached_input_tokens=0,
+        output_tokens=0,
+        commercial=False,
+        estimated=False,
+    )
+    unrelated_run_id = add_run(
+        summary_case, revision_id, status="completed", sequence=2
+    )
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=unrelated_run_id,
+        stage="private",
+        model_id="foreign-model",
+        cost_usd=99.0,
+        input_tokens=999,
+        cached_input_tokens=0,
+        output_tokens=999,
+        commercial=True,
+        estimated=True,
+    )
+    with services.database.session() as db:
+        foreign_session = m.SessionRecord(name="Foreign usage session")
+        db.add(foreign_session)
+        db.flush()
+        foreign_session_id = foreign_session.id
+    foreign_revision_id, _ = add_plan(
+        summary_case, session_id=foreign_session_id
+    )
+    foreign_run_id = add_run(
+        summary_case,
+        foreign_revision_id,
+        status="completed",
+        session_id=foreign_session_id,
+    )
+    add_usage_event(
+        summary_case,
+        session_id=foreign_session_id,
+        generation_run_id=run_id,
+        stage="foreign-session",
+        model_id="foreign-model",
+        cost_usd=100.0,
+        input_tokens=1000,
+        cached_input_tokens=0,
+        output_tokens=1000,
+        commercial=True,
+        estimated=True,
+    )
+    add_usage_event(
+        summary_case,
+        session_id=session_id,
+        generation_run_id=foreign_run_id,
+        stage="foreign-run",
+        model_id="foreign-model",
+        cost_usd=200.0,
+        input_tokens=2000,
+        cached_input_tokens=0,
+        output_tokens=2000,
+        commercial=True,
+        estimated=True,
+    )
+
+    result = read(summary_case)["active_run"]
+    with services.database.session() as db:
+        matching_events = list(
+            db.scalars(
+                select(m.UsageEvent).where(
+                    m.UsageEvent.session_id == session_id,
+                    m.UsageEvent.generation_run_id == run_id,
+                )
+            )
+        )
+    usage = result["usage"]
+    assert result["job_id"] == active_job_id
+    assert usage == usage_summary(matching_events)
+    assert usage == {
+        "total_cost_usd": pytest.approx(0.15),
+        "event_count": 5,
+        "priced_event_count": 3,
+        "has_unpriced_usage": True,
+        "commercial": True,
+        "estimated": True,
+        "input_tokens": 167,
+        "cached_input_tokens": 32,
+        "output_tokens": 40,
+        "total_tokens": 207,
+        "model_ids": ["model-a", "model-z"],
+        "stages": [
+            {
+                "stage": "optimization",
+                "cost_usd": 0.0,
+                "event_count": 1,
+                "priced_event_count": 0,
+                "input_tokens": 7,
+                "cached_input_tokens": 0,
+                "output_tokens": 3,
+            },
+            {
+                "stage": "other",
+                "cost_usd": pytest.approx(0.03),
+                "event_count": 2,
+                "priced_event_count": 1,
+                "input_tokens": 10,
+                "cached_input_tokens": 2,
+                "output_tokens": 2,
+            },
+            {
+                "stage": "tts",
+                "cost_usd": pytest.approx(0.12),
+                "event_count": 2,
+                "priced_event_count": 2,
+                "input_tokens": 150,
+                "cached_input_tokens": 30,
+                "output_tokens": 35,
+            },
+        ],
+    }
+
+
+def test_usage_aggregate_query_runs_only_for_an_active_run(summary_case):
+    services, _, session_id = summary_case
+    revision_id, _ = add_plan(summary_case)
+
+    def captured_read():
+        statements = []
+        def statement(_conn, _cursor, sql, _parameters, _context, _many):
+            statements.append(sql)
+
+        event.listen(services.database.engine, "before_cursor_execute", statement)
+        try:
+            get_generation_summary(services.database, session_id)
+        finally:
+            event.remove(services.database.engine, "before_cursor_execute", statement)
+        return statements
+
+    without_active_run = captured_read()
+    assert not any("usage_events" in sql.lower() for sql in without_active_run)
+
+    add_run(summary_case, revision_id)
+    with_active_run = captured_read()
+    usage_queries = [
+        sql for sql in with_active_run if "usage_events" in sql.lower()
+    ]
+    assert len(usage_queries) == 1
+
+
+def test_workflow_keeps_usage_flags_on_reload_and_completion(summary_case):
+    services, client, session_id = summary_case
+    revision_id, _ = add_plan(summary_case)
+    run_id = add_run(summary_case, revision_id)
+    for cost in (0.01, None):
+        add_usage_event(
+            summary_case, session_id=session_id, generation_run_id=run_id,
+            stage="tts", model_id="gemini-3.8-flash-tts", cost_usd=cost,
+            input_tokens=10, cached_input_tokens=0, output_tokens=25,
+            commercial=True, estimated=True,
+        )
+    for status in ("running", "completed"):
+        with services.database.session() as db:
+            db.get(m.GenerationRun, run_id).status = status
+        response = client.get(f"/api/v1/sessions/{session_id}/workflow")
+        assert response.status_code == 200
+        stage = next(item for item in response.get_json()["stages"] if item["key"] == "generate_audio")
+        assert stage["usage"]["estimated"] is True
+        assert stage["usage"]["has_unpriced_usage"] is True
+        assert stage["usage"]["cost_usd"] == pytest.approx(0.01)
 
 
 def test_verified_repair_child_reports_actual_worker_progress(summary_case):
@@ -253,6 +571,8 @@ def test_verified_repair_child_reports_actual_worker_progress(summary_case):
     assert read(summary_case)["active_run"] == {
         "id": child_id, "status": "running", "progress": 0.4,
         "progress_detail": "Generating block 2",
+        "job_id": run_job_id(summary_case, child_id),
+        "usage": None,
     }
 
 
@@ -271,8 +591,9 @@ def test_latest_assembly_and_cross_session_isolation(summary_case):
         )
         db.add(foreign_job)
         db.flush()
+        foreign_job_id = foreign_job.id
         # Even a corrupted cross-session job reference cannot leak progress.
-        db.get(m.GenerationRun, run_id).job_id = foreign_job.id
+        db.get(m.GenerationRun, run_id).job_id = foreign_job_id
         now = m.utcnow()
         older = m.OutputAssembly(session_id=session_id, status="completed", created_at=now)
         newest = m.OutputAssembly(
@@ -289,9 +610,11 @@ def test_latest_assembly_and_cross_session_isolation(summary_case):
     result = read(summary_case)
     assert result["active_run"] == {
         "id": run_id, "status": "running", "progress": 0.0, "progress_detail": None,
+        "job_id": None, "usage": None,
     }
     assert result["assembly"] == {
         "id": newest_id, "status": "running", "progress": 0.0, "progress_detail": None,
+        "job_id": None, "usage": None,
     }
     with services.database.session() as db:
         job = m.Job(
@@ -348,15 +671,22 @@ def test_queries_and_model_hydration_are_constant_with_1000_runs_30000_takes(sum
             event.remove(services.database.engine, "before_cursor_execute", statement)
             event.remove(Session, "loaded_as_persistent", loaded)
         assert hydrated == []
-        assert len(statements) == 5  # Explicit snapshot BEGIN and four SELECTs.
+        assert len(statements) == 6  # Explicit snapshot BEGIN and five SELECTs.
         assert all("audio_takes" not in sql for sql in statements)
         settings_queries = [sql for sql in statements if "settings_json" in sql.lower()]
         assert len(settings_queries) == 1
         selected_columns = settings_queries[0].partition("FROM")[0].lower()
         assert "settings_json" not in selected_columns
         assert "artifacts.role" in selected_columns
+        usage_queries = [sql for sql in statements if "usage_events" in sql.lower()]
+        assert len(usage_queries) == 1
+        usage_projection = usage_queries[0].partition("FROM")[0].lower()
+        assert "raw_usage_json" in usage_projection
+        assert "json_extract" in usage_projection
+        assert "select usage_events.raw_usage_json" not in usage_projection
         assert all(
             "_json" not in sql or "settings_json" in sql.lower()
+            or sql in usage_queries
             for sql in statements
         )
         assert sum("LIMIT" in sql for sql in statements) == 2

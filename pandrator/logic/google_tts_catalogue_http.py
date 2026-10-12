@@ -133,7 +133,7 @@ def get_google_voice_catalog(
     page_token_key = "pageToken" if vertex else "page_token"
     next_token_key = "nextPageToken" if vertex else "next_page_token"
     alternate_next_token_key = "next_page_token" if vertex else "nextPageToken"
-    page_params: dict[str, str | int] = {page_size_key: 50 if vertex else 1000}
+    page_params: dict[str, str | int] = {page_size_key: 1000}
     page_token: str | None = None
     seen_tokens: set[str] = set()
     seen_ids: set[str] = set()

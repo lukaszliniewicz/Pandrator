@@ -542,6 +542,8 @@
     <GenerationStatusBar
       sessionId={routeSessionId}
       workspaceVisible={active('/generation')}
+      onusage={(activity) =>
+        contextState.workflow.applyGenerationUsage(activity)}
     />
   {/key}
 {/if}

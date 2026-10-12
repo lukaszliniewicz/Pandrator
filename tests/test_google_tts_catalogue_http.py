@@ -14,7 +14,7 @@ from pandrator.logic import google_tts_catalogue_http
 ENDPOINT = "https://voices.example.invalid/catalogue?endpoint-secret"
 HEADERS = {"Authorization": "Bearer fixture-secret", "Accept": "application/json"}
 GEMINI_PARAMS: dict[str, str | int] = {"page_size": 1000}
-VERTEX_PARAMS: dict[str, str | int] = {"pageSize": 50}
+VERTEX_PARAMS: dict[str, str | int] = {"pageSize": 1000}
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +202,7 @@ def test_gemini_pages_use_literal_options_and_first_case_sensitive_ids_win(
 
 
 def test_vertex_camel_case_response_and_resource_name_fallback_keep_borrowed_session_open() -> None:
+    first_page_ids = ["Cloud-Voice", *(f"bulk-{index:04d}" for index in range(1, 1000))]
     script = GetScript(
         [
             Step(
@@ -209,13 +210,14 @@ def test_vertex_camel_case_response_and_resource_name_fallback_keep_borrowed_ses
                     {
                         "voices": [
                             {
-                                "voiceId": "cloud-voice",
+                                "voiceId": first_page_ids[0],
                                 "displayName": "Cloud voice",
                                 "languageCode": "en-GB",
                                 "regionCode": "europe-west4",
                                 "expireTime": "2031-01-01T00:00:00Z",
                                 "credential": "must not escape",
-                            }
+                            },
+                            *({"voiceId": identifier} for identifier in first_page_ids[1:]),
                         ],
                         "nextPageToken": "vertex-page-secret",
                     }
@@ -226,6 +228,8 @@ def test_vertex_camel_case_response_and_resource_name_fallback_keep_borrowed_ses
                 FakeResponse(
                     {
                         "voices": [
+                            {"voiceId": "Cloud-Voice", "displayName": "Ignored duplicate"},
+                            {"voiceId": "cloud-voice"},
                             {
                                 "name": "projects/example/locations/global/voices/resource-voice",
                                 "gender": "MALE",
@@ -242,16 +246,33 @@ def test_vertex_camel_case_response_and_resource_name_fallback_keep_borrowed_ses
         ENDPOINT, headers=HEADERS, vertex=True, request_session=script  # type: ignore[arg-type]
     )
 
-    assert voices == [
-        {
-            "id": "cloud-voice",
-            "display_name": "Cloud voice",
-            "language_code": "en-GB",
-            "region_code": "europe-west4",
-            "expire_time": "2031-01-01T00:00:00Z",
-        },
-        {"id": "resource-voice", "gender": "MALE"},
+    assert [voice["id"] for voice in voices] == [
+        *first_page_ids,
+        "cloud-voice",
+        "resource-voice",
     ]
+    assert voices[0] == {
+        "id": "Cloud-Voice",
+        "display_name": "Cloud voice",
+        "language_code": "en-GB",
+        "region_code": "europe-west4",
+        "expire_time": "2031-01-01T00:00:00Z",
+    }
+    assert voices[-1] == {
+        "id": "resource-voice",
+        "gender": "MALE",
+    }
+    assert script.calls == [
+        (ENDPOINT, HEADERS, VERTEX_PARAMS, 15, False),
+        (
+            ENDPOINT,
+            HEADERS,
+            {**VERTEX_PARAMS, "pageToken": "vertex-page-secret"},
+            15,
+            False,
+        ),
+    ]
+    assert len(voices) == 1002
     script.assert_consumed()
     assert script.closed is False
 

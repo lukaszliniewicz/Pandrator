@@ -178,7 +178,7 @@ def test_registry_discovers_only_structured_model_voices_with_safe_metadata(
             if provider == "gemini"
             else {"Authorization": f"Bearer {VERTEX_TOKEN}"}
         )
-        expected_page = {"page_size": 1000} if provider == "gemini" else {"pageSize": 50}
+        expected_page = {"page_size": 1000} if provider == "gemini" else {"pageSize": 1000}
         assert endpoint == expected_endpoint
         assert options == {
             "headers": expected_headers,

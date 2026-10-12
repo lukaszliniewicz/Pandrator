@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from sqlalchemy import and_, func, literal, or_, select, union_all
+from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from .database import Database
@@ -1061,6 +1061,8 @@ def build_workflow_snapshot(
                         func.sum(UsageEvent.cost_usd).label("cost_usd"),
                         func.count(UsageEvent.cost_usd).label("priced_event_count"),
                         func.count(UsageEvent.id).label("event_count"),
+                        func.max(case((UsageEvent.raw_usage_json["estimated"].as_boolean().is_(True), 1), else_=0)).label("estimated"),
+                        func.max(case((and_(UsageEvent.raw_usage_json["commercial"].as_boolean().is_(True), UsageEvent.cost_usd.is_(None)), 1), else_=0)).label("has_unpriced_usage"),
                         func.max(UsageEvent.created_at).label("created_at"),
                     )
                     .where(
@@ -1142,6 +1144,8 @@ def build_workflow_snapshot(
                     else None
                 ),
                 "event_count": sum(int(row.event_count or 0) for row in matching),
+                "estimated": any(bool(row.estimated) for row in matching),
+                "has_unpriced_usage": any(bool(row.has_unpriced_usage) for row in matching),
                 "model_ids": models,
                 "model_id": " · ".join(models),
                 "created_at": created_at.isoformat() if created_at else None,

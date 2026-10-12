@@ -169,6 +169,8 @@
 
   let sourceAudioUrl = $state('');
   let previewMode = $state<'original' | 'video' | 'audio'>('original');
+  let preferredMedia = $state<'audio' | 'video'>('video');
+  let previewResume = $state<{ time: number; playing: boolean } | null>(null);
   let videoPlaybackError = $state('');
   let sourceAudioPreparing = $state(false);
   let sourceAudioError = $state('');
@@ -843,6 +845,16 @@
     }
   }
 
+  function selectMedia(view: 'audio' | 'video') {
+    const player = playbackElement();
+    previewResume = {
+      time: player?.currentTime ?? reviewTime / 1000,
+      playing: Boolean(player && !player.paused)
+    };
+    preferredMedia = view;
+    void prepareSourceAudio(sourceMediaArtifactId);
+  }
+
   async function prepareSourceAudio(
     artifactId: string,
     mode: 'original' | 'video' | 'audio' = 'original'
@@ -857,6 +869,7 @@
     videoPlaybackError = '';
     sourceAudioError = '';
     if (sourceIsVideo && mode === 'original') {
+      previewMode = preferredMedia === 'audio' ? 'audio' : 'original';
       sourceAudioUrl = `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
       return;
     }
@@ -1040,6 +1053,11 @@
     }
   }
   onMount(() => {
+    const compactDisplay = window.matchMedia(
+      '(max-width: 80rem), (max-height: 56rem)'
+    ).matches;
+    maximized = compactDisplay;
+    preferredMedia = compactDisplay ? 'audio' : 'video';
     reviewPrimaryArtifactId = primaryArtifactId;
     editArtifactId = primaryArtifactId;
     const remembered = readReviewDraft(
@@ -1062,9 +1080,45 @@
       sourceAudioUrl = '';
       sourceAudioError = '';
       cuePlaybackError = '';
+      previewResume = null;
       sourceAudioPreparing = false;
       if (artifactId) void prepareSourceAudio(artifactId);
     });
+  });
+
+  $effect(() => {
+    const player = playbackElement();
+    if (!player) return;
+    const update = () => (reviewTime = player.currentTime * 1000);
+    player.addEventListener('timeupdate', update);
+    return () => player.removeEventListener('timeupdate', update);
+  });
+
+  $effect(() => {
+    const player = playbackElement();
+    const resume = previewResume;
+    const source = sourceAudioUrl;
+    if (!player || !resume || !source) return;
+    const restore = () => {
+      if (
+        playbackElement() !== player ||
+        previewResume !== resume ||
+        sourceAudioUrl !== source
+      )
+        return;
+      player.currentTime = Math.min(
+        resume.time,
+        Number.isFinite(player.duration) ? player.duration : resume.time
+      );
+      previewResume = null;
+      if (resume.playing)
+        void player.play().catch((caught) => {
+          cuePlaybackError = errorMessage(caught);
+        });
+    };
+    if (player.readyState >= 1) restore();
+    else player.addEventListener('loadedmetadata', restore, { once: true });
+    return () => player.removeEventListener('loadedmetadata', restore);
   });
 
   $effect(() => {
@@ -1077,6 +1131,10 @@
     return `${String(Math.floor(value / 3600000)).padStart(2, '0')}:${String(Math.floor(value / 60000) % 60).padStart(2, '0')}:${String(Math.floor(value / 1000) % 60).padStart(2, '0')}.${String(value % 1000).padStart(3, '0')}`;
   }
   $effect(() => {
+    if (!sourceIsVideo || previewMode === 'audio') {
+      captionsUrl = '';
+      return;
+    }
     const cues =
       editMode === 'passages'
         ? passages.filter((item) => !item.deleted)
@@ -1342,6 +1400,34 @@
     {#if sourceMediaArtifactId || sourceMediaError}<div
         class="border-b border-[var(--line)] px-5 py-3 sm:px-7"
       >
+        {#if sourceIsVideo && !sourceMediaError}
+          <div
+            class="mb-2 flex items-center gap-2 text-xs"
+            aria-label="Review media"
+          >
+            <span class="muted">Preview</span>
+            <div
+              class="inline-flex rounded-lg border border-[var(--line)] p-0.5"
+            >
+              <button
+                type="button"
+                class="rounded-md px-3 py-1.5 font-semibold"
+                class:active={previewMode === 'audio'}
+                aria-pressed={previewMode === 'audio'}
+                disabled={sourceAudioPreparing}
+                onclick={() => selectMedia('audio')}>Audio</button
+              >
+              <button
+                type="button"
+                class="rounded-md px-3 py-1.5 font-semibold"
+                class:active={previewMode !== 'audio'}
+                aria-pressed={previewMode !== 'audio'}
+                disabled={sourceAudioPreparing}
+                onclick={() => selectMedia('video')}>Video</button
+              >
+            </div>
+          </div>
+        {/if}
         {#if sourceMediaError}<p class="text-xs text-red-500" role="alert">
             {sourceMediaError}
           </p>{:else if sourceAudioUrl && sourceIsVideo && previewMode !== 'audio'}<div
@@ -1420,21 +1506,14 @@
               type="button"
               class="font-semibold text-[var(--accent)]"
               disabled={sourceAudioPreparing}
-              onclick={() => prepareSourceAudio(sourceMediaArtifactId, 'video')}
-              >Prepare compatible video preview</button
-            >
-            <button
-              type="button"
-              class="font-semibold text-[var(--accent)]"
-              disabled={sourceAudioPreparing}
-              onclick={() => prepareSourceAudio(sourceMediaArtifactId, 'audio')}
-              >Use audio-only preview</button
+              onclick={() =>
+                prepareSourceAudio(
+                  sourceMediaArtifactId,
+                  previewMode === 'audio' ? 'audio' : 'video'
+                )}
+              >Prepare compatible {previewMode === 'audio' ? 'audio' : 'video'} preview</button
             >
           </div>
-          <p class="muted mt-1 text-xs">
-            Preview files preserve the original. Compatible video can take time
-            to prepare.
-          </p>
         {/if}
         {#if cuePlaybackError}<p class="mt-2 text-xs text-red-500" role="alert">
             {cuePlaybackError}

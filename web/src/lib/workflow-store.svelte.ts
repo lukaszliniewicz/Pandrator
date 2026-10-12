@@ -1,6 +1,11 @@
 import { artifactRoleLabel } from './artifact-display';
 import { sessionApi } from './domain-api';
-import type { LoadState, WorkflowSnapshot, WorkflowStage } from './api-models';
+import type {
+  GenerationActivitySummary,
+  LoadState,
+  WorkflowSnapshot,
+  WorkflowStage
+} from './api-models';
 import {
   invalidates,
   invalidationBus,
@@ -132,6 +137,36 @@ export class WorkflowStore {
 
   replace(snapshot: WorkflowSnapshot) {
     this.resource.replace(retainHistory(this.snapshot, snapshot));
+  }
+
+  /** Apply lightweight live totals only to the exact generation job on screen. */
+  applyGenerationUsage(activity: GenerationActivitySummary) {
+    const snapshot = this.snapshot;
+    const totals = activity.usage;
+    if (!snapshot || !activity.job_id || !totals) return;
+    let changed = false;
+    const stages = snapshot.stages.map((stage) => {
+      if (stage.key !== 'generate_audio' || stage.job_id !== activity.job_id)
+        return stage;
+      const usage = {
+        ...stage.usage,
+        input_tokens: totals.input_tokens ?? 0,
+        cached_input_tokens: totals.cached_input_tokens ?? 0,
+        output_tokens: totals.output_tokens ?? 0,
+        total_tokens: totals.total_tokens ?? 0,
+        cost_usd: totals.total_cost_usd ?? null,
+        model_id: totals.model_ids?.[0] ?? stage.usage?.model_id ?? '',
+        model_ids: totals.model_ids ?? [],
+        event_count: Number(totals.event_count ?? 0),
+        estimated: Boolean(totals.estimated),
+        has_unpriced_usage: Boolean(totals.has_unpriced_usage),
+        created_at: stage.usage?.created_at ?? null
+      };
+      if (JSON.stringify(usage) === JSON.stringify(stage.usage)) return stage;
+      changed = true;
+      return { ...stage, usage };
+    });
+    if (changed) this.replace({ ...snapshot, stages });
   }
 
   async loadStageHistory(stageKey: string) {
