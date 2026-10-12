@@ -1,9 +1,12 @@
 """Owned read-ahead lifecycle for Kobold Qwen batch audio streams."""
 
+import ctypes
 import logging
 import socket
 import sys
 from collections.abc import Callable, Iterator
+from ctypes import wintypes
+from functools import lru_cache
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 
@@ -12,6 +15,68 @@ import requests
 from .kobold_qwen_contracts import KoboldQwenBatchAudioEvent, KoboldQwenBatchMessage
 
 logger = logging.getLogger(__name__)
+_IS_WINDOWS = sys.platform == "win32"
+_THREAD_TERMINATE = 0x0001
+_ERROR_NOT_FOUND = 1168
+
+
+@lru_cache(maxsize=1)
+def _windows_kernel32() -> ctypes.CDLL:
+    """Load and type the Windows APIs used to interrupt the owned reader."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.CancelSynchronousIo.argtypes = (wintypes.HANDLE,)
+    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+def _windows_last_error() -> int:
+    return ctypes.get_last_error()
+
+
+def _windows_api_error(api_name: str, error_code: int) -> OSError:
+    return OSError(error_code, f"{api_name} failed.")
+
+
+def _cancel_windows_reader_io(native_id: int | None) -> None:
+    """Cancel pending synchronous I/O on this response's owned reader thread."""
+    if not _IS_WINDOWS or native_id is None:
+        return
+
+    kernel32 = _windows_kernel32()
+    handle = kernel32.OpenThread(_THREAD_TERMINATE, False, native_id)
+    if not handle:
+        raise _windows_api_error("OpenThread", _windows_last_error())
+
+    try:
+        if not kernel32.CancelSynchronousIo(handle):
+            error_code = _windows_last_error()
+            if error_code != _ERROR_NOT_FOUND:
+                raise _windows_api_error("CancelSynchronousIo", error_code)
+    finally:
+        pending_error = sys.exception()
+        try:
+            closed = kernel32.CloseHandle(handle)
+        except BaseException:
+            if pending_error is None:
+                raise
+            logger.debug("Failed to close the Windows reader thread handle.", exc_info=True)
+        else:
+            if not closed:
+                close_error = _windows_api_error("CloseHandle", _windows_last_error())
+                if pending_error is None:
+                    raise close_error
+                logger.debug(
+                    "Failed to close the Windows reader thread handle.",
+                    exc_info=(
+                        type(pending_error),
+                        pending_error,
+                        pending_error.__traceback__,
+                    ),
+                )
 
 
 def iter_read_ahead_batch(
@@ -63,8 +128,9 @@ def iter_read_ahead_batch(
         with response_lock:
             if active_response is not None:
                 # Keep the producer from releasing the response back to its pool
-                # until the owner-socket interruption has finished.
+                # until both owner-socket and reader-I/O interruption have finished.
                 interrupt(active_response)
+                _cancel_windows_reader_io(reader.native_id)
 
     def put_message(message: KoboldQwenBatchMessage) -> bool:
         while not stop_event.is_set():

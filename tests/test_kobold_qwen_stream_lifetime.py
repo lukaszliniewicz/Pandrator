@@ -11,6 +11,7 @@ import threading
 import time
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -194,6 +195,29 @@ def cleanup(server, readers, consumer=None):
     for reader in readers:
         reader.join(timeout=2)
         assert not reader.is_alive(), "Fixture reader survived cleanup"
+
+
+def fake_windows_api(*, thread_handle=0x1234, cancel_result=1, close_result=1):
+    calls = []
+
+    def open_thread(*args):
+        calls.append(("open", *args))
+        return thread_handle
+
+    def cancel_synchronous_io(*args):
+        calls.append(("cancel", *args))
+        return cancel_result
+
+    def close_handle(*args):
+        calls.append(("close", *args))
+        return close_result
+
+    api = SimpleNamespace(
+        OpenThread=open_thread,
+        CancelSynchronousIo=cancel_synchronous_io,
+        CloseHandle=close_handle,
+    )
+    return api, calls
 
 
 def test_close_after_first_result_retires_stalled_native_reader(
@@ -387,3 +411,94 @@ def test_close_uses_full_duplex_owner_shutdown_for_blocked_body_read():
             reader.join(timeout=2)
         assert close_thread is None or not close_thread.is_alive()
         assert not any(reader.is_alive() for reader in reader_threads)
+
+
+def test_windows_reader_io_cancel_closes_thread_handle(monkeypatch):
+    api, calls = fake_windows_api()
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", lambda: api)
+
+    kobold_qwen_stream._cancel_windows_reader_io(8675309)
+
+    assert calls == [
+        ("open", kobold_qwen_stream._THREAD_TERMINATE, False, 8675309),
+        ("cancel", 0x1234),
+        ("close", 0x1234),
+    ]
+
+
+def test_windows_kernel32_loader_types_and_caches_api(monkeypatch):
+    class FakeFunction:
+        argtypes = None
+        restype = None
+
+    functions = {
+        name: FakeFunction()
+        for name in ("OpenThread", "CancelSynchronousIo", "CloseHandle")
+    }
+    fake_kernel32 = SimpleNamespace(**functions)
+    loads = []
+
+    def fake_windll(name, *, use_last_error):
+        loads.append((name, use_last_error))
+        return fake_kernel32
+
+    loader = kobold_qwen_stream._windows_kernel32
+    monkeypatch.setattr(kobold_qwen_stream.ctypes, "WinDLL", fake_windll, raising=False)
+    loader.cache_clear()
+    try:
+        assert loader() is fake_kernel32
+        assert loader() is fake_kernel32
+    finally:
+        loader.cache_clear()
+
+    assert loads == [("kernel32", True)]
+    assert functions["OpenThread"].argtypes == (
+        kobold_qwen_stream.wintypes.DWORD,
+        kobold_qwen_stream.wintypes.BOOL,
+        kobold_qwen_stream.wintypes.DWORD,
+    )
+    assert functions["OpenThread"].restype is kobold_qwen_stream.wintypes.HANDLE
+    assert functions["CancelSynchronousIo"].argtypes == (kobold_qwen_stream.wintypes.HANDLE,)
+    assert functions["CancelSynchronousIo"].restype is kobold_qwen_stream.wintypes.BOOL
+    assert functions["CloseHandle"].argtypes == (kobold_qwen_stream.wintypes.HANDLE,)
+    assert functions["CloseHandle"].restype is kobold_qwen_stream.wintypes.BOOL
+
+
+def test_windows_reader_io_cancel_ignores_completion_race(monkeypatch):
+    api, calls = fake_windows_api(cancel_result=0)
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", lambda: api)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_last_error", lambda: 1168)
+
+    kobold_qwen_stream._cancel_windows_reader_io(2468)
+
+    assert calls[-1] == ("close", 0x1234)
+
+
+def test_windows_reader_io_cancel_propagates_error_and_closes_handle(monkeypatch):
+    api, calls = fake_windows_api(cancel_result=0)
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", lambda: api)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_last_error", lambda: 5)
+
+    with pytest.raises(OSError) as error:
+        kobold_qwen_stream._cancel_windows_reader_io(1357)
+
+    assert error.value.errno == 5
+    assert error.value.strerror == "CancelSynchronousIo failed."
+    assert calls[-1] == ("close", 0x1234)
+
+
+@pytest.mark.parametrize(
+    ("is_windows", "native_id"),
+    [(False, 123), (True, None)],
+)
+def test_windows_reader_io_cancel_skips_unavailable_target(monkeypatch, is_windows, native_id):
+    def unexpected_loader():
+        raise AssertionError("Kernel32 must not load when cancellation cannot run")
+
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", is_windows)
+    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", unexpected_loader)
+
+    kobold_qwen_stream._cancel_windows_reader_io(native_id)
