@@ -170,6 +170,7 @@ from .sessions import (
     UpdateSessionInput,
     UpdateSessionSettingsInput,
 )
+from .sounds import SOUND_INPUT_MODELS
 from .source_cleaning_dispatch import (
     ClaimSourceCleaningDispatchBatchInput,
     CreateSourceCleaningDispatchRunInput,
@@ -277,6 +278,7 @@ TOOL_INPUT_MODELS = (
     *GENERATION_CONTROLS_INPUT_MODELS,
     *GENERATION_RECAST_INPUT_MODELS,
     *VOICE_METADATA_INPUT_MODELS,
+    *SOUND_INPUT_MODELS,
     ExplainSystemInput,
     RecommendNextStepsInput,
     TargetStatusInput,
@@ -586,6 +588,7 @@ __all__ = [
     "TranscriptionSource",
     "TranscribeInput",
     "TOOL_INPUT_MODELS",
+    "SOUND_INPUT_MODELS",
     "ToolEnvelope",
     "ToolInput",
     "UpdateGenerationSegmentBatchItem",

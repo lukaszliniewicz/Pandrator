@@ -27,7 +27,7 @@ def setup_case(
     runtime, calls, application = option_runtime(tmp_path)
     manager = Mock()
 
-    def status(_runtime):
+    def status(runtime, _arguments):
         calls.append({"method": "manager_status", "headers": correlation_headers()})
         print(SENTINEL)
         return {"status": "ready"}
@@ -129,7 +129,7 @@ def test_every_registered_tool_advertises_closed_top_level_arguments(tmp_path: P
             return await client.list_tools()
 
     tools = asyncio.run(discover()).tools
-    assert len(tools) == 162
+    assert len(tools) == 185
     assert all(tool.input_schema.get("additionalProperties") is False for tool in tools)
     assert calls == application.mock_calls == []
 

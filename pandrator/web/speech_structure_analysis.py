@@ -112,7 +112,8 @@ def _assert_structural_only(
     """
 
     source_spans = tuple(source.spans) if source is not None else ()
-    empty_delivery = Delivery().model_dump(mode="json")
+    # Parsed markup omits optional delivery controls that have no value.
+    empty_delivery = Delivery().model_dump(mode="json", exclude_none=True)
     for result_span in result.spans:
         # Parsed source spans cover the identical transcript. Compare each
         # overlapping metadata scope once, rather than scanning per character.

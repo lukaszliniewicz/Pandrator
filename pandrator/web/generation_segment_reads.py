@@ -227,6 +227,7 @@ class GenerationSegmentReader:
                 ].as_string()
                 filters.append(
                     select(AudioTake.id)
+                    .join(Artifact, Artifact.id == AudioTake.artifact_id)
                     .where(
                         AudioTake.generation_segment_id == GenerationSegment.id,
                         AudioTake.is_active.is_(True),

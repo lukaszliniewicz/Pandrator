@@ -73,7 +73,14 @@ def test_native_speech_context_forwarding(tmp_path: Path, capsys, mode: str, del
         "idempotency_key": "speech:submit-1",
         "result": {
             "kind": "speech_optimization",
-            "items": [{"unit_id": 1, "text": "Doctor Jones", "speech_xml": None}],
+            "items": [{
+                "unit_id": 1,
+                "text": "Doctor Jones",
+                "speech_xml": None,
+                "annotations": None,
+                "source_sha256": None,
+                "boundary_after": None,
+            }],
         },
         "context_delta": expected,
         "character_proposals": BASE["character_proposals"],
@@ -112,7 +119,7 @@ def test_native_context_schema_is_optional_and_strict(tmp_path: Path) -> None:
             return await client.list_tools()
 
     tools = asyncio.run(discover()).tools
-    assert len(tools) == 162
+    assert len(tools) == 185
     schema = next(t.input_schema for t in tools if t.name == TOOL)
     assert schema["additionalProperties"] is False
     assert "context_delta" not in schema["required"]

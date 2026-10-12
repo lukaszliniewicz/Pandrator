@@ -79,8 +79,8 @@ def settings(provider: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, object
     return {
         "service": tts_handler.OPENAI_COMPAT_SERVICE,
         "openai_audio_endpoint": "azure-fixture",
-        "model": "MAI-Voice-2",
-        "voice": "de-DE-Klaus:MAI-Voice-2",
+        "model": "MAI-Voice-2.1",
+        "voice": "de-DE-Klaus:MAI-Voice-2.1",
         "provider_configs": [
             {
                 "id": "azure-fixture",
@@ -230,7 +230,6 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
                 "input": "Hello",
                 "voice": "default",
                 "response_format": "wav",
-                "speed": 1.0,
                 "voxcpm": {
                     "cfg_value": 1.5,
                     "inference_timesteps": 15,
@@ -250,13 +249,7 @@ def test_native_caller_uses_real_status_retry_cause_cancellation_and_wav_decoder
                 "input": "Hello",
                 "voice": "default",
                 "response_format": "wav",
-                "speed": 1.0,
-                "temperature": 0.7,
-                "top_p": 0.7,
-                "chunk_length": 200,
-                "latency": "balanced",
-                "normalize": True,
-                "prosody": {"speed": 1.0, "volume": 0.0, "normalize_loudness": True},
+                "fishs2": {"temperature": 0.7, "top_p": 0.7},
             }
             assert "data" not in options
         elif provider == "voxtral":

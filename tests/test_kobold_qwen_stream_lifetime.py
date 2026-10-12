@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import queue
+import socket
 import threading
 import time
 import wave
@@ -235,3 +236,105 @@ def test_close_retires_reader_when_extra_provider_events_fill_queue(monkeypatch,
         assert readers and not any(reader.is_alive() for reader in readers)
     finally:
         stream.close()
+
+
+def test_close_uses_full_duplex_owner_shutdown_for_blocked_body_read():
+    body_started = threading.Event()
+    release_body = threading.Event()
+    shutdown_entered = threading.Event()
+    finish_shutdown = threading.Event()
+    producer_clear_attempted = threading.Event()
+    producer_clear_finished = threading.Event()
+    producer_closed = threading.Event()
+    raw_closed = threading.Event()
+    shutdown_calls = []
+    reader_threads = []
+    close_thread = None
+    close_errors = []
+
+    class FakeRaw:
+        def _sock_shutdown(self, how):
+            shutdown_calls.append(("owner", how))
+            if how == socket.SHUT_RDWR:
+                release_body.set()
+                shutdown_entered.set()
+                finish_shutdown.wait()
+
+        def shutdown(self):
+            # Model urllib3's public shutdown path, which only shuts down reads.
+            self._sock_shutdown(socket.SHUT_RD)
+
+        def close(self):
+            raw_closed.set()
+
+    class FakeResponse:
+        raw = FakeRaw()
+
+        def close(self):
+            self.raw.close()
+
+    response = FakeResponse()
+
+    def producer(_stop_event, set_response):
+        set_response(response)
+        try:
+            yield {"id": "0", "audio": None, "error": None}
+            body_started.set()
+            release_body.wait()
+        finally:
+            producer_clear_attempted.set()
+            set_response(None)
+            producer_clear_finished.set()
+            response.close()
+            producer_closed.set()
+
+    def thread_factory(*args, **kwargs):
+        thread = threading.Thread(*args, **kwargs)
+        reader_threads.append(thread)
+        return thread
+
+    stream = kobold_qwen_stream.iter_read_ahead_batch(
+        1,
+        producer=producer,
+        thread_factory=thread_factory,
+    )
+
+    def close_stream():
+        try:
+            stream.close()
+        except BaseException as error:
+            close_errors.append(error)
+
+    try:
+        assert next(stream)["id"] == "0"
+        assert body_started.wait(1), "Producer did not enter its simulated body read"
+        close_thread = threading.Thread(target=close_stream, daemon=True)
+        close_thread.start()
+        assert shutdown_entered.wait(1), "Owner-socket shutdown was not attempted"
+        assert producer_clear_attempted.wait(1), "Producer did not finish its body read"
+        assert not producer_clear_finished.wait(0.1), (
+            "Reader released response ownership before shutdown finished"
+        )
+        assert not raw_closed.is_set(), "Producer must wait before returning the response"
+        finish_shutdown.set()
+        close_thread.join(timeout=0.9)
+
+        assert not close_thread.is_alive(), "Stream close did not retire the reader promptly"
+        assert close_errors == []
+        assert reader_threads and not any(thread.is_alive() for thread in reader_threads)
+        assert shutdown_calls == [("owner", socket.SHUT_RDWR)]
+        assert producer_clear_finished.is_set()
+        assert producer_closed.is_set()
+        assert raw_closed.is_set(), "Producer must retain response-close ownership"
+    finally:
+        # Always release the fixture body and bound both joins, even if shutdown regresses.
+        release_body.set()
+        finish_shutdown.set()
+        if close_thread is None:
+            stream.close()
+        if close_thread is not None:
+            close_thread.join(timeout=2)
+        for reader in reader_threads:
+            reader.join(timeout=2)
+        assert close_thread is None or not close_thread.is_alive()
+        assert not any(reader.is_alive() for reader in reader_threads)

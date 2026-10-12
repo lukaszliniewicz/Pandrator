@@ -39,7 +39,7 @@ def _witness(root: Path) -> dict[str, tuple[bytes, int, int, int, int, int]]:
     for path in root.rglob("*"):
         if path.is_file():
             stat = path.stat()
-            files[str(path.relative_to(root))] = (
+            files[path.relative_to(root).as_posix()] = (
                 path.read_bytes(),
                 stat.st_dev,
                 stat.st_ino,

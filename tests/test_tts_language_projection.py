@@ -239,8 +239,10 @@ def test_static_fallbacks_and_unknown_custom_profile_identity_are_model_scoped()
     }
     _decorate_model_language_support(direct_gemini)
     direct_support = direct_gemini["model_catalog"][0]["language_support"]
-    assert direct_support["coverage"] == "unknown"
-    assert direct_support["languages"] == []
+    assert direct_support["coverage"] == "subset"
+    direct_languages = set(direct_support["languages"])
+    assert len(direct_languages) == 24
+    assert {"en-us", "pl-pl", "nl-nl", "ja-jp"} <= direct_languages
 
     custom_openai_compatible = {
         "id": "my_custom_openai_profile",

@@ -49,8 +49,8 @@ def test_catalogue_has_local_cloud_and_static_azure_models():
     )
     assert audio_item["catalogue_id"] == f"audio_cpp:{audio_model_id}"
 
-    azure = _item("azure", "MAI-Voice-2")
-    assert azure["catalogue_id"] == "azure:MAI-Voice-2"
+    azure = _item("azure", "MAI-Voice-2.1")
+    assert azure["catalogue_id"] == "azure:MAI-Voice-2.1"
     assert azure["voice_mode"] == "prebuilt"
     assert azure["capabilities"] == ["emotion_control", "prebuilt_voices"]
     assert azure["pandrator_features"]["emotion_control"] == "discrete_styles"
@@ -65,9 +65,8 @@ def test_catalogue_has_local_cloud_and_static_azure_models():
     )
     assert azure["upstream_features"] == {"emotion_control": True}
     assert "https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-voices" in azure["sources"]
-    assert "https://learn.microsoft.com/azure/ai-services/speech-service/mai-voices" in azure["sources"]
-    assert _item("azure", "MAI-Voice-2-Flash")["catalogue_id"] == (
-        "azure:MAI-Voice-2-Flash"
+    assert _item("azure", "MAI-Voice-2.1-Flash")["catalogue_id"] == (
+        "azure:MAI-Voice-2.1-Flash"
     )
     assert "en" in _item("xtts", "tts_models/multilingual/multi-dataset/xtts_v2")[
         "supported_languages"
@@ -154,9 +153,9 @@ def test_elevenlabs_models_distinguish_v3_directions_from_v2_and_setup_state():
     v2 = provider_rows["eleven_multilingual_v2"]
     assert v2["pandrator_features"]["instructions"] == "none"
     assert v2["pandrator_features"]["instruction_scope"] == "none"
-    assert v2["pandrator_features"]["vocal_events"] == "none"
+    assert v2["pandrator_features"]["vocal_events"] == "pause"
     assert "instructions" not in v2["capabilities"]
-    assert "vocal_events" not in v2["capabilities"]
+    assert "vocal_events" in v2["capabilities"]
 
     turbo = provider_rows["eleven_turbo_v2_5"]
     assert turbo["upstream_status"] == "deprecated"

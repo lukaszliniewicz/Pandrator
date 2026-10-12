@@ -454,7 +454,7 @@ async def capture_contract(root: Path) -> dict[str, Any]:
     runtime, _, _ = fixture_runtime(root / "metadata", CASES[0])
     async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
         metadata = (await client.list_tools()).model_dump(mode="json", by_alias=True)
-    assert len(metadata["tools"]) == 162
+    assert len(metadata["tools"]) == 185
     groups: dict[str, list[dict[str, Any]]] = {}
     for name, cases in (
         ("records", CASES),

@@ -904,15 +904,16 @@ def command_training_list(args) -> int:
     paths, database = _database(args)
     try:
         records = TrainingService(database, paths, JobQueue(database)).list(limit=None)
-        _emit([
+        payload = [
             {"id": item["id"], "model_name": item["model_name"], "status": item["status"],
              "job_id": item["job_id"], "source_artifact_id": item["source_artifact_id"],
              "output_artifact_id": item["output_artifact_id"], "error": item["error_message"]}
             for item in records
-        ], args.json)
-        return 0
+        ]
     finally:
         database.dispose()
+    _emit(payload, args.json)
+    return 0
 
 
 def command_training_start(args) -> int:
@@ -927,20 +928,20 @@ def command_training_start(args) -> int:
         record, job = TrainingService(database, paths, JobQueue(database)).start(request)
         payload = _job_dict(job)
         payload["training_id"] = record.id
-        _emit(payload, args.json)
-        return 0
     finally:
         database.dispose()
+    _emit(payload, args.json)
+    return 0
 
 
 def command_training_cancel(args) -> int:
     paths, database = _database(args)
     try:
         result = TrainingService(database, paths, JobQueue(database)).cancel(args.training_id)
-        _emit(result, args.json)
-        return 0
     finally:
         database.dispose()
+    _emit(result, args.json)
+    return 0
 
 
 def command_export_create(args) -> int:

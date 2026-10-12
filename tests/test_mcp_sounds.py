@@ -934,6 +934,13 @@ def test_sound_schemas_validate_action_fields_and_revision_ranges():
         idempotency_key="reference-import-01",
     )
     assert validated.target == "voice_reference"
+    with pytest.raises(ValidationError):
+        ImportAudioReferenceInput(
+            root_name="approved",
+            relative_path="audio/ref.wav",
+            target="https://example.com/audio/ref.wav",
+            idempotency_key="reference-import-02",
+        )
 
     music = GenerateSoundInput(
         prompt="music",

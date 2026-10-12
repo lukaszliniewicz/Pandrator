@@ -66,13 +66,15 @@ def test_every_pinned_model_compiles_to_family_route_and_manifest_layout(model_i
     assert argv[argv.index("--task") + 1] == "gen"
     assert argv[argv.index("--family") + 1] == model.family
     assert argv[argv.index("--backend") + 1] == model.backends[0]
-    assert argv[argv.index("--model") + 1].startswith("/cache/" + model.id)
+    model_argument = Path(argv[argv.index("--model") + 1])
+    model_root = Path("/cache") / model.id
+    assert model_argument.is_relative_to(model_root)
     assert argv[argv.index("--out") + 1] == "/private/out.wav"
     assert argv[argv.index("--out-format") + 1] == "pcm16"
     if model.is_directory_model:
-        assert argv[argv.index("--model") + 1] == "/cache/" + model.id
+        assert model_argument == model_root
     else:
-        assert argv[argv.index("--model") + 1].endswith(model.model_path_asset.path)
+        assert model_argument == model_root / Path(model.model_path_asset.path)
 
 
 def test_backend_kind_and_model_specific_duration_defaults_and_ranges():

@@ -350,7 +350,8 @@ class ManagerUninstallTests(unittest.TestCase):
         self.assertEqual(journal.read_bytes(), journal_bytes)
 
     def test_export_publication_refuses_a_destination_created_after_review(self):
-        destination = Path(self.temporary.name) / "collision.zip"
+        # Match the planner's canonical path, including Windows temp aliases.
+        destination = (Path(self.temporary.name) / "collision.zip").resolve(strict=False)
         plan = self._plan(export_data=str(destination))
         operation, created = self.application.submit_operation(
             plan_id=plan.id,

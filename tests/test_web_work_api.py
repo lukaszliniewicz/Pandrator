@@ -12,7 +12,7 @@ from pandrator.web.credentials import SecretRedactor
 from pandrator.web.database import Database
 from pandrator.web.http_lifecycle import ApiGuards
 from pandrator.web.jobs import JobQueue
-from pandrator.web.models import Job, JobEvent, SessionRecord, utcnow
+from pandrator.web.models import Job, JobEvent, SessionPurge, SessionRecord, utcnow
 from pandrator.web.work import WorkService, _work_state
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -367,6 +367,7 @@ class WorkServiceListingTests(unittest.TestCase):
                     "kind": "alpha",
                     "status": "queued",
                     "created_at": now,
+                    "payload_json": ignored_payload,
                 },
                 {
                     "id": "match-middle",
@@ -374,6 +375,7 @@ class WorkServiceListingTests(unittest.TestCase):
                     "kind": "alpha",
                     "status": "queued",
                     "created_at": now - timedelta(seconds=1),
+                    "payload_json": ignored_payload,
                 },
                 {
                     "id": "match-oldest",
@@ -381,6 +383,7 @@ class WorkServiceListingTests(unittest.TestCase):
                     "kind": "alpha",
                     "status": "queued",
                     "created_at": now - timedelta(seconds=2),
+                    "payload_json": ignored_payload,
                 },
                 {
                     "id": "other-session",
@@ -427,6 +430,9 @@ class WorkServiceListingTests(unittest.TestCase):
 
         self.assertEqual(["match-newest", "match-middle"], [item.id for item in listing])
         self.assertEqual(2, project.call_count)
+        public_views = [item.model_dump(mode="json") for item in listing]
+        self.assertTrue(all("payload_json" not in item for item in public_views))
+        self.assertNotIn(ignored_payload["history"], repr(public_views))
         job_selects = [
             (statement, parameters)
             for statement, parameters in statements
@@ -450,6 +456,103 @@ class WorkServiceListingTests(unittest.TestCase):
         self.assertIn("order by jobs.created_at desc", statement.lower())
         self.assertIn("limit ?", statement.lower())
         self.assertEqual((2, 0), tuple(parameters[-2:]))
+
+    def test_purge_payloads_are_hydrated_in_one_bounded_batch(self):
+        now = utcnow()
+        targets = {
+            "purging-job": "session-purging",
+            "failed-job": "session-failed",
+            "complete-job": "session-complete",
+        }
+        self._insert_jobs(
+            [
+                {
+                    "id": "ordinary-job",
+                    "kind": "noop",
+                    "status": "queued",
+                    "created_at": now,
+                    "payload_json": {"private": "ordinary-payload-canary"},
+                },
+                *(
+                    {
+                        "id": job_id,
+                        "kind": "maintenance.session_purge",
+                        "status": "queued",
+                        "created_at": now - timedelta(seconds=index + 1),
+                        "payload_json": {
+                            "target_session_id": target_id,
+                            "private": f"{job_id}-payload-canary",
+                        },
+                    }
+                    for index, (job_id, target_id) in enumerate(targets.items())
+                ),
+                {
+                    "id": "preview-job",
+                    "kind": "maintenance.session_purge_preview",
+                    "status": "queued",
+                    "created_at": now - timedelta(seconds=4),
+                    "payload_json": {
+                        "target_session_id": "session-preview",
+                        "private": "preview-payload-canary",
+                    },
+                },
+            ]
+        )
+        with self.database.session() as session:
+            session.add_all(
+                SessionPurge(
+                    session_id=target_id,
+                    state=state,
+                    manifest_json=[],
+                    expected_revision=1,
+                    impact_token="x" * 64,
+                )
+                for target_id, state in zip(
+                    targets.values(), ("purging", "failed", "complete"), strict=True
+                )
+            )
+
+        statements = []
+
+        def capture_sql(_connection, _cursor, statement, parameters, _context, _many):
+            statements.append((statement, parameters))
+
+        event.listen(self.database.engine, "before_cursor_execute", capture_sql)
+        try:
+            listing = self.work.list(limit=10)
+        finally:
+            event.remove(self.database.engine, "before_cursor_execute", capture_sql)
+
+        views = {item.id: item for item in listing}
+        self.assertEqual(
+            {"ordinary-job", *targets, "preview-job"}, set(views)
+        )
+        self.assertTrue(views["ordinary-job"].cancellable)
+        for job_id, target_id in targets.items():
+            self.assertEqual(target_id, views[job_id].target_session_id)
+            self.assertFalse(views[job_id].cancellable)
+        self.assertEqual("session-preview", views["preview-job"].target_session_id)
+        self.assertTrue(views["preview-job"].cancellable)
+        public_views = [item.model_dump(mode="json") for item in listing]
+        self.assertTrue(all("payload_json" not in item for item in public_views))
+        serialized = repr(public_views)
+        for canary in (
+            "ordinary-payload-canary",
+            *(f"{job_id}-payload-canary" for job_id in targets),
+            "preview-payload-canary",
+        ):
+            self.assertNotIn(canary, serialized)
+
+        payload_selects = [
+            (statement, parameters)
+            for statement, parameters in statements
+            if "jobs.payload_json" in statement.lower() and "from jobs" in statement.lower()
+        ]
+        self.assertEqual(1, len(payload_selects))
+        statement, parameters = payload_selects[0]
+        self.assertIn("select jobs.id, jobs.payload_json", statement.lower())
+        self.assertIn("jobs.id in", statement.lower())
+        self.assertEqual(4, len(parameters))
 
     def test_sql_state_filter_matches_public_alias_normalization(self):
         rows = [

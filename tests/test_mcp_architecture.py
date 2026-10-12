@@ -188,12 +188,15 @@ class McpArchitectureTests(unittest.TestCase):
             "workspace",
         }
         for model in TOOL_INPUT_MODELS:
-            allowed_catalog_origin = model.__name__ == "VoiceCatalogInput"
-            forbidden = (
-                forbidden_fields - {"origin"}
-                if allowed_catalog_origin
-                else forbidden_fields
-            )
+            forbidden = set(forbidden_fields)
+            if model.__name__ == "VoiceCatalogInput":
+                forbidden.remove("origin")
+            elif model.__name__ == "ImportAudioReferenceInput":
+                self.assertEqual(
+                    get_args(model.model_fields["target"].annotation),
+                    ("sound", "voice_reference"),
+                )
+                forbidden.remove("target")
             self.assertTrue(
                 forbidden.isdisjoint(model.model_fields),
                 f"{model.__name__}: {set(model.model_fields) & forbidden}",
@@ -371,6 +374,8 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_adopt_performance_plan",
                 "pandrator_apply_speech_selection",
                 "pandrator_apply_speech_selection_batch",
+                "pandrator_create_pronunciation",
+                "pandrator_delete_pronunciation",
                 "pandrator_create_comparison_export",
                 "pandrator_assemble_generation_run",
                 "pandrator_analyse_performance_plan",
@@ -399,6 +404,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_create_speech_optimization_dispatch_run",
                 "pandrator_create_session",
                 "pandrator_create_text_source",
+                "pandrator_generate_sound",
                 "pandrator_create_translation_branches",
                 "pandrator_create_translation_project",
                 "pandrator_execute_translation_project_operation",
@@ -411,12 +417,16 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_download_artifact",
                 "pandrator_edit_performance_plan",
                 "pandrator_import_local_source",
+                "pandrator_import_audio_reference",
                 "pandrator_import_subtitles",
                 "pandrator_fork_session",
                 "pandrator_inspect_source_cleaning_dispatch_extraction",
                 "pandrator_patch_subtitle_cues",
+                "pandrator_plan_export_variant",
+                "pandrator_plan_workflow",
                 "pandrator_patch_session_settings",
                 "pandrator_prepare_media_edit",
+                "pandrator_project_sounds",
                 "pandrator_prepare_speech_plan",
                 "pandrator_propose_media_edit",
                 "pandrator_regenerate_segments",
@@ -454,6 +464,8 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_update_session",
                 "pandrator_update_session_settings",
                 "pandrator_update_session_trash_policy",
+                "pandrator_update_pronunciation",
+                "pandrator_sound_library",
                 "pandrator_update_voice_metadata",
                 "pandrator_create_voice",
                 "pandrator_promote_voice_design",
@@ -493,6 +505,13 @@ class McpArchitectureTests(unittest.TestCase):
                     "pandrator_delete_session_permanently",
                     # The current policy revision fences this write.
                     "pandrator_update_session_trash_policy",
+                    # Pronunciation writes use duplicate/version guards;
+                    # saved-plan writes lack replay keys and need state inspection.
+                    "pandrator_create_pronunciation",
+                    "pandrator_update_pronunciation",
+                    "pandrator_delete_pronunciation",
+                    "pandrator_plan_workflow",
+                    "pandrator_plan_export_variant",
                 }
                 for action in mutating
             )

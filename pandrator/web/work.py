@@ -270,7 +270,6 @@ class WorkService:
                 Job.progress,
                 Job.progress_detail,
                 Job.result_json,
-                Job.payload_json,
                 Job.error_code,
                 Job.error_message,
                 Job.created_at,
@@ -292,18 +291,37 @@ class WorkService:
         self.queue._reconcile_stale()
         with self.queue.database.session() as session:
             jobs = session.scalars(statement).all()
+            purge_payload_ids = [
+                job.id for job in jobs
+                if str(job.kind).startswith("maintenance.session_purge")
+            ]
+            if purge_payload_ids:
+                session.scalars(
+                    select(Job)
+                    .options(load_only(Job.id, Job.payload_json))
+                    .where(Job.id.in_(purge_payload_ids))
+                ).all()
             purge_targets = {
                 str((job.payload_json or {}).get("target_session_id"))
-                for job in jobs if job.kind == "maintenance.session_purge"
+                for job in jobs
+                if job.kind == "maintenance.session_purge"
                 and (job.payload_json or {}).get("target_session_id")
             }
             claimed_targets = set(session.scalars(select(SessionPurge.session_id).where(
                 SessionPurge.session_id.in_(purge_targets),
                 SessionPurge.state.in_(("purging", "failed", "complete")),
             ))) if purge_targets else set()
-            return [self._project(
-                job, purge_claimed=(job.payload_json or {}).get("target_session_id") in claimed_targets,
-            ) for job in jobs]
+            return [
+                self._project(
+                    job,
+                    purge_claimed=(
+                        (job.payload_json or {}).get("target_session_id") in claimed_targets
+                        if job.kind == "maintenance.session_purge"
+                        else False
+                    ),
+                )
+                for job in jobs
+            ]
 
     def get(self, job_id: str) -> WorkView:
         return self._project(self.queue.get(job_id))

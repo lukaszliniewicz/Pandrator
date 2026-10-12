@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -488,7 +489,7 @@ class WorkerResilienceTests(unittest.TestCase):
                 job.id, "worker", ["gpu:0"], lease_generation=generation
             )
         )
-        with sqlite3.connect(self.database_path) as writer:
+        with closing(sqlite3.connect(self.database_path)) as writer, writer:
             writer.execute("BEGIN IMMEDIATE")
             started = time.monotonic()
             with self.assertRaises(OperationalError):
@@ -758,7 +759,7 @@ class WorkerResilienceTests(unittest.TestCase):
 
     def test_writer_contention_does_not_cancel_monitor_renewal(self):
         def hold_writer_during_monitor(_payload, _progress, cancel_event):
-            with sqlite3.connect(self.database_path) as writer:
+            with closing(sqlite3.connect(self.database_path)) as writer, writer:
                 writer.execute("BEGIN IMMEDIATE")
                 self.assertFalse(cancel_event.wait(0.8))
                 writer.rollback()

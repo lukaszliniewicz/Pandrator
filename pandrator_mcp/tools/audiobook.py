@@ -62,14 +62,22 @@ AUDIOBOOK_ACTIONS = (
 )
 
 # FastMCP supplies Python signature defaults even when a caller omits an
-# optional field. Zero is outside the declared types of these fields; the
-# public schema removes this internal default so exact supplied keys survive.
-_OMITTED_SELECTION_FIELD = 0
-_SELECTION_OPTIONAL_FIELDS = frozenset({
-    "speaker", "character_id", "voice_category", "voice", "delivery",
-    "speech_xml", "vocal_event", "unlock_locked",
-    "enable_casting", "enable_performance", "enable_vocalizations",
-})
+# optional field. These per-field values sit outside each field's declared
+# type; the public schema retains the model's own constraints and hides them.
+_SELECTION_OPTIONAL_FIELD_SENTINELS = {
+    "speaker": 0,
+    "character_id": 0,
+    "voice_category": 0,
+    "voice": 0,
+    "delivery": 0,
+    "speech_xml": 0,
+    "vocal_event": 0,
+    "unlock_locked": 0,
+    "enable_casting": 0,
+    "enable_performance": 0,
+    "enable_vocalizations": 0,
+    "expected_sound_plan_revision": -1,
+}
 
 
 def audiobook_action(
@@ -200,7 +208,11 @@ def _register_tool(
         if model in (PreviewSpeechSelectionInput, ApplySpeechSelectionInput):
             values = {
                 key: value for key, value in values.items()
-                if not (key in _SELECTION_OPTIONAL_FIELDS and type(value) is int and value == _OMITTED_SELECTION_FIELD)
+                if not (
+                    key in _SELECTION_OPTIONAL_FIELD_SENTINELS
+                    and type(value) is int
+                    and value == _SELECTION_OPTIONAL_FIELD_SENTINELS[key]
+                )
             }
         return validated_call(_handler, runtime, model, values)
 
@@ -227,9 +239,9 @@ def _register_tool(
                 default=(
                     inspect.Parameter.empty
                     if field.is_required()
-                    else _OMITTED_SELECTION_FIELD
+                    else _SELECTION_OPTIONAL_FIELD_SENTINELS[field_name]
                     if model in (PreviewSpeechSelectionInput, ApplySpeechSelectionInput)
-                    and field_name in _SELECTION_OPTIONAL_FIELDS
+                    and field_name in _SELECTION_OPTIONAL_FIELD_SENTINELS
                     else field.default
                 ),
             )

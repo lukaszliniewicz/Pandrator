@@ -514,7 +514,8 @@ def test_worker_cli_closes_after_native_handler_unwinds_before_database_disposal
         disposal.append(session.close_count)
         original_dispose()
 
-    def handlers(_database, _paths, *, tts_providers):
+    def handlers(_database, _paths, *, jobs, tts_providers):
+        assert jobs.database is _database
         registries.append(tts_providers)
         pool = tts_providers.get("audio_cpp")._session_pool
         registry = JobHandlerRegistry()
@@ -528,7 +529,10 @@ def test_worker_cli_closes_after_native_handler_unwinds_before_database_disposal
             return {"completed": True}
 
         registry.register("fixture.tts", execute, domain="fixture")
-        return SimpleNamespace(handler_registry=registry)
+        return SimpleNamespace(
+            handler_registry=registry,
+            sound_mixes=SimpleNamespace(run_mix=lambda *_args: None),
+        )
 
     def worker(*args):
         instance = Worker(*args)
@@ -588,11 +592,15 @@ def test_worker_cli_retires_owned_registry_on_constructor_and_runner_exit(
         disposal.append(session.close_count)
         original_dispose()
 
-    def handlers(_database, _paths, *, tts_providers):
+    def handlers(_database, _paths, *, jobs, tts_providers):
+        assert jobs.database is _database
         assert tts_providers is providers
         if ending == "construction_error":
             raise RuntimeError("controlled workflow constructor failure")
-        return SimpleNamespace(handler_registry=JobHandlerRegistry())
+        return SimpleNamespace(
+            handler_registry=JobHandlerRegistry(),
+            sound_mixes=SimpleNamespace(run_mix=lambda *_args: None),
+        )
 
     def run(_self):
         if ending == "interrupt":

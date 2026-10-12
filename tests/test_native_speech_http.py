@@ -115,7 +115,7 @@ AZURE_URL = "https://azure.invalid/custom/speech"
 AZURE_SSML = (
     '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
     'xmlns:mstts="http://www.w3.org/2001/mstts" xml:lang="de-DE">'
-    '<voice xml:lang="de-DE" name="de-DE-Klaus:MAI-Voice-2">'
+    '<voice xml:lang="de-DE" name="de-DE-Klaus:MAI-Voice-2.1">'
     '<prosody rate="+25%">Hello</prosody></voice></speak>'
 )
 
@@ -125,7 +125,7 @@ def native_request(provider: str, monkeypatch: pytest.MonkeyPatch) -> requests.R
         return tts_handler._request_elevenlabs_audio("Hello", elevenlabs_settings(monkeypatch))
     assert provider == "azure"
     monkeypatch.setenv("FIXTURE_NATIVE_KEY", "fixture-key")
-    settings = {"model": "MAI-Voice-2", "voice": "de-DE-Klaus:MAI-Voice-2", "speed": 1.25}
+    settings = {"model": "MAI-Voice-2.1", "voice": "de-DE-Klaus:MAI-Voice-2.1", "speed": 1.25}
     endpoint: dict[str, object] = {
         "base_url": "https://azure.invalid",
         "speech_path": "/custom/speech",
@@ -281,7 +281,7 @@ def test_request_preparation_errors_remain_outside_the_transport_catch_boundary(
         raise error
 
     def ssml(text: str, model: str, voice: str, settings: dict) -> str:
-        assert text == "Hello" and model == "MAI-Voice-2" and voice == "de-DE-Klaus:MAI-Voice-2"
+        assert text == "Hello" and model == "MAI-Voice-2.1" and voice == "de-DE-Klaus:MAI-Voice-2.1"
         raise error
 
     def post(url: str, **options: object) -> requests.Response:
@@ -352,8 +352,8 @@ def azure_settings(
     return {
         "service": tts_handler.OPENAI_COMPAT_SERVICE,
         "openai_audio_endpoint": "azure-fixture",
-        "model": "MAI-Voice-2",
-        "voice": "de-DE-Klaus:MAI-Voice-2",
+        "model": "MAI-Voice-2.1",
+        "voice": "de-DE-Klaus:MAI-Voice-2.1",
         "speed": 1.25,
         "provider_configs": [
             {

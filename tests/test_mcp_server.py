@@ -76,6 +76,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_request_translation_project_export_bundle",
                         "pandrator_audition_voice",
                         "pandrator_adopt_performance_plan",
+                        "pandrator_apply_speech_selection_batch",
                         "pandrator_analyse_performance_plan",
                         "pandrator_claim_performance_batch",
                         "pandrator_create_performance_plan",
@@ -99,10 +100,13 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_control_runtime",
                         "pandrator_create_voice",
                         "pandrator_create_voice_collection",
+                        "pandrator_create_comparison_export",
                         "pandrator_create_dispatch_run",
                         "pandrator_create_media_edit_dispatch_run",
                         "pandrator_create_session",
+                        "pandrator_create_pronunciation",
                         "pandrator_delete_output",
+                        "pandrator_delete_pronunciation",
                         "pandrator_delete_session_permanently",
                         "pandrator_create_source_cleaning_dispatch_run",
                         "pandrator_create_speech_optimization_dispatch_run",
@@ -114,11 +118,15 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_execute_workflow_plan",
                         "pandrator_explain_system",
                         "pandrator_generate_speech_plan",
+                        "pandrator_generate_sound",
                         "pandrator_get_generation_controls",
+                        "pandrator_get_generation_operation",
+                        "pandrator_get_generation_run_coverage",
                         "pandrator_get_audiobook_setup",
                         "pandrator_configure_audiobook",
                         "pandrator_preview_speech_segment",
                         "pandrator_preview_speech_selection",
+                        "pandrator_preview_speech_selection_batch",
                         "pandrator_get_speech_selection_context",
                         "pandrator_apply_speech_selection",
                         "pandrator_get_capabilities",
@@ -132,6 +140,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_media_edit_dispatch_run",
                         "pandrator_get_provider_status",
                         "pandrator_get_session",
+                        "pandrator_get_session_purge_inspection",
                         "pandrator_get_session_settings",
                         "pandrator_get_session_trash_policy",
                         "pandrator_get_voice_setup",
@@ -150,12 +159,14 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_get_work_log",
                         "pandrator_get_workflow",
                         "pandrator_import_local_source",
+                        "pandrator_import_audio_reference",
                         "pandrator_import_voice_reference",
                         "pandrator_import_subtitles",
                         "pandrator_inspect_media_edit_boundary",
                         "pandrator_inspect_source_cleaning_dispatch_extraction",
                         "pandrator_inspect_dispatch_split_boundaries",
                         "pandrator_list_artifacts",
+                        "pandrator_list_pronunciations",
                         "pandrator_list_dispatch_runs",
                         "pandrator_list_generation_runs",
                         "pandrator_list_generation_segments",
@@ -180,6 +191,7 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_prepare_media_edit",
                         "pandrator_prepare_speech_plan",
                         "pandrator_promote_voice_design",
+                        "pandrator_project_sounds",
                         "pandrator_preview_subtitles",
                         "pandrator_preview_recast",
                         "pandrator_preview_undo_recast",
@@ -228,6 +240,9 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                         "pandrator_update_session",
                         "pandrator_update_session_settings",
                         "pandrator_update_session_trash_policy",
+                        "pandrator_update_pronunciation",
+                        "pandrator_sound_catalogue",
+                        "pandrator_sound_library",
                         "pandrator_update_voice_collection",
                         "pandrator_update_voice_metadata",
                         "pandrator_configure_voice_setup",
@@ -252,6 +267,12 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     }
                     if tool.name == "pandrator_get_voice_catalog":
                         forbidden_properties.remove("origin")
+                    elif tool.name == "pandrator_import_audio_reference":
+                        self.assertEqual(
+                            tool.input_schema["properties"]["target"]["enum"],
+                            ["sound", "voice_reference"],
+                        )
+                        forbidden_properties.remove("target")
                     self.assertTrue(properties.isdisjoint(forbidden_properties))
                     spec = ACTION_CATALOG.get(tool.name)
                     self.assertEqual(
@@ -276,9 +297,16 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                 response_mode_tools = (
                     "pandrator_get_tts_catalog",
                     "pandrator_get_voice_catalog",
+                    "pandrator_assemble_generation_run",
+                    "pandrator_list_generation_runs",
+                    "pandrator_list_generation_segments",
                     "pandrator_list_work",
                     "pandrator_get_work",
                     "pandrator_get_work_log",
+                    "pandrator_regenerate_segments",
+                    "pandrator_revise_speech_block_plan",
+                    "pandrator_select_take",
+                    "pandrator_update_generation_segment",
                 )
                 for tool_name in response_mode_tools:
                     mode_schema = tools_by_name[tool_name].input_schema["properties"][
@@ -431,6 +459,25 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                     schema = tools_by_name[name].input_schema
                     validator = Draft202012Validator(schema)
                     self.assertIn("context_capsule", schema["properties"])
+                    execution_mode_schema = schema["properties"]["execution_mode"]
+                    self.assertEqual("string", execution_mode_schema["type"])
+                    self.assertEqual(
+                        ["serial", "parallel"], execution_mode_schema["enum"]
+                    )
+                    max_parallel_schema = schema["properties"]["max_parallel_batches"]
+                    self.assertEqual("integer", max_parallel_schema["type"])
+                    self.assertEqual(1, max_parallel_schema["minimum"])
+                    self.assertEqual(8, max_parallel_schema["maximum"])
+                    policy_description = (
+                        "Serial requires max_parallel_batches=1; "
+                        "parallel requires 2 through 8."
+                    )
+                    self.assertEqual(
+                        policy_description, execution_mode_schema["description"]
+                    )
+                    self.assertEqual(
+                        policy_description, max_parallel_schema["description"]
+                    )
                     self.assertFalse(list(validator.iter_errors(base)))
                     self.assertFalse(
                         list(
@@ -443,28 +490,41 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
                             )
                         )
                     )
-                    self.assertTrue(
-                        list(
-                            validator.iter_errors(
-                                {
-                                    **base,
-                                    "execution_mode": "serial",
-                                    "max_parallel_batches": 2,
-                                }
-                            )
+                    # The published signature stays flat; input validation
+                    # enforces the cross-field policy at invocation time.
+                    for execution_mode, max_parallel_batches, expected_message in (
+                        (
+                            "serial",
+                            2,
+                            "Value error, Serial execution requires "
+                            "max_parallel_batches=1.",
+                        ),
+                        (
+                            "parallel",
+                            1,
+                            "Value error, Parallel execution requires "
+                            "max_parallel_batches from 2 to 8.",
+                        ),
+                    ):
+                        invalid_execution = await client.call_tool(
+                            name,
+                            {
+                                **base,
+                                "execution_mode": execution_mode,
+                                "max_parallel_batches": max_parallel_batches,
+                            },
                         )
-                    )
-                    self.assertTrue(
-                        list(
-                            validator.iter_errors(
-                                {
-                                    **base,
-                                    "execution_mode": "parallel",
-                                    "max_parallel_batches": 1,
-                                }
-                            )
+                        self.assertTrue(invalid_execution.is_error)
+                        failure_text = invalid_execution.content[0].text
+                        failure = json.loads(
+                            failure_text[failure_text.index("{") :]
                         )
-                    )
+                        self.assertEqual("validation_error", failure["code"])
+                        self.assertTrue(failure["request_id"])
+                        self.assertEqual(
+                            expected_message,
+                            failure["details"]["errors"][0]["msg"],
+                        )
                 dispatch_tools = {
                     tool.name: tool for tool in listed.tools if "dispatch" in tool.name
                 }
@@ -771,11 +831,34 @@ class McpServerContractTests(unittest.IsolatedAsyncioTestCase):
             for tool_name, (model, fields) in model_fields.items():
                 advertised = tools_by_name[tool_name].input_schema
                 model_schema = model.model_json_schema()
+                expected_properties = set(model_schema["properties"])
+                if tool_name in {
+                    "pandrator_assemble_generation_run",
+                    "pandrator_list_generation_runs",
+                    "pandrator_list_generation_segments",
+                    "pandrator_regenerate_segments",
+                    "pandrator_revise_speech_block_plan",
+                    "pandrator_select_take",
+                    "pandrator_update_generation_segment",
+                }:
+                    expected_properties.add("response_mode")
                 self.assertEqual(
-                    set(model_schema["properties"]),
+                    expected_properties,
                     set(advertised["properties"]),
                     tool_name,
                 )
+                if tool_name in {
+                    "pandrator_assemble_generation_run",
+                    "pandrator_list_generation_runs",
+                    "pandrator_list_generation_segments",
+                    "pandrator_regenerate_segments",
+                    "pandrator_revise_speech_block_plan",
+                    "pandrator_select_take",
+                    "pandrator_update_generation_segment",
+                }:
+                    response_mode_schema = advertised["properties"]["response_mode"]
+                    self.assertEqual(["standard", "structured"], response_mode_schema["enum"])
+                    self.assertEqual("standard", response_mode_schema["default"])
                 for field_name in fields:
                     expected = model_schema["properties"][field_name]
                     type_name = expected.get("type")

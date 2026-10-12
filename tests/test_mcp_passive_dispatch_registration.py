@@ -235,7 +235,14 @@ CASES = [
             "lease_token": "fixture-lease",
             "result": {
                 "kind": "speech_optimization",
-                "items": [{"unit_id": 1, "text": "Fixture", "speech_xml": None}],
+                "items": [{
+                    "unit_id": 1,
+                    "text": "Fixture",
+                    "speech_xml": None,
+                    "annotations": None,
+                    "source_sha256": None,
+                    "boundary_after": None,
+                }],
             },
             "context_delta": {
                 "terminology": {},
@@ -507,7 +514,7 @@ async def tool_metadata(root: Path) -> dict[str, Any]:
     async with Client(build_server(runtime), mode="auto", raise_exceptions=False) as client:
         metadata = (await client.list_tools()).model_dump(mode="json", by_alias=True)
     assert calls == application.mock_calls == []
-    assert len(metadata["tools"]) == 162
+    assert len(metadata["tools"]) == 185
     selected = [tool for tool in metadata["tools"] if tool["name"] in {case.name for case in CASES}]
     assert [tool["name"] for tool in selected] == [case.name for case in CASES]
     for tool in selected:

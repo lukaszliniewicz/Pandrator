@@ -13,7 +13,7 @@ from unittest import mock
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import event, func, select
+from sqlalchemy import MetaData, Table, event, func, select
 
 from pandrator.runtime import DataPaths, PathBoundaryError
 from pandrator.web.api import create_app
@@ -800,12 +800,24 @@ class SchemaUpgradeTests(unittest.TestCase):
 
             database = Database(database_path)
             with database.session() as session:
-                # Populate the old schema without asking the current ORM to
-                # insert nullable columns introduced by later migrations.
                 session_id = "legacy-source-session"
+                # Reflect the downgraded schema so current ORM defaults stay out.
+                legacy_sessions = Table(
+                    "sessions", MetaData(), autoload_with=session.connection()
+                )
                 session.execute(
-                    SessionRecord.__table__.insert().values(
-                        id=session_id, name="Legacy source", storage_key="legacy-source"
+                    legacy_sessions.insert().values(
+                        id=session_id,
+                        name="Legacy source",
+                        storage_key="legacy-source",
+                        workflow_kind="audiobook",
+                        source_language="auto",
+                        workflow_preset="custom",
+                        included_stages_json=[],
+                        status="idle",
+                        revision=1,
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
                     )
                 )
                 artifact = Artifact(

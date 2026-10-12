@@ -58,7 +58,7 @@ considered once per pass. Uncertain text-to-cue mappings are skipped.
 
 The repair uses additional TTS calls. A new plan version becomes active only
 after replacement audio succeeds and passes timing checks; earlier versions
-and takes remain available. Open **Speech plans** in the generation drawer to
+and takes remain available. Open **Generation → Speech plans** to
 browse versions, preview their blocks, and see whether each repair was applied,
 not applied, failed, or stopped. Older repairs may have no recorded outcome.
 This pass applies to complete voiceover generation

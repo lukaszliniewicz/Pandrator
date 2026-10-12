@@ -161,6 +161,8 @@ def _persisted_matches_response(
 ) -> dict[str, Any]:
     persisted = _record(lifecycle.database, lifecycle.session_id)
     payload = response.get_json()
+    # Standalone sessions have no translation-project membership.
+    assert payload.pop("translation_project", None) is None
     for key, value in payload.items():
         stored = persisted[key]
         if isinstance(value, str) and (key.endswith("_at") or key == "purge_after"):

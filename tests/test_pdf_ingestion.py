@@ -1929,10 +1929,14 @@ class PDFIngestionCacheTests(unittest.TestCase):
             self.assertEqual(fingerprint, self._fingerprint(source_b))
             self.assertEqual(self._rows(warm), self._rows(reused))
             self.assertEqual(self._rows(fresh), self._rows(reused))
-            self.assertEqual(str(source_b.resolve()), fresh.source_path)
+            fresh_source_path = Path(fresh.source_path)
+            self.assertTrue(fresh_source_path.is_absolute())
+            self.assertEqual(fresh_source_path.resolve(), source_b.resolve())
             self.assertEqual(source_b.name, fresh.filename)
             self.assertNotEqual(warm.metadata_candidates, fresh.metadata_candidates)
-            self.assertEqual(str(source_b.resolve()), reused.source_path)
+            reused_source_path = Path(reused.source_path)
+            self.assertTrue(reused_source_path.is_absolute())
+            self.assertEqual(reused_source_path.resolve(), source_b.resolve())
             self.assertEqual(source_b.name, reused.filename)
             self.assertEqual(fresh.metadata_candidates, reused.metadata_candidates)
 
@@ -2101,7 +2105,9 @@ class PDFIngestionCacheTests(unittest.TestCase):
             self.assertEqual(original_bytes, source.read_bytes())
             self.assertEqual(original_sidecar_bytes, sidecar.read_bytes())
             self.assertEqual(fingerprint, self._fingerprint(source))
-            self.assertEqual(str(source.resolve()), repaired.source_path)
+            repaired_source_path = Path(repaired.source_path)
+            self.assertTrue(repaired_source_path.is_absolute())
+            self.assertEqual(repaired_source_path.resolve(), source.resolve())
             self.assertEqual(source.name, repaired.filename)
             self.assertEqual(
                 fresh.attributes["pycroppdf_provenance"],

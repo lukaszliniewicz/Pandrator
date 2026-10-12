@@ -504,6 +504,7 @@ class InstallerUpdateAdmissionTests(unittest.TestCase):
                 self.handle.write(data[:4])
                 self.handle.flush()
                 if self.replace:
+                    self.handle.close()
                     temporary = self.marker.with_suffix(".replacement")
                     temporary.write_bytes(replacement)
                     os.replace(temporary, self.marker)

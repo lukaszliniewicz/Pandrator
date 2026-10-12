@@ -1,6 +1,7 @@
 """Owned read-ahead lifecycle for Kobold Qwen batch audio streams."""
 
 import logging
+import socket
 import sys
 from collections.abc import Callable, Iterator
 from queue import Empty, Full, Queue
@@ -25,9 +26,10 @@ def iter_read_ahead_batch(
 ) -> Iterator[KoboldQwenBatchAudioEvent]:
     """Read ahead while retaining ownership until the reader has stopped.
 
-    Public raw shutdown can interrupt an admitted response body. Before a
-    response arrives, or without that capability, cleanup waits for the existing
-    transport timeout. Response close remains the producer reader's responsibility.
+    Prefer full-duplex owner-socket shutdown for an admitted response, retaining
+    public raw shutdown as a fallback. Before response admission, or when neither
+    shutdown path is available, cleanup waits for the existing transport timeout.
+    Response close remains the producer reader's responsibility.
     """
     if items_count <= 0:
         return
@@ -38,10 +40,15 @@ def iter_read_ahead_batch(
     active_response: requests.Response | None = None
 
     def interrupt(response: requests.Response) -> None:
-        shutdown = getattr(response.raw, "shutdown", None)
+        raw = response.raw
+        shutdown = getattr(raw, "_sock_shutdown", None)
+        args = (socket.SHUT_RDWR,)
+        if not callable(shutdown):
+            shutdown = getattr(raw, "shutdown", None)
+            args = ()
         if callable(shutdown):
             try:
-                shutdown()
+                shutdown(*args)
             except (OSError, ValueError, RuntimeError):
                 logger.debug("Qwen batch response shutdown raced with cleanup.", exc_info=True)
 
@@ -54,9 +61,10 @@ def iter_read_ahead_batch(
 
     def interrupt_active_response() -> None:
         with response_lock:
-            response = active_response
-        if response is not None:
-            interrupt(response)
+            if active_response is not None:
+                # Keep the producer from releasing the response back to its pool
+                # until the owner-socket interruption has finished.
+                interrupt(active_response)
 
     def put_message(message: KoboldQwenBatchMessage) -> bool:
         while not stop_event.is_set():

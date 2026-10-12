@@ -24,7 +24,7 @@ def performance_action(runtime: McpRuntime, action: str, arguments) -> ToolOutco
         values.pop(field, None)
     payload = runtime.require_application().performance_plan_request(action, values)
     projected = dict(payload)
-    if action == "create" and not arguments.include_units:
+    if action in {"create", "get"} and not arguments.include_units:
         for field in ("items", "offset", "limit", "filter"):
             projected.pop(field, None)
     if action == "claim" and arguments.packet_format == "compact":

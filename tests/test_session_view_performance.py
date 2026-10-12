@@ -246,6 +246,8 @@ class SessionViewPerformanceTests(unittest.TestCase):
             "around_ordinal": 5, "source_cue_id": "cue", "radius": 4,
             "q": "needle", "match_case": True, "whole_word": True,
             "text_field": "spoken", "boundary_flags": False,
+            "audio_version_side": "before", "take_history": "selected",
+            "segment_ids": ["segment-1", "segment-2"],
         }
         replacement_database, replacement_settings = object(), object()
         with patch.object(self.generation, "database", replacement_database), patch.object(

@@ -51,6 +51,34 @@ class ActionCatalog:
 
 ACTION_CATALOG = ActionCatalog(
     (
+        ActionSpec(
+            "pandrator_sound_catalogue", "Sound and music catalogue",
+            "SoundCatalogueInput", RiskClass.READ, "app.read",
+            "soundCatalogue", "GET", "/api/v1/sounds/catalogue", True,
+        ),
+        ActionSpec(
+            "pandrator_generate_sound", "Generate sound or music",
+            "GenerateSoundInput", RiskClass.RUN, "app.run",
+            "generateSound", "POST", "/api/v1/sounds/generate", True,
+            requires_idempotency=True,
+        ),
+        # Action selectors dispatch to several fixed routes. Mutating actions
+        # require an idempotency key; their read actions do not.
+        ActionSpec(
+            "pandrator_sound_library", "Sound and music library",
+            "SoundLibraryInput", RiskClass.WRITE, "app.write",
+            None, None, None, True, requires_idempotency=True,
+        ),
+        ActionSpec(
+            "pandrator_import_audio_reference", "Import audio reference",
+            "ImportAudioReferenceInput", RiskClass.WRITE, "app.write",
+            None, "PUT", None, True, requires_idempotency=True,
+        ),
+        ActionSpec(
+            "pandrator_project_sounds", "Project sounds",
+            "ProjectSoundsInput", RiskClass.WRITE, "app.write",
+            None, None, None, True, requires_idempotency=True,
+        ),
         ActionSpec("pandrator_get_generation_operation", "Follow a generation operation", "GetGenerationOperationInput", RiskClass.READ, "app.read", "getGenerationOperation", "GET", "/api/v1/generation-operations/{operationId}", True),
         ActionSpec("pandrator_get_generation_run_coverage", "Inspect selected-run audio coverage", "GetGenerationRunCoverageInput", RiskClass.READ, "app.read", "getGenerationRunCoverage", "GET", "/api/v1/generation-runs/{runId}/coverage", True),
         ActionSpec("pandrator_list_pronunciations", "List pronunciation entries", "ListPronunciationsInput", RiskClass.READ, "app.read", "listPronunciations", "GET", "/api/v1/pronunciations", True),

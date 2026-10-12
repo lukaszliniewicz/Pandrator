@@ -43,7 +43,7 @@ class ModelCatalogueApiTests(unittest.TestCase):
             "offset": 3,
             "limit": 17,
             "next_offset": None,
-            "items": [{"catalogue_id": "azure:MAI-Voice-2"}],
+            "items": [{"catalogue_id": "azure:MAI-Voice-2.1"}],
             "families": [],
             "providers": [{"id": "azure", "name": "Azure", "kind": "commercial"}],
         }
@@ -91,11 +91,11 @@ class ModelCatalogueApiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual("azure", payload["items"][0]["provider_id"])
         self.assertEqual(
-            {"MAI-Voice-2", "MAI-Voice-2-Flash"},
+            {"MAI-Voice-2.1", "MAI-Voice-2.1-Flash"},
             {item["id"] for item in payload["items"]},
         )
         self.assertIn(
-            {"id": "azure", "name": "Azure Speech · MAI Voice 2", "kind": "commercial"},
+            {"id": "azure", "name": "Azure Speech · MAI Voice 2.1", "kind": "commercial"},
             payload["providers"],
         )
 

@@ -350,8 +350,8 @@ def test_video_publication_respects_durable_job_boundary(video_publication_case,
 
     def after_commit_context(original):
         @contextmanager
-        def wrapped():
-            with original() as session:
+        def wrapped(**kwargs):
+            with original(**kwargs) as session:
                 yield session
             if boundary == "after" and session is publication_session:
                 interrupt()

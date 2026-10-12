@@ -100,7 +100,7 @@ def test_zero_budget_admits_only_empty_queue_without_cancellation(
 
 
 def test_inspection_is_one_readonly_snapshot_and_closes_connection(tmp_path: Path) -> None:
-    path = tmp_path / "escaped ?# queue.db"
+    path = tmp_path / "escaped # % queue.db"
     native_connect = sqlite3.connect
     with closing(native_connect(path)) as connection, connection:
         connection.execute("CREATE TABLE jobs(status TEXT)")

@@ -77,13 +77,13 @@ Use the [pronunciation library](../guides/pronunciation-and-speech.md) for known
 names and terms. It changes only the TTS request; your displayed source remains
 readable.
 
-For character voices, choose **Multiple voices** in the **Audiobook voices**
+For character voices, choose **Multiple voices** in the **Voices**
 card. Prepare narration, annotate the prepared speech units, then assign voices
 to the narrator and accepted characters in that card. Reporting clauses such as
 “said Scrooge” belong to the narrator. Speaker annotation preserves the spoken
 words; acting directions are optional and require a compatible model.
 
-Open the Generation drawer to review underlined speaker phrases and delivery
+Open **Generation** to review underlined speaker phrases and delivery
 symbols. Hover or focus a phrase to inspect its resolved voice; select text to
 change its speaker, published voice, or directions. **Preview change** shows
 the compiled voice sequence and unsupported controls before **Apply reviewed

@@ -288,6 +288,15 @@ def test_selection_registered_mcp_schema_and_transport_preserve_optional_fields(
             for field in ("voice_category", "speech_xml", "vocal_event", "enable_vocalizations"):
                 assert field in preview_schema["properties"]
                 assert "default" not in preview_schema["properties"][field]
+            for schema in (preview_schema, apply_schema):
+                revision_schema = schema["properties"]["expected_sound_plan_revision"]
+                assert "default" not in revision_schema
+                integer_schema = next(
+                    option
+                    for option in revision_schema["anyOf"]
+                    if option.get("type") == "integer"
+                )
+                assert integer_schema["minimum"] == 0
             assert "expected_segment_revision" in context_schema["required"]
             assert "object object" not in str(preview_schema)
             assert "expected_preview_revision" in apply_schema["required"]
@@ -298,6 +307,7 @@ def test_selection_registered_mcp_schema_and_transport_preserve_optional_fields(
             assert body == PreviewSpeechSelectionInput(**_selection()).model_dump(
                 exclude_unset=True, exclude={"session_id"}
             )
+            assert "expected_sound_plan_revision" not in body
             result = await client.call_tool("pandrator_preview_speech_selection", _selection(start=3, end=8, voice=None, delivery=None))
             assert not result.is_error
             body = application.preview_speech_selection.call_args.kwargs["body"]
@@ -323,9 +333,27 @@ def test_selection_registered_mcp_schema_and_transport_preserve_optional_fields(
             assert application.preview_speech_selection.call_args.kwargs["body"]["enable_vocalizations"] is True
             result = await client.call_tool("pandrator_preview_speech_selection", _selection(
                 speech_xml='<segment id="segment-1">Some text</segment>',
+                expected_sound_plan_revision=0,
             ))
             assert not result.is_error
-            assert application.preview_speech_selection.call_args.kwargs["body"]["speech_xml"].startswith("<segment")
+            body = application.preview_speech_selection.call_args.kwargs["body"]
+            assert body["speech_xml"].startswith("<segment")
+            assert body["expected_sound_plan_revision"] == 0
+            result = await client.call_tool("pandrator_preview_speech_selection", _selection(
+                speech_xml='<segment id="segment-1">Some text</segment>',
+                expected_sound_plan_revision=None,
+            ))
+            assert not result.is_error
+            assert application.preview_speech_selection.call_args.kwargs["body"][
+                "expected_sound_plan_revision"
+            ] is None
+            result = await client.call_tool("pandrator_preview_speech_selection", _selection(
+                vocal_event={"kind": "laugh"}, enable_vocalizations=False,
+            ))
+            assert not result.is_error
+            assert application.preview_speech_selection.call_args.kwargs["body"][
+                "enable_vocalizations"
+            ] is False
             result = await client.call_tool("pandrator_get_speech_selection_context", _selection())
             assert not result.is_error
             assert application.get_speech_selection_context.call_args.kwargs["body"] == {
@@ -341,6 +369,11 @@ def test_selection_registered_mcp_schema_and_transport_preserve_optional_fields(
             for invalid_payload in (
                 _selection(vocal_event=None),
                 _selection(speech_xml=None),
+                _selection(expected_sound_plan_revision=0),
+                _selection(
+                    speech_xml='<segment id="segment-1">Some text</segment>',
+                    expected_sound_plan_revision=-1,
+                ),
                 _selection(speech_xml="<segment/>", vocal_event={"kind": "sigh"}),
                 _selection(vocal_event={"kind": "sigh", "duration_ms": 100}),
                 _selection(speaker="narrator", voice_category="female"),
@@ -365,5 +398,44 @@ def test_selection_registered_mcp_schema_and_transport_preserve_optional_fields(
                 "kind": "laugh", "position": "after",
             }
             assert application.apply_speech_selection.call_args.kwargs["body"]["enable_vocalizations"] is True
+            result = await client.call_tool("pandrator_apply_speech_selection", {
+                **_selection(
+                    speech_xml='<segment id="segment-1">Updated text</segment>',
+                    expected_sound_plan_revision=0,
+                ),
+                "expected_preview_revision": REVISION,
+                "idempotency_key": "selection-apply-4",
+            })
+            assert not result.is_error
+            body = application.apply_speech_selection.call_args.kwargs["body"]
+            assert body["speech_xml"].startswith("<segment")
+            assert body["expected_sound_plan_revision"] == 0
+            result = await client.call_tool("pandrator_apply_speech_selection", {
+                **_selection(
+                    speech_xml='<segment id="segment-1">Updated text</segment>',
+                    expected_sound_plan_revision=None,
+                ),
+                "expected_preview_revision": REVISION,
+                "idempotency_key": "selection-apply-5",
+            })
+            assert not result.is_error
+            assert application.apply_speech_selection.call_args.kwargs["body"][
+                "expected_sound_plan_revision"
+            ] is None
+            applied = application.apply_speech_selection.call_count
+            for invalid_selection in (
+                _selection(expected_sound_plan_revision=0),
+                _selection(
+                    speech_xml='<segment id="segment-1">Updated text</segment>',
+                    expected_sound_plan_revision=-1,
+                ),
+            ):
+                invalid = await client.call_tool("pandrator_apply_speech_selection", {
+                    **invalid_selection,
+                    "expected_preview_revision": REVISION,
+                    "idempotency_key": "selection-apply-invalid",
+                })
+                assert invalid.is_error
+            assert application.apply_speech_selection.call_count == applied
 
     asyncio.run(exercise())

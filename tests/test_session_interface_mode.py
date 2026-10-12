@@ -10,6 +10,7 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from pydantic import ValidationError
 
 from pandrator.web.api import create_app
@@ -80,7 +81,7 @@ def test_old_database_rows_migrate_to_advanced_and_keep_their_ids(tmp_path: Path
     with engine.begin() as connection:
         assert connection.execute(
             sa.text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "0054_session_interface_mode"
+        ).scalar_one() == ScriptDirectory.from_config(config).get_current_head()
         sessions = sa.Table("sessions", sa.MetaData(), autoload_with=connection)
         connection.execute(
             sessions.insert().values(

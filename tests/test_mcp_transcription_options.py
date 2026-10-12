@@ -141,7 +141,7 @@ def test_discovered_transcription_options_are_canonical_and_optional(tmp_path: P
             return await client.list_tools()
 
     tools = asyncio.run(inventory()).tools
-    assert len(tools) == 162
+    assert len(tools) == 185
     schema = next(tool.input_schema for tool in tools if tool.name == "pandrator_transcribe")
     for field, expected in {
         "qwen_asr_model": {"qwen3_asr_0_6b", "qwen3_asr_1_7b"},

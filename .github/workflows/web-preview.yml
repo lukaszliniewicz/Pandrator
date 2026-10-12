@@ -20,9 +20,8 @@ jobs:
     if: ${{ !inputs.skip_python }}
     name: Python tests (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    # The export lane varied from 32 to over 41 minutes of pytest work,
-    # plus 3.5 minutes of setup. Keep its platform overhead inside the budget.
-    timeout-minutes: ${{ matrix.name == 'windows-web-07' && 55 || matrix.os == 'windows-latest' && 45 || 35 }}
+    # Windows filesystem checks use smaller lanes to stay within this budget.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 35 }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +45,7 @@ jobs:
             os: ubuntu-latest
             lanes: >-
               web-05-serial web-06-serial web-07-serial web-08-serial
+              web-09-serial web-10-serial web-11-serial
               installer-serial manager-serial mcp-serial
               system-media-serial
           - name: windows-fast-xdist
@@ -77,6 +77,15 @@ jobs:
           - name: windows-web-08
             os: windows-latest
             lanes: web-08-serial
+          - name: windows-web-09
+            os: windows-latest
+            lanes: web-09-serial
+          - name: windows-web-10
+            os: windows-latest
+            lanes: web-10-serial
+          - name: windows-web-11
+            os: windows-latest
+            lanes: web-11-serial
           - name: windows-services
             os: windows-latest
             lanes: >-
@@ -171,27 +180,51 @@ jobs:
           - os: ubuntu-latest
             browser: chromium
             shard: 1
-            shards: 1
+            shards: 2
+          - os: ubuntu-latest
+            browser: chromium
+            shard: 2
+            shards: 2
           - os: ubuntu-latest
             browser: firefox
             shard: 1
-            shards: 1
-          - os: windows-latest
-            browser: chromium
-            shard: 1
             shards: 2
-          - os: windows-latest
-            browser: chromium
-            shard: 2
-            shards: 2
-          - os: windows-latest
-            browser: firefox
-            shard: 1
-            shards: 2
-          - os: windows-latest
+          - os: ubuntu-latest
             browser: firefox
             shard: 2
             shards: 2
+          - os: windows-latest
+            browser: chromium
+            shard: 1
+            shards: 4
+          - os: windows-latest
+            browser: chromium
+            shard: 2
+            shards: 4
+          - os: windows-latest
+            browser: chromium
+            shard: 3
+            shards: 4
+          - os: windows-latest
+            browser: chromium
+            shard: 4
+            shards: 4
+          - os: windows-latest
+            browser: firefox
+            shard: 1
+            shards: 4
+          - os: windows-latest
+            browser: firefox
+            shard: 2
+            shards: 4
+          - os: windows-latest
+            browser: firefox
+            shard: 3
+            shards: 4
+          - os: windows-latest
+            browser: firefox
+            shard: 4
+            shards: 4
 
     steps:
       - uses: actions/checkout@v4

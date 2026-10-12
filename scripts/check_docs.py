@@ -130,7 +130,7 @@ def check_repository(root: Path) -> list[str]:
 
     for relative in _public_paths(repository):
         if _private_path(relative):
-            errors.append(f"internal material must remain untracked: {relative}")
+            errors.append(f"internal material must remain untracked: {relative.as_posix()}")
 
     for relative in documents:
         if relative.name in _FORBIDDEN_PUBLIC_DOCUMENTS or relative.name.startswith(

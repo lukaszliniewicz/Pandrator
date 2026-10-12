@@ -163,11 +163,13 @@ class AuditService:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, destination)
-            directory_descriptor = os.open(pending, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
+            directory_flag = getattr(os, "O_DIRECTORY", None)
+            if directory_flag is not None:
+                directory_descriptor = os.open(pending, os.O_RDONLY | directory_flag)
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
         finally:
             temporary.unlink(missing_ok=True)
 

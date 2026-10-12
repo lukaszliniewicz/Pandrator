@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import sqlite3
+import wave
 from collections.abc import Iterator
 from contextlib import closing, contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -21,8 +22,16 @@ from sqlalchemy.pool import Pool
 
 from pandrator.runtime import DataPaths
 from pandrator.web import cli
+from pandrator.web.artifacts import ArtifactService
 from pandrator.web.database import Database
-from pandrator.web.models import ApiToken, Artifact, Job, JobEvent, SessionRecord
+from pandrator.web.models import (
+    ApiToken,
+    Artifact,
+    Job,
+    JobEvent,
+    SessionRecord,
+    TrainingRun,
+)
 from tests.web_test_support import prepare_web_test_data_root
 
 COMMANDS = {
@@ -398,7 +407,9 @@ def test_output_failure_occurs_after_native_pool_retirement(owner: HeldDatabase)
     owner.assert_retired()
 
 
-def test_native_twelve_command_round_trip_disposes_before_every_output(tmp_path: Path) -> None:
+def test_native_fifteen_command_round_trip_disposes_before_every_output(
+    tmp_path: Path,
+) -> None:
     paths = prepare_web_test_data_root(tmp_path)
     observed: list[str] = []
 
@@ -441,21 +452,60 @@ def test_native_twelve_command_round_trip_disposes_before_every_output(tmp_path:
     assert [record["id"] for record in invoke("command_job_list")] == [job_id]
     assert invoke("command_job_show", job_id=job_id)["status"] == "queued"
     assert invoke("command_job_cancel", job_id=job_id)["status"] == "canceled"
+
+    voice_path = paths.uploads / "voice-reference.wav"
+    paths.uploads.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(voice_path), "wb") as voice_file:
+        voice_file.setnchannels(1)
+        voice_file.setsampwidth(2)
+        voice_file.setframerate(16_000)
+        voice_file.writeframes(b"\0\0" * 320)
+    artifact_database = Database(paths.database)
+    try:
+        voice_reference = ArtifactService(artifact_database, paths).register(
+            voice_path,
+            kind="audio",
+            role="voice_reference",
+            session_id=session_id,
+        )
+    finally:
+        artifact_database.dispose()
+
+    training = invoke("command_training_start", artifact_id=voice_reference.id)
+    training_id = training["training_id"]
+    training_job_id = training["id"]
+    assert training["kind"] == "training.xtts"
+    assert training["status"] == "queued"
+    trainings = invoke("command_training_list")
+    assert [item["id"] for item in trainings] == [training_id]
+    assert trainings[0]["source_artifact_id"] == voice_reference.id
+    assert trainings[0]["model_name"] == "narrator"
+    canceled_training = invoke("command_training_cancel", training_id=training_id)
+    assert canceled_training["status"] == "canceled"
+
     assert invoke("command_doctor") == {
         "ok": True,
         "data_root": str(paths.root),
         "artifact_issues": [],
     }
-    assert len(observed) == 12 and set(observed) == set(COMMANDS)
+    assert len(observed) == 15 and set(observed) == set(COMMANDS)
     database = Database(paths.database)
     try:
         with database.session() as session:
             token = session.get(ApiToken, token_id)
             record = session.get(SessionRecord, session_id)
             job = session.get(Job, job_id)
+            training_run = session.get(TrainingRun, training_id)
+            training_job = session.get(Job, training_job_id)
             assert token is not None and token.revoked_at is not None
             assert record is not None and (paths.sessions / record.storage_key).is_dir()
             assert job is not None and job.status == "canceled"
+            assert training_run is not None
+            assert training_run.source_artifact_id == voice_reference.id
+            assert training_run.model_name == "narrator"
+            assert training_run.status == "canceled"
+            assert training_job is not None and training_job.kind == "training.xtts"
+            assert training_job.status == "canceled"
             assert list(
                 session.scalars(
                     select(JobEvent.event_type)

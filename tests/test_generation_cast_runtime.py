@@ -354,7 +354,7 @@ def test_customvoice_requires_a_native_speaker():
     assert resolve_binding(None, {"voice": "Ryan"}, settings)["voice"] == "Ryan"
 
 
-def test_preview_service_override_keeps_cast_and_reports_live_readiness(case):
+def test_preview_service_override_keeps_cast_and_reports_cached_readiness(case):
     plan, _xml = seed_cast(case)
     catalogue = case["services"]["tts_catalogue"]
     with patch.object(catalogue, "snapshot", return_value=({"services": [{"id": "audio_cpp", "available": True, "models": []}]}, 1)) as refresh:
@@ -368,7 +368,7 @@ def test_preview_service_override_keeps_cast_and_reports_live_readiness(case):
     assert result["readiness"]["model_available"] is False
     assert result["readiness"]["compilation_only"] is True
     assert result["generation_source"]["plan_revision_id"] == case["revision_id"]
-    refresh.assert_called_once_with(refresh=True)
+    refresh.assert_called_once_with(refresh=False)
 
 
 @pytest.mark.parametrize("cancel_at", ["part", "verification"])

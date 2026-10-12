@@ -1,11 +1,14 @@
 """Durable audit behavior when another SQLite writer holds the database."""
 
 import json
+import os
 import sqlite3
 import stat
 import tempfile
 import time
 import unittest
+from contextlib import closing
+from unittest.mock import patch
 
 from sqlalchemy.exc import OperationalError
 
@@ -53,8 +56,8 @@ class AuditContentionTests(unittest.TestCase):
             metadata={"retryable": "secret-value"},
         )
 
-    def test_busy_event_spools_and_replays_once_after_restart(self):
-        with sqlite3.connect(self.database_path) as writer:
+    def _assert_busy_event_spools_and_replays_once(self):
+        with closing(sqlite3.connect(self.database_path)) as writer, writer:
             writer.execute("BEGIN IMMEDIATE")
             started = time.monotonic()
             with self.assertLogs("pandrator.web.audit", level="WARNING"):
@@ -63,8 +66,9 @@ class AuditContentionTests(unittest.TestCase):
             pending = self.database_path.parent / "audit-pending"
             files = list(pending.glob("*.json"))
             self.assertEqual(1, len(files))
-            self.assertEqual(0o700, stat.S_IMODE(pending.stat().st_mode))
-            self.assertEqual(0o600, stat.S_IMODE(files[0].stat().st_mode))
+            if os.name != "nt":
+                self.assertEqual(0o700, stat.S_IMODE(pending.stat().st_mode))
+                self.assertEqual(0o600, stat.S_IMODE(files[0].stat().st_mode))
             contents = files[0].read_text()
             self.assertNotIn("secret-value", contents)
             payload = json.loads(contents)
@@ -89,6 +93,13 @@ class AuditContentionTests(unittest.TestCase):
         with self.database.session() as session:
             self.assertEqual(1, session.query(AuditEvent).count())
 
+    def test_busy_event_spools_and_replays_once_after_restart(self):
+        self._assert_busy_event_spools_and_replays_once()
+
+    def test_busy_event_spools_and_replays_once_without_directory_capability(self):
+        with patch.object(os, "O_DIRECTORY", None, create=True):
+            self._assert_busy_event_spools_and_replays_once()
+
     def test_scoped_timeout_is_restored_after_busy_and_success(self):
         with self.database.session(busy_timeout_ms=13) as session:
             self.assertEqual(
@@ -103,7 +114,7 @@ class AuditContentionTests(unittest.TestCase):
                 30_000, session.connection().exec_driver_sql("PRAGMA busy_timeout").scalar_one()
             )
 
-        with sqlite3.connect(self.database_path) as writer:
+        with closing(sqlite3.connect(self.database_path)) as writer, writer:
             writer.execute("BEGIN IMMEDIATE")
             with self.assertRaises(OperationalError):
                 with self.database.immediate_session(busy_timeout_ms=15):
@@ -115,7 +126,7 @@ class AuditContentionTests(unittest.TestCase):
             )
 
     def test_ordinary_record_replays_pending_event_without_cleanup(self):
-        with sqlite3.connect(self.database_path) as writer:
+        with closing(sqlite3.connect(self.database_path)) as writer, writer:
             writer.execute("BEGIN IMMEDIATE")
             with self.assertLogs("pandrator.web.audit", level="WARNING"):
                 self._record()
@@ -143,14 +154,14 @@ class AuditContentionTests(unittest.TestCase):
         self.assertEqual(3, len(self.audit.list()))
 
     def test_busy_opportunistic_drain_stays_bounded_and_keeps_file(self):
-        with sqlite3.connect(self.database_path) as writer:
+        with closing(sqlite3.connect(self.database_path)) as writer, writer:
             writer.execute("BEGIN IMMEDIATE")
             with self.assertLogs("pandrator.web.audit", level="WARNING"):
                 self._record()
             writer.rollback()
         file = next((self.database_path.parent / "audit-pending").glob("*.json"))
 
-        with sqlite3.connect(self.database_path) as writer:
+        with closing(sqlite3.connect(self.database_path)) as writer, writer:
             writer.execute("BEGIN IMMEDIATE")
             started = time.monotonic()
             with self.assertLogs("pandrator.web.audit", level="WARNING"):

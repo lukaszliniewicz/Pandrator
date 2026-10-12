@@ -154,6 +154,7 @@ def test_native_mcp_fork_and_parallel_language_runs(tmp_path: Path):
                             {
                                 "run_id": run["id"],
                                 "idempotency_key": f"claim-{run['id']}",
+                                "packet_format": "standard",
                             },
                         )
                     )

@@ -302,7 +302,9 @@ class DispatchHandlerTests(unittest.TestCase):
 
         claimed = claim_dispatch_batch(
             self.runtime,
-            ClaimDispatchBatchInput(run_id="run-1", idempotency_key="claim:logical"),
+            ClaimDispatchBatchInput(
+                run_id="run-1", idempotency_key="claim:logical", packet_format="standard"
+            ),
         )
         actual = claimed.result["batch"]["cues"][0]
         self.assertEqual("logical_passage", claimed.result["batch"]["id_namespace"])
@@ -327,6 +329,7 @@ class DispatchHandlerTests(unittest.TestCase):
             ClaimDispatchBatchInput(
                 run_id="run-1",
                 idempotency_key="claim:one",
+                packet_format="standard",
             ),
         )
         self.assertEqual("lease-capability", claimed.result["lease_token"])

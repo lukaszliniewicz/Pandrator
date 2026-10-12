@@ -71,7 +71,6 @@ def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
                 "input": TEXT,
                 "voice": "default",
                 "response_format": "wav",
-                "speed": 1.0,
                 "voxcpm": {
                     "cfg_value": 1.5,
                     "inference_timesteps": 15,
@@ -94,13 +93,7 @@ def default_options(provider: str, timeout: int = 300) -> dict[str, object]:
                 "input": TEXT,
                 "voice": "default",
                 "response_format": "wav",
-                "speed": 1.0,
-                "temperature": 0.7,
-                "top_p": 0.7,
-                "chunk_length": 200,
-                "latency": "balanced",
-                "normalize": True,
-                "prosody": {"speed": 1.0, "volume": 0.0, "normalize_loudness": True},
+                "fishs2": {"temperature": 0.7, "top_p": 0.7},
             },
             "timeout": timeout,
         }
@@ -469,7 +462,6 @@ def test_local_custom_payload_and_environment_key_precedence(
             "input": TEXT,
             "voice": "demo",
             "response_format": "wav",
-            "speed": 1.25,
             "voxcpm": {
                 "cfg_value": 1.5,
                 "inference_timesteps": 15,
@@ -481,7 +473,6 @@ def test_local_custom_payload_and_environment_key_precedence(
                 "min_len": 2,
                 "max_len": 4096,
             },
-            "instructions": "custom",
         }
     elif provider == "fishs2":
         settings["xtts_model"] = "fish-s2"
@@ -490,13 +481,7 @@ def test_local_custom_payload_and_environment_key_precedence(
             "input": TEXT,
             "voice": "demo",
             "response_format": "wav",
-            "speed": 1.25,
-            "temperature": 0.7,
-            "top_p": 0.7,
-            "chunk_length": 200,
-            "latency": "balanced",
-            "normalize": True,
-            "prosody": {"speed": 1.25, "volume": 0.0, "normalize_loudness": True},
+            "fishs2": {"temperature": 0.7, "top_p": 0.7},
         }
     elif provider == "kokoro":
         settings["xtts_model"] = "openai/kokoro"

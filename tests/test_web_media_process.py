@@ -340,5 +340,6 @@ def test_cancellable_runner_keeps_native_output_and_checked_error_contracts(text
         result = run_cancellable(command, **options)
         assert result.returncode == 0
         output = result.stdout
-    assert output == ("hello\n" if text else b"hello\n")
-    assert result.stderr == ("detail\n" if text else b"detail\n")
+    newline = os.linesep if text else os.linesep.encode()
+    assert output == ("hello" if text else b"hello") + newline
+    assert result.stderr == ("detail" if text else b"detail") + newline

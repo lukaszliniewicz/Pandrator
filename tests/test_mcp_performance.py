@@ -192,10 +192,10 @@ def test_registered_signatures_are_flat_and_match_input_models():
         Server(), None, lambda *args: args, _response, read_only="read", write_action="write"
     )
     models = {model.__name__: model for model in PERFORMANCE_INPUT_MODELS}
-    for action, name, _title, model, *_rest in PERFORMANCE_ACTIONS:
+    for _action, name, _title, model, *_rest in PERFORMANCE_ACTIONS:
         signature = inspect.signature(recorded[name])
         assert set(signature.parameters) == set(models[model].model_fields) | (
-            {"response_mode"} if action in {"claim", "create", "get"} else set()
+            {"response_mode"}
         )
         assert "kwargs" not in signature.parameters
 
@@ -227,8 +227,11 @@ def test_performance_registration_pops_transport_mode_before_strict_validation()
         envelope, mode = recorded[name](**values, response_mode="structured")
         assert mode == "structured"
         assert "response_mode" not in envelope["result"]
-    with pytest.raises(ValidationError):
-        recorded["pandrator_list_performance_plans"](session_id="session", response_mode="structured")
+    list_envelope, list_mode = recorded["pandrator_list_performance_plans"](
+        session_id="session", response_mode="structured"
+    )
+    assert list_mode == "structured"
+    assert "response_mode" not in list_envelope["result"]
 
 
 def _performance_claim_payload():
@@ -326,8 +329,9 @@ def test_performance_plan_metadata_default_and_full_units_on_demand(action):
     }}
     assert full == {"schema_version": "1", **payload}
     assert payload == before
-    assert all("include_units" not in call.args[1]
-               for call in application.performance_plan_request.call_args_list)
+    calls = application.performance_plan_request.call_args_list
+    assert [call.args[0] for call in calls] == [action, action]
+    assert [call.args[1]["include_units"] for call in calls] == [False, True]
 
 
 def test_performance_submit_next_claim_then_complete_review_and_terminal_shape():
@@ -412,8 +416,7 @@ class PerformanceProtocolTests(unittest.IsolatedAsyncioTestCase):
                     ]
                     assert purpose_schema["default"] == "delivery"
                     assert "arguments" not in create.input_schema["properties"]
-                    for name in ("pandrator_create_performance_plan", "pandrator_get_performance_plan",
-                                 "pandrator_claim_performance_batch"):
+                    for _action, name, *_rest in PERFORMANCE_ACTIONS:
                         response_schema = tools[name].input_schema["properties"]["response_mode"]
                         assert response_schema["enum"] == ["standard", "structured"]
                         assert response_schema["default"] == "standard"
@@ -443,6 +446,16 @@ class PerformanceProtocolTests(unittest.IsolatedAsyncioTestCase):
                         application.performance_plan_request.call_args.args[0]
                         == "create"
                     )
+                    result = await client.call_tool(
+                        "pandrator_list_performance_plans",
+                        {"session_id": "s", "response_mode": "structured"},
+                    )
+                    assert not result.is_error
+                    assert (
+                        application.performance_plan_request.call_args.args[0]
+                        == "list"
+                    )
+                    assert "response_mode" not in application.performance_plan_request.call_args.args[1]
                     result = await client.call_tool(
                         "pandrator_submit_performance_batch",
                         {

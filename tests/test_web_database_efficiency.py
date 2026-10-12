@@ -310,8 +310,10 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
         large = self.measure_assembly(100)
 
         self.assertEqual(small["select_count"], large["select_count"])
-        self.assertLessEqual(large["select_count"], 8)
-        self.assertLessEqual(large["selects_per_segment"], 0.08)
+        # Audio-version revalidation and sound-cue lookup add fixed reads.
+        # Equality across 3 and 100 segments still rejects per-segment queries.
+        self.assertLessEqual(large["select_count"], 12)
+        self.assertLessEqual(large["selects_per_segment"], 0.12)
 
         small_run = self.measure_assembly(3, run_scoped=True)
         large_run = self.measure_assembly(100, run_scoped=True)
@@ -319,8 +321,9 @@ class WebDatabaseEfficiencyTests(unittest.TestCase):
             small_run["select_count"],
             large_run["select_count"],
         )
-        self.assertLessEqual(large_run["select_count"], 9)
-        self.assertLessEqual(large_run["selects_per_segment"], 0.09)
+        # Run-bound take selection loads segments, takes and artifacts in batches.
+        self.assertLessEqual(large_run["select_count"], 15)
+        self.assertLessEqual(large_run["selects_per_segment"], 0.15)
 
     def test_representative_query_plans_use_covering_indexes_without_temp_sorts(self):
         with tempfile.TemporaryDirectory() as directory:

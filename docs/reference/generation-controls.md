@@ -352,8 +352,8 @@ and editable alongside XML drafts.
 
 ## Editing generation text and reusing a run
 
-The generation drawer's **Edit text** selector separates **Display / subtitles**
-from **TTS speech**. Display edits keep the existing spoken wording, including
+In **Generation → Display options**, choose **Script / subtitle text** or
+**Speech text**. Display edits keep the existing spoken wording, including
 when speech previously followed the display text. Use **Use display text for
 speech** (or **Reset to script** in the speech editor) to make both match again.
 Speech-only edits never replace the display wording.
@@ -362,8 +362,7 @@ Selecting an older audio run also selects its saved generation settings. That
 settings source survives text edits that create a new plan revision, and applies
 to both segment regeneration and the Generate audio dialog. Provider, model,
 voice, language and explicit TTS speed are retained; assembly slowdown remains a
-separate setting. The API expresses this independently of audio ownership with
-`settings_source_run_id` on generation preview/start requests.
+separate setting.
 
 Subtitle exports capture display text from the selected run's plan, or the active
 plan when no run is selected, when the export is queued. Only its matching source
@@ -374,7 +373,7 @@ are omitted. Spoken overrides are never used as subtitle copy. Original subtitle
 artifacts and historical plans stay unchanged.
 
 A queued replacement is shown separately from the older recording's stale state.
-If an export holds the session, the drawer explains that generation is waiting
+If an export holds the session, Generation explains that generation is waiting
 for it; queuing a replacement does not interrupt the export.
 
 
@@ -383,16 +382,16 @@ for it; queuing a replacement does not interrupt the export.
 Every new project offers Simple (the default) or Advanced. The project header
 lets you switch later and saves the preference. Existing projects retain
 Advanced. Language workspaces use their shared project's preference; forks
-inherit the source preference. MCP creation accepts `interface_mode`, and all
-MCP operations remain available in either mode.
+inherit the source preference. AI assistants can use the same MCP workflows
+in either mode.
 
 Simple keeps compact progress/result cards and read-only Generation previews,
 playback, search and output access. Advanced adds wording, cast/delivery and XML
-editing, take selection and topology controls. A switch waits for wording saves
+editing, take selection, splitting and merging. A switch waits for wording saves
 and refuses to hide an unfinished direction editor. Neither choice starts work
 nor changes the workflow's Review each stage / Automatic execution choice.
 
 Advanced previews are also read-only until double-click, F2 or the pencil opens
 the wording editor. Phrase selection still offers speech actions; a caret and
 cursor insertion actions belong to the explicit editor. Hover details read
-existing annotations without another API call.
+the saved voice assignments and directions.

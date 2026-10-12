@@ -514,6 +514,7 @@ class MediaEditDispatchRouteTests(unittest.TestCase):
     def test_post_write_rejection_is_durable_and_mcp_preserves_acceptance_details(self):
         fixture = _media_edit_fixture.MediaEditServiceTests()
         fixture.setUp()
+        fixture.database.dispose()
         app = None
         try:
             bootstrap = BootstrapTokenStore()
@@ -526,7 +527,6 @@ class MediaEditDispatchRouteTests(unittest.TestCase):
             http = app.test_client()
             csrf = http.post("/api/v1/auth/bootstrap", json={"token": token}).get_json()["csrf_token"]
             services = app.extensions["pandrator"]
-            fixture.database.dispose()
             fixture.database = services["database"]
             fixture.artifacts = services["artifacts"]
             fixture.session_id = (
