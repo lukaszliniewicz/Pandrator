@@ -45,6 +45,19 @@ class SubtitleReviewMutationService:
         principal: Principal,
         idempotency_key: str | None,
     ) -> SubtitleMutationResult:
+        if payload.dry_run:
+            with self.database.session() as session:
+                result = self.review.save_review_in_session(
+                    session,
+                    session_id,
+                    stage,
+                    payload.expected_revision,
+                    [item.model_dump() for item in payload.segments],
+                    dry_run=True,
+                    source_artifact_id=payload.source_artifact_id,
+                    expected_source_hash=payload.expected_source_hash,
+                )
+            return SubtitleMutationResult(result, status_code=200)
         return self._save(
             operation_id="saveSubtitleReview",
             principal=principal,
@@ -52,7 +65,7 @@ class SubtitleReviewMutationService:
             request_payload={
                 "session_id": session_id,
                 "stage": stage,
-                **payload.model_dump(mode="json"),
+                **payload.model_dump(mode="json", exclude={"dry_run"}),
             },
             immediate=idempotency_key is not None,
             mutate=lambda session, paths: self.review.save_review_in_session(
@@ -76,6 +89,20 @@ class SubtitleReviewMutationService:
         principal: Principal,
         idempotency_key: str | None,
     ) -> SubtitleMutationResult:
+        if payload.dry_run:
+            with self.database.session() as session:
+                result = self.review.save_passage_review_in_session(
+                    session,
+                    session_id,
+                    stage,
+                    payload.expected_revision,
+                    [item.model_dump() for item in payload.passages],
+                    dry_run=True,
+                    source_artifact_id=payload.source_artifact_id,
+                    expected_source_hash=payload.expected_source_hash,
+                    expected_composition_hash=payload.expected_composition_hash,
+                )
+            return SubtitleMutationResult(result, status_code=200)
         return self._save(
             operation_id="saveSubtitlePassageReview",
             principal=principal,
@@ -83,7 +110,7 @@ class SubtitleReviewMutationService:
             request_payload={
                 "session_id": session_id,
                 "stage": stage,
-                **payload.model_dump(mode="json"),
+                **payload.model_dump(mode="json", exclude={"dry_run"}),
             },
             immediate=True,
             mutate=lambda session, paths: self.review.save_passage_review_in_session(

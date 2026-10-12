@@ -254,11 +254,14 @@ class GenerationSegmentReader:
                     raise ValueError("No speech blocks reference the requested source cue in this revision.")
                 cursor = max(0, min(matching) - radius)
                 end_ordinal = max(matching) + radius
+            page_filters = [*filters, GenerationSegment.ordinal >= max(0, cursor)]
             if end_ordinal is not None:
                 if end_ordinal < max(0, cursor):
                     raise ValueError("The end ordinal must not precede the requested start.")
-                filters.append(GenerationSegment.ordinal <= end_ordinal)
-            page_filters = [*filters, GenerationSegment.ordinal >= max(0, cursor)]
+                # A visible/context window limits rows, not the matching plan
+                # count. Otherwise refreshing eight rows shrinks the header
+                # from the full plan size to eight.
+                page_filters.append(GenerationSegment.ordinal <= end_ordinal)
             rows = list(
                 session.scalars(
                     select(GenerationSegment)

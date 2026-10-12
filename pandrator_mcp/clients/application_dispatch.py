@@ -300,6 +300,8 @@ class ApplicationDispatchMethods(ApplicationRequests):
             # larger on the wire while the backend still enforces the exact
             # decoded response limit.
             maximum_body_bytes=4 * 1024 * 1024,
+            request_timeout_seconds=max(self.timeout_seconds, 120.0),
+            request_timeout_limit_seconds=300.0,
         )
 
     def create_source_cleaning_dispatch_run(

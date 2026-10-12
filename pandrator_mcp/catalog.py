@@ -453,6 +453,18 @@ ACTION_CATALOG = ActionCatalog(
             True,
         ),
         ActionSpec(
+            "pandrator_preview_subtitle_passages", "Inspect logical subtitle passages",
+            "PreviewSubtitlePassagesInput", RiskClass.READ, "app.read",
+            "getExactSubtitleReview", "GET", "/api/v1/sessions/{sessionId}/subtitles/review", True,
+        ),
+        ActionSpec(
+            "pandrator_patch_subtitle_passages", "Edit logical subtitle passages and turns",
+            "PatchSubtitlePassagesInput", RiskClass.WRITE, "app.write",
+            "saveSubtitlePassageReview", "POST",
+            "/api/v1/sessions/{sessionId}/subtitles/{stage}/passage-review", True,
+            requires_idempotency=True,
+        ),
+        ActionSpec(
             "pandrator_patch_subtitle_cues",
             "Patch specific subtitle cues by ordinal with revision guard",
             "PatchSubtitleCuesInput",

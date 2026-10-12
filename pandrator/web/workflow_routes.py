@@ -20,6 +20,24 @@ from .workflows import WorkflowService
 RouteResponse = Response | tuple[Response, int]
 
 
+def workflow_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep status and history, excluding artifact bodies before HTTP encoding."""
+    def artifact_summary(item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        return {key: value for key, value in item.items()
+                if key not in {"metadata_json", "metadata", "path", "relative_path"}}
+
+    return {
+        **payload,
+        "stages": [
+            {**stage, "artifact": artifact_summary(stage.get("artifact")),
+             "artifacts": [artifact_summary(item) for item in stage.get("artifacts", [])]}
+            for stage in payload.get("stages", [])
+        ],
+    }
+
+
 class StageHistoryReader(Protocol):
     def __call__(
         self, session: Session, session_id: str, stage_key: str, *,
@@ -62,7 +80,11 @@ def register_workflow_session_routes(
     @require_auth
     def workflow_get(session_id: str):
         try:
-            return context.jsonify(workflows.snapshot(session_id))
+            view = context.request().args.get("view", "full")
+            if view not in {"full", "summary"}:
+                return error_response("validation_error", "Unknown workflow view.", 422)
+            snapshot = workflows.snapshot(session_id)
+            return context.jsonify(workflow_summary(snapshot) if view == "summary" else snapshot)
         except KeyError:
             return error_response("not_found", "Session not found.", 404)
 

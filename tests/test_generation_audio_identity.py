@@ -28,7 +28,7 @@ from pandrator.web.models import (
     VoiceSample,
     utcnow,
 )
-from pandrator.web.tts_providers import TtsCapabilities
+from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 
 
 class GenerationAudioIdentityTests(unittest.TestCase):
@@ -686,6 +686,285 @@ class GenerationAudioIdentityTests(unittest.TestCase):
         self.assertEqual(2, resumed["skipped"])
         self.assertEqual(1, resumed["generated"])
         self.assertEqual(["One"], calls)
+
+    def test_grouped_preparation_reports_progress_and_validates_identities_once(self):
+        from pandrator.web import generation_audio_identity
+
+        segments = [{"text": f"Grouped line {index}."} for index in range(30)]
+        session_id, _revision_id, segment_ids = self._create_case(
+            segments, name="grouped-preparation-progress"
+        )
+        started = self.generation.start(
+            session_id, run_override=self._override(tts_batch_size=32)
+        )
+        progress_events = []
+        batch_starts = []
+        capabilities = TtsCapabilities(
+            batch_synthesis=True,
+            streaming_batch=True,
+            max_batch_size=32,
+        )
+
+        def start_batch(items, **_kwargs):
+            batch_starts.append([item[0] for item in items])
+            self.assertEqual(
+                "Preparing speech requests: 30 of 30", progress_events[-1][1]
+            )
+            self.assertEqual(2, identity_context.call_count)
+            return iter(
+                TtsBatchResult(
+                    id=segment_id, audio=AudioSegment.silent(duration=20)
+                )
+                for segment_id, _text, _settings in items
+            )
+
+        with (
+            patch.object(
+                self.handlers.tts_providers,
+                "synthesis_capabilities",
+                return_value=capabilities,
+            ),
+            patch.object(
+                self.handlers,
+                "_start_streaming_tts_batch",
+                side_effect=start_batch,
+            ),
+            patch.object(
+                generation_audio_identity,
+                "plan_audio_identities",
+                wraps=generation_audio_identity.plan_audio_identities,
+            ) as identity_planner,
+            patch.object(
+                generation_audio_identity,
+                "AudioIdentityContext",
+                wraps=generation_audio_identity.AudioIdentityContext,
+            ) as identity_context,
+        ):
+            result = self.handlers.run_generation(
+                {"generation_run_id": started["id"]},
+                lambda value, detail=None: progress_events.append((value, detail)),
+                threading.Event(),
+            )
+
+        self.assertEqual("completed", result["status"])
+        self.assertEqual([segment_ids], batch_starts)
+        preparation_events = [
+            (value, detail)
+            for value, detail in progress_events
+            if str(detail or "").startswith("Preparing speech requests:")
+        ]
+        self.assertEqual(
+            [
+                "Preparing speech requests: 0 of 30",
+                "Preparing speech requests: 25 of 30",
+                "Preparing speech requests: 30 of 30",
+            ],
+            [detail for _value, detail in preparation_events],
+        )
+        self.assertEqual({0.0}, {value for value, _detail in preparation_events})
+        self.assertEqual(2, identity_planner.call_count)
+        self.assertEqual(
+            set(segment_ids),
+            set(identity_planner.call_args_list[-1].kwargs["segment_ids"]),
+        )
+
+    def test_grouped_preparation_detects_identity_change_before_provider_start(self):
+        from pandrator.web import generation_audio_identity
+
+        session_id, _revision_id, segment_ids = self._create_case(
+            [{"text": "First."}, {"text": "Second."}, {"text": "Third."}],
+            name="grouped-preparation-identity-change",
+        )
+        started = self.generation.start(
+            session_id, run_override=self._override(tts_batch_size=3)
+        )
+        capabilities = TtsCapabilities(
+            batch_synthesis=True,
+            streaming_batch=True,
+            max_batch_size=3,
+        )
+
+        def mutate_voice(value, detail=None):
+            if detail == "Preparing speech requests: 0 of 3":
+                with self.database.session() as session:
+                    session.get(GenerationSegment, segment_ids[0]).language = "pl"
+
+        with (
+            patch.object(
+                self.handlers.tts_providers,
+                "synthesis_capabilities",
+                return_value=capabilities,
+            ),
+            patch.object(self.handlers, "_start_streaming_tts_batch") as start_batch,
+            patch.object(
+                generation_audio_identity,
+                "plan_audio_identities",
+                wraps=generation_audio_identity.plan_audio_identities,
+            ) as identity_planner,
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during generation"):
+                self.handlers.run_generation(
+                    {"generation_run_id": started["id"]},
+                    mutate_voice,
+                    threading.Event(),
+                )
+
+        start_batch.assert_not_called()
+        self.assertEqual(2, identity_planner.call_count)
+
+    def test_grouped_preparation_pause_and_cancel_return_before_provider_start(self):
+        capabilities = TtsCapabilities(
+            batch_synthesis=True,
+            streaming_batch=True,
+            max_batch_size=3,
+        )
+        for requested_status in ("paused", "canceled"):
+            with self.subTest(status=requested_status):
+                session_id, _revision_id, _segment_ids = self._create_case(
+                    [{"text": f"Line {index}."} for index in range(30)],
+                    name=f"grouped-preparation-{requested_status}",
+                )
+                started = self.generation.start(
+                    session_id, run_override=self._override(tts_batch_size=3)
+                )
+                cancel_event = threading.Event()
+
+                def interrupt_preparation(
+                    _value,
+                    detail=None,
+                    requested_status=requested_status,
+                    cancel_event=cancel_event,
+                    run_id=started["id"],
+                ):
+                    if detail != "Preparing speech requests: 25 of 30":
+                        return
+                    if requested_status == "canceled":
+                        cancel_event.set()
+                    else:
+                        with self.database.session() as session:
+                            session.get(GenerationRun, run_id).pause_requested = True
+
+                with (
+                    patch.object(
+                        self.handlers.tts_providers,
+                        "synthesis_capabilities",
+                        return_value=capabilities,
+                    ),
+                    patch.object(self.handlers, "_start_streaming_tts_batch") as start_batch,
+                ):
+                    result = self.handlers.run_generation(
+                        {"generation_run_id": started["id"]},
+                        interrupt_preparation,
+                        cancel_event,
+                    )
+
+                self.assertEqual(requested_status, result["status"])
+                self.assertEqual(0, result["generated"])
+                start_batch.assert_not_called()
+                with self.database.session() as session:
+                    self.assertEqual(
+                        requested_status,
+                        session.get(GenerationRun, started["id"]).status,
+                    )
+
+    def test_serial_identity_guard_still_runs_before_each_synthesis(self):
+        session_id, _revision_id, segment_ids = self._create_case(
+            [{"text": "First."}, {"text": "Second."}],
+            name="serial-generation-identity-guard",
+        )
+        started = self.generation.start(session_id, run_override=self._override())
+        calls = []
+
+        def synthesize(text, _settings, **_kwargs):
+            calls.append(text)
+            if len(calls) == 1:
+                with self.database.session() as session:
+                    session.get(GenerationSegment, segment_ids[1]).language = "pl"
+            return AudioSegment.silent(duration=20)
+
+        with (
+            patch.object(
+                self.handlers.tts_providers,
+                "synthesis_capabilities",
+                return_value=TtsCapabilities(
+                    batch_synthesis=False, streaming_batch=False
+                ),
+            ),
+            patch.object(self.handlers.tts_providers, "synthesize", side_effect=synthesize),
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during generation"):
+                self.handlers.run_generation(
+                    {"generation_run_id": started["id"]},
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+
+        self.assertEqual(["First."], calls)
+
+    def test_cast_identity_guard_still_runs_before_synthesis(self):
+        from pandrator.web.generation_controls import save_generation_controls
+
+        session_id, _revision_id, segment_ids = self._create_case(
+            [{"text": "A narrated line.", "speaker": "Narrator"}],
+            name="cast-generation-identity-guard",
+        )
+        with self.database.session() as session:
+            save_generation_controls(
+                session,
+                session_id,
+                expected_revision=0,
+                characters=[],
+                cast={"narrator": {"voice": "Kore"}},
+            )
+        override = {
+            "tts": {
+                "service": "gemini",
+                "model": "gemini-2.5-flash-tts",
+                "voice": "Kore",
+                "casting_enabled": True,
+            }
+        }
+        started = self.generation.start(session_id, run_override=override)
+        calls = []
+        changed = False
+
+        def mutate_segment_language(settings):
+            nonlocal changed
+            if not changed:
+                changed = True
+                with self.database.session() as session:
+                    session.get(GenerationSegment, segment_ids[0]).language = "pl"
+            return settings
+
+        with (
+            patch.object(
+                self.handlers.tts_providers,
+                "synthesis_capabilities",
+                return_value=TtsCapabilities(
+                    batch_synthesis=False, streaming_batch=False
+                ),
+            ),
+            patch.object(
+                self.handlers,
+                "prepare_audio_cpp_voice_reference",
+                side_effect=mutate_segment_language,
+            ),
+            patch.object(
+                self.handlers.tts_providers,
+                "synthesize",
+                side_effect=lambda *_args, **_kwargs: calls.append("synthesized")
+                or AudioSegment.silent(duration=20),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during generation"):
+                self.handlers.run_generation(
+                    {"generation_run_id": started["id"]},
+                    lambda *_args: None,
+                    threading.Event(),
+                )
+
+        self.assertTrue(changed)
+        self.assertEqual([], calls)
 
 
     def test_enabling_casting_stales_earlier_takes(self):

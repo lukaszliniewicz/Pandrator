@@ -6,7 +6,11 @@ import type {
 } from './api-models';
 import { sessionApi } from './domain-api';
 import { errorMessage } from './errors';
-import { getTtsCompactCatalogue, getVoiceLibrary } from './tts-catalogue-cache';
+import {
+  getTtsCompactCatalogue,
+  getTtsServiceDetail,
+  getVoiceLibrary
+} from './tts-catalogue-cache';
 
 type CatalogueLoad = {
   catalogue: TtsCompactCatalogue;
@@ -18,15 +22,25 @@ export class TtsCatalogueState {
   catalogue = $state<TtsCatalogue>({ services: [] });
   voices = $state<VoiceRecord[]>([]);
   error = $state('');
+  voicesLoading = $state(false);
+  voiceError = $state('');
+  checkingServices = $state<string[]>([]);
+  serviceErrors = $state<Record<string, string>>({});
   private loaded = false;
+  private voicesLoaded = false;
   private request = 0;
   private voiceRequest = 0;
   private disposed = false;
   private discoveryRequests = new Map<string, number>();
+  private serviceRequests = new Map<string, Promise<void>>();
 
   invalidate() {
     this.request++;
+    this.voiceRequest++;
     this.discoveryRequests.clear();
+    this.serviceRequests.clear();
+    this.checkingServices = [];
+    this.voicesLoading = false;
   }
 
   dispose() {
@@ -34,40 +48,89 @@ export class TtsCatalogueState {
   }
 
   async load(force = false): Promise<CatalogueLoad | undefined> {
-    if (this.loaded && !force) return;
+    if (this.loaded && !force) {
+      if (!this.voicesLoaded && !this.voicesLoading)
+        void this.reloadVoices(false).catch(() => undefined);
+      return;
+    }
     const request = ++this.request;
-    const voiceRequest = ++this.voiceRequest;
+    this.serviceRequests.clear();
+    this.checkingServices = [];
+    this.serviceErrors = {};
     const isCurrent = () => !this.disposed && request === this.request;
     this.error = '';
+    // Saved references should not hold the provider/model controls hostage.
+    void this.reloadVoices(force).catch(() => undefined);
     try {
-      const [services, voices] = await Promise.all([
-        getTtsCompactCatalogue(true, force),
-        getVoiceLibrary(force)
-      ]);
+      const services = await getTtsCompactCatalogue(force, force);
       if (!isCurrent()) return;
       this.catalogue = services;
-      if (voiceRequest === this.voiceRequest) this.voices = voices.items ?? [];
       return { catalogue: services, current: isCurrent };
     } catch (caught) {
       if (isCurrent()) this.error = errorMessage(caught);
     }
   }
 
-  async reloadVoices() {
+  async reloadVoices(force = true) {
     const catalogueRequest = this.request;
     const request = ++this.voiceRequest;
     const isCurrent = () =>
       !this.disposed &&
       catalogueRequest === this.request &&
       request === this.voiceRequest;
+    this.voicesLoading = true;
+    this.voiceError = '';
     try {
-      const voices = await getVoiceLibrary(true);
+      const voices = await getVoiceLibrary(force);
       if (!isCurrent()) return;
       this.voices = voices.items ?? [];
+      this.voicesLoaded = true;
       return this.voices;
     } catch (caught) {
-      if (isCurrent()) throw caught;
+      if (isCurrent()) {
+        this.voiceError = errorMessage(caught);
+        throw caught;
+      }
+    } finally {
+      if (isCurrent()) this.voicesLoading = false;
     }
+  }
+
+  /** Refresh just the selected provider; ordinary opening keeps cached models visible. */
+  refreshService(serviceId: string): Promise<void> {
+    const pending = this.serviceRequests.get(serviceId);
+    if (pending) return pending;
+    const request = this.request;
+    const isCurrent = () => !this.disposed && request === this.request;
+    this.checkingServices = [...this.checkingServices, serviceId];
+    this.serviceErrors = { ...this.serviceErrors, [serviceId]: '' };
+    const task = getTtsServiceDetail(serviceId, { refresh: true })
+      .then(({ service }) => {
+        if (!isCurrent()) return;
+        this.catalogue = {
+          ...this.catalogue,
+          services: this.catalogue.services.map((item) =>
+            item.id === serviceId ? { ...item, ...service } : item
+          )
+        };
+      })
+      .catch((caught) => {
+        if (isCurrent())
+          this.serviceErrors = {
+            ...this.serviceErrors,
+            [serviceId]: errorMessage(caught)
+          };
+      })
+      .finally(() => {
+        if (isCurrent())
+          this.checkingServices = this.checkingServices.filter(
+            (id) => id !== serviceId
+          );
+        if (this.serviceRequests.get(serviceId) === task)
+          this.serviceRequests.delete(serviceId);
+      });
+    this.serviceRequests.set(serviceId, task);
+    return task;
   }
 
   finishLoad(load: CatalogueLoad) {

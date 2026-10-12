@@ -2831,12 +2831,14 @@
       <span class="muted text-[.65rem] tabular-nums"
         >{progressPercent(headerRun.progress)}%</span
       >
-      {#if headerRun.progress_detail || headerRun.status === 'queued'}
+      {#if headerRun.progress_detail || ['queued', 'running'].includes(headerRun.status)}
         <span
           class="muted max-w-64 truncate text-[.65rem]"
           title={headerRun.progress_detail ?? ''}
           >{headerRun.progress_detail ??
-            'Waiting for an available worker'}</span
+            (headerRun.status === 'queued'
+              ? 'Waiting for an available worker'
+              : 'Preparing generation…')}</span
         >
       {/if}
     {/if}

@@ -51,6 +51,7 @@ from .dispatch_context import (
     store_context_delta,
     wave_bounds,
 )
+from .export_subtitles import subtitle_export_diagnostics
 from .logical_passages import (
     attach_passages,
     load_timing_reference,
@@ -2257,6 +2258,8 @@ class DispatchRunService:
             logical_values = map_output_passages(values, input_passages)
             values = logical_values
         finalization_settings = (run.settings_json or {}).get("subtitle_finalization")
+        accepted_srt = passage_srt(values)
+        output_language = run.target_language if run.kind == "translation" else run.source_language
         timing_reference: dict[str, Any] | None = None
         # Existing durable runs keep their original publication contract.
         if isinstance(finalization_settings, dict):
@@ -2402,6 +2405,11 @@ class DispatchRunService:
                 "dispatch_kind": run.kind,
                 "language": document.language,
                 "subtitle_finalization": finalization_settings,
+                "subtitle_diagnostics": subtitle_export_diagnostics(
+                    accepted_srt, srt, finalization_settings or {}, None,
+                    language=output_language or "",
+                    language_origin="dispatch_language",
+                ),
                 "subtitle_boundary_timing_reference": timing_reference,
                 "uncertain_segment_count": sum(
                     1

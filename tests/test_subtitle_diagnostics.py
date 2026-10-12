@@ -6,7 +6,7 @@ from pandrator.logic.dubbing.subtitle_finalization import (
     diagnose_srt_content,
     finalize_srt_content,
 )
-from pandrator.web.export_subtitles import subtitle_profile
+from pandrator.web.export_subtitles import subtitle_export_diagnostics, subtitle_profile
 from pandrator.web.settings_policy import BUILTIN_DEFAULTS, adapt_runtime_settings
 from pandrator.web.workspace_settings import subtitle_settings_provenance
 from pandrator_mcp.schemas import GetSessionSettingsInput, ListArtifactsInput
@@ -78,6 +78,32 @@ def test_counts_invalid_duration_and_residual_speed_violation_without_changing_o
     assert input_counts["line_length_violating_cues"] == 2
     assert final_counts["reading_speed_violating_cues"] >= 1
     assert finalize_srt_content(content, settings) == before
+
+
+def test_diagnostics_include_bounded_issue_locations_and_text_integrity():
+    content = "\n\n".join(
+        f"{i + 1}\n00:00:00,000 --> 00:00:00,100\nToo fast."
+        for i in range(30)
+    )
+    diagnostic = subtitle_export_diagnostics(content, content, {"subtitle_max_cps": 20},
+        None, language="de", language_origin="test")
+    assert diagnostic["final"]["issues_total"] == 30
+    assert len(diagnostic["final"]["issues"]) == 20
+    assert diagnostic["final"]["issues_truncated"] is True
+    assert diagnostic["final"]["issues"][0]["ordinal"] == 1
+    assert diagnostic["final"]["overlapping_cues"] == 29
+    assert diagnostic["text_integrity"]["matches"] is True
+    source = "1\n00:00:00,000 --> 00:00:02,000\n„Bewusstsein“ im Alltag.\n"
+    broken = source.replace("“ im", "“im")
+    mismatch = subtitle_export_diagnostics(source, broken, {}, None,
+        language="de", language_origin="test")
+    assert mismatch["text_integrity"]["matches"] is False
+    assert mismatch["text_integrity"]["source_sha256"] != mismatch["text_integrity"]["final_sha256"]
+
+
+def test_exact_speed_threshold_does_not_report_a_violation():
+    content = "1\n00:00:00,000 --> 00:00:00,400\nCorrect.\n"
+    assert diagnose_srt_content(content, {"subtitle_max_cps": 20})["reading_speed_violating_cues"] == 0
 
 
 def test_colliding_normalized_spans_keep_valid_cue_speed_in_both_orders():

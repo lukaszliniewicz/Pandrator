@@ -55,7 +55,7 @@ export class GenerationSpeechOptionsState {
     try {
       const [settings, services, voices] = await Promise.all([
         sessionApi.settings(scope, 'tts'),
-        getTtsCompactCatalogue(true),
+        getTtsCompactCatalogue(),
         editing ? getVoiceLibrary() : Promise.resolve({ items: [] })
       ]);
       if (!isCurrent()) return;

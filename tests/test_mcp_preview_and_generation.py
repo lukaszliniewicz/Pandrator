@@ -173,6 +173,7 @@ class _FakeApplication:
         segments: list[dict],
         source_artifact_id: str | None = None,
         idempotency_key: str | None = None,
+        dry_run: bool = False,
     ):
         self.calls.append(
             (
@@ -184,6 +185,7 @@ class _FakeApplication:
                     "segments": segments,
                     "source_artifact_id": source_artifact_id,
                     "idempotency_key": idempotency_key,
+                    "dry_run": dry_run,
                 },
             )
         )
@@ -1011,7 +1013,9 @@ class PreviewAndGenerationTests(unittest.TestCase):
         save_calls = [
             c for c in self.application.calls if c[0] == "save_subtitle_review"
         ]
-        self.assertEqual(len(save_calls), 0)
+        self.assertEqual(len(save_calls), 1)
+        self.assertTrue(save_calls[0][1]["dry_run"])
+        self.assertTrue(dry_run_outcome.result["validated"])
 
         # 2. Actual commit
         commit_outcome = replace_subtitle_text(

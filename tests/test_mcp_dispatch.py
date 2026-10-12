@@ -1,8 +1,10 @@
 import unittest
 from types import SimpleNamespace
+from typing import Any
 
 from pydantic import ValidationError
 
+from pandrator_mcp.clients.application_dispatch import ApplicationDispatchMethods
 from pandrator_mcp.schemas import (
     ClaimDispatchBatchInput,
     CreateDispatchRunInput,
@@ -125,6 +127,19 @@ class _Application:
     def submit_dispatch_batch(self, batch_id, **kwargs):
         self.calls.append(("submit", {"batch_id": batch_id, **kwargs}))
         return {"batch_id": batch_id, "run_id": "run-1", "status": "accepted"}
+
+
+class _RecordingDispatchClient(ApplicationDispatchMethods):
+    def __init__(self, timeout_seconds: float):
+        self.timeout_seconds = timeout_seconds
+        self.request: tuple[str, dict[str, Any]] | None = None
+
+    def _request_json(self, path: str, **kwargs: Any) -> dict[str, Any]:
+        self.request = (path, kwargs)
+        return {"status": "accepted"}
+
+    def _request_binary_json(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("Binary requests are not part of this test.")
 
 
 class DispatchHandlerTests(unittest.TestCase):
@@ -291,6 +306,22 @@ class DispatchHandlerTests(unittest.TestCase):
             "pandrator_claim_dispatch_batch",
             submitted.next_actions[0].tool,
         )
+
+    def test_submit_dispatch_uses_a_bounded_per_request_timeout(self):
+        for configured_timeout, expected_timeout in ((15.0, 120.0), (180.0, 180.0)):
+            with self.subTest(configured_timeout=configured_timeout):
+                client = _RecordingDispatchClient(configured_timeout)
+                client.submit_dispatch_batch(
+                    "batch-1",
+                    lease_token="lease-capability",
+                    result={"kind": "correction", "operations": []},
+                    idempotency_key="submit:timeout-test",
+                )
+
+                self.assertIsNotNone(client.request)
+                _path, request = client.request
+                self.assertEqual(expected_timeout, request["request_timeout_seconds"])
+                self.assertEqual(300.0, request["request_timeout_limit_seconds"])
 
     def test_logical_passage_claim_retains_distinct_audio_evidence_ids(self):
         payload = self.application.claim_dispatch_batch("run-1")

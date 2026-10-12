@@ -334,7 +334,9 @@ def get_workflow(
     runtime: McpRuntime,
     arguments: GetWorkflowInput,
 ) -> dict[str, Any]:
-    return _workflow_projection(runtime.require_application().get_workflow(arguments.session_id))
+    return _workflow_projection(
+        runtime.require_application().get_workflow(arguments.session_id, summary=True)
+    )
 
 
 def get_session_settings(
@@ -626,6 +628,38 @@ def _public_subtitle_ordinal(cue: dict[str, Any], fallback_index: int) -> int:
         return fallback_index + 1
 
 
+def _subtitle_review_fields(cue: dict[str, Any]) -> dict[str, Any]:
+    """Carry source identity and review evidence through display-only edits."""
+    return {
+        key: cue[key] for key in (
+            "id", "turn_id", "source_passage_ids", "starts_new_turn",
+            "review_state", "review_note", "evidence_ids", "uncertain_source_cue_ids",
+        ) if key in cue
+    }
+
+
+def _exact_subtitle_edit_source(
+    application: Any, session_id: str, target: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve the active document to its artifact-owned display references."""
+    if not target.get("document_id") or not target.get("revision_id"):
+        return target, {}
+    catalog = application.get_subtitle_catalog(session_id)
+    item = next((row for row in catalog.get("items", [])
+                 if row.get("document_id") == target["document_id"]
+                 and row.get("revision_id") == target["revision_id"]), None)
+    if item is None:
+        raise PandratorMcpError("not_found", "The active subtitle revision has no reviewable artifact.")
+    artifact_id = item["artifact_id"]
+    review = application.review_subtitles(session_id, artifact_ids=[artifact_id])
+    column = next((row for row in review.get("columns", [])
+                   if row.get("artifact_id") == artifact_id), None)
+    if column is None or column.get("revision_id") != target["revision_id"]:
+        raise PandratorMcpError("revision_conflict", "Subtitle source changed; refresh the preview.")
+    return column, {"source_artifact_id": artifact_id,
+                    "expected_source_hash": column["source_content_hash"]}
+
+
 def preview_subtitles(
     runtime: McpRuntime,
     arguments: PreviewSubtitlesInput,
@@ -719,6 +753,7 @@ def preview_subtitles(
 
     projected_cues = [
         {
+            **_subtitle_review_fields(cue),
             "ordinal": _public_subtitle_ordinal(cue, offset + idx),
             "start_ms": int(cue.get("start_ms", 0)),
             "end_ms": int(cue.get("end_ms", 0)),
@@ -767,6 +802,7 @@ def replace_subtitle_text(
             "revision_conflict",
             f"Subtitle revision conflict: expected {arguments.expected_revision} but active is {current_revision}.",
         )
+    target_info, source_guards = _exact_subtitle_edit_source(application, session_id, target_info)
     raw_segments = list(target_info.get("segments") or [])
     if not raw_segments:
         raise PandratorMcpError(
@@ -824,6 +860,7 @@ def replace_subtitle_text(
 
         modified_segments.append(
             {
+                **_subtitle_review_fields(seg),
                 "start_ms": start_ms,
                 "end_ms": end_ms,
                 "text": new_text,
@@ -846,6 +883,15 @@ def replace_subtitle_text(
         )
 
     if arguments.dry_run:
+        application.save_subtitle_review(
+            session_id,
+            stage_key,
+            expected_revision=arguments.expected_revision,
+            segments=modified_segments,
+            idempotency_key=arguments.idempotency_key,
+            dry_run=True,
+            **source_guards,
+        )
         return ToolOutcome(
             result={
                 "schema_version": "1",
@@ -853,6 +899,7 @@ def replace_subtitle_text(
                 "stage": stage_key,
                 "revision": current_revision,
                 "dry_run": True,
+                "validated": True,
                 "modified_count": len(changes),
                 "changes": changes,
                 "message": f"Dry-run found {len(changes)} cue(s) matching '{search_text}'.",
@@ -883,6 +930,7 @@ def replace_subtitle_text(
         expected_revision=arguments.expected_revision,
         segments=modified_segments,
         idempotency_key=arguments.idempotency_key,
+        **source_guards,
     )
 
     next_actions = [
@@ -945,6 +993,7 @@ def patch_subtitle_cues(
             "revision_conflict",
             f"Subtitle revision conflict: expected {arguments.expected_revision} but active is {current_revision}.",
         )
+    target_info, source_guards = _exact_subtitle_edit_source(application, session_id, target_info)
     raw_segments = list(target_info.get("segments") or [])
     if not raw_segments:
         raise PandratorMcpError(
@@ -953,6 +1002,8 @@ def patch_subtitle_cues(
         )
 
     patches_by_ordinal = {patch.ordinal: patch for patch in arguments.cues}
+    if len(patches_by_ordinal) != len(arguments.cues):
+        raise PandratorMcpError("validation_error", "Cue patches must use unique ordinals.")
     max_ordinal = len(raw_segments)
     for ord_num in patches_by_ordinal:
         if ord_num < 1 or ord_num > max_ordinal:
@@ -998,6 +1049,7 @@ def patch_subtitle_cues(
 
             modified_segments.append(
                 {
+                    **_subtitle_review_fields(seg),
                     "start_ms": new_start,
                     "end_ms": new_end,
                     "text": new_text,
@@ -1013,6 +1065,7 @@ def patch_subtitle_cues(
         else:
             modified_segments.append(
                 {
+                    **_subtitle_review_fields(seg),
                     "start_ms": orig_start,
                     "end_ms": orig_end,
                     "text": orig_text,
@@ -1032,6 +1085,7 @@ def patch_subtitle_cues(
         expected_revision=arguments.expected_revision,
         segments=modified_segments,
         idempotency_key=arguments.idempotency_key,
+        **source_guards,
     )
 
     next_actions = [

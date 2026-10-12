@@ -342,6 +342,26 @@ def _compact_claim(
 
     task = projected.get("task")
     manifest = _project_fields(task, _COMPACT_MANIFEST_KEYS) if isinstance(task, dict) else {}
+    quality_policy = manifest.get("quality_policy")
+    if (
+        isinstance(task, dict)
+        and task.get("kind") == "correction"
+        and isinstance(quality_policy, dict)
+    ):
+        route_catalog = quality_policy.get("route_catalog")
+        if isinstance(route_catalog, list):
+            compact_quality_policy = dict(quality_policy)
+            compact_quality_policy["route_catalog"] = [
+                {
+                    key: value
+                    for key, value in route.items()
+                    if key not in {"supported_languages", "languages"}
+                }
+                if isinstance(route, dict)
+                else route
+                for route in route_catalog
+            ]
+            manifest["quality_policy"] = compact_quality_policy
     result = compact_manifest_packet(projected, manifest, known_manifest_hash=known_manifest_hash)
     if isinstance(task, dict):
         result["task"] = _project_fields(task, _COMPACT_TASK_KEYS)

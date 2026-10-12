@@ -8976,6 +8976,11 @@ export interface components {
         };
         /** SubtitlePassageReviewRequest */
         SubtitlePassageReviewRequest: {
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run?: boolean;
             /** Expected Composition Hash */
             expected_composition_hash: string;
             /** Expected Revision */
@@ -8989,6 +8994,11 @@ export interface components {
         };
         /** SubtitleReviewRequest */
         SubtitleReviewRequest: {
+            /**
+             * Dry Run
+             * @default false
+             */
+            dry_run?: boolean;
             /** Expected Revision */
             expected_revision: number;
             /**
@@ -10110,8 +10120,12 @@ export interface operations {
     listArtifacts: {
         parameters: {
             query?: {
-                /** @description Compact pages omit stored metadata, hashes and paths, and add project and passage labels. */
-                view?: "full" | "compact";
+                /** @description Compact pages add project and passage labels. Summary preserves hashes and subtitle diagnostics while omitting artifact bodies and paths. */
+                view?: "full" | "compact" | "summary";
+                /** @description Exact role filter applied before limit and offset. */
+                role?: string;
+                /** @description Exact kind filter applied before limit and offset. */
+                kind?: string;
                 media_type?: "audio" | "text";
                 session_id?: string;
                 output_only?: boolean;
@@ -18210,7 +18224,10 @@ export interface operations {
     };
     getWorkflow: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Summary omits artifact bodies and local paths while retaining workflow status and selections. */
+                view?: "full" | "summary";
+            };
             header?: never;
             path: {
                 sessionId: string;

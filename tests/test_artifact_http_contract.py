@@ -89,6 +89,48 @@ def row_inventory(harness: Harness) -> tuple[list[dict[str, Any]], list[dict[str
     return artifacts, edges
 
 
+def test_summary_filters_artifacts_before_limit_and_keeps_diagnostics(harness: Harness):
+    source = harness.directory / "reviewed.srt"
+    source.write_text("1\n00:00:00,000 --> 00:00:01,000\nText.\n")
+    selected = harness.artifacts.register(source, kind="srt", role="correction",
+        session_id=harness.session_id, metadata={"language": "en",
+            "subtitle_diagnostics": {"final": {"cue_count": 1}},
+            "logical_passages": {"large": "x" * 9_000_000}})
+    later = harness.directory / "later.txt"
+    later.write_text("Later unrelated artifact")
+    harness.artifacts.register(later, kind="txt", role="unrelated", session_id=harness.session_id)
+    response = harness.client.get("/api/v1/artifacts", query_string={
+        "session_id": harness.session_id, "role": "correction", "kind": "srt",
+        "view": "summary", "limit": 1})
+    assert response.status_code == 200
+    assert len(response.data) < 2000
+    item = response.get_json()["items"][0]
+    assert item["id"] == selected.id
+    assert item["content_hash"] == selected.content_hash
+    assert item["metadata_json"] == {"language": "en", "subtitle_diagnostics": {"final": {"cue_count": 1}}}
+    assert "relative_path" not in item
+
+
+def test_workflow_summary_drops_large_artifact_bodies_before_http_encoding(harness: Harness, monkeypatch):
+    workflows = harness.client.application.extensions["pandrator"]["workflows"]
+    full = {"session_id": harness.session_id, "revision": 3, "sources": [], "stages": [{
+        "key": "translate", "status": "completed", "selected_artifact_id": "a",
+        "selection_revision": 5, "artifact": {"id": "a", "content_hash": "h",
+            "metadata_json": {"logical_passages": "x" * 9_000_000}},
+        "artifacts": [{"id": "a", "version": 3, "metadata_json": {"large": "x" * 1000}}],
+    }]}
+    monkeypatch.setattr(workflows, "snapshot", lambda session_id: full)
+    response = harness.client.get(f"/api/v1/sessions/{harness.session_id}/workflow?view=summary")
+    assert response.status_code == 200
+    assert len(response.data) < 2000
+    stage = response.get_json()["stages"][0]
+    assert stage["selected_artifact_id"] == "a"
+    assert stage["selection_revision"] == 5
+    assert stage["artifact"] == {"id": "a", "content_hash": "h"}
+    assert len(full["stages"][0]["artifact"]["metadata_json"]["logical_passages"]) == 9_000_000
+    assert harness.client.get(f"/api/v1/sessions/{harness.session_id}/workflow?view=bogus").status_code == 422
+
+
 def file_inventory(directory: Path) -> dict[str, bytes]:
     return {
         path.relative_to(directory).as_posix(): path.read_bytes()

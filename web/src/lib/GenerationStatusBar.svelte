@@ -102,7 +102,12 @@
       <span
         class="muted min-w-0 flex-1 truncate text-xs"
         title={activity?.progress_detail ?? ''}
-        >{activity?.progress_detail ?? `${percent}%`}</span
+        >{activity?.progress_detail ??
+          (run?.status === 'queued'
+            ? 'Waiting for an available worker'
+            : run?.status === 'running' && !percent
+              ? 'Preparing generation…'
+              : `${percent}%`)}</span
       >
     {/if}
     {#if run && ['queued', 'running'].includes(run.status)}

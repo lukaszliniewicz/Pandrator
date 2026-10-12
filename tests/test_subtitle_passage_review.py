@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from copy import deepcopy
@@ -13,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import event, select
 
 from pandrator.web.api import create_app
-from pandrator.web.auth import BootstrapTokenStore
+from pandrator.web.auth import BootstrapTokenStore, Principal
 from pandrator.web.logical_passages import (
     attach_passages,
     materialize_speech_source,
@@ -21,13 +22,17 @@ from pandrator.web.logical_passages import (
 )
 from pandrator.web.models import (
     Artifact,
+    Base,
     Document,
     DocumentRevision,
     Segment,
     SubtitleEvidence,
     TimedWord,
 )
-from pandrator.web.schemas import SubtitlePassageReviewRequest
+from pandrator.web.schemas import (
+    SubtitlePassageReviewRequest,
+    SubtitleReviewRequest,
+)
 from pandrator.web.workspace_settings import WorkspaceSettingsService
 from tests import test_web_subtitle_review as legacy_review_tests
 from tests.web_test_support import prepare_web_test_data_root
@@ -87,13 +92,23 @@ def _edits(rows: list[dict], **overrides) -> list[dict]:
     return output
 
 
-def _save(case, source_id, source_hash, revision, values, *, composition_hash=None):
+def _save(
+    case,
+    source_id,
+    source_hash,
+    revision,
+    values,
+    *,
+    composition_hash=None,
+    dry_run=False,
+):
     column = case.service.review(case.session.id, [source_id])["columns"][0]
     return case.service.save_passage_review(
         case.session.id,
         "correction",
         revision,
         values,
+        dry_run=dry_run,
         source_artifact_id=source_id,
         expected_source_hash=source_hash,
         expected_composition_hash=composition_hash or column["composition_hash"],
@@ -112,6 +127,38 @@ def _saved_rows(case, result):
             )
         )
         return deepcopy(rows), segments, artifact
+
+
+def _database_snapshot(database):
+    with database.engine.connect() as connection:
+        return {
+            table.name: tuple(
+                tuple(row)
+                for row in connection.execute(
+                    table.select().order_by(*table.primary_key.columns)
+                )
+            )
+            for table in sorted(Base.metadata.tables.values(), key=lambda item: item.name)
+        }
+
+
+def _file_inventory(root):
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _test_principal():
+    return Principal(
+        subject="subtitle-review-test",
+        kind="service",
+        scopes=frozenset({"app.write"}),
+        token_id=None,
+        network_zone="loopback",
+        target_instance_id="test-instance",
+    )
 
 
 def test_combined_display_can_edit_each_canonical_passage_independently(review_case):
@@ -425,8 +472,11 @@ def test_passage_set_must_be_exact_and_retain_speech(review_case, kind, message)
     else:
         for value in values:
             value["deleted"] = True
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=message) as saved_error:
         _save(review_case, source_id, source_hash, 1, values)
+    with pytest.raises(ValueError, match=message) as preview_error:
+        _save(review_case, source_id, source_hash, 1, values, dry_run=True)
+    assert str(preview_error.value) == str(saved_error.value)
 
 
 def test_explicit_passage_deletion_keeps_other_canonical_identity(review_case):
@@ -474,7 +524,7 @@ def test_source_revision_hash_and_composition_hash_are_optimistic_guards(review_
             0,
             {"max_chars_per_line": 41},
         )
-    with pytest.raises(RuntimeError, match="composition settings changed"):
+    with pytest.raises(RuntimeError, match="composition settings changed") as saved_error:
         _save(
             review_case,
             source_id,
@@ -483,6 +533,99 @@ def test_source_revision_hash_and_composition_hash_are_optimistic_guards(review_
             values,
             composition_hash=column["composition_hash"],
         )
+    with pytest.raises(RuntimeError, match="composition settings changed") as preview_error:
+        _save(
+            review_case,
+            source_id,
+            source_hash,
+            1,
+            values,
+            composition_hash=column["composition_hash"],
+            dry_run=True,
+        )
+    assert str(preview_error.value) == str(saved_error.value)
+
+
+def test_legacy_dry_run_rejects_foreign_evidence_like_a_save(review_case):
+    source_id, source_hash, _revision_id = _source(
+        review_case,
+        "1\n00:00:00,000 --> 00:00:02,000\nTarget source.\n",
+        [{"id": "target", "text": "Target source.", "start_ms": 0, "end_ms": 2000}],
+    )
+    foreign_session = review_case.sessions.create(
+        "Foreign evidence source", workflow_kind="subtitles"
+    )
+    foreign_dir = review_case.paths.sessions / foreign_session.storage_key
+    foreign_dir.mkdir(parents=True)
+    foreign_path = foreign_dir / "foreign-evidence-source.srt"
+    foreign_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nForeign source.\n",
+        encoding="utf-8",
+    )
+    foreign_artifact = review_case.artifacts.register(
+        foreign_path,
+        kind="srt",
+        role="correction",
+        session_id=foreign_session.id,
+    )
+    review_case.handlers._store_srt_document(
+        foreign_session.id, foreign_artifact, "correction"
+    )
+    with review_case.database.session() as session:
+        managed = session.get(Artifact, foreign_artifact.id)
+        revision_id = managed.metadata_json["revision_id"]
+        source_segment = session.scalar(
+            select(Segment).where(Segment.revision_id == revision_id)
+        )
+        session.add(
+            SubtitleEvidence(
+                id="foreign-session-evidence",
+                session_id=foreign_session.id,
+                source_artifact_id=managed.id,
+                source_revision_id=revision_id,
+                source_segment_id=source_segment.id,
+                cue_id=1,
+                start_ms=0,
+                end_ms=2000,
+                clip_start_ms=0,
+                clip_end_ms=2000,
+                reason="Evidence from a different session.",
+                routes_json=["whisper"],
+                audio_model_ids_json=[],
+                status="completed",
+                candidates_json=[],
+                resolution_json={},
+            )
+        )
+
+    values = [
+        {
+            "start_ms": 0,
+            "end_ms": 2000,
+            "text": "Reviewed with foreign evidence.",
+            "evidence_ids": ["foreign-session-evidence"],
+        }
+    ]
+    with pytest.raises(ValueError, match="must belong to this session") as saved_error:
+        review_case.service.save_review(
+            review_case.session.id,
+            "correction",
+            1,
+            values,
+            source_artifact_id=source_id,
+            expected_source_hash=source_hash,
+        )
+    with pytest.raises(ValueError, match="must belong to this session") as preview_error:
+        review_case.service.save_review(
+            review_case.session.id,
+            "correction",
+            1,
+            values,
+            dry_run=True,
+            source_artifact_id=source_id,
+            expected_source_hash=source_hash,
+        )
+    assert str(preview_error.value) == str(saved_error.value)
 
 
 def test_registration_failure_rolls_back_passage_revision_and_published_file(review_case):
@@ -538,6 +681,41 @@ def test_passage_request_rejects_client_owned_ancestry_and_word_ids():
     }
     with pytest.raises(ValidationError):
         SubtitlePassageReviewRequest.model_validate(request)
+
+
+@pytest.mark.parametrize(
+    ("model", "payload_data"),
+    [
+        (
+            SubtitleReviewRequest,
+            {
+                "expected_revision": 0,
+                "segments": [{"start_ms": 0, "end_ms": 1000, "text": "Text."}],
+            },
+        ),
+        (
+            SubtitlePassageReviewRequest,
+            {
+                "source_artifact_id": "source",
+                "expected_source_hash": "hash",
+                "expected_revision": 1,
+                "expected_composition_hash": "settings-hash",
+                "passages": [
+                    {
+                        "id": "p000001",
+                        "text": "Text.",
+                        "start_ms": 0,
+                        "end_ms": 1000,
+                    }
+                ],
+            },
+        ),
+    ],
+)
+def test_dry_run_fields_are_strict_booleans(model, payload_data):
+    payload_data["dry_run"] = 1
+    with pytest.raises(ValidationError):
+        model.model_validate(payload_data)
 
 
 def test_four_selected_columns_share_a_bounded_composition_snapshot(review_case):
@@ -644,6 +822,129 @@ class PassageReviewRouteTests(unittest.TestCase):
     def tearDown(self):
         self.app.extensions["pandrator"]["database"].dispose()
         self.temporary.cleanup()
+
+    def test_legacy_mutation_dry_run_preserves_state_and_same_key_can_commit(self):
+        request = SubtitleReviewRequest.model_validate(
+            {
+                "source_artifact_id": self.source_id,
+                "expected_source_hash": self.source_hash,
+                "expected_revision": self.source_revision,
+                "segments": [
+                    {
+                        "start_ms": 0,
+                        "end_ms": 2000,
+                        "text": "Legacy dry run review.",
+                    }
+                ],
+                "dry_run": True,
+            }
+        )
+        database = self.services.database
+        with database.session() as session:
+            document_id = session.get(Artifact, self.source_id).metadata_json[
+                "document_id"
+            ]
+        before_rows = _database_snapshot(database)
+        before_files = _file_inventory(self.session_dir)
+        result = self.services.subtitle_mutations.save_review(
+            self.session.id,
+            "correction",
+            request,
+            principal=_test_principal(),
+            idempotency_key="legacy-dry-run-key",
+        )
+
+        self.assertEqual(200, result.status_code)
+        self.assertFalse(result.replayed)
+        self.assertEqual(
+            {
+                "dry_run": True,
+                "validated": True,
+                "session_id": self.session.id,
+                "stage": "correction",
+                "document_id": document_id,
+                "revision": self.source_revision,
+                "source_artifact_id": self.source_id,
+                "source_content_hash": self.source_hash,
+                "cue_count": 1,
+                "logical_passage_count": 1,
+            },
+            result.payload,
+        )
+        self.assertEqual(before_rows, _database_snapshot(database))
+        self.assertEqual(before_files, _file_inventory(self.session_dir))
+
+        committed = self.services.subtitle_mutations.save_review(
+            self.session.id,
+            "correction",
+            request.model_copy(update={"dry_run": False}),
+            principal=_test_principal(),
+            idempotency_key="legacy-dry-run-key",
+        )
+        self.assertEqual(201, committed.status_code)
+        self.assertFalse(committed.replayed)
+        self.assertEqual(self.source_revision + 1, committed.payload["revision"])
+
+    def test_canonical_mutation_dry_run_preserves_state_and_same_key_can_commit(self):
+        request = SubtitlePassageReviewRequest.model_validate(
+            {
+                "source_artifact_id": self.source_id,
+                "expected_source_hash": self.source_hash,
+                "expected_revision": self.source_revision,
+                "expected_composition_hash": self.column["composition_hash"],
+                "passages": [
+                    {
+                        "id": "route-passage",
+                        "text": "Canonical dry run review.",
+                        "speaker": "NARRATOR",
+                        "start_ms": 0,
+                        "end_ms": 2000,
+                    }
+                ],
+                "dry_run": True,
+            }
+        )
+        database = self.services.database
+        with database.session() as session:
+            document_id = session.get(Artifact, self.source_id).metadata_json[
+                "document_id"
+            ]
+        before_rows = _database_snapshot(database)
+        before_files = _file_inventory(self.session_dir)
+        result = self.services.subtitle_mutations.save_passage_review(
+            self.session.id,
+            "correction",
+            request,
+            principal=_test_principal(),
+            idempotency_key="canonical-dry-run-key",
+        )
+
+        self.assertEqual(200, result.status_code)
+        self.assertFalse(result.replayed)
+        self.assertEqual(True, result.payload["dry_run"])
+        self.assertEqual(True, result.payload["validated"])
+        self.assertEqual(self.session.id, result.payload["session_id"])
+        self.assertEqual("correction", result.payload["stage"])
+        self.assertEqual(document_id, result.payload["document_id"])
+        self.assertEqual(self.source_revision, result.payload["revision"])
+        self.assertEqual(self.source_id, result.payload["source_artifact_id"])
+        self.assertEqual(self.source_hash, result.payload["source_content_hash"])
+        self.assertEqual(self.column["composition_hash"], result.payload["composition_hash"])
+        self.assertEqual(1, result.payload["logical_passage_count"])
+        self.assertGreaterEqual(result.payload["cue_count"], 1)
+        self.assertEqual(before_rows, _database_snapshot(database))
+        self.assertEqual(before_files, _file_inventory(self.session_dir))
+
+        committed = self.services.subtitle_mutations.save_passage_review(
+            self.session.id,
+            "correction",
+            request.model_copy(update={"dry_run": False}),
+            principal=_test_principal(),
+            idempotency_key="canonical-dry-run-key",
+        )
+        self.assertEqual(201, committed.status_code)
+        self.assertFalse(committed.replayed)
+        self.assertEqual(self.source_revision + 1, committed.payload["revision"])
 
     def test_canonical_route_replays_idempotent_response(self):
         response_body = {

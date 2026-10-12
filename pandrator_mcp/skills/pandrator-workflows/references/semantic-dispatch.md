@@ -41,6 +41,12 @@ validation fails, progress is uncertain, finalization needs recovery, or the
 completed artifact is due for review. Retain exact retry arguments and keys;
 compact output is not permission to discard recovery state.
 
+Retain one authoritative accepted result per batch, including its exact submitted
+arguments and idempotency key. When rebuilding after interruption, read persisted
+accepted output with `pandrator_get_dispatch_preview`; do not replay an earlier
+in-memory draft. Write large local receipts in bounded chunks or through a file
+API instead of embedding the whole document in one shell argument.
+
 ## Choose context at setup
 
 Keep the live context defaults when continuity is uncertain. One model can
@@ -121,6 +127,20 @@ Use web research only when available, appropriate for the content's privacy,
 and useful to resolve a specific uncertainty such as a name or quotation.
 Record source and confidence. Searchable text is not proof of what the speaker
 said; preserve uncertainty where the evidence does not settle it.
+
+For small edits after publication, prefer `pandrator_preview_subtitle_passages`
+and `pandrator_patch_subtitle_passages` when advertised. Use the exact artifact,
+source hash, revision and composition hash, and only the returned logical IDs.
+Set `starts_new_turn=true` for a handoff at an existing passage boundary without
+inventing a speaker. Preview with `dry_run=true`; a successful preview has passed
+the same validation as saving. Inspect the resulting artifact and consumer input
+selection before continuing to translation or generation.
+
+Evidence defaults to a text/provenance summary. Request `detail=full` only when
+raw timing evidence is needed. Review subtitle artifact diagnostics before
+delivery: speed/layout violations and text-integrity mismatches remain actionable
+even when every language batch has been accepted. Keep display text in normal
+written language while resolving those delivery issues.
 
 ## PDF/EPUB source cleanup
 

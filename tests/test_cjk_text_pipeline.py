@@ -34,6 +34,19 @@ from pandrator.logic.dubbing.text_units import (
 )
 
 
+@pytest.mark.parametrize("fragments,expected", [
+    (["„Gegenwart“", "bezeichnen"], "„Gegenwart“ bezeichnen"),
+    (["„consciousness“", "im"], "„consciousness“ im"),
+    (["nicht.“", "Für"], "nicht.“ Für"),
+    (["„Blindsehen“", "sprechen"], "„Blindsehen“ sprechen"),
+    (["He said “", "hello”,", "then left."], "He said “hello”, then left."),
+    (["„Hallo", "“", "sagt er."], "„Hallo“ sagt er."),
+])
+def test_quote_seams_keep_german_word_spaces_and_english_opening_quotes(fragments, expected):
+    assert join_fragments(fragments) == expected
+    assert clean_text("\n".join(fragments)) == expected
+
+
 @pytest.mark.parametrize("value,expected", [
     ("Japanese", "ja"), ("ja_JP", "ja"), ("jpn", "ja"),
     ("Korean", "ko"), ("ko-KR", "ko"), ("kor", "ko"),

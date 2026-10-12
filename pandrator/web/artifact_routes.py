@@ -43,7 +43,7 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
     def artifact_list():
         view = request.args.get("view", "full")
         media_type = request.args.get("media_type")
-        if view not in {"full", "compact"} or media_type not in {None, "audio", "text"}:
+        if view not in {"full", "compact", "summary"} or media_type not in {None, "audio", "text"}:
             return error_response("validation_error", "Invalid artifact view or media type.", 400)
         try:
             offset = int(request.args.get("offset", 0))
@@ -75,6 +75,10 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
             requested_session = str(request.args.get("session_id") or "")
             if requested_session:
                 statement = statement.where(Artifact.session_id == requested_session)
+            for field in ("role", "kind"):
+                value = request.args.get(field)
+                if value:
+                    statement = statement.where(getattr(Artifact, field) == value)
             if media_type:
                 kinds = (
                     (
@@ -209,6 +213,16 @@ def register_artifact_routes(app: DomainBlueprints, context: RouteContext) -> No
                         "created_at",
                     ),
                 )
+                if view == "summary":
+                    metadata = serialized.get("metadata_json") or {}
+                    serialized["metadata_json"] = {
+                        key: metadata[key] for key in
+                        ("language", "subtitle_diagnostics", "subtitle_tracks")
+                        if key in metadata
+                    }
+                    serialized.pop("relative_path", None)
+                    items.append(serialized)
+                    continue
                 # The owner UI may copy the server-local path for completed
                 # outputs. The relative managed key remains the durable API
                 # identifier; this presentation field is intentionally

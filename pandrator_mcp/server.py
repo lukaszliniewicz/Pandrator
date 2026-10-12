@@ -43,6 +43,7 @@ from .registrations.sessions import (
 )
 from .registrations.source_cleaning_dispatch import register_source_cleaning_dispatch_tools
 from .registrations.speech_optimization_dispatch import register_speech_optimization_dispatch_tools
+from .registrations.subtitle_passages import register_subtitle_passage_tools
 from .registrations.transcription import register_transcription_tools
 from .request_context import begin_request, end_request
 from .results import ToolOutcome
@@ -620,6 +621,11 @@ def build_server(runtime: McpRuntime):
         execute_action=execute_action,
     )
 
+    register_subtitle_passage_tools(
+        server, runtime, _call_with_validated_input,
+        read_only=read_only, write_action=write_action,
+    )
+
     @server.tool(
         name="pandrator_preview_subtitles",
         title="Preview subtitle cues, transcript segments, and translations",
@@ -957,13 +963,13 @@ def build_server(runtime: McpRuntime):
         title="Inspect subtitle audio evidence",
         annotations=read_only,
     )
-    def subtitle_evidence_get_tool(evidence_id: str, response_mode: Literal["standard", "structured"] = "standard") -> dict[str, Any]:
+    def subtitle_evidence_get_tool(evidence_id: str, response_mode: Literal["standard", "structured"] = "standard", detail: Literal["summary", "full"] = "summary") -> dict[str, Any]:
         """Read candidate transcripts, provenance, timing, and cost status."""
 
         envelope = _call_with_input_factory(
             get_subtitle_evidence,
             runtime,
-            lambda: GetSubtitleEvidenceInput(evidence_id=evidence_id),
+            lambda: GetSubtitleEvidenceInput(evidence_id=evidence_id, detail=detail),
         )
         return _response(envelope, response_mode)
 

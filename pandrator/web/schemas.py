@@ -394,6 +394,7 @@ class SubtitleReviewRequest(StrictModel):
     expected_source_hash: str | None = Field(default=None, min_length=1, max_length=128)
     expected_revision: int = Field(ge=0)
     segments: list[SubtitleSegmentInput] = Field(min_length=1)
+    dry_run: StrictBool = False
 
 
 class SubtitlePassageInput(StrictModel):
@@ -414,6 +415,7 @@ class SubtitlePassageReviewRequest(StrictModel):
     expected_revision: int = Field(ge=0)
     expected_composition_hash: str = Field(min_length=1, max_length=128)
     passages: list[SubtitlePassageInput] = Field(min_length=1)
+    dry_run: StrictBool = False
 
 
 class SubtitleEvidenceCreateRequest(StrictModel):

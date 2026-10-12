@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+import math
+import re
+from typing import Any, Literal
 
 from ..context import McpRuntime
 from ..errors import NextAction
@@ -44,9 +47,168 @@ _EVIDENCE_KEYS = (
     "created_at",
     "updated_at",
 )
+_CANDIDATE_SUMMARY_KEYS = (
+    "id",
+    "route",
+    "status",
+    "text",
+    "context_text",
+    "selection_method",
+    "language",
+    "timing_kind",
+    "timing_method",
+    "provider",
+    "model",
+    "engine",
+    "compute_backend",
+    "transcript_artifact_id",
+    "error",
+    "error_message",
+)
+_COST_SUMMARY_KEYS = (
+    "kind",
+    "amount",
+    "currency",
+    "unit",
+    "cost_source",
+    "price_effective_until",
+    "usage_reported_by_provider",
+    "submitted_audio_seconds",
+    "billable_audio_seconds",
+    "billing_increment_seconds",
+)
+_CACHE_HASH_KEYS = (
+    "key_sha256",
+    "media_sha256",
+    "configuration_sha256",
+    "prompt_sha256",
+    "source_language_sha256",
+)
+_CACHE_WINDOW_KEYS = ("clip_window_ms", "cue_window_ms")
+_REUSED_FROM_KEYS = (
+    "evidence_id",
+    "candidate_id",
+    "transcript_artifact_id",
+    "source_artifact_id",
+    "source_revision_id",
+    "source_media_artifact_id",
+)
 
 
-def _record(payload: dict[str, Any]) -> dict[str, Any]:
+def _cost_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        key: item
+        for key in _COST_SUMMARY_KEYS
+        if key in value
+        and isinstance(
+            (item := value[key]),
+            (str, int, float, bool),
+        )
+        and not (isinstance(item, float) and not math.isfinite(item))
+        and not (isinstance(item, str) and len(item) > 200)
+    }
+
+
+def _cache_summary(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    version = value.get("version")
+    if isinstance(version, int) and not isinstance(version, bool):
+        result["version"] = version
+    for key in ("route", "model_id"):
+        item = value.get(key)
+        if isinstance(item, str) and len(item) <= 200:
+            result[key] = item
+    for key in _CACHE_HASH_KEYS:
+        item = value.get(key)
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item):
+            result[key] = item
+    for key in _CACHE_WINDOW_KEYS:
+        item = value.get(key)
+        if (
+            isinstance(item, list)
+            and len(item) == 2
+            and all(isinstance(part, int) and not isinstance(part, bool) for part in item)
+        ):
+            result[key] = list(item)
+    return result
+
+
+def _reused_from_summary(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        key: item
+        for key in _REUSED_FROM_KEYS
+        if isinstance((item := value.get(key)), str) and len(item) <= 200
+    }
+
+
+def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: candidate[key]
+        for key in _CANDIDATE_SUMMARY_KEYS
+        if key in candidate
+    }
+    segments = candidate.get("segments")
+    words = candidate.get("words")
+    segment_items = segments if isinstance(segments, list) else []
+    result["segments_count"] = len(segment_items)
+    if isinstance(words, list):
+        words_count = len(words)
+    else:
+        words_count = sum(
+            len(segment["words"])
+            for segment in segment_items
+            if isinstance(segment, dict) and isinstance(segment.get("words"), list)
+        )
+    result["words_count"] = words_count
+    result["has_timing_detail"] = bool(segment_items or words_count)
+    for key, projector in (
+        ("cost", _cost_summary),
+        ("cache", _cache_summary),
+        ("reused_from", _reused_from_summary),
+    ):
+        if key in candidate:
+            projected = projector(candidate[key])
+            if projected is not None:
+                result[key] = projected
+    return result
+
+
+def _candidate_collection(value: Any) -> Any:
+    if isinstance(value, list):
+        return [
+            _candidate_summary(candidate)
+            for candidate in value
+            if isinstance(candidate, dict)
+        ]
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+        if isinstance(decoded, list):
+            return json.dumps(
+                [
+                    _candidate_summary(candidate)
+                    for candidate in decoded
+                    if isinstance(candidate, dict)
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+    return []
+
+
+def _record(
+    payload: dict[str, Any],
+    *,
+    detail: Literal["summary", "full"] = "summary",
+) -> dict[str, Any]:
     source = payload.get("record")
     if not isinstance(source, dict):
         source = payload.get("evidence")
@@ -55,6 +217,10 @@ def _record(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(source, dict):
         source = payload
     projected = {key: source[key] for key in _EVIDENCE_KEYS if key in source}
+    if detail == "summary":
+        for key in ("candidates", "candidates_json"):
+            if key in source:
+                projected[key] = _candidate_collection(source[key])
     evidence_id = str(
         projected.get("evidence_id") or projected.get("id") or ""
     ).strip()
@@ -124,7 +290,7 @@ def get_subtitle_evidence(
     payload = runtime.require_application().get_subtitle_evidence(
         arguments.evidence_id
     )
-    result = _record(payload)
+    result = _record(payload, detail=arguments.detail)
     status = str(result.get("status") or "").strip().lower()
     return ToolOutcome(
         result=result,

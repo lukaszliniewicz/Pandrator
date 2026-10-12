@@ -272,13 +272,20 @@
     }
     await loadSpeechCatalogues();
     configuredServiceId ||= draft.ttsService;
-    const configured = speechCatalogues.catalogue.services.find((service) =>
+    let configured = speechCatalogues.catalogue.services.find((service) =>
       [service.id, service.name].some(
         (value) =>
           String(value ?? '').toLowerCase() ===
           configuredServiceId.toLowerCase()
       )
     );
+    if (configured && configured.available == null) {
+      const serviceId = configured.id;
+      await speechCatalogues.refreshService(serviceId);
+      configured = speechCatalogues.catalogue.services.find(
+        (service) => service.id === serviceId
+      );
+    }
     if (configured?.available === true) return '';
     return (
       configured?.availability_reason ||
@@ -699,8 +706,6 @@
     )
       draft.exportMode = 'subtitles';
     draft.subtitleFormat = String(saved.subtitle_format ?? 'srt');
-    if (stage.key === 'generate_audio' && activeService)
-      await discoverTtsService(activeService);
     if (!isCurrent()) return;
     if (stage.key === 'generate_audio' && ttsSelection.selectedTtsService) {
       draft.ttsService = String(
@@ -718,7 +723,9 @@
         draft.voiceName || String(ttsSelection.selectedTtsDefaultVoice ?? '');
       if (
         String(ttsSelection.selectedTtsService.id).toLowerCase() ===
-        'kobold_qwen'
+          'kobold_qwen' &&
+        !speechCatalogues.voicesLoading &&
+        !speechCatalogues.voiceError
       ) {
         const catalogue = Array.from(
           ttsSelection.selectedTtsService.voice_catalogues?.[draft.ttsModel] ??
@@ -749,6 +756,13 @@
       }
     }
     settingsLoading = false;
+    if (
+      stage.key === 'generate_audio' &&
+      activeService?.available == null &&
+      activeService
+    ) {
+      void speechCatalogues.refreshService(activeService.id);
+    }
   }
 
   async function persistSection(
@@ -927,7 +941,7 @@
                   ''
               );
       }
-      if (active) await discoverTtsService(active);
+      if (active && force) await discoverTtsService(active);
       if (!speechCatalogues.finishLoad(loaded)) return;
       if (String(active?.id ?? '').toLowerCase() === 'xtts')
         await loadXttsModels();
@@ -1158,6 +1172,10 @@
   async function discoverTtsService(
     service: TtsService | undefined = ttsSelection.selectedTtsService
   ) {
+    if (service && service.available == null) {
+      await speechCatalogues.refreshService(service.id);
+      return;
+    }
     await speechCatalogues.discover(service);
   }
 

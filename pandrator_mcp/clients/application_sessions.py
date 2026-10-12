@@ -117,11 +117,17 @@ class ApplicationSessionMethods(ApplicationRequests):
             body={"expected_revision": expected_revision, "days": days},
         )
 
-    def get_workflow(self, session_id: str) -> dict[str, Any]:
-        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/workflow")
+    def get_workflow(self, session_id: str, *, summary: bool = False) -> dict[str, Any]:
+        path = f"/api/v1/sessions/{quote(session_id, safe='')}/workflow"
+        if summary:
+            return self._request_json(path, parameters={"view": "summary"})
+        return self._request_json(path)
 
     def get_subtitles(self, session_id: str) -> dict[str, Any]:
         return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles")
+
+    def get_subtitle_catalog(self, session_id: str) -> dict[str, Any]:
+        return self._request_json(f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles/catalog")
 
     def fork_session(
         self,
@@ -170,6 +176,8 @@ class ApplicationSessionMethods(ApplicationRequests):
         segments: list[dict[str, Any]],
         source_artifact_id: str | None = None,
         idempotency_key: str | None = None,
+        dry_run: bool = False,
+        expected_source_hash: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "expected_revision": expected_revision,
@@ -177,10 +185,34 @@ class ApplicationSessionMethods(ApplicationRequests):
         }
         if source_artifact_id:
             payload["source_artifact_id"] = source_artifact_id
+        if expected_source_hash:
+            payload["expected_source_hash"] = expected_source_hash
+        if dry_run:
+            payload["dry_run"] = True
         return self._request_json(
             f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles/{quote(stage, safe='')}/review",
             method="POST",
             body=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    def save_subtitle_passage_review(
+        self, session_id: str, stage: str, *, source_artifact_id: str,
+        expected_source_hash: str, expected_revision: int,
+        expected_composition_hash: str, passages: list[dict[str, Any]],
+        idempotency_key: str, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/api/v1/sessions/{quote(session_id, safe='')}/subtitles/{quote(stage, safe='')}/passage-review",
+            method="POST",
+            body={
+                "source_artifact_id": source_artifact_id,
+                "expected_source_hash": expected_source_hash,
+                "expected_revision": expected_revision,
+                "expected_composition_hash": expected_composition_hash,
+                "passages": passages,
+                "dry_run": dry_run,
+            },
             idempotency_key=idempotency_key,
         )
 

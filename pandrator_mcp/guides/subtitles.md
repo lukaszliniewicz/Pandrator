@@ -15,6 +15,21 @@ snapshot and selected artifact IDs before continuing downstream. Selecting an
 older upstream revision can invalidate or clear dependent selections; use the
 reported impact rather than assuming downstream work is still current.
 
+For a small change to accepted text, use `pandrator_preview_subtitle_passages`
+with the exact artifact ID. It returns logical passage IDs, speaker turns,
+source hash, document revision, and composition hash. Pass those guards to
+`pandrator_patch_subtitle_passages` with only the changed passages. A
+`starts_new_turn: true` edit can keep the text unchanged and does not require
+inventing a speaker name. The server preserves other passages, source word
+anchors, and evidence. Logical passage IDs, displayed SRT ordinals, and dispatch
+cue IDs are separate namespaces.
+
+Use `dry_run: true` to validate a passage patch or text replacement through the
+same backend checks as a save. It creates no artifact or idempotency receipt;
+the same key can then commit the reviewed request. A display cue containing
+multiple logical passages must be edited through the passage tool. Existing
+cue patches and text replacements retain exact display and passage references.
+
 Speech recognition may run locally or through a provider depending on the
 configured engine. Translation may use an LLM or a translation provider. An
 exact plan should disclose remote data transfer and identify the selected input
@@ -64,3 +79,23 @@ otherwise retain the default full text response. Fragment evidence engines come
 from `pandrator_get_subtitle_evidence_routes`, with `force_refresh` available to
 bypass matching successful evidence. See the repository passive-dispatch guide
 for the complete protocol.
+
+Evidence reads default to `detail=summary`: candidate text, padded context,
+model/timing provenance, counts and transcript artifact references remain
+available. Use `detail=full` when the individual word or segment timings are
+needed. Compact claim manifests omit complete supported-language lists; request
+`pandrator_get_subtitle_evidence_routes` with `include_languages=true` to inspect
+those lists.
+
+Final-batch submission allows at least 120 seconds for synchronous artifact
+finalization. If the response still times out, retain the exact submitted
+result, lease token and idempotency key. Inspect the run or retry the same
+request with the same key; do not start another translation from an older
+cached draft. `pandrator_get_dispatch_preview` reads persisted accepted output.
+
+Workflow status and artifact inventories request summary API responses before
+HTTP encoding. Artifact role/kind filters apply before the limit. Published
+dispatch and reviewed subtitle artifacts include reading-speed/layout counts,
+up to 20 issue locations, and a normalized text-integrity comparison. These
+diagnostics report unresolved delivery constraints; they do not shorten the
+translation or prove alignment against the recording.

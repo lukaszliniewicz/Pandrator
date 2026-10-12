@@ -151,7 +151,7 @@ class GenerationPlanReviewTests(unittest.TestCase):
         self.assertEqual(old["items"][0]["text"], self.initial_text)
 
     def test_around_ordinal_context_preserves_revision_and_source_cue_timing(self):
-        for radius, ordinals, total in ((0, [1], 2), (1, [0, 1, 2], 3)):
+        for radius, ordinals, total in ((0, [1], 3), (1, [0, 1, 2], 3)):
             with self.subTest(radius=radius):
                 response = self.client.get(
                     f"/api/v1/sessions/{self.session_id}/generation-segments",

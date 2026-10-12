@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
@@ -97,6 +97,7 @@ def run_generation(
         str(value) for value in (payload.get("segment_ids") or []) if str(value)
     }
     operation = str(payload.get("operation") or "generate")
+    progress(0.0, "Checking speech plan and voice references")
     with context.database.session() as session:
         run = session.get(GenerationRun, run_id)
         if run is None:
@@ -215,6 +216,7 @@ def run_generation(
     from .settings_policy import adapt_runtime_settings
     from .workspace import mark_output_assemblies_stale
 
+    progress(0.0, "Loading speech provider settings")
     tts_settings = {
         **adapt_runtime_settings("tts", dict(settings_snapshot.get("tts") or {})),
         **adapt_runtime_settings(
@@ -422,6 +424,37 @@ def run_generation(
     batch_contexts: dict[str, dict[str, Any]] = {}
     parallel_batch_boundaries: set[str] = set()
     parallel_synthesis_batch = False
+
+    def _preparation_interruption() -> dict[str, Any] | None:
+        with context.database.session() as session:
+            flags = session.execute(
+                select(
+                    GenerationRun.cancel_requested,
+                    GenerationRun.pause_requested,
+                ).where(GenerationRun.id == run_id)
+            ).one_or_none()
+            if flags is None:
+                raise KeyError(run_id)
+            status = (
+                "canceled"
+                if cancel_event.is_set() or flags.cancel_requested
+                else "paused"
+                if flags.pause_requested
+                else None
+            )
+            if status is None:
+                return None
+            session.execute(
+                update(GenerationRun)
+                .where(GenerationRun.id == run_id)
+                .values(status=status, updated_at=utcnow())
+            )
+        return {
+            "generation_run_id": run_id,
+            "status": status,
+            "generated": generated,
+        }
+
     # The selected alternate owns the provider endpoint for this run.  In
     # particular, a first-class service's explicit base URL must reach the
     # legacy synthesis boundary instead of the source provider's URL.
@@ -456,6 +489,18 @@ def run_generation(
             effective_batch_size = 1
         if effective_batch_size > 1:
             batch_items: list[tuple[str, str, dict[str, Any]]] = []
+            batch_request_total = sum(
+                1
+                for segment_id in segment_ids
+                if operation != "resume" or segment_id not in completed_take_ids
+            )
+            progress(
+                optimization_share,
+                f"Preparing speech requests: 0 of {batch_request_total}",
+            )
+            interruption = _preparation_interruption()
+            if interruption is not None:
+                return interruption
             for segment_id in segment_ids:
                 if operation == "resume" and segment_id in completed_take_ids:
                     continue
@@ -487,7 +532,6 @@ def run_generation(
                     verified=verified_qwen_voices,
                     cancel_event=cancel_event,
                 )
-                _assert_current_audio_identity(segment_id)
                 batch_contexts[segment_id] = {
                     "text": str(seed["text"]),
                     "synthesized_text": synthesized_text,
@@ -496,7 +540,47 @@ def run_generation(
                 batch_items.append(
                     (segment_id, synthesized_text, segment_tts_settings)
                 )
+                prepared_count = len(batch_items)
+                if prepared_count % 25 == 0:
+                    progress(
+                        optimization_share,
+                        f"Preparing speech requests: {prepared_count} of {batch_request_total}",
+                    )
+                    interruption = _preparation_interruption()
+                    if interruption is not None:
+                        return interruption
             if batch_items:
+                prepared_count = len(batch_items)
+                if prepared_count % 25 != 0:
+                    progress(
+                        optimization_share,
+                        f"Preparing speech requests: {prepared_count} of {batch_request_total}",
+                    )
+                    interruption = _preparation_interruption()
+                    if interruption is not None:
+                        return interruption
+                prepared_ids = [item[0] for item in batch_items]
+                with context.database.session() as session:
+                    current_audio_identities = plan_audio_identities(
+                        session,
+                        plan_revision_id,
+                        settings_snapshot,
+                        segment_ids=prepared_ids,
+                    )
+                expected_audio_identities = {
+                    segment_id: audio_identities.get(segment_id)
+                    for segment_id in prepared_ids
+                }
+                if (
+                    set(current_audio_identities) != set(prepared_ids)
+                    or current_audio_identities != expected_audio_identities
+                ):
+                    raise ValueError(
+                        "A voice reference or segment delivery setting changed during generation. Start a new run to keep its audio consistent."
+                    )
+                interruption = _preparation_interruption()
+                if interruption is not None:
+                    return interruption
                 batch_results = context._start_streaming_tts_batch(
                     batch_items,
                     batch_size=effective_batch_size,

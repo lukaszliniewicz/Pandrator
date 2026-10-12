@@ -110,6 +110,18 @@ class GenerationSearchTests(unittest.TestCase):
         self.assertEqual(2, page["total"])
         self.assertEqual([6], [item["ordinal"] for item in page["items"]])
 
+    def test_visible_window_preserves_full_matching_total(self):
+        self.create_plan([{"text": f"Row {index}"} for index in range(569)])
+        initial = self.list_segments(limit=1, view="compact").get_json()
+        window = self.list_segments(cursor=0, end_ordinal=7, view="compact").get_json()
+        self.assertEqual(569, initial["total"])
+        self.assertEqual(569, window["total"])
+        self.assertEqual(list(range(8)), [item["ordinal"] for item in window["items"]])
+        self.assertIsNone(window["next_cursor"])
+        filtered = self.list_segments(q="Row 5", end_ordinal=7, view="compact").get_json()
+        self.assertEqual(80, filtered["total"])
+        self.assertEqual([5], [item["ordinal"] for item in filtered["items"]])
+
     def test_unicode_whole_word_and_punctuation_matching_is_literal(self):
         self.assertTrue(contains_literal("Straße", "STRASSE"))
         self.assertTrue(contains_literal("un café", "CAFÉ", whole_word=True))

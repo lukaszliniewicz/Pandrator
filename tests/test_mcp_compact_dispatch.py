@@ -7,7 +7,26 @@ from pydantic import ValidationError
 
 from pandrator_mcp.compact_packets import compact_manifest_packet
 from pandrator_mcp.schemas import ClaimDispatchBatchInput, SubmitDispatchBatchInput
-from pandrator_mcp.tools.dispatch import claim_dispatch_batch, submit_dispatch_batch
+from pandrator_mcp.tools.dispatch import (
+    _claim as project_claim,
+)
+from pandrator_mcp.tools.dispatch import (
+    _compact_claim,
+    claim_dispatch_batch,
+    submit_dispatch_batch,
+)
+
+_CATALOG_LANGUAGES = (
+    "ar", "bg", "ca", "cs", "da", "de", "el", "en", "es", "et", "fi",
+    "fr", "he", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv",
+    "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl",
+)
+_CATALOG_REGIONS = ("US", "GB", "CA", "AU", "IN", "BR", "DE", "JP")
+_CATALOG_LOCALES = [
+    f"{language}-{region}"
+    for language in _CATALOG_LANGUAGES
+    for region in _CATALOG_REGIONS
+]
 
 
 def _claim_payload(cue_count: int = 40) -> dict:
@@ -55,7 +74,44 @@ def _claim_payload(cue_count: int = 40) -> dict:
             "glossary": {"old term": "preferred term"},
             "timing_context_mode": "full",
             "substantial_gap_ms": 2_000,
-            "quality_policy": {"preserve_uncertain_text": True},
+            "quality_policy": {
+                "preserve_uncertain_text": True,
+                "semantic_coherence_required": True,
+                "deletion_allowed": False,
+                "evidence_tool": "pandrator_request_subtitle_evidence",
+                "evidence_status_tool": "pandrator_get_subtitle_evidence",
+                "available_routes": ["whisper", "audio_llm"],
+                "route_catalog": [
+                    {
+                        "route": "whisper",
+                        "label": "Whisper",
+                        "local": True,
+                        "remote": False,
+                        "timing_method": "native_word",
+                        "supported_languages": list(_CATALOG_LOCALES),
+                        "language_supported": True,
+                        "ready": True,
+                        "reason": "Local runtime is available.",
+                        "language_reason": "",
+                        "route_extension": "preserve this unknown property",
+                    },
+                    {
+                        "route": "audio_llm",
+                        "label": "Audio-capable LLM",
+                        "local": None,
+                        "remote": None,
+                        "timing_method": "bounded_clip",
+                        "languages": list(_CATALOG_LOCALES),
+                        "language_supported": None,
+                        "ready": None,
+                        "reason": "Readiness depends on the selected model.",
+                        "language_reason": "",
+                    },
+                ],
+                "audio_witness_models": [],
+                "audio_witness_policy": "Audio witnesses do not supply timing.",
+                "fallback": "mark_uncertain",
+            },
         },
         "batch": {
             "id_namespace": "source_revision_cue",
@@ -212,6 +268,75 @@ class CompactDispatchTests(unittest.TestCase):
         self.assertIn("instructions", full["manifest"])
         self.assertIn("quality_policy", full["manifest"])
         self.assertEqual("a" * 64, mismatch["task"]["source_content_hash"])
+
+    def test_compact_manifest_prunes_route_language_arrays_before_hashing(self):
+        raw = _claim_payload(cue_count=2)
+        raw_before = copy.deepcopy(raw)
+        projected = project_claim(raw)
+        projected_before = copy.deepcopy(projected)
+        compact = _compact_claim(projected, known_manifest_hash=None)
+        cached = _compact_claim(
+            projected,
+            known_manifest_hash=compact["manifest_hash"],
+        )
+        standard = _claim(self.runtime, "standard")
+
+        self.assertEqual(raw_before, raw)
+        self.assertEqual(projected_before, projected)
+        standard_policy = standard["task"]["quality_policy"]
+        compact_policy = compact["manifest"]["quality_policy"]
+        self.assertEqual(raw["task"]["quality_policy"], standard_policy)
+        self.assertEqual("en", compact["manifest"]["source_language"])
+        self.assertEqual(248, len(standard_policy["route_catalog"][0]["supported_languages"]))
+        self.assertEqual(248, len(standard_policy["route_catalog"][1]["languages"]))
+        for original_route, route in zip(
+            standard_policy["route_catalog"],
+            compact_policy["route_catalog"],
+            strict=True,
+        ):
+            self.assertNotIn("supported_languages", route)
+            self.assertNotIn("languages", route)
+            self.assertEqual(
+                {
+                    key: value
+                    for key, value in original_route.items()
+                    if key not in {"supported_languages", "languages"}
+                },
+                route,
+            )
+        self.assertEqual(["whisper", "audio_llm"], [
+            route["route"] for route in compact_policy["route_catalog"]
+        ])
+        whisper = compact_policy["route_catalog"][0]
+        self.assertTrue(whisper["language_supported"])
+        self.assertTrue(whisper["ready"])
+        self.assertEqual("native_word", whisper["timing_method"])
+        self.assertEqual(
+            "preserve this unknown property",
+            whisper["route_extension"],
+        )
+        self.assertEqual(
+            {key: value for key, value in standard_policy.items() if key != "route_catalog"},
+            {key: value for key, value in compact_policy.items() if key != "route_catalog"},
+        )
+        standard_policy_bytes = len(
+            json.dumps(
+                standard_policy,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        compact_policy_bytes = len(
+            json.dumps(
+                compact_policy,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        self.assertGreaterEqual(standard_policy_bytes - compact_policy_bytes, 3_000)
+        self.assertEqual(compact["manifest_hash"], cached["manifest_hash"])
+        self.assertEqual(compact["task"], cached["task"])
+        self.assertNotIn("manifest", cached)
 
     def test_compact_packet_reduces_representative_claim_bytes(self):
         standard = _claim(self.runtime)

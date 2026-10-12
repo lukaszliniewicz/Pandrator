@@ -9,6 +9,7 @@ from pandrator.web.database import Database
 from pandrator.web.models import (
     Artifact,
     ArtifactEdge,
+    Document,
     DocumentRevision,
     Segment,
     SegmentLineage,
@@ -377,6 +378,48 @@ class SubtitleReviewTests(unittest.TestCase):
         self.assertEqual(
             "Imported directly into a fresh subtitle session.",
             payload["stages"]["transcription"]["segments"][0]["text"],
+        )
+
+    def test_first_import_dry_run_does_not_create_a_document(self):
+        result = self.service.save_review(
+            self.session.id,
+            "transcription",
+            0,
+            [
+                {
+                    "start_ms": 0,
+                    "end_ms": 1500,
+                    "text": "Validate an import without saving it.",
+                }
+            ],
+            dry_run=True,
+        )
+
+        self.assertEqual(True, result["dry_run"])
+        self.assertEqual(True, result["validated"])
+        self.assertEqual(self.session.id, result["session_id"])
+        self.assertEqual("transcription", result["stage"])
+        self.assertIsNone(result["document_id"])
+        self.assertEqual(0, result["revision"])
+        self.assertEqual(1, result["cue_count"])
+        self.assertEqual(1, result["logical_passage_count"])
+        with self.database.session() as session:
+            document = session.scalar(
+                select(Document).where(
+                    Document.session_id == self.session.id,
+                    Document.stage == "transcription",
+                )
+            )
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.session_id == self.session.id,
+                    Artifact.role == "transcription",
+                )
+            )
+        self.assertIsNone(document)
+        self.assertIsNone(artifact)
+        self.assertFalse(
+            (self.session_dir / "reviewed_transcription_r1.srt").exists()
         )
 
     def test_comparison_groups_splits_and_saving_creates_reviewed_revision(self):

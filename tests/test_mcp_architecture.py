@@ -422,6 +422,7 @@ class McpArchitectureTests(unittest.TestCase):
                 "pandrator_fork_session",
                 "pandrator_inspect_source_cleaning_dispatch_extraction",
                 "pandrator_patch_subtitle_cues",
+                "pandrator_patch_subtitle_passages",
                 "pandrator_plan_export_variant",
                 "pandrator_plan_workflow",
                 "pandrator_patch_session_settings",

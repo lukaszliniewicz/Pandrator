@@ -99,6 +99,14 @@ Claimed `turn_id` values are durable boundaries, and correction or translation
 must not merge across them. Word evidence is inspected on demand rather than
 included in every claim.
 
+After publication, use `pandrator_preview_subtitle_passages` and
+`pandrator_patch_subtitle_passages` for a small wording or turn correction.
+Pin the returned artifact hash, revision and composition hash; submit only the
+changed logical passage IDs. This avoids replaying every batch for a name or
+speaker handoff. `dry_run=true` executes the save validation without publishing.
+Preserve the accepted English artifact before starting another language, and
+use persisted accepted output or its verified export as the authoritative text.
+
 ### Check ambiguous audio with another recognizer
 
 Fragment evidence supports `whisper`, `parakeet`, `moss`, `qwen3`,
@@ -109,6 +117,14 @@ configured; choose a ready engine that supports the clip language. STT routes
 reuse the application's configured engines and credentials. Audio-LLM evidence
 is untimed. Evidence remains a comparison aid and never silently replaces the
 correction text. One request can compare up to seven distinct routes.
+
+Evidence summaries retain transcript text, context and provenance; request
+`detail=full` only for raw segment and word timings. Compact claim manifests
+retain route readiness and support for the source language while leaving full
+language lists to the catalogue's `include_languages=true` view. Completion
+receipts distinguish accepted batches from finalized artifacts. On a submission
+timeout, inspect the run or replay the exact request and original idempotency
+key; a new key is a new mutation.
 
 STT settings accept `engine` as an alias for `stt_engine`; conflicting aliases
 and unknown submitted STT keys fail validation rather than being silently

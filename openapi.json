@@ -10522,6 +10522,11 @@
       "SubtitlePassageReviewRequest": {
         "additionalProperties": false,
         "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
           "expected_composition_hash": {
             "maxLength": 128,
             "minLength": 1,
@@ -10567,6 +10572,11 @@
       "SubtitleReviewRequest": {
         "additionalProperties": false,
         "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
           "expected_revision": {
             "minimum": 0,
             "title": "Expected Revision",
@@ -13250,15 +13260,32 @@
         "operationId": "listArtifacts",
         "parameters": [
           {
-            "description": "Compact pages omit stored metadata, hashes and paths, and add project and passage labels.",
+            "description": "Compact pages add project and passage labels. Summary preserves hashes and subtitle diagnostics while omitting artifact bodies and paths.",
             "in": "query",
             "name": "view",
             "schema": {
               "default": "full",
               "enum": [
                 "full",
-                "compact"
+                "compact",
+                "summary"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact role filter applied before limit and offset.",
+            "in": "query",
+            "name": "role",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exact kind filter applied before limit and offset.",
+            "in": "query",
+            "name": "kind",
+            "schema": {
               "type": "string"
             }
           },
@@ -24471,6 +24498,19 @@
       "get": {
         "operationId": "getWorkflow",
         "parameters": [
+          {
+            "description": "Summary omits artifact bodies and local paths while retaining workflow status and selections.",
+            "in": "query",
+            "name": "view",
+            "schema": {
+              "default": "full",
+              "enum": [
+                "full",
+                "summary"
+              ],
+              "type": "string"
+            }
+          },
           {
             "in": "path",
             "name": "sessionId",

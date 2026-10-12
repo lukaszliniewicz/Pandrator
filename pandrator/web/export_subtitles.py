@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from pandrator.logic.dubbing.languages import normalize_language_code, subtitle_language_title
+from pandrator.logic.dubbing.srt_utils import parse_srt
 from pandrator.logic.dubbing.subtitle_finalization import (
     SubtitleFinalizationConfig,
     diagnose_srt_content,
 )
+from pandrator.logic.dubbing.text_units import join_fragments
 
 from .models import Artifact, SessionRecord
 from .settings_policy import RUNTIME_SETTING_ALIASES
@@ -86,10 +89,18 @@ def subtitle_export_diagnostics(
     language_origin: str,
 ) -> dict[str, Any]:
     effective = {**settings, "subtitle_language": language}
+    source_text = join_fragments(cue.text for cue in parse_srt(source))
+    final_text = join_fragments(cue.text for cue in parse_srt(finalized))
     return {
         "profile": subtitle_profile(effective, provenance, language=language, language_origin=language_origin, text=source),
         "input": diagnose_srt_content(source, effective),
         "final": diagnose_srt_content(finalized, effective),
+        "text_integrity": {
+            "matches": source_text == final_text,
+            "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "final_sha256": hashlib.sha256(final_text.encode("utf-8")).hexdigest(),
+            "normalization": "presentation line breaks and fragment spacing; speaker labels excluded",
+        },
     }
 
 

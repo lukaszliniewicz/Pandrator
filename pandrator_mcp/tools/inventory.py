@@ -20,6 +20,7 @@ def _safe_subtitle_diagnostics(value: object) -> dict[str, Any]:
         "cue_count", "line_length_violating_cues", "line_length_violating_lines",
         "reading_speed_violating_cues", "max_lines_violating_cues",
         "invalid_duration_cues", "observed_max_units_per_line", "observed_max_cps",
+        "overlapping_cues", "issues_total",
     )
     profile = value.get("profile")
     profile = profile if isinstance(profile, dict) else {}
@@ -69,10 +70,22 @@ def _safe_subtitle_diagnostics(value: object) -> dict[str, Any]:
             phase: {
                 key: counts[key] for key in count_keys
                 if key in counts and isinstance(counts[key], (int, float))
-            } | {"semantics": "display units; strict greater-than limits; millisecond cue duration"}
+            } | {
+                "semantics": "display units; strict greater-than limits; millisecond cue duration",
+                "issues": [
+                    {key: item[key] for key in ("ordinal", "start_ms", "end_ms", "cps", "reasons")
+                     if key in item}
+                    for item in counts.get("issues", [])[:20] if isinstance(item, dict)
+                ],
+                "issues_truncated": counts.get("issues_truncated") is True,
+            }
             for phase in ("input", "final")
             if isinstance(counts := value.get(phase), dict)
         },
+        "text_integrity": {
+            key: integrity[key] for key in ("matches", "source_sha256", "final_sha256", "normalization")
+            if key in integrity and isinstance(integrity[key], (str, bool))
+        } if isinstance(integrity := value.get("text_integrity"), dict) else {"status": "unavailable"},
     }
 
 
@@ -98,6 +111,9 @@ def list_artifacts(
     payload = runtime.require_application().list_artifacts(
         session_id=arguments.session_id,
         limit=arguments.limit,
+        summary=True,
+        **({"role": arguments.role} if arguments.role else {}),
+        **({"kind": arguments.kind} if arguments.kind else {}),
     )
     source = payload.get("items")
     items: list[dict[str, Any]] = []

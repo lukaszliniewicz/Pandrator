@@ -101,6 +101,14 @@
 {#if speechCatalogues.error}<p role="alert" class="text-sm text-red-600">
     Could not refresh speech services: {speechCatalogues.error}
   </p>{/if}
+{#if speechCatalogues.serviceErrors[ttsSelection.selectedTtsService?.id ?? '']}<p
+    role="alert"
+    class="text-sm text-red-600"
+  >
+    Could not check the selected provider: {speechCatalogues.serviceErrors[
+      ttsSelection.selectedTtsService?.id ?? ''
+    ]}
+  </p>{/if}
 <div class="grid gap-2">
   <div class="flex items-center justify-between gap-3">
     <span class="text-sm font-semibold">TTS service</span><button
@@ -123,6 +131,11 @@
         >{#each ttsSelection.availableTtsServices as service}<option
             value={service.id}>{service.name} · available</option
           >{/each}</optgroup
+      >{/if}{#if ttsSelection.uncheckedTtsServices.length}<optgroup
+        label="Not checked yet"
+        >{#each ttsSelection.uncheckedTtsServices as service}<option
+            value={service.id}>{service.name}</option
+          >{/each}</optgroup
       >{/if}{#if ttsSelection.unavailableTtsServices.length}<optgroup
         label="Unavailable"
         >{#each ttsSelection.unavailableTtsServices as service}<option
@@ -131,7 +144,15 @@
             class="text-[var(--muted)]">{service.name} · unavailable</option
           >{/each}</optgroup
       >{/if}</select
-  >{#if ttsSelection.selectedTtsService && !ttsSelection.selectedTtsServiceAvailable}<span
+  >{#if speechCatalogues.checkingServices.includes(ttsSelection.selectedTtsService?.id ?? '')}<span
+      class="muted flex items-center gap-2 text-xs"
+      role="status"
+      ><LoaderCircle size={14} class="animate-spin" /> Checking the selected provider
+      and its voices…</span
+    >{:else if ttsSelection.selectedTtsService && ttsSelection.selectedTtsService.available == null}<span
+      class="muted text-xs"
+      role="status">Provider availability has not been checked yet.</span
+    >{:else if ttsSelection.selectedTtsService && !ttsSelection.selectedTtsServiceAvailable}<span
       class="text-xs font-semibold text-red-500"
       role="status"
       >{ttsSelection.selectedTtsService.availability_reason ||
@@ -462,8 +483,8 @@
               draft.voiceName ||
               (ttsSelection.selectedModelAllowsReferenceFree
                 ? 'Speech direction · no reference'
-                : 'Choose a voice')}{:else}{ttsSelection.localVoiceChoices
-              .length}
+                : 'Choose a voice')}{:else if speechCatalogues.voicesLoading}Loading…{:else if speechCatalogues.voiceError}Unavailable{:else}{ttsSelection
+              .localVoiceChoices.length}
             {ttsSelection.localVoiceChoices.length === 1
               ? 'voice'
               : 'voices'}{/if}</span
@@ -498,6 +519,17 @@
           {#if !draft.voiceName}<CheckCircle2 size={16} />{/if}
         </button>
       {/if}
+      {#if speechCatalogues.voicesLoading}<p
+          class="muted mt-3 flex items-center gap-2 text-sm"
+          role="status"
+        >
+          <LoaderCircle size={14} class="animate-spin" /> Loading saved voices…
+        </p>{:else if speechCatalogues.voiceError}<p
+          class="mt-3 text-sm text-red-600"
+          role="alert"
+        >
+          Could not load saved voices: {speechCatalogues.voiceError}
+        </p>{/if}
       {#if ttsSelection.localVoiceChoices.length}
         <div class="mt-3 space-y-2">
           {#each ttsSelection.localVoiceChoices as choice}
@@ -575,7 +607,7 @@
             </article>
           {/each}
         </div>
-      {:else}
+      {:else if !speechCatalogues.voicesLoading && !speechCatalogues.voiceError}
         <p
           class="muted mt-3 rounded-xl border border-dashed border-[var(--line)] p-4 text-sm"
         >

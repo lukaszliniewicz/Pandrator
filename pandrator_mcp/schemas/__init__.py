@@ -202,6 +202,7 @@ from .subtitle_evidence import (
     RequestSubtitleEvidenceInput,
     ResolveSubtitleEvidenceInput,
 )
+from .subtitle_passages import PatchSubtitlePassagesInput, PreviewSubtitlePassagesInput
 from .system import CapabilitiesInput, SystemStatusInput, TargetStatusInput
 from .transcription import (
     Base64TranscriptionSource,
@@ -381,6 +382,8 @@ TOOL_INPUT_MODELS = (
     PreviewSubtitlesInput,
     ReplaceSubtitleTextInput,
     PatchSubtitleCuesInput,
+    PreviewSubtitlePassagesInput,
+    PatchSubtitlePassagesInput,
     ImportSubtitlesInput,
     ListGenerationSegmentsInput,
     ListSpeechPlanRevisionsInput,
@@ -409,6 +412,8 @@ TOOL_INPUT_MODELS = (
 )
 
 __all__ = [
+    "PatchSubtitlePassagesInput",
+    "PreviewSubtitlePassagesInput",
     "GetGenerationOperationInput", "GetGenerationRunCoverageInput",
     "ListPronunciationsInput", "CreatePronunciationInput",
     "UpdatePronunciationInput", "DeletePronunciationInput",

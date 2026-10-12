@@ -58,7 +58,15 @@ export class TtsSettingsSelection {
       this.speechCatalogues.catalogue.services,
       this.draft.ttsService
     )
-      .filter((service) => service.available !== true)
+      .filter((service) => service.available === false)
+      .sort(this.compareServices)
+  );
+  uncheckedTtsServices = $derived.by(() =>
+    selectableTtsServices(
+      this.speechCatalogues.catalogue.services,
+      this.draft.ttsService
+    )
+      .filter((service) => service.available == null)
       .sort(this.compareServices)
   );
   ttsModels = $derived.by(() => this.selectedTtsService?.models ?? []);

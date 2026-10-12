@@ -939,7 +939,9 @@ def build_openapi_document() -> dict:
                 "get": {
                     "operationId": "listArtifacts",
                     "parameters": [
-                        {"name": "view", "in": "query", "schema": {"type": "string", "enum": ["full", "compact"], "default": "full"}, "description": "Compact pages omit stored metadata, hashes and paths, and add project and passage labels."},
+                        {"name": "view", "in": "query", "schema": {"type": "string", "enum": ["full", "compact", "summary"], "default": "full"}, "description": "Compact pages add project and passage labels. Summary preserves hashes and subtitle diagnostics while omitting artifact bodies and paths."},
+                        {"name": "role", "in": "query", "schema": {"type": "string"}, "description": "Exact role filter applied before limit and offset."},
+                        {"name": "kind", "in": "query", "schema": {"type": "string"}, "description": "Exact kind filter applied before limit and offset."},
                         {"name": "media_type", "in": "query", "schema": {"type": "string", "enum": ["audio", "text"]}},
                         {"name": "session_id", "in": "query", "schema": {"type": "string"}},
                         {"name": "output_only", "in": "query", "schema": {"type": "boolean"}},
@@ -987,6 +989,11 @@ def build_openapi_document() -> dict:
             "/api/v1/sessions/{sessionId}/workflow": {
                 "get": {
                     "operationId": "getWorkflow",
+                    "parameters": [{
+                        "name": "view", "in": "query",
+                        "schema": {"type": "string", "enum": ["full", "summary"], "default": "full"},
+                        "description": "Summary omits artifact bodies and local paths while retaining workflow status and selections.",
+                    }],
                     "responses": {"200": {"description": "Workflow snapshot"}},
                 }
             },

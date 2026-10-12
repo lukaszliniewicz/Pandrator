@@ -56,12 +56,21 @@ class ApplicationSourceMethods(ApplicationRequests):
         *,
         session_id: str | None = None,
         limit: int = 50,
+        role: str | None = None,
+        kind: str | None = None,
+        summary: bool = False,
     ) -> dict[str, Any]:
         parameters: dict[str, Any] = {
             "limit": max(1, min(int(limit), 100)),
         }
         if session_id:
             parameters["session_id"] = session_id
+        if role:
+            parameters["role"] = role
+        if kind:
+            parameters["kind"] = kind
+        if summary:
+            parameters["view"] = "summary"
         return self._request_json("/api/v1/artifacts", parameters=parameters)
 
     def artifact_context(self, artifact_id: str) -> dict[str, Any]:

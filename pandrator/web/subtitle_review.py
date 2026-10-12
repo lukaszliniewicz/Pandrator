@@ -26,10 +26,12 @@ from pandrator.logic.dubbing.subtitle_finalization import (
 from .artifacts import ArtifactService
 from .database import Database
 from .document_roles import ARTIFACT_ROLE_TO_STAGE
+from .export_subtitles import subtitle_export_diagnostics
 from .logical_passages import (
     attach_passages,
     load_timing_reference,
     passage_review_metadata,
+    passage_srt,
     same_timing_language,
     source_passages,
     stored_passages,
@@ -1034,6 +1036,7 @@ class SubtitleReviewService:
         expected_revision: int,
         values: list[dict[str, Any]],
         *,
+        dry_run: bool = False,
         source_artifact_id: str | None = None,
         expected_source_hash: str | None = None,
         db_session=None,
@@ -1051,6 +1054,7 @@ class SubtitleReviewService:
                         stage,
                         expected_revision,
                         values,
+                        dry_run=dry_run,
                         source_artifact_id=source_artifact_id,
                         expected_source_hash=expected_source_hash,
                         db_session=session,
@@ -1259,8 +1263,9 @@ class SubtitleReviewService:
                     stage=stage,
                     language=(None if language == "auto" else language),
                 )
-                session.add(document)
-                session.flush()
+                if not dry_run:
+                    session.add(document)
+                    session.flush()
                 previous = None
                 previous_segments: list[Segment] = []
                 next_revision_number = 1
@@ -1443,6 +1448,30 @@ class SubtitleReviewService:
                     )
                 if not reviewed["speaker"] and overlapping_speakers:
                     reviewed["speaker"] = next(iter(overlapping_speakers.values()))
+            if dry_run:
+                return {
+                    "dry_run": True,
+                    "validated": True,
+                    "session_id": session_id,
+                    "stage": stage,
+                    "document_id": document.id,
+                    "revision": expected_revision,
+                    "source_artifact_id": (
+                        source_artifact.id if source_artifact is not None else None
+                    ),
+                    "source_content_hash": (
+                        source_artifact.content_hash
+                        if source_artifact is not None
+                        else None
+                    ),
+                    **(
+                        {"composition_hash": composition_hash}
+                        if _prepared_canonical is not None
+                        else {}
+                    ),
+                    "cue_count": len(normalized),
+                    "logical_passage_count": len(logical_rows),
+                }
             next_revision_number = (
                 int(
                     session.scalar(
@@ -1600,6 +1629,12 @@ class SubtitleReviewService:
                 .order_by(Artifact.created_at.desc())
             )
             parent_id = parent_artifact.id if parent_artifact else None
+            diagnostic_settings = composition_settings
+            if _prepared_canonical is None:
+                resolved, _ = WorkspaceSettingsService(self.database).resolve_in_session(
+                    session, session_id, sections=["subtitles"]
+                )
+                diagnostic_settings = resolved.get("subtitles") or {}
             try:
                 artifact = self.artifacts.register_in_session(
                     session,
@@ -1625,6 +1660,12 @@ class SubtitleReviewService:
                         "revision_id": revision_id,
                         "stage": stage,
                         "language": language,
+                        "subtitle_diagnostics": subtitle_export_diagnostics(
+                            passage_srt(logical_rows), content,
+                            adapt_runtime_settings("subtitles", diagnostic_settings),
+                            None, language=language or "",
+                            language_origin="reviewed_document",
+                        ),
                         "reviewed": True,
                         "has_speaker_metadata": bool(speakers),
                         "speaker_count": len(speakers),
@@ -1677,20 +1718,25 @@ class SubtitleReviewService:
         expected_revision: int,
         values: list[dict[str, Any]],
         *,
+        dry_run: bool = False,
         source_artifact_id: str,
         expected_source_hash: str,
         expected_composition_hash: str,
     ) -> dict[str, Any]:
-        """Save canonical passage edits in one immediate database transaction."""
+        """Save or validate canonical passage edits in a database transaction."""
         published_paths: list[Path] = []
         try:
-            with self.database.immediate_session() as session:
+            transaction = (
+                self.database.session if dry_run else self.database.immediate_session
+            )
+            with transaction() as session:
                 return self.save_passage_review_in_session(
                     session,
                     session_id,
                     stage,
                     expected_revision,
                     values,
+                    dry_run=dry_run,
                     source_artifact_id=source_artifact_id,
                     expected_source_hash=expected_source_hash,
                     expected_composition_hash=expected_composition_hash,
@@ -1708,6 +1754,7 @@ class SubtitleReviewService:
         expected_revision: int,
         values: list[dict[str, Any]],
         *,
+        dry_run: bool = False,
         source_artifact_id: str,
         expected_source_hash: str,
         expected_composition_hash: str,
@@ -1731,6 +1778,7 @@ class SubtitleReviewService:
             stage,
             expected_revision,
             display_values,
+            dry_run=dry_run,
             source_artifact_id=source_artifact_id,
             expected_source_hash=expected_source_hash,
             db_session=session,
@@ -2020,6 +2068,7 @@ class SubtitleReviewService:
         expected_revision: int,
         values: list[dict[str, Any]],
         *,
+        dry_run: bool = False,
         source_artifact_id: str | None = None,
         expected_source_hash: str | None = None,
         published_paths: list[Path] | None = None,
@@ -2030,6 +2079,7 @@ class SubtitleReviewService:
             stage,
             expected_revision,
             values,
+            dry_run=dry_run,
             source_artifact_id=source_artifact_id,
             expected_source_hash=expected_source_hash,
             db_session=session,

@@ -1,4 +1,6 @@
 import asyncio
+import copy
+import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +27,7 @@ class _Application:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self.status = "queued"
+        self.candidates: list[dict] = []
 
     def request_subtitle_evidence(self, session_id, **kwargs):
         self.calls.append(("request", {"session_id": session_id, **kwargs}))
@@ -37,6 +40,7 @@ class _Application:
                 "status": self.status,
                 "reason": kwargs["reason"],
                 "audio_model_ids": kwargs["audio_model_ids"],
+                "candidates": self.candidates,
                 "private_path": "/must/not/leak.wav",
             },
             "job": {"id": "job-1", "status": self.status},
@@ -49,7 +53,7 @@ class _Application:
             "record": {
                 "id": evidence_id,
                 "status": self.status,
-                "candidates": [],
+                "candidates": self.candidates,
                 "private_path": "/must/not/leak.json",
             },
             "job": {"id": "job-1", "status": self.status},
@@ -71,6 +75,7 @@ class _Application:
                 "id": evidence_id,
                 "session_id": session_id,
                 "status": "resolved",
+                "candidates": self.candidates,
                 "resolution": {"action": kwargs["action"]},
             },
             "job": {"id": "job-1", "status": "succeeded"},
@@ -244,6 +249,195 @@ class SubtitleEvidenceMcpTests(unittest.TestCase):
         call = self.application.calls[-1][1]
         self.assertEqual("accepted", call["action"])
         self.assertEqual("whisper-1", call["candidate_id"])
+
+    def test_summary_projects_candidates_across_request_get_and_resolve(self):
+        candidate = {
+            "id": "whisper-1",
+            "route": "whisper",
+            "status": "success",
+            "text": "The cue keeps its complete transcript.",
+            "context_text": "The full nearby sentence remains intact.",
+            "selection_method": "word_overlap",
+            "language": "en",
+            "timing_kind": "native_word",
+            "timing_method": "word_alignment",
+            "provider": "Local STT",
+            "model": "whisper-model",
+            "engine": "whisper",
+            "compute_backend": "cpu",
+            "transcript_artifact_id": "transcript-1",
+            "segments": [
+                {
+                    "start_ms": 100,
+                    "end_ms": 800,
+                    "text": "raw segment text",
+                    "words": [
+                        {"start_ms": 100, "end_ms": 400, "text": "raw"},
+                        {"start_ms": 400, "end_ms": 800, "text": "words"},
+                    ],
+                }
+            ],
+            "words": [
+                {"start_ms": 100, "end_ms": 400, "text": "raw"},
+                {"start_ms": 400, "end_ms": 800, "text": "words"},
+            ],
+            "cost": {
+                "kind": "estimate",
+                "amount": 0.02,
+                "currency": "USD",
+                "unit": "request",
+                "cost_source": "provider estimate",
+                "credentials": "must not leak",
+            },
+            "cache": {
+                "version": 1,
+                "key_sha256": "a" * 64,
+                "media_sha256": "b" * 64,
+                "configuration_sha256": "c" * 64,
+                "prompt_sha256": None,
+                "route": "whisper",
+                "model_id": "whisper-model",
+                "clip_window_ms": [0, 2_000],
+                "cue_window_ms": [100, 800],
+                "source_language_sha256": "d" * 64,
+                "private_path": "/must/not/leak/cache.json",
+                "api_key": "must not leak",
+            },
+            "reused_from": {
+                "evidence_id": "evidence-old",
+                "candidate_id": "whisper-old",
+                "transcript_artifact_id": "transcript-old",
+                "source_artifact_id": "artifact-old",
+                "source_revision_id": "revision-old",
+                "source_media_artifact_id": "media-old",
+                "private_path": "/must/not/leak/old.json",
+            },
+            "private_path": "/must/not/leak/candidate.json",
+        }
+        nested_only_words = {
+            "id": "parakeet-1",
+            "route": "parakeet",
+            "status": "success",
+            "text": "A second complete transcript.",
+            "segments": [{"words": [{"text": "nested"}, {"text": "count"}]}],
+        }
+        failed_candidate = {
+            "id": "moss-1",
+            "route": "moss",
+            "status": "failed",
+            "error": "The provider returned a safe diagnostic.",
+            "error_message": "An alternate bounded diagnostic.",
+        }
+        self.application.candidates = [candidate, nested_only_words, failed_candidate]
+        original_candidates = copy.deepcopy(self.application.candidates)
+
+        request = request_subtitle_evidence(
+            self.runtime,
+            RequestSubtitleEvidenceInput(
+                session_id="session-1",
+                source_artifact_id="artifact-1",
+                cue_id=5,
+                reason="Check the spoken wording.",
+                routes=["whisper"],
+                idempotency_key="evidence:summary:request",
+            ),
+        )
+        fetched = get_subtitle_evidence(
+            self.runtime,
+            GetSubtitleEvidenceInput(evidence_id="evidence-1"),
+        )
+        resolved = resolve_subtitle_evidence(
+            self.runtime,
+            ResolveSubtitleEvidenceInput(
+                session_id="session-1",
+                evidence_id="evidence-1",
+                action="accepted",
+                candidate_id="whisper-1",
+                idempotency_key="evidence:summary:resolve",
+            ),
+        )
+
+        for result, expected_status in zip(
+            (request.result, fetched.result, resolved),
+            ("queued", "queued", "resolved"),
+            strict=True,
+        ):
+            summary, nested_summary, failed_summary = result["candidates"]
+            self.assertEqual("evidence-1", result["evidence_id"])
+            self.assertEqual(expected_status, result["status"])
+            self.assertEqual("job-1", result["job_id"])
+            self.assertEqual("The cue keeps its complete transcript.", summary["text"])
+            self.assertEqual(
+                "The full nearby sentence remains intact.",
+                summary["context_text"],
+            )
+            self.assertEqual("transcript-1", summary["transcript_artifact_id"])
+            self.assertEqual(1, summary["segments_count"])
+            self.assertEqual(2, summary["words_count"])
+            self.assertTrue(summary["has_timing_detail"])
+            self.assertNotIn("segments", summary)
+            self.assertNotIn("words", summary)
+            self.assertNotIn("private_path", summary)
+            self.assertEqual("whisper", summary["cache"]["route"])
+            self.assertEqual([0, 2_000], summary["cache"]["clip_window_ms"])
+            self.assertNotIn("api_key", summary["cache"])
+            self.assertNotIn("private_path", summary["cache"])
+            self.assertEqual("evidence-old", summary["reused_from"]["evidence_id"])
+            self.assertNotIn("private_path", summary["reused_from"])
+            self.assertEqual(0.02, summary["cost"]["amount"])
+            self.assertNotIn("credentials", summary["cost"])
+            self.assertEqual(2, nested_summary["words_count"])
+            self.assertTrue(nested_summary["has_timing_detail"])
+            self.assertEqual(
+                "The provider returned a safe diagnostic.",
+                failed_summary["error"],
+            )
+            self.assertEqual(
+                "An alternate bounded diagnostic.",
+                failed_summary["error_message"],
+            )
+        self.assertEqual(original_candidates, self.application.candidates)
+
+        encoded = json.dumps([candidate], ensure_ascii=False)
+        with patch.object(
+            self.application,
+            "get_subtitle_evidence",
+            return_value={
+                "record": {
+                    "id": "evidence-1",
+                    "status": "completed",
+                    "candidates_json": encoded,
+                }
+            },
+        ):
+            encoded_result = get_subtitle_evidence(
+                self.runtime,
+                GetSubtitleEvidenceInput(evidence_id="evidence-1"),
+            ).result
+        encoded_candidates = json.loads(encoded_result["candidates_json"])
+        self.assertNotIn("segments", encoded_candidates[0])
+        self.assertNotIn("words", encoded_candidates[0])
+        self.assertNotIn("private_path", encoded_candidates[0])
+
+    def test_full_detail_preserves_candidate_timing_arrays(self):
+        candidate = {
+            "id": "whisper-1",
+            "route": "whisper",
+            "status": "success",
+            "text": "The transcript remains complete.",
+            "segments": [{"start_ms": 100, "end_ms": 900, "text": "segment"}],
+            "words": [{"start_ms": 100, "end_ms": 400, "text": "word"}],
+        }
+        self.application.candidates = [candidate]
+        outcome = get_subtitle_evidence(
+            self.runtime,
+            GetSubtitleEvidenceInput(evidence_id="evidence-1", detail="full"),
+        )
+
+        self.assertEqual([candidate], outcome.result["candidates"])
+        self.assertEqual("summary", GetSubtitleEvidenceInput(evidence_id="evidence-1").detail)
+        with self.assertRaises(ValidationError):
+            GetSubtitleEvidenceInput(evidence_id="evidence-1", detail="invalid")
 
 
 if __name__ == "__main__":

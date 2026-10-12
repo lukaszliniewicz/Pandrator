@@ -608,6 +608,7 @@ def finalize_srt_content(content: str, settings: dict[str, Any] | None = None) -
 
 def diagnose_srt_content(
     content: str, settings: dict[str, Any] | None = None,
+    *, detail_limit: int = 20,
 ) -> dict[str, Any]:
     """Count delivery-limit observations without changing cue composition.
 
@@ -645,19 +646,44 @@ def diagnose_srt_content(
     max_lines_cues = 0
     maximum_line = 0.0
     maximum_cps = 0.0
+    issues: list[dict[str, Any]] = []
+    issue_count = 0
+    overlapping_cues = 0
+    previous_end_ms = 0
+    detail_limit = max(0, min(detail_limit, 100))
     for ordinal, cue in enumerate(cues):
+        reasons: list[str] = []
         lines = cue.text.splitlines()
         lengths = [config.character_count(line) for line in lines]
         excess = sum(length > config.max_chars_per_line for length in lengths)
         violating_lines += excess
         line_cues += bool(excess)
         max_lines_cues += len(lines) > config.max_lines
+        if excess:
+            reasons.append("line_length")
+        if len(lines) > config.max_lines:
+            reasons.append("line_count")
+        if ordinal in invalid_ordinals:
+            reasons.append("invalid_duration")
+        if ordinal > 0 and cue.start_ms < previous_end_ms:
+            overlapping_cues += 1
+            reasons.append("overlap")
+        previous_end_ms = max(previous_end_ms, cue.end_ms)
         maximum_line = max(maximum_line, *lengths) if lengths else maximum_line
         duration_ms = cue.end_ms - cue.start_ms
+        cps = None
         if ordinal not in invalid_ordinals and duration_ms > 0:
             cps = config.character_count(cue.text) * 1000.0 / duration_ms
             maximum_cps = max(maximum_cps, cps)
-            speed_cues += cps > config.max_chars_per_second
+            too_fast = config.character_count(cue.text) * 1000 > config.max_chars_per_second * duration_ms
+            speed_cues += too_fast
+            if too_fast:
+                reasons.append("reading_speed")
+        if reasons:
+            issue_count += 1
+            if len(issues) < detail_limit:
+                issues.append({"ordinal": ordinal + 1, "start_ms": cue.start_ms,
+                               "end_ms": cue.end_ms, "cps": cps, "reasons": reasons})
     return {
         "cue_count": len(cues),
         "line_length_violating_cues": line_cues,
@@ -667,6 +693,10 @@ def diagnose_srt_content(
         "invalid_duration_cues": invalid_durations,
         "observed_max_units_per_line": maximum_line,
         "observed_max_cps": maximum_cps,
+        "overlapping_cues": overlapping_cues,
+        "issues": issues,
+        "issues_total": issue_count,
+        "issues_truncated": issue_count > len(issues),
         "semantics": "display units; strict greater-than limits; millisecond cue duration",
     }
 

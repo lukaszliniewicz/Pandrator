@@ -65,6 +65,7 @@ class RequestSubtitleEvidenceInput(ToolInput):
 
 class GetSubtitleEvidenceInput(ToolInput):
     evidence_id: str = Field(min_length=1, max_length=120)
+    detail: Literal["summary", "full"] = "summary"
 
 
 class GetSubtitleEvidenceRoutesInput(ToolInput):
