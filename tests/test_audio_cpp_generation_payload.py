@@ -69,7 +69,7 @@ def test_every_pinned_model_compiles_to_family_route_and_manifest_layout(model_i
     model_argument = Path(argv[argv.index("--model") + 1])
     model_root = Path("/cache") / model.id
     assert model_argument.is_relative_to(model_root)
-    assert argv[argv.index("--out") + 1] == "/private/out.wav"
+    assert argv[argv.index("--out") + 1] == str(Path("/private/out.wav").resolve())
     assert argv[argv.index("--out-format") + 1] == "pcm16"
     if model.is_directory_model:
         assert model_argument == model_root

@@ -104,6 +104,51 @@ def readers(monkeypatch):
     return created
 
 
+
+@pytest.fixture
+def native_interruptions(monkeypatch):
+    """Retain socket retirement details when a native lifetime assertion fails."""
+    observations = []
+    original = tts_handler._iter_kobold_qwen_batch_audio_http
+
+    def observed_http(*args, **kwargs):
+        admit = kwargs.get("response_callback")
+
+        def observe_response(response):
+            if response is not None:
+                raw = response.raw
+                shutdown = getattr(raw, "_sock_shutdown", None)
+                owner = getattr(shutdown, "__self__", None)
+                record = {
+                    "callback_available": callable(shutdown),
+                    "owner_timeout": owner.gettimeout() if owner is not None else None,
+                    "owner_fileno": owner.fileno() if owner is not None else None,
+                    "calls": [],
+                }
+                observations.append(record)
+                if callable(shutdown):
+                    def observed_shutdown(*shutdown_args):
+                        started = time.monotonic()
+                        result = {"mode": shutdown_args, "error": None}
+                        try:
+                            return shutdown(*shutdown_args)
+                        except BaseException as error:
+                            result["error"] = repr(error)
+                            raise
+                        finally:
+                            result["elapsed"] = time.monotonic() - started
+                            if len(record["calls"]) < 8:
+                                record["calls"].append(result)
+                    raw._sock_shutdown = observed_shutdown
+            if admit is not None:
+                admit(response)
+
+        yield from original(*args, **{**kwargs, "response_callback": observe_response})
+
+    monkeypatch.setattr(tts_handler, "_iter_kobold_qwen_batch_audio_http", observed_http)
+    return observations
+
+
 def stream_for(server, cancel=None):
     return tts_handler.iter_kobold_qwen_batch_audio(
         [
@@ -151,7 +196,9 @@ def cleanup(server, readers, consumer=None):
         assert not reader.is_alive(), "Fixture reader survived cleanup"
 
 
-def test_close_after_first_result_retires_stalled_native_reader(stalled_server, readers):
+def test_close_after_first_result_retires_stalled_native_reader(
+    stalled_server, readers, native_interruptions
+):
     stalled_server[1]["first_event"] = True
     stalled_server[3].set()
     stream = stream_for(stalled_server)
@@ -161,7 +208,7 @@ def test_close_after_first_result_retires_stalled_native_reader(stalled_server, 
         stream.close()
         for reader in readers:
             reader.join(timeout=1)
-        assert time.monotonic() - started < 1
+        assert time.monotonic() - started < 1, native_interruptions
         assert readers and not any(reader.is_alive() for reader in readers)
     finally:
         cleanup(stalled_server, readers)
@@ -169,7 +216,9 @@ def test_close_after_first_result_retires_stalled_native_reader(stalled_server, 
 
 
 @pytest.mark.parametrize("after_first", [False, True])
-def test_cancel_while_waiting_retires_stalled_native_reader(stalled_server, readers, after_first):
+def test_cancel_while_waiting_retires_stalled_native_reader(
+    stalled_server, readers, after_first, native_interruptions
+):
     stalled_server[1]["first_event"] = after_first
     stalled_server[3].set()
     cancel = threading.Event()
@@ -180,7 +229,7 @@ def test_cancel_while_waiting_retires_stalled_native_reader(stalled_server, read
     try:
         assert stalled_server[4].wait(1)
         cancel.set()
-        assert finished.wait(1), "Canceled consumer remained blocked on body"
+        assert finished.wait(1), f"Canceled consumer remained blocked on body: {native_interruptions}"
         assert outcome == [None]
         assert readers and not any(reader.is_alive() for reader in readers)
     finally:

@@ -386,7 +386,7 @@ def test_mcp_read_defaults_forward_compact_projection_fields():
     assert forwarded["view"] == "annotations"
     assert forwarded["include_units"] is False
     assert forwarded["segment_ids"] == ["segment-a", "segment-b"]
-    assert result["items"] == []
+    assert result == {"schema_version": "1", "id": "plan"}
 
     application.performance_plan_request.reset_mock()
     application.performance_plan_request.return_value = {
