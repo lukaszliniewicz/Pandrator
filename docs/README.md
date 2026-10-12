@@ -50,8 +50,10 @@ covers assistant connections, access permissions, and workflow operations.
 ## Releases and documentation
 
 [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) has the
-latest downloads, checksums, and release notes. Earlier changes are described in
-the [0.11.0](release-notes-0.11.0.md), [0.10.1](release-notes-0.10.1.md), and
+latest downloads, checksums, and release notes. Read the
+[0.12.0 release notes](release-notes-0.12.0.md) for the current release.
+Earlier changes are described in the [0.11.0](release-notes-0.11.0.md),
+[0.10.1](release-notes-0.10.1.md), and
 [0.10.0](release-notes-0.10.0.md) notes.
 
 Public documentation describes features and workflows that readers can use.

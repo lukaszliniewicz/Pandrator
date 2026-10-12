@@ -4,42 +4,45 @@
 
 # Pandrator
 
-**Make audiobooks, subtitles, and voiceovers in one workspace.**
+**Make audiobooks, subtitles, voiceovers, sounds, and music in one workspace.**
 
 Turn a book into something you can listen to. Transcribe a recording, translate
-its subtitles, or give it a new voice. Pandrator brings the steps together in a
-browser interface, with room to review and refine the result as you go.
+its subtitles, or give it a new voice. Add sound effects and background music.
+Pandrator brings the steps together in a browser interface, with room to review
+and refine the result as you go.
 
 Run speech and transcription models on your own computer, connect a cloud
 provider, or let your AI assistant help through MCP. Start with one workflow
 and add more when you need them.
 
-The main application uses a Python backend and a Svelte frontend. The Qt
-desktop interface is retired; Pandrator Manager opens the current interface
-in your browser. Older workspace data can still be imported. For the retired Qt
-interface, use an [older release](https://github.com/lukaszliniewicz/Pandrator/releases).
+Pandrator Manager installs the application and the engines you choose, then
+opens Pandrator in your browser. Older workspace data can still be imported.
+For the retired Qt desktop interface, use an
+[older release](https://github.com/lukaszliniewicz/Pandrator/releases).
 
-[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.11.0/PandratorManager-0.9.28-windows-x86_64.exe)
-[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.11.0/PandratorManager-0.9.28-x86_64.AppImage)
+[![Download for Windows (.exe)](https://img.shields.io/badge/Download_for_Windows-.exe-2563eb?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.12.0/PandratorManager-0.9.29-windows-x86_64.exe)
+[![Download for Linux (.AppImage)](https://img.shields.io/badge/Download_for_Linux-.AppImage-168572?style=for-the-badge)](https://github.com/lukaszliniewicz/Pandrator/releases/download/v.0.12.0/PandratorManager-0.9.29-x86_64.AppImage)
 
-Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.11.0 / Manager 0.9.28
+Windows 10/11 and Linux desktop · x86-64 · Pandrator 0.12.0 / Manager 0.9.29
 
 [All downloads & release notes](https://github.com/lukaszliniewicz/Pandrator/releases/latest)
 · [Installation help](docs/getting-started/installation.md)
 · [User guides](docs/README.md)
 
-## New in 0.11.0
+## New in 0.12.0
 
-- **Language choices follow the model.** Search 745 language entries with
-  separate TTS, recognition, alignment and voice-design coverage.
-- **Automatic transcription prefers Parakeet**, then supported Qwen and Whisper
-  routes. Optional Demucs isolation uses a smaller, approximately 62 MB model.
-- **Subtitle review protects edits.** Edit spoken passages separately from
-  display cues, undo changes, and prepare compatible video or audio previews.
-- **Collect multilingual exports.** Preview selected-language operations, resume
-  durable progress, and download verified manifests or complete ZIP collections.
+- **Shape the performance.** Edit speech, assign character voices, and add
+  delivery directions in the generation workspace.
+- **Change a voice without starting over.** Regenerate the affected recordings,
+  compare Before and After, and return to the earlier audio when needed.
+- **Create sounds and music.** Generate or import clips, save them in a reusable
+  library, and place them alongside narration or voiceovers.
+- **Choose how much control you need.** Simple mode keeps everyday work focused;
+  Advanced mode exposes detailed speech and mixing controls.
+- **Turn an audiobook into a video book.** Export saved narration with timed
+  reading text and configurable presentation.
 
-See the [0.11.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.11.0).
+See the [0.12.0 release notes](https://github.com/lukaszliniewicz/Pandrator/releases/tag/v.0.12.0).
 
 ## Try your first workflow
 
@@ -67,6 +70,7 @@ explains this and the release checksums.
 | A book, document, or pasted text | Narrated audio or an M4B audiobook with chapters and cover art | [First audiobook](docs/getting-started/first-audiobook.md) |
 | An audio/video file or existing subtitles | Reviewed, corrected, or translated subtitles | [First subtitles](docs/getting-started/first-subtitles.md) |
 | A video or subtitle file | Synchronized speech and a dubbed video | [First voiceover](docs/getting-started/first-voiceover.md) |
+| A description or an audio clip | Reusable sound effects, music, and a mixed soundtrack | [Sounds and mixing](docs/reference/sounds-and-mixing.md) |
 | A recording and optional captions | Transcript-guided cuts, reviewed boundaries, and an edited video | [Recording editing with MCP](pandrator_mcp/guides/workflows.md#media-editing) |
 | A short clip or your microphone | A TXT, SRT, or JSON transcript without creating a session | [Quick Transcribe](docs/reference/quick-transcription.md) |
 
@@ -76,8 +80,8 @@ If you use **Codex, Claude Code, OpenCode, or another MCP-capable host**, its
 model can do Pandrator's language work directly. You do not need to configure
 a separate LLM provider or API key in Pandrator for this route.
 
-This is the **in-harness passive MCP workflow**: Pandrator prepares and tracks
-the work; the model in your existing conversation processes it and submits
+In a **passive MCP workflow**, Pandrator prepares and tracks the work; the
+model in your existing conversation processes it and submits
 results through MCP. “Passive” describes Pandrator's role: it does not make the
 LLM calls itself.
 
@@ -132,9 +136,26 @@ to your host.
   and optional AI assistance.
 - Adjust pronunciation and speech text, generate in segments, compare takes,
   and regenerate selected passages.
+- Assign character voices and delivery directions. After changing the cast,
+  regenerate the affected recordings and compare the saved Before and After
+  audio versions.
 - Record or upload voice references and retain their transcripts.
 - Export WAV, MP3, Opus, FLAC, or M4B, with audiobook chapters, metadata,
   and cover art where the format supports them.
+- Export a video book with timed reading text, or save timed subtitles alongside
+  the narration.
+
+### Sounds and music
+
+- Generate sound effects or music from a description, or import your own clips.
+  Available controls, including lyrics, depend on the selected model.
+- Save clips and alternate versions in a searchable library for reuse.
+- Place effects around spoken passages and mix background music with narration
+  or voiceovers. Adjust timing, volume, trim, and fades while retaining the
+  original speech recordings.
+
+See [sounds and mixing](docs/reference/sounds-and-mixing.md) and
+[choosing a sound or music model](docs/reference/sound-and-music-models.md).
 
 ### Subtitles, voiceovers, and recording edits
 
@@ -181,9 +202,9 @@ settings. You can switch models or add more later. Available families include:
 | **FireRedTTS3 Base** | Experimental multilingual reference-voice cloning. |
 | **BreezeTTS 2** | Instruction-based voice design and optional reference cloning in English and Mandarin Chinese. |
 
-The Manager supplies selectable Q8_0 model packages. CPU, Vulkan, and CUDA
-builds are available; the Linux CUDA build is currently best-effort and has not
-been verified on NVIDIA hardware. Available voices and languages depend on the
+The Manager supplies model packages with their supported compute options.
+CPU, Vulkan, and CUDA builds are available; the Linux CUDA build is currently
+best-effort and has not been verified on NVIDIA hardware. Available voices and languages depend on the
 selected model.
 
 These dedicated providers also remain available:
@@ -219,8 +240,8 @@ XTTS training benefits strongly from an NVIDIA GPU.
 ### Cloud speech and external servers
 
 - **OpenAI:** `gpt-4o-mini-tts`, `tts-1`, and `tts-1-hd`.
-- **Google Gemini / Vertex AI:** Gemini 3.1 Flash TTS Preview, 2.5 Flash TTS,
-  and 2.5 Pro TTS.
+- **Google Gemini / Vertex AI:** speech generation and custom voice creation
+  on supported models.
 - **ElevenLabs:** native API integration with live model and voice discovery.
 - **Azure Speech:** MAI Voice 2 and MAI Voice 2 Flash preset voices.
 - **External servers:** OpenAI-compatible and generic JSON endpoints, with
@@ -266,6 +287,8 @@ and the [privacy guide](docs/security/privacy-and-security.md) for data flows.
 | PDF/EPUB extraction and cleanup | [Document ingestion](docs/reference/document-ingestion.md) |
 | Correction, translation, and glossaries | [Language workflows](docs/guides/correction-and-translation.md) |
 | Pronunciation and narration preparation | [Pronunciation](docs/guides/pronunciation-and-speech.md) · [Speech optimization](docs/reference/speech-optimization.md) |
+| Character voices and delivery | [Generation controls](docs/reference/generation-controls.md) |
+| Sound effects, music, and mixing | [Sounds and mixing](docs/reference/sounds-and-mixing.md) |
 | Supported output formats | [Formats and exports](docs/reference/formats-and-exports.md) |
 | Installation, updates, and repair | [Manager guide](pandrator_manager/README.md) |
 | MCP connection and workflow skill setup | [MCP guide](pandrator_mcp/README.md) |
