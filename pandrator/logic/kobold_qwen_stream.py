@@ -1,14 +1,14 @@
 """Owned read-ahead lifecycle for Kobold Qwen batch audio streams."""
 
-import ctypes
 import logging
+import math
 import socket
+import struct
 import sys
 from collections.abc import Callable, Iterator
-from ctypes import wintypes
-from functools import lru_cache
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
+from typing import Protocol, cast
 
 import requests
 
@@ -16,67 +16,72 @@ from .kobold_qwen_contracts import KoboldQwenBatchAudioEvent, KoboldQwenBatchMes
 
 logger = logging.getLogger(__name__)
 _IS_WINDOWS = sys.platform == "win32"
-_THREAD_TERMINATE = 0x0001
-_ERROR_NOT_FOUND = 1168
 
 
-@lru_cache(maxsize=1)
-def _windows_kernel32() -> ctypes.CDLL:
-    """Load and type the Windows APIs used to interrupt the owned reader."""
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    kernel32.OpenThread.restype = wintypes.HANDLE
-    kernel32.CancelSynchronousIo.argtypes = (wintypes.HANDLE,)
-    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    return kernel32
+class _WindowsSocketOwner(Protocol):
+    def gettimeout(self) -> float | None: ...
+
+    def getsockopt(self, level: int, option: int, length: int) -> bytes: ...
+
+    def setsockopt(self, level: int, option: int, value: bytes) -> None: ...
+
+    def settimeout(self, value: float | None) -> None: ...
+
+    def fileno(self) -> int: ...
 
 
-def _windows_last_error() -> int:
-    return ctypes.get_last_error()
+def _prepare_windows_receive_timeout(
+    response: requests.Response,
+) -> Callable[[], None] | None:
+    """Use Winsock's receive timeout for the owned Windows response socket."""
+    if not _IS_WINDOWS:
+        return None
 
+    shutdown = getattr(response.raw, "_sock_shutdown", None)
+    owner = getattr(shutdown, "__self__", None)
+    if owner is None:
+        return None
 
-def _windows_api_error(api_name: str, error_code: int) -> OSError:
-    return OSError(error_code, f"{api_name} failed.")
+    get_timeout = getattr(owner, "gettimeout", None)
+    get_socket_option = getattr(owner, "getsockopt", None)
+    set_socket_option = getattr(owner, "setsockopt", None)
+    set_timeout = getattr(owner, "settimeout", None)
+    get_fileno = getattr(owner, "fileno", None)
+    if not all(
+        callable(method)
+        for method in (get_timeout, get_socket_option, set_socket_option, set_timeout, get_fileno)
+    ):
+        return None
+    owner = cast(_WindowsSocketOwner, owner)
 
+    original_timeout = owner.gettimeout()
+    if original_timeout is None or original_timeout <= 0:
+        return None
 
-def _cancel_windows_reader_io(native_id: int | None) -> None:
-    """Cancel pending synchronous I/O on this response's owned reader thread."""
-    if not _IS_WINDOWS or native_id is None:
-        return
+    original_socket_timeout = owner.getsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, 4)
+    if not isinstance(original_socket_timeout, bytes) or len(original_socket_timeout) != 4:
+        return None
 
-    kernel32 = _windows_kernel32()
-    handle = kernel32.OpenThread(_THREAD_TERMINATE, False, native_id)
-    if not handle:
-        raise _windows_api_error("OpenThread", _windows_last_error())
+    receive_timeout = struct.pack("I", math.ceil(original_timeout * 1000))
+
+    def restore() -> None:
+        if owner.fileno() < 0:
+            return
+        try:
+            owner.settimeout(original_timeout)
+        finally:
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, original_socket_timeout)
 
     try:
-        if not kernel32.CancelSynchronousIo(handle):
-            error_code = _windows_last_error()
-            if error_code != _ERROR_NOT_FOUND:
-                raise _windows_api_error("CancelSynchronousIo", error_code)
-    finally:
-        pending_error = sys.exception()
+        owner.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, receive_timeout)
+        owner.settimeout(None)
+    except BaseException as setup_error:
         try:
-            closed = kernel32.CloseHandle(handle)
-        except BaseException:
-            if pending_error is None:
-                raise
-            logger.debug("Failed to close the Windows reader thread handle.", exc_info=True)
-        else:
-            if not closed:
-                close_error = _windows_api_error("CloseHandle", _windows_last_error())
-                if pending_error is None:
-                    raise close_error
-                logger.debug(
-                    "Failed to close the Windows reader thread handle.",
-                    exc_info=(
-                        type(pending_error),
-                        pending_error,
-                        pending_error.__traceback__,
-                    ),
-                )
+            restore()
+        except BaseException as restore_error:
+            raise restore_error from setup_error
+        raise
+    return restore
 
 
 def iter_read_ahead_batch(
@@ -103,6 +108,7 @@ def iter_read_ahead_batch(
     stop_event = Event()
     response_lock = Lock()
     active_response: requests.Response | None = None
+    active_response_restore: Callable[[], None] | None = None
 
     def interrupt(response: requests.Response) -> None:
         raw = response.raw
@@ -118,19 +124,29 @@ def iter_read_ahead_batch(
                 logger.debug("Qwen batch response shutdown raced with cleanup.", exc_info=True)
 
     def set_response(response: requests.Response | None) -> None:
-        nonlocal active_response
+        nonlocal active_response, active_response_restore
+        if response is None:
+            with response_lock:
+                restore = active_response_restore
+                active_response_restore = None
+                try:
+                    if restore is not None:
+                        restore()
+                finally:
+                    active_response = None
+            return
         with response_lock:
             active_response = response
-        if response is not None and stop_event.is_set():
+            active_response_restore = _prepare_windows_receive_timeout(response)
+        if stop_event.is_set():
             interrupt(response)
 
     def interrupt_active_response() -> None:
         with response_lock:
             if active_response is not None:
                 # Keep the producer from releasing the response back to its pool
-                # until both owner-socket and reader-I/O interruption have finished.
+                # until the owner-socket interruption has finished.
                 interrupt(active_response)
-                _cancel_windows_reader_io(reader.native_id)
 
     def put_message(message: KoboldQwenBatchMessage) -> bool:
         while not stop_event.is_set():

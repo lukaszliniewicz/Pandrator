@@ -282,8 +282,8 @@ def test_post_build_keyboard_interrupt_retires_native_carrier(owners: NativeOwne
 def test_partial_start_waits_for_native_initial_write_before_factory_failure(
     owners: NativeOwners, failed_name: str
 ) -> None:
-    entered, release, callback_finished, fault, factory_finished = (
-        threading.Event() for _ in range(5)
+    entered, release, callback_finished, startup_ready, fault, factory_finished = (
+        threading.Event() for _ in range(6)
     )
     error = RuntimeError("controlled partial startup failure")
     errors: list[BaseException] = []
@@ -303,6 +303,9 @@ def test_partial_start_waits_for_native_initial_write_before_factory_failure(
             owner._completed.set()
 
     def selected_start(thread):
+        if thread.name == "pandrator-startup-maintenance":
+            startup_ready.set()
+            return native_start(thread)
         if thread.name == failed_name:
             assert entered.wait(5)
             fault.set()
@@ -326,7 +329,14 @@ def test_partial_start_waits_for_native_initial_write_before_factory_failure(
     ):
         try:
             factory.start()
-            assert fault.wait(5)
+            assert startup_ready.wait(20), (
+                "startup maintenance thread did not start; "
+                f"factory_finished={factory_finished.is_set()} errors={errors!r}"
+            )
+            assert fault.wait(5), (
+                f"fault thread did not fail; entered={entered.is_set()} "
+                f"factory_finished={factory_finished.is_set()} errors={errors!r}"
+            )
             assert entered.is_set()
             assert not factory_finished.wait(0.1)
             assert len(owners.carriers) == 1

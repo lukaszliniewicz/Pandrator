@@ -7,6 +7,8 @@ import io
 import json
 import queue
 import socket
+import struct
+import sys
 import threading
 import time
 import wave
@@ -14,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from pandrator.logic import kobold_qwen_stream, tts_handler
 
@@ -24,7 +27,8 @@ def stalled_server():
     allow_headers = threading.Event()
     headers_sent = threading.Event()
     release = threading.Event()
-    configuration = {"first_event": False}
+    configuration = {"first_event": False, "requests": 0}
+    request_lock = threading.Lock()
     body = io.BytesIO()
     with wave.open(body, "wb") as output:
         output.setnchannels(1)
@@ -50,6 +54,8 @@ def stalled_server():
             pass
 
         def do_POST(self):
+            with request_lock:
+                configuration["requests"] += 1
             self.rfile.read(int(self.headers["Content-Length"]))
             entered.set()
             assert allow_headers.wait(3), "Fixture headers must be released"
@@ -128,19 +134,25 @@ def native_interruptions(monkeypatch):
                 }
                 observations.append(record)
                 if callable(shutdown):
-                    def observed_shutdown(*shutdown_args):
-                        started = time.monotonic()
-                        result = {"mode": shutdown_args, "error": None}
-                        try:
-                            return shutdown(*shutdown_args)
-                        except BaseException as error:
-                            result["error"] = repr(error)
-                            raise
-                        finally:
-                            result["elapsed"] = time.monotonic() - started
-                            if len(record["calls"]) < 8:
-                                record["calls"].append(result)
-                    raw._sock_shutdown = observed_shutdown
+
+                    class ObservedShutdown:
+                        def __init__(self):
+                            self.__self__ = owner
+
+                        def __call__(self, *shutdown_args):
+                            started = time.monotonic()
+                            result = {"mode": shutdown_args, "error": None}
+                            try:
+                                return shutdown(*shutdown_args)
+                            except BaseException as error:
+                                result["error"] = repr(error)
+                                raise
+                            finally:
+                                result["elapsed"] = time.monotonic() - started
+                                if len(record["calls"]) < 8:
+                                    record["calls"].append(result)
+
+                    raw._sock_shutdown = ObservedShutdown()
             if admit is not None:
                 admit(response)
 
@@ -197,27 +209,49 @@ def cleanup(server, readers, consumer=None):
         assert not reader.is_alive(), "Fixture reader survived cleanup"
 
 
-def fake_windows_api(*, thread_handle=0x1234, cancel_result=1, close_result=1):
-    calls = []
+class FakeReceiveOwner:
+    def __init__(self, *, timeout=1800.0, socket_timeout=b"\x01\x02\x03\x04", fileno=42):
+        self.timeout = timeout
+        self.socket_timeout = socket_timeout
+        self.descriptor = fileno
+        self.fail_blocking_timeout = False
+        self.calls = []
+        self.release_body = threading.Event()
 
-    def open_thread(*args):
-        calls.append(("open", *args))
-        return thread_handle
+    def _sock_shutdown(self, how):
+        self.calls.append(("shutdown", how))
+        if how == socket.SHUT_RDWR:
+            self.release_body.set()
 
-    def cancel_synchronous_io(*args):
-        calls.append(("cancel", *args))
-        return cancel_result
+    def gettimeout(self):
+        self.calls.append(("gettimeout",))
+        return self.timeout
 
-    def close_handle(*args):
-        calls.append(("close", *args))
-        return close_result
+    def getsockopt(self, level, option, length):
+        self.calls.append(("getsockopt", level, option, length))
+        return self.socket_timeout
 
-    api = SimpleNamespace(
-        OpenThread=open_thread,
-        CancelSynchronousIo=cancel_synchronous_io,
-        CloseHandle=close_handle,
-    )
-    return api, calls
+    def setsockopt(self, level, option, value):
+        self.calls.append(("setsockopt", level, option, value))
+        self.socket_timeout = value
+
+    def settimeout(self, value):
+        self.calls.append(("settimeout", value))
+        if value is None and self.fail_blocking_timeout:
+            raise RuntimeError("settimeout(None) failed")
+        self.timeout = value
+
+    def fileno(self):
+        self.calls.append(("fileno",))
+        return self.descriptor
+
+
+class FakeReceiveResponse:
+    def __init__(self, owner):
+        self.raw = owner
+
+    def close(self):
+        self.raw.calls.append(("response_close",))
 
 
 def test_close_after_first_result_retires_stalled_native_reader(
@@ -413,92 +447,185 @@ def test_close_uses_full_duplex_owner_shutdown_for_blocked_body_read():
         assert not any(reader.is_alive() for reader in reader_threads)
 
 
-def test_windows_reader_io_cancel_closes_thread_handle(monkeypatch):
-    api, calls = fake_windows_api()
+def test_windows_receive_timeout_maps_and_restores_owner_socket(monkeypatch):
+    original_socket_timeout = b"\x01\x02\x03\x04"
+    owner = FakeReceiveOwner(socket_timeout=original_socket_timeout)
+    response = FakeReceiveResponse(owner)
+    body_started = threading.Event()
+    producer_cleared = threading.Event()
     monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
-    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", lambda: api)
 
-    kobold_qwen_stream._cancel_windows_reader_io(8675309)
+    def producer(_stop_event, set_response):
+        set_response(response)
+        owner.calls.append(("body_read",))
+        body_started.set()
+        try:
+            yield {"id": "0", "audio": None, "error": None}
+            owner.release_body.wait()
+        finally:
+            set_response(None)
+            response.close()
+            producer_cleared.set()
 
-    assert calls == [
-        ("open", kobold_qwen_stream._THREAD_TERMINATE, False, 8675309),
-        ("cancel", 0x1234),
-        ("close", 0x1234),
-    ]
-
-
-def test_windows_kernel32_loader_types_and_caches_api(monkeypatch):
-    class FakeFunction:
-        argtypes = None
-        restype = None
-
-    functions = {
-        name: FakeFunction()
-        for name in ("OpenThread", "CancelSynchronousIo", "CloseHandle")
-    }
-    fake_kernel32 = SimpleNamespace(**functions)
-    loads = []
-
-    def fake_windll(name, *, use_last_error):
-        loads.append((name, use_last_error))
-        return fake_kernel32
-
-    loader = kobold_qwen_stream._windows_kernel32
-    monkeypatch.setattr(kobold_qwen_stream.ctypes, "WinDLL", fake_windll, raising=False)
-    loader.cache_clear()
+    stream = kobold_qwen_stream.iter_read_ahead_batch(1, producer=producer)
     try:
-        assert loader() is fake_kernel32
-        assert loader() is fake_kernel32
+        assert next(stream)["id"] == "0"
+        assert body_started.wait(1), "Producer did not enter the simulated body read"
+
+        stream.close()
+
+        assert producer_cleared.is_set()
+        assert owner.timeout == 1800.0
+        assert owner.socket_timeout == original_socket_timeout
+        assert owner.calls == [
+            ("gettimeout",),
+            ("getsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, 4),
+            (
+                "setsockopt",
+                socket.SOL_SOCKET,
+                socket.SO_RCVTIMEO,
+                struct.pack("I", 1_800_000),
+            ),
+            ("settimeout", None),
+            ("body_read",),
+            ("shutdown", socket.SHUT_RDWR),
+            ("fileno",),
+            ("settimeout", 1800.0),
+            ("setsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, original_socket_timeout),
+            ("response_close",),
+        ]
     finally:
-        loader.cache_clear()
-
-    assert loads == [("kernel32", True)]
-    assert functions["OpenThread"].argtypes == (
-        kobold_qwen_stream.wintypes.DWORD,
-        kobold_qwen_stream.wintypes.BOOL,
-        kobold_qwen_stream.wintypes.DWORD,
-    )
-    assert functions["OpenThread"].restype is kobold_qwen_stream.wintypes.HANDLE
-    assert functions["CancelSynchronousIo"].argtypes == (kobold_qwen_stream.wintypes.HANDLE,)
-    assert functions["CancelSynchronousIo"].restype is kobold_qwen_stream.wintypes.BOOL
-    assert functions["CloseHandle"].argtypes == (kobold_qwen_stream.wintypes.HANDLE,)
-    assert functions["CloseHandle"].restype is kobold_qwen_stream.wintypes.BOOL
-
-
-def test_windows_reader_io_cancel_ignores_completion_race(monkeypatch):
-    api, calls = fake_windows_api(cancel_result=0)
-    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
-    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", lambda: api)
-    monkeypatch.setattr(kobold_qwen_stream, "_windows_last_error", lambda: 1168)
-
-    kobold_qwen_stream._cancel_windows_reader_io(2468)
-
-    assert calls[-1] == ("close", 0x1234)
-
-
-def test_windows_reader_io_cancel_propagates_error_and_closes_handle(monkeypatch):
-    api, calls = fake_windows_api(cancel_result=0)
-    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
-    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", lambda: api)
-    monkeypatch.setattr(kobold_qwen_stream, "_windows_last_error", lambda: 5)
-
-    with pytest.raises(OSError) as error:
-        kobold_qwen_stream._cancel_windows_reader_io(1357)
-
-    assert error.value.errno == 5
-    assert error.value.strerror == "CancelSynchronousIo failed."
-    assert calls[-1] == ("close", 0x1234)
+        owner.release_body.set()
+        stream.close()
 
 
 @pytest.mark.parametrize(
-    ("is_windows", "native_id"),
-    [(False, 123), (True, None)],
+    ("is_windows", "timeout", "has_owner", "socket_timeout"),
+    [
+        (False, 1800.0, True, b"\x01\x02\x03\x04"),
+        (True, None, True, b"\x01\x02\x03\x04"),
+        (True, 0.0, True, b"\x01\x02\x03\x04"),
+        (True, 1800.0, False, b"\x01\x02\x03\x04"),
+        (True, 1800.0, True, b"bad"),
+    ],
 )
-def test_windows_reader_io_cancel_skips_unavailable_target(monkeypatch, is_windows, native_id):
-    def unexpected_loader():
-        raise AssertionError("Kernel32 must not load when cancellation cannot run")
-
+def test_windows_receive_timeout_leaves_unsupported_owners_unchanged(
+    monkeypatch, is_windows, timeout, has_owner, socket_timeout
+):
+    owner = FakeReceiveOwner(timeout=timeout, socket_timeout=socket_timeout)
+    if has_owner:
+        response = FakeReceiveResponse(owner)
+    else:
+        response = SimpleNamespace(raw=SimpleNamespace(_sock_shutdown=lambda *_args: None))
     monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", is_windows)
-    monkeypatch.setattr(kobold_qwen_stream, "_windows_kernel32", unexpected_loader)
 
-    kobold_qwen_stream._cancel_windows_reader_io(native_id)
+    restore = kobold_qwen_stream._prepare_windows_receive_timeout(response)
+
+    assert restore is None
+    if not is_windows or not has_owner:
+        assert owner.calls == []
+    elif timeout is None or timeout == 0:
+        assert owner.calls == [("gettimeout",)]
+    else:
+        assert owner.calls == [
+            ("gettimeout",),
+            ("getsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, 4),
+        ]
+    assert owner.timeout == timeout
+    assert owner.socket_timeout == socket_timeout
+
+
+def test_windows_receive_timeout_skips_restore_for_closed_owner(monkeypatch):
+    owner = FakeReceiveOwner()
+    response = FakeReceiveResponse(owner)
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+
+    restore = kobold_qwen_stream._prepare_windows_receive_timeout(response)
+
+    assert restore is not None
+    owner.descriptor = -1
+    owner.calls.clear()
+    restore()
+
+    assert owner.calls == [("fileno",)]
+    assert owner.timeout is None
+    assert owner.socket_timeout == struct.pack("I", 1_800_000)
+
+
+def test_windows_receive_timeout_restores_socket_option_when_setup_fails(monkeypatch):
+    original_socket_timeout = b"\x01\x02\x03\x04"
+    owner = FakeReceiveOwner(socket_timeout=original_socket_timeout)
+    owner.fail_blocking_timeout = True
+    monkeypatch.setattr(kobold_qwen_stream, "_IS_WINDOWS", True)
+
+    with pytest.raises(RuntimeError, match=r"settimeout\(None\) failed"):
+        kobold_qwen_stream._prepare_windows_receive_timeout(FakeReceiveResponse(owner))
+
+    assert owner.timeout == 1800.0
+    assert owner.socket_timeout == original_socket_timeout
+    assert owner.calls == [
+        ("gettimeout",),
+        ("getsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, 4),
+        (
+            "setsockopt",
+            socket.SOL_SOCKET,
+            socket.SO_RCVTIMEO,
+            struct.pack("I", 1_800_000),
+        ),
+        ("settimeout", None),
+        ("fileno",),
+        ("settimeout", 1800.0),
+        ("setsockopt", socket.SOL_SOCKET, socket.SO_RCVTIMEO, original_socket_timeout),
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires native Winsock receive timeouts")
+def test_windows_short_receive_timeout_raises_once_after_partial_body(
+    stalled_server, readers, monkeypatch, native_interruptions
+):
+    stalled_server[1]["first_event"] = True
+    stalled_server[3].set()
+    original = tts_handler._iter_kobold_qwen_batch_audio_http
+
+    def set_short_timeout_before_admission(*args, **kwargs):
+        callback = kwargs.get("response_callback")
+
+        def admit_with_short_timeout(response):
+            if response is not None:
+                shutdown = getattr(response.raw, "_sock_shutdown", None)
+                owner = getattr(shutdown, "__self__", None)
+                assert owner is not None, "The admitted response must expose its socket owner"
+                owner.settimeout(0.2)
+            if callback is not None:
+                callback(response)
+
+        yield from original(
+            *args,
+            **{**kwargs, "response_callback": admit_with_short_timeout},
+        )
+
+    monkeypatch.setattr(
+        tts_handler,
+        "_iter_kobold_qwen_batch_audio_http",
+        set_short_timeout_before_admission,
+    )
+    stream = stream_for(stalled_server)
+    consumer = None
+    try:
+        assert next(stream)["id"] == "0"
+        started = time.monotonic()
+        consumer, finished, outcome = next_in_thread(stream)
+
+        assert finished.wait(1), (
+            f"Native receive timeout did not retire the reader: {native_interruptions}"
+        )
+        assert time.monotonic() - started < 1
+        assert len(outcome) == 1
+        assert isinstance(outcome[0], requests.exceptions.RequestException)
+        assert stalled_server[1]["requests"] == 1, (
+            "A partial-body timeout must not retry the request"
+        )
+        assert readers and not any(reader.is_alive() for reader in readers)
+    finally:
+        cleanup(stalled_server, readers, consumer)
+        stream.close()
