@@ -13,6 +13,7 @@
   import { errorMessage } from '$lib/errors';
   import { invalidationBus } from '$lib/invalidation';
   import { useSessionContext } from '$lib/session-context';
+  import { projectHref } from '$lib/project-library';
   import LanguagePicker from '$lib/LanguagePicker.svelte';
   import ProjectOperationPanel from '$lib/ProjectOperationPanel.svelte';
   import {
@@ -22,6 +23,7 @@
 
   const context = useSessionContext();
   const sessionId = $derived(String(page.params.id));
+  const folderContextId = $derived(page.url.searchParams.get('folder') ?? '');
   let project = $state<TranslationProject | null>(null);
   let selectedBranches = $state<string[]>([]);
   function statusName(state: ProjectReadiness | undefined) {
@@ -71,22 +73,38 @@
       (stage) => stage.key === 'transcribe'
     )
   );
+  const correctionRequired = $derived(
+    context.session?.included_stages_json.includes('correct') ?? false
+  );
+  const correctionRefreshRequired = $derived(
+    correctionRequired && project?.checkpoint_role === 'transcription'
+  );
+  const availableCheckpoints = $derived(
+    checkpointOptions.filter(
+      (item) => !correctionRequired || item.stage === 'correction'
+    )
+  );
   const selectedSourceId = $derived(
-    correction?.selected_artifact_id ||
-      correction?.artifact?.id ||
-      transcription?.selected_artifact_id ||
-      transcription?.artifact?.id ||
+    (correctionRequired
+      ? correction?.selected_artifact_id || correction?.artifact?.id
+      : transcription?.selected_artifact_id || transcription?.artifact?.id) ||
       ''
   );
   const checkpointId = $derived(
-    chosenCheckpointId ||
-      (checkpointOptions.some((item) => item.artifact_id === selectedSourceId)
+    (availableCheckpoints.some(
+      (item) => item.artifact_id === chosenCheckpointId
+    )
+      ? chosenCheckpointId
+      : '') ||
+      (availableCheckpoints.some(
+        (item) => item.artifact_id === selectedSourceId
+      )
         ? selectedSourceId
         : '') ||
       readyCheckpointId ||
-      checkpointOptions.findLast((item) => item.stage === 'correction')
+      availableCheckpoints.findLast((item) => item.stage === 'correction')
         ?.artifact_id ||
-      checkpointOptions.findLast((item) => item.stage === 'transcription')
+      availableCheckpoints.findLast((item) => item.stage === 'transcription')
         ?.artifact_id ||
       ''
   );
@@ -100,6 +118,7 @@
   );
   const excludedLanguages = $derived([
     effectiveSourceLanguage,
+    context.session?.target_language ?? '',
     ...(project?.branches.map((branch) => branch.target_language) ?? [])
   ]);
   const planValid = $derived(
@@ -116,6 +135,12 @@
         )
       )
   );
+  function reviewSourceHref() {
+    const params = new URLSearchParams();
+    if (folderContextId) params.set('folder', folderContextId);
+    if (checkpointId) params.set('review', checkpointId);
+    return `/sessions/${sessionId}/text${params.size ? `?${params}` : ''}`;
+  }
 
   async function load(id = sessionId) {
     const current = ++request;
@@ -217,7 +242,7 @@
 
   async function addBranches(event: SubmitEvent) {
     event.preventDefault();
-    if (!project || !branchesValid || busy) return;
+    if (!project || !branchesValid || busy || correctionRefreshRequired) return;
     busy = true;
     error = '';
     const id = sessionId;
@@ -335,7 +360,7 @@
       <p class="muted mt-2 text-sm">
         Source: <a
           class="font-semibold text-[var(--accent)]"
-          href={`/sessions/${project.source_session_id}`}
+          href={projectHref(project.source_session_id, folderContextId)}
           >{project.source_session_name}</a
         >
         · {languageName(project.source_language)}
@@ -364,7 +389,8 @@
               Existing languages keep their pinned source and timeline. Use the
               <a
                 class="font-semibold underline"
-                href={`/sessions/${project.source_session_id}`}>overview</a
+                href={projectHref(project.source_session_id, folderContextId)}
+                >overview</a
               >
               to update the source for newly added languages.
             </p>
@@ -479,12 +505,26 @@
             <div
               class="mt-4 flex flex-wrap gap-4 text-sm font-semibold text-[var(--accent)]"
             >
-              <a href={`/sessions/${branch.session_id}`}>Open language</a>
-              <a href={`/sessions/${branch.session_id}/text`}>Subtitles</a>
+              <a href={projectHref(branch.session_id, folderContextId)}
+                >Open language</a
+              >
+              <a href={projectHref(branch.session_id, folderContextId, '/text')}
+                >Subtitles</a
+              >
               {#if branch.workflow_kind === 'voiceover'}<a
-                  href={`/sessions/${branch.session_id}/voice`}>Voice & audio</a
+                  href={projectHref(
+                    branch.session_id,
+                    folderContextId,
+                    '/voice'
+                  )}>Voice & audio</a
                 >{/if}
-              <a href={`/sessions/${branch.session_id}/output`}>Output</a>
+              <a
+                href={projectHref(
+                  branch.session_id,
+                  folderContextId,
+                  '/output'
+                )}>Output</a
+              >
             </div>
           {/if}
         </section>
@@ -502,9 +542,14 @@
     <form onsubmit={addBranches} class="surface rounded-2xl p-6">
       <h3 class="text-lg font-semibold">Add languages</h3>
       <p class="muted mt-2 text-sm leading-6">
-        Choose up to 20 languages. Each gets its own workspace, so translations
-        can proceed in parallel.
+        Choose up to 20 languages. Switch between their controls in this
+        project; translations can proceed in parallel.
       </p>
+      {#if correctionRefreshRequired}<p class="mt-3 text-sm" role="status">
+          Correction is now included. Complete it and use the corrected source
+          for added languages on the overview before adding another language.
+          Existing languages keep their source versions.
+        </p>{/if}
       <div class="mt-4 max-w-xl">
         <LanguagePicker
           bind:value={languages}
@@ -528,7 +573,7 @@
       </label>
       <button
         type="submit"
-        disabled={busy || !branchesValid}
+        disabled={busy || !branchesValid || correctionRefreshRequired}
         class="mt-5 flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
       >
         {#if busy}<LoaderCircle class="animate-spin" size={16} />Creating
@@ -621,7 +666,7 @@
           </p>
         {/if}
         <a
-          href={`/sessions/${sessionId}/text${checkpointId ? `?review=${encodeURIComponent(checkpointId)}` : ''}`}
+          href={reviewSourceHref()}
           class="mt-3 inline-block text-sm font-semibold text-[var(--accent)]"
           >Review source subtitles</a
         >
@@ -635,7 +680,7 @@
           translation and voice generation start separately inside each one.{/if}
       </p>
       {#if checkpointId}
-        {#if checkpointOptions.length > 1}
+        {#if availableCheckpoints.length > 1}
           <label
             for="project-correction"
             class="mt-5 block text-sm font-semibold">Source checkpoint</label
@@ -648,7 +693,7 @@
             disabled={busy}
             class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3"
           >
-            {#each checkpointOptions as item}<option value={item.artifact_id}
+            {#each availableCheckpoints as item}<option value={item.artifact_id}
                 >{item.stage === 'correction' ? 'Correction' : 'Transcription'} v{item.version}
                 · {item.language ?? 'Source language'}</option
               >{/each}

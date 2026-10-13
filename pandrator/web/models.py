@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -234,6 +235,39 @@ class TranslationProjectBranch(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "target_language", name="uq_translation_project_language"),
     )
+
+
+class ProjectFolder(Base):
+    __tablename__ = "project_folders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("project_folders.id", ondelete="RESTRICT"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class ProjectFolderMembership(Base):
+    __tablename__ = "project_folder_memberships"
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="ck_project_folder_membership_position"),
+        Index("ix_project_folder_memberships_project_session_id", "project_session_id"),
+    )
+
+    folder_id: Mapped[str] = mapped_column(
+        ForeignKey("project_folders.id", ondelete="CASCADE"), primary_key=True
+    )
+    project_session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class TranslationProjectOperation(Base):

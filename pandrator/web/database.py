@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-SCHEMA_HEAD = "0057_segment_lineage_child_index"
+SCHEMA_HEAD = "0058_project_folders"
 
 
 def is_sqlite_busy(error: BaseException) -> bool:

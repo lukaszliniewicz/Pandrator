@@ -117,9 +117,9 @@ class BackendArchitectureTests(unittest.TestCase):
 
     def test_route_contract_is_partitioned_without_losing_rules(self):
         rules = list(self.app.url_map.iter_rules())
-        self.assertEqual(348, len(rules))
+        self.assertEqual(355, len(rules))
         self.assertEqual(
-            341,
+            348,
             sum(rule.rule.startswith("/api/") for rule in rules),
         )
         self.assertTrue({
@@ -137,6 +137,11 @@ class BackendArchitectureTests(unittest.TestCase):
             "/api/v1/voice-catalog/metadata",
             "/api/v1/voice-collections",
             "/api/v1/voice-collections/<collection_id>",
+            "/api/v1/project-folders",
+            "/api/v1/project-folders/<folder_id>",
+            "/api/v1/project-folders/<folder_id>/projects",
+            "/api/v1/sessions/<session_id>/project-folders",
+            "/api/v1/translation-projects/<project_id>",
             "/api/v1/voices/<voice_id>/samples/from-artifact",
             "/api/v1/translation-project-operations/<operation_id>/exports/manifest",
             "/api/v1/translation-project-operations/<operation_id>/exports/bundle",
@@ -155,6 +160,7 @@ class BackendArchitectureTests(unittest.TestCase):
         self.assertEqual(set(DOMAIN_ORDER), set(self.app.blueprints))
         self.assertEqual("library", route_domain("/api/v1/voice-catalog"))
         self.assertEqual("library", route_domain("/api/v1/voice-collections"))
+        self.assertEqual("sessions", route_domain("/api/v1/project-folders"))
         for rule in rules:
             if rule.endpoint == "static":
                 continue

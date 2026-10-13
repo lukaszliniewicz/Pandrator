@@ -40,25 +40,58 @@
     projectId?: string;
     projectRevision?: number;
   } | null = null;
-  const checkpointId = $derived(
+  const correctionRequired = $derived(
+    source?.included_stages_json.includes('correct') ?? false
+  );
+  const correctionCheckpointId = $derived(
     workspace.source.workflow.snapshot?.stages.find(
       (stage) => stage.key === 'correct'
     )?.selected_artifact_id ||
       workspace.source.workflow.snapshot?.stages.find(
         (stage) => stage.key === 'correct'
       )?.artifact?.id ||
-      workspace.source.workflow.snapshot?.stages.find(
-        (stage) => stage.key === 'transcribe'
-      )?.selected_artifact_id ||
+      ''
+  );
+  const transcriptionCheckpointId = $derived(
+    workspace.source.workflow.snapshot?.stages.find(
+      (stage) => stage.key === 'transcribe'
+    )?.selected_artifact_id ||
       workspace.source.workflow.snapshot?.stages.find(
         (stage) => stage.key === 'transcribe'
       )?.artifact?.id ||
-      payload?.source_checkpoint_artifact_id ||
-      payload?.correction_checkpoint_artifact_id ||
       ''
   );
+  const checkpointId = $derived(
+    (correctionRequired ? correctionCheckpointId : transcriptionCheckpointId) ||
+      (!correctionRequired ||
+      !project ||
+      project.checkpoint_role === 'correction'
+        ? payload?.source_checkpoint_artifact_id
+        : '') ||
+      ''
+  );
+  const correctionRefreshRequired = $derived(
+    correctionRequired && project?.checkpoint_role === 'transcription'
+  );
+  const sharedHref = (suffix: string) => {
+    const params = new URLSearchParams();
+    const folder = page.url.searchParams.get('folder');
+    if (folder) params.set('folder', folder);
+    if (workspace.selectedId !== source?.id)
+      params.set('language', workspace.selectedId);
+    return `/sessions/${source?.id}${suffix}${params.size ? `?${params}` : ''}`;
+  };
+  function reviewSourceHref() {
+    const checkpoint = project?.source_status?.current_checkpoint?.artifact_id;
+    if (!project || !checkpoint) return sharedHref('/sources');
+    const params = new URLSearchParams({ review: checkpoint });
+    const folder = page.url.searchParams.get('folder');
+    if (folder) params.set('folder', folder);
+    return `/sessions/${project.source_session_id}/text?${params}`;
+  }
   const excluded = $derived([
     project?.source_language ?? source?.source_language ?? '',
+    source?.target_language ?? '',
     ...(project?.branches.map((branch) => branch.target_language) ?? [])
   ]);
 
@@ -80,7 +113,9 @@
 
   function select(id: string) {
     if (id !== workspace.selectedId)
-      void goto(`/sessions/${id}${page.url.search}`);
+      void goto(
+        `/sessions/${id}${page.url.searchParams.has('folder') ? `?folder=${encodeURIComponent(page.url.searchParams.get('folder')!)}` : ''}`
+      );
   }
 
   async function useNewerSource() {
@@ -113,7 +148,14 @@
   }
 
   async function addLanguages() {
-    if (!source || !checkpointId || !targets.length || busy) return;
+    if (
+      !source ||
+      !checkpointId ||
+      !targets.length ||
+      busy ||
+      correctionRefreshRequired
+    )
+      return;
     const sourceId = source.id;
     const selectedTargets = [...targets];
     const signature = JSON.stringify([
@@ -196,32 +238,11 @@
           <Languages size={18} class="text-[var(--accent)]" />Translate
         </div>
         {#if branches.length && source}
-          <label class="block max-w-sm text-xs font-semibold"
-            >Target language
-            <select
-              aria-label="Target language"
-              class="mt-1.5 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 text-sm"
-              value={workspace.selectedId}
-              disabled={busy}
-              onchange={(event) => select(event.currentTarget.value)}
-            >
-              <option value={source.id}
-                >Original · {languageLabel(
-                  project?.source_language || source.source_language
-                )}</option
-              >
-              {#each branches as branch (branch.id)}
-                <option value={branch.session_id}
-                  >{languageLabel(branch.target_language)}</option
-                >
-              {/each}
-            </select>
-          </label>
           <p class="muted mt-2 text-xs">
             {chosen
               ? `${languageLabel(chosen.target_language)} translation, voices, generation and output are shown below.`
-              : 'Original-language controls are shown below.'} Each language keeps
-            its settings and recordings.
+              : `${languageLabel(source.target_language || project?.source_language || source.source_language)} controls are shown below.`}
+            Each language keeps its settings and recordings.
           </p>
         {:else if store.loading}
           <p class="muted text-sm" role="status">Loading languages…</p>
@@ -237,15 +258,20 @@
         <button
           class="btn btn-sm btn-secondary"
           onclick={openAdd}
-          disabled={busy || store.loading}
+          disabled={busy || store.loading || correctionRefreshRequired}
           ><Plus size={15} />Add language</button
         >
         {#if source && project}<a
             class="btn btn-sm btn-secondary"
-            href={`/sessions/${source.id}/languages`}>Manage languages</a
+            href={sharedHref('/languages')}>Manage languages</a
           >{/if}
       </div>
     </div>
+    {#if correctionRefreshRequired}<p class="muted mt-3 text-sm" role="status">
+        Correction is now included. Complete it and use the corrected source for
+        added languages before adding another language. Existing languages keep
+        their source versions.
+      </p>{/if}
     {#if project?.source_status?.source_changed}
       <div
         class="mt-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-3 text-sm"
@@ -255,11 +281,10 @@
           Newer source available. Existing languages keep the source version
           used for their translation. <a
             class="font-semibold underline"
-            href={`/sessions/${project.source_session_id}/text`}
-            >Review source</a
+            href={reviewSourceHref()}>Review source</a
           >
         </p>
-        {#if project.source_status.current_checkpoint?.artifact_id}
+        {#if project.source_status.current_checkpoint?.artifact_id && (!correctionRequired || project.source_status.current_checkpoint.role === 'correction')}
           <button
             class="btn btn-sm btn-secondary mt-2"
             disabled={busy}
@@ -289,15 +314,21 @@
         </div>
         <LanguagePicker bind:value={targets} {excluded} disabled={busy} />
         <p class="muted mt-3 text-xs">
-          Uses the selected corrected source, or source subtitles when no
-          correction is selected. Adding languages starts no provider work.
+          Uses the selected correction when correction is included, or the
+          selected source subtitles otherwise. Adding languages starts no
+          provider work.
         </p>
         {#if !checkpointId}<p class="mt-2 text-sm" role="status">
-            Prepare source subtitles before adding languages.
+            {correctionRequired
+              ? 'Complete the selected correction before adding languages.'
+              : 'Prepare source subtitles before adding languages.'}
           </p>{/if}
         <button
           class="btn btn-primary mt-3"
-          disabled={busy || !targets.length || !checkpointId}
+          disabled={busy ||
+            !targets.length ||
+            !checkpointId ||
+            correctionRefreshRequired}
           onclick={addLanguages}
           >{#if busy}<LoaderCircle size={16} class="animate-spin" />{/if}Add {targets.length ===
           1

@@ -110,6 +110,7 @@ def route_domain(rule: str) -> str:
     if rule.startswith(
         (
             "/api/v1/sessions",
+            "/api/v1/project-folders",
             "/api/v1/defaults",
             "/api/v1/settings",
         )

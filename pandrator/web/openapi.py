@@ -17,6 +17,7 @@ from .google_voice_design_schemas import GoogleVoiceDesignCreate
 from .identity import ApplicationIdentityDocument
 from .performance_openapi import PERFORMANCE_SCHEMAS, performance_paths
 from .project_export_bundle_routes import PROJECT_EXPORT_BUNDLE_SCHEMAS, project_export_bundle_paths
+from .project_folder_routes import PROJECT_FOLDER_SCHEMAS, project_folder_paths
 from .project_operation_routes import PROJECT_OPERATION_SCHEMAS, project_operation_paths
 from .quick_transcription_openapi import transcription_paths
 from .quick_transcription_schemas import (
@@ -50,6 +51,7 @@ def build_openapi_document() -> dict:
         **WORKFLOW_IMPROVEMENT_SCHEMAS,
         **FLOW_SCHEMAS,
         **PROJECT_SCHEMAS,
+        **PROJECT_FOLDER_SCHEMAS,
         **PROJECT_OPERATION_SCHEMAS,
         **PROJECT_EXPORT_BUNDLE_SCHEMAS,
         **COMPARISON_EXPORT_SCHEMAS,
@@ -3739,6 +3741,7 @@ def build_openapi_document() -> dict:
     paths.update(repair_batch_paths())
     paths.update(session_flow_paths())
     paths.update(translation_project_paths())
+    paths.update(project_folder_paths())
     paths.update(project_operation_paths())
     paths.update(project_export_bundle_paths())
     paths.update(performance_paths())

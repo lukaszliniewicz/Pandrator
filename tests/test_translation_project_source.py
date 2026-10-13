@@ -238,6 +238,87 @@ def test_optional_deferred_setup_requires_known_source_and_respects_selection(so
         )
 
 
+def test_correction_selected_requires_correction_checkpoint_for_setup_and_creation(
+    source_case,
+):
+    services, source = source_case
+    with services.database.session() as db:
+        record = db.get(SessionRecord, source.id)
+        record.included_stages_json = ["correct", "transcribe", "export"]
+        write_setup(db, source.id, MultilingualSetup(target_languages=["ja"]))
+    transcription = _text(services, source, "transcription")
+
+    with services.database.session() as db:
+        pending = get_session_project(db, source.id, paths=services.paths)
+        assert pending["setup_state"] == "awaiting_correction"
+        assert pending["source_checkpoint_artifact_id"] is None
+        with pytest.raises(TranslationProjectConflict, match="Correction is selected"):
+            create_project_in_session(
+                db,
+                source.id,
+                transcription.id,
+                "Languages",
+                source.revision,
+                paths=services.paths,
+            )
+
+    correction = _text(services, source, "correction")
+    with services.database.session() as db:
+        ready = get_session_project(db, source.id, paths=services.paths)
+        assert ready["setup_state"] == "ready"
+        assert ready["source_checkpoint_artifact_id"] == correction.id
+        assert create_project_in_session(
+            db,
+            source.id,
+            correction.id,
+            "Languages",
+            source.revision,
+            paths=services.paths,
+        )["project"]["checkpoint_artifact_id"] == correction.id
+
+
+def test_disabling_correction_allows_transcription_project_source(source_case):
+    services, source = source_case
+    with services.database.session() as db:
+        db.get(SessionRecord, source.id).included_stages_json = ["transcribe", "export"]
+        write_setup(db, source.id, MultilingualSetup(target_languages=["ja"]))
+    transcription = _text(services, source, "transcription")
+    with services.database.session() as db:
+        pending = get_session_project(db, source.id, paths=services.paths)
+        assert pending["setup_state"] == "ready"
+        assert pending["source_checkpoint_artifact_id"] == transcription.id
+        project = create_project_in_session(
+            db,
+            source.id,
+            transcription.id,
+            "Languages",
+            source.revision,
+            paths=services.paths,
+        )["project"]
+        assert project["checkpoint_role"] == "transcription"
+
+
+def test_project_source_refresh_rejects_transcription_when_correction_selected(
+    source_case,
+):
+    services, source = source_case
+    transcription = _text(services, source, "transcription")
+    project = _project(services, source, transcription)
+    with services.database.session() as db:
+        record = db.get(SessionRecord, source.id)
+        record.included_stages_json = ["correct", "transcribe", "export"]
+        record.revision += 1
+        source_revision = record.revision
+    with services.database.session() as db:
+        with pytest.raises(TranslationProjectConflict, match="Correction is selected"):
+            update_project_source_in_session(
+                db,
+                project["id"],
+                transcription.id,
+                project["revision"],
+                source_revision,
+                paths=services.paths,
+            )
 def test_source_status_tracks_transcription_then_later_correction_without_repinning(source_case):
     services, source = source_case
     checkpoint = _text(services, source)

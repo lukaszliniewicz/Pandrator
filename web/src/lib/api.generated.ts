@@ -1272,6 +1272,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/project-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listProjectFolders"];
+        put?: never;
+        post: operations["createProjectFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/project-folders/{folderId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["deleteProjectFolder"];
+        options?: never;
+        head?: never;
+        patch: operations["updateProjectFolder"];
+        trace?: never;
+    };
+    "/api/v1/project-folders/{folderId}/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["replaceProjectFolderProjects"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/pronunciations": {
         parameters: {
             query?: never;
@@ -2542,6 +2590,22 @@ export interface paths {
          * @description Performance metadata never rewrites accepted speech text or creates audio. Adoption affects future synthesis only. Leased batches contain read-only semantic context.
          */
         post: operations["previewPerformancePlan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/project-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["replaceSessionProjectFolders"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4221,7 +4285,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["renameTranslationProject"];
         trace?: never;
     };
     "/api/v1/translation-projects/{projectId}/branches": {
@@ -7140,6 +7204,43 @@ export interface components {
             /** Expected Manifest Digest */
             expected_manifest_digest: string;
         };
+        /** ProjectFolderCreateRequest */
+        ProjectFolderCreateRequest: {
+            /** Name */
+            name: string;
+            /**
+             * Parent Id
+             * @default null
+             */
+            parent_id?: string | null;
+        };
+        /** ProjectFolderDeleteRequest */
+        ProjectFolderDeleteRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** ProjectFolderProjectsReplaceRequest */
+        ProjectFolderProjectsReplaceRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Project Ids */
+            project_ids: string[];
+        };
+        /** ProjectFolderUpdateRequest */
+        ProjectFolderUpdateRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Name
+             * @default null
+             */
+            name?: string | null;
+            /**
+             * Parent Id
+             * @default null
+             */
+            parent_id?: string | null;
+        };
         /** PronunciationCreate */
         PronunciationCreate: {
             /**
@@ -7534,6 +7635,15 @@ export interface components {
              * @default null
              */
             target_language?: string | null;
+        };
+        /** SessionProjectFoldersReplaceRequest */
+        SessionProjectFoldersReplaceRequest: {
+            /** Expected Revisions */
+            expected_revisions: {
+                [key: string]: number;
+            };
+            /** Folder Ids */
+            folder_ids: string[];
         };
         SessionPurgePreview: {
             blockers: string[];
@@ -9309,6 +9419,13 @@ export interface components {
              * @default
              */
             name?: string;
+        };
+        /** TranslationProjectRenameRequest */
+        TranslationProjectRenameRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Name */
+            name: string;
         };
         /** TranslationProjectSourceUpdateRequest */
         TranslationProjectSourceUpdateRequest: {
@@ -12032,6 +12149,231 @@ export interface operations {
         responses: {
             /** @description Qt-to-web parity registry */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listProjectFolders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project-folder snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder or session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project-folder request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createProjectFolder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectFolderCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Project-folder snapshot */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder or session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project-folder request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteProjectFolder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                folderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectFolderDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Project-folder snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder or session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project-folder request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateProjectFolder: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                folderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectFolderUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Project-folder snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder or session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project-folder request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replaceProjectFolderProjects: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                folderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectFolderProjectsReplaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Project-folder snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder or session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project-folder request */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15654,6 +15996,53 @@ export interface operations {
                 content?: never;
             };
             /** @description Invalid performance annotation, anchor or request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    replaceSessionProjectFolders: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionProjectFoldersReplaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Project-folder snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Folder or session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision or idempotency conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project-folder request */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -20439,6 +20828,57 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Translation project state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Session, checkpoint, or project not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Changed revision, source, or duplicate language */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid project request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    renameTranslationProject: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranslationProjectRenameRequest"];
+            };
+        };
         responses: {
             /** @description Translation project state */
             200: {

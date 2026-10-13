@@ -35,7 +35,12 @@ test('language versions form one project and switch output controls while linkin
   page
 }) => {
   await signIn(page);
-  const source = await project(page, 'Library navigation source');
+  const source = await project(
+    page,
+    'Library navigation source',
+    'voiceover',
+    'de'
+  );
   const branch = await project(
     page,
     'Library navigation Japanese',
@@ -72,8 +77,18 @@ test('language versions form one project and switch output controls while linkin
     page.getByRole('heading', { name: 'Projects', exact: true })
   ).toBeVisible();
   await expect(
-    page.getByText('One corrected source · 1 language version')
+    page.getByText('English source · 2 language versions')
   ).toBeVisible();
+  const group = page.locator(`[data-project-id="${source.id}"]`);
+  await expect(group.getByRole('link', { name: /^Japanese/ })).toBeHidden();
+  await group
+    .getByRole('button', { name: `Expand languages for ${membership.name}` })
+    .click();
+  await expect(
+    group.getByText('Shared source · English', { exact: true })
+  ).toBeVisible();
+  await expect(group.getByRole('link', { name: /^German/ })).toBeVisible();
+  await expect(group.getByRole('link', { name: /^Japanese/ })).toBeVisible();
   await expect(
     page.getByRole('link', { name: branch.name, exact: true })
   ).toHaveCount(0);
@@ -101,12 +116,111 @@ test('language versions form one project and switch output controls while linkin
   const nav = page.getByRole('navigation', { name: 'Project sections' });
   await expect(
     nav.getByRole('link', { name: 'Sources', exact: true })
-  ).toHaveAttribute('href', `/sessions/${source.id}/sources`);
+  ).toHaveAttribute(
+    'href',
+    `/sessions/${source.id}/sources?language=${branch.id}`
+  );
   await expect(
     nav.getByRole('link', { name: 'Languages', exact: true })
-  ).toHaveAttribute('href', `/sessions/${source.id}/languages`);
+  ).toHaveAttribute(
+    'href',
+    `/sessions/${source.id}/languages?language=${branch.id}`
+  );
   await nav.getByRole('link', { name: 'Sources', exact: true }).click();
+  await expect(page).toHaveURL(
+    `/sessions/${source.id}/sources?language=${branch.id}`
+  );
+  await expect(page.getByLabel('Project language')).toHaveValue(branch.id);
+  await page.getByLabel('Project language').selectOption(source.id);
   await expect(page).toHaveURL(`/sessions/${source.id}/sources`);
+  await expect(
+    nav.getByRole('link', { name: 'Output', exact: true })
+  ).toHaveAttribute('href', `/sessions/${source.id}/output`);
+  await page.getByLabel('Project language').selectOption(branch.id);
+  await nav.getByRole('link', { name: 'Output', exact: true }).click();
+  await expect(page).toHaveURL(`/sessions/${branch.id}/output`);
+
+  const selections: string[] = [];
+  page.on('request', (request) => {
+    if (
+      request.method() !== 'GET' &&
+      /generation|stage-selection|generation-runs/.test(request.url())
+    )
+      selections.push(request.url());
+  });
+  for (const item of [source, branch]) {
+    const base = `**/api/v1/sessions/${item.id}`;
+    const oldId = `old-${item.id}`;
+    await page.route(`${base}/generation/summary*`, (route) =>
+      route.fulfill({
+        json: {
+          session_id: item.id,
+          plan_revision_id: `active-${item.id}`,
+          total: 0,
+          included_total: 0,
+          active_run: null,
+          assembly: null
+        }
+      })
+    );
+    await page.route(`${base}/generation-runs?*`, (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              id: oldId,
+              session_id: item.id,
+              plan_revision_id: `plan-${oldId}`,
+              sequence_number: 1,
+              operation: 'generate',
+              label: 'Reviewed older recording',
+              status: 'completed',
+              progress: 1
+            },
+            {
+              id: `new-${item.id}`,
+              session_id: item.id,
+              plan_revision_id: `new-plan-${item.id}`,
+              sequence_number: 2,
+              operation: 'generate',
+              label: 'Newer unfinished recording',
+              status: 'failed',
+              progress: 0
+            }
+          ]
+        }
+      })
+    );
+    await page.route(`${base}/generation-segments?*`, (route) =>
+      route.fulfill({
+        json: {
+          items: [],
+          total: 0,
+          next_cursor: null,
+          plan_revision_id: `active-${item.id}`,
+          is_active_revision: true
+        }
+      })
+    );
+  }
+  await nav.getByRole('link', { name: 'Generation', exact: true }).click();
+  await page
+    .getByRole('combobox', { name: 'Audio view', exact: true })
+    .selectOption(`old-${branch.id}`);
+  await page.getByLabel('Project language').selectOption(source.id);
+  await expect(page).toHaveURL(`/sessions/${source.id}/generation`);
+  await page
+    .getByRole('combobox', { name: 'Audio view', exact: true })
+    .selectOption(`old-${source.id}`);
+  await page.getByLabel('Project language').selectOption(branch.id);
+  await expect(
+    page.getByRole('combobox', { name: 'Audio view', exact: true })
+  ).toHaveValue(`old-${branch.id}`);
+  await page.getByLabel('Project language').selectOption(source.id);
+  await expect(
+    page.getByRole('combobox', { name: 'Audio view', exact: true })
+  ).toHaveValue(`old-${source.id}`);
+  expect(selections).toEqual([]);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
     await page.evaluate(

@@ -354,6 +354,149 @@ class TranslationProjectServiceTests(unittest.TestCase):
             self.assertEqual(2, len(db.scalars(select(TranslationProjectBranch)).all()))
             self.assertEqual(3, len(db.scalars(select(SessionRecord)).all()))
 
+    def test_source_target_language_is_reserved_for_future_branches(self):
+        project = self._create_project()["project"]
+        with self.database.session() as db:
+            db.get(SessionRecord, self.source.id).target_language = "de"
+        with self.assertRaises(TranslationProjectConflict):
+            self._create_branches(
+                project["id"],
+                project["revision"],
+                [{"target_language": "de"}],
+            )
+        with self.database.session() as db:
+            self.assertEqual([], db.scalars(select(TranslationProjectBranch)).all())
+
+    def test_correction_selection_blocks_only_new_branches_for_transcription_pin(self):
+        source = self.sessions.update(
+            self.source.id,
+            self.source.revision,
+            {"included_stages_json": ["translate", "export"]},
+        )
+        directory = self.paths.sessions / source.storage_key
+        transcription_path = directory / "transcription.srt"
+        transcription_path.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nHello from transcription.\n",
+            encoding="utf-8",
+        )
+        transcription = self.artifacts.register(
+            transcription_path,
+            kind="srt",
+            role="transcription",
+            session_id=source.id,
+            metadata={"language": "en"},
+        )
+        with self.database.immediate_session() as db:
+            created = create_project_in_session(
+                db,
+                source.id,
+                transcription.id,
+                "Languages",
+                source.revision,
+                paths=self.paths,
+            )
+        project = created["project"]
+        branched = self._create_branches(
+            project["id"], project["revision"], [{"target_language": "de"}]
+        )["project"]
+        existing_branch = branched["branches"][0]
+        with self.database.session() as db:
+            existing_record = db.get(SessionRecord, existing_branch["session_id"])
+            existing_record.name = "Existing German branch work"
+            retained_job = Job(
+                kind="translation.test",
+                session_id=existing_record.id,
+                status="queued",
+                payload_json={"retained": True},
+            )
+            db.add(retained_job)
+
+        self.sessions.update(
+            source.id,
+            source.revision,
+            {"included_stages_json": ["correct", "translate", "export"]},
+        )
+        with self.assertRaisesRegex(TranslationProjectConflict, "Refresh the project source"):
+            self._create_branches(
+                project["id"], branched["revision"], [{"target_language": "fr"}]
+            )
+
+        with self.database.session() as db:
+            branches = db.scalars(
+                select(TranslationProjectBranch).where(
+                    TranslationProjectBranch.project_id == project["id"]
+                )
+            ).all()
+            self.assertEqual([existing_branch["id"]], [row.id for row in branches])
+            existing_record = db.get(SessionRecord, existing_branch["session_id"])
+            self.assertEqual("Existing German branch work", existing_record.name)
+            self.assertEqual(
+                {"retained": True}, db.get(Job, retained_job.id).payload_json
+            )
+            stored_project = get_project(db, project["id"])["project"]
+            self.assertEqual(1, len(stored_project["branches"]))
+
+    def test_project_rename_changes_only_project_metadata_and_replays(self):
+        project = self._create_project()["project"]
+        branched = self._create_branches(
+            project["id"], project["revision"], [{"target_language": "ja"}]
+        )["project"]
+        branch_id = branched["branches"][0]["session_id"]
+        with self.database.session() as db:
+            branch_record = db.get(SessionRecord, branch_id)
+            original_branch_name = branch_record.name
+            original_source_name = db.get(SessionRecord, self.source.id).name
+            db.add(
+                Job(
+                    kind="translation.test",
+                    session_id=branch_id,
+                    status="completed",
+                    payload_json={"retained": True},
+                )
+            )
+        with self.database.session() as db:
+            before_settings = {
+                (row.session_id, row.section): (row.value_json, row.revision)
+                for row in db.scalars(select(SessionSetting)).all()
+            }
+            job_before = db.scalar(select(Job).where(Job.session_id == branch_id))
+            job_snapshot = (job_before.id, job_before.status, job_before.payload_json)
+
+        url = f"/api/v1/translation-projects/{project['id']}"
+        payload = {"expected_revision": branched["revision"], "name": "  New title  "}
+        headers = {**self.headers, "Idempotency-Key": "rename-project-title-01"}
+        renamed = self.client.patch(url, json=payload, headers=headers)
+        self.assertEqual(200, renamed.status_code, renamed.get_json())
+        body = renamed.get_json()
+        self.assertEqual("New title", body["project"]["name"])
+        self.assertEqual(branched["revision"] + 1, body["project"]["revision"])
+        replay = self.client.patch(url, json=payload, headers=headers)
+        self.assertEqual(200, replay.status_code)
+        self.assertEqual("true", replay.headers.get("Idempotency-Replayed"))
+        self.assertEqual(body, replay.get_json())
+
+        with self.database.session() as db:
+            self.assertEqual(original_source_name, db.get(SessionRecord, self.source.id).name)
+            self.assertEqual(original_branch_name, db.get(SessionRecord, branch_id).name)
+            after_settings = {
+                (row.session_id, row.section): (row.value_json, row.revision)
+                for row in db.scalars(select(SessionSetting)).all()
+            }
+            self.assertEqual(before_settings, after_settings)
+            job_after = db.get(Job, job_snapshot[0])
+            self.assertEqual(
+                job_snapshot,
+                (job_after.id, job_after.status, job_after.payload_json),
+            )
+
+        unchanged = self.client.patch(
+            url,
+            json={"expected_revision": body["project"]["revision"], "name": "New title"},
+            headers={**self.headers, "Idempotency-Key": "rename-project-title-02"},
+        )
+        self.assertEqual(200, unchanged.status_code, unchanged.get_json())
+        self.assertEqual(body["project"]["revision"], unchanged.get_json()["project"]["revision"])
+
 
 if __name__ == "__main__":
     unittest.main()

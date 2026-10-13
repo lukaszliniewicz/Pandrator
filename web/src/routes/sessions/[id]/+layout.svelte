@@ -9,6 +9,7 @@
     ListMusic,
     Check,
     FileText,
+    Folder,
     Layers3,
     Languages,
     Pencil,
@@ -20,7 +21,10 @@
   } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
   import { languageLabel } from '$lib/language-registry';
-  import { sessionApi } from '$lib/domain-api';
+  import { sessionApi, translationProjectApi } from '$lib/domain-api';
+  import ProjectFolderAssignment from '$lib/ProjectFolderAssignment.svelte';
+  import { ProjectFoldersStore } from '$lib/project-folders-store.svelte';
+  import { folderPath, projectActivity } from '$lib/project-library';
   import {
     PROJECT_INTERFACE,
     ProjectInterface
@@ -64,6 +68,13 @@
   let savingName = $state(false);
   let nameError = $state('');
   let nameInput = $state<HTMLInputElement>();
+  let nameMutation: { signature: string; key: string } | null = null;
+  let assigningFolders = $state(false);
+  const projectFolders = new ProjectFoldersStore();
+  const folderContextId = $derived(page.url.searchParams.get('folder') ?? '');
+  const folderContext = $derived(
+    projectFolders.value.items.find((folder) => folder.id === folderContextId)
+  );
   const workspace = new ProjectWorkspace(
     page.params.id ?? '',
     () => void openWorkflowCustomizer()
@@ -136,6 +147,12 @@
   const membership = $derived(workspace.membership);
   const sourceSessionId = $derived(workspace.sourceId);
   const sourceSession = $derived(sourceContext.session);
+  const projectName = $derived(
+    workspace.source.languages.value?.project?.name ||
+      membership?.name ||
+      sourceSession?.name ||
+      'Project'
+  );
   const languageVersions = $derived(
     appState.sessions
       .filter(
@@ -156,23 +173,58 @@
     '/languages',
     '/cleaning'
   ]);
+  const currentSuffix = $derived(
+    page.url.pathname.slice(`/sessions/${routeSessionId}`.length)
+  );
+  const languageContextId = $derived(
+    sharedSections.has(currentSuffix) &&
+      languageVersions.some(
+        (version) => version.id === page.url.searchParams.get('language')
+      )
+      ? page.url.searchParams.get('language')!
+      : routeSessionId
+  );
+  const languageContext = $derived(
+    languageVersions.find((version) => version.id === languageContextId) ??
+      sourceSession
+  );
+  $effect(() => {
+    if (folderContextId)
+      void untrack(() => projectFolders.load()).catch(() => undefined);
+  });
+  function navigationSearch(languageId?: string) {
+    const params = new URLSearchParams();
+    if (folderContextId) params.set('folder', folderContextId);
+    if (languageId && languageId !== sourceSessionId)
+      params.set('language', languageId);
+    return params.size ? `?${params}` : '';
+  }
   const sectionHref = (suffix: string) =>
-    `/sessions/${sharedSections.has(suffix) ? sourceSessionId : routeSessionId}${suffix}`;
+    sharedSections.has(suffix)
+      ? `/sessions/${sourceSessionId}${suffix}${navigationSearch(languageContextId)}`
+      : `/sessions/${languageContextId}${suffix}${navigationSearch()}`;
   function switchLanguage(id: string) {
+    if (!languageVersions.some((version) => version.id === id)) return;
     const suffix = page.url.pathname.slice(
       `/sessions/${routeSessionId}`.length
     );
     const version = languageVersions.find((item) => item.id === id);
+    if (sharedSections.has(suffix)) {
+      void goto(
+        `/sessions/${sourceSessionId}${suffix}${navigationSearch(id)}`,
+        { noScroll: true, keepFocus: true }
+      );
+      return;
+    }
     const nextSuffix =
-      sharedSections.has(suffix) && id !== sourceSessionId
-        ? version?.workflow_kind === 'subtitles'
-          ? '/text'
-          : '/voice'
-        : ['/voice', '/generation'].includes(suffix) &&
-            version?.workflow_kind === 'subtitles'
-          ? '/text'
-          : suffix;
-    void goto(`/sessions/${id}${nextSuffix}`);
+      ['/voice', '/generation'].includes(suffix) &&
+      version?.workflow_kind === 'subtitles'
+        ? '/text'
+        : suffix;
+    void goto(`/sessions/${id}${nextSuffix}${navigationSearch()}`, {
+      noScroll: true,
+      keepFocus: true
+    });
   }
   $effect(() => {
     const id = routeSessionId;
@@ -191,10 +243,14 @@
     const disconnectSource = source.connect();
     const disconnectSelected =
       selected !== source ? selected.connect() : () => {};
+    const disconnectLanguages = source.languages.connect();
+    if (workspace.membership)
+      void untrack(() => source.languages.load()).catch(() => undefined);
     void untrack(loadSourceProfile);
     return () => {
       disconnectSource();
       disconnectSelected();
+      disconnectLanguages();
     };
   });
   async function loadSourceProfile(force = false) {
@@ -234,8 +290,17 @@
   }
   async function editName() {
     if (!sourceContext.session) return;
-    nameDraft = sourceContext.session.name;
-    nameRevision = sourceContext.session.revision;
+    if (membership)
+      await workspace.source.languages.load(true).catch(() => undefined);
+    nameDraft = projectName;
+    nameRevision = membership
+      ? (workspace.source.languages.value?.project?.revision ?? 0)
+      : sourceContext.session.revision;
+    if (!nameRevision) {
+      nameError =
+        'Project metadata could not be loaded. Reload before renaming.';
+      return;
+    }
     nameError = '';
     editingName = true;
     await tick();
@@ -244,17 +309,34 @@
   }
   async function saveName() {
     if (!sourceContext.session || savingName || !nameDraft.trim()) return;
-    if (nameDraft.trim() === sourceContext.session.name) {
+    if (nameDraft.trim() === projectName) {
       editingName = false;
       return;
     }
     savingName = true;
     nameError = '';
     try {
-      await sessionApi.update(sourceContext.session.id, nameRevision, {
-        name: nameDraft.trim()
-      });
+      if (membership) {
+        const body = {
+          expected_revision: nameRevision,
+          name: nameDraft.trim()
+        };
+        const signature = JSON.stringify([membership.id, body]);
+        if (nameMutation?.signature !== signature)
+          nameMutation = { signature, key: crypto.randomUUID() };
+        await translationProjectApi.updateName(
+          membership.id,
+          body,
+          nameMutation.key
+        );
+        await workspace.source.languages.load(true);
+        nameMutation = null;
+      } else
+        await sessionApi.update(sourceContext.session.id, nameRevision, {
+          name: nameDraft.trim()
+        });
       await sourceContext.reload();
+      await appState.refreshSessions();
       editingName = false;
     } catch (caught) {
       nameError = errorMessage(caught);
@@ -339,7 +421,7 @@
     const sessionId = page.params.id ?? '';
     appState.mobileSessionNavigation = {
       sessionId,
-      title: sourceContext.session?.name ?? 'Project',
+      title: projectName,
       items: tabs.map((tab) => ({
         href: sectionHref(tab.href),
         label: tab.label
@@ -358,6 +440,18 @@
   </div>
 {:else if sourceContext.session}
   <div class="session-shell mx-auto min-w-0 max-w-[100rem] overflow-x-clip">
+    <nav
+      aria-label="Project location"
+      class="mb-3 flex flex-wrap items-center gap-2 text-xs"
+    >
+      <a class="muted underline underline-offset-4" href="/sessions">Projects</a
+      >
+      {#if folderContext}<span class="muted" aria-hidden="true">/</span><a
+          class="min-w-0 break-words text-[var(--accent)] underline underline-offset-4"
+          href={`/sessions?folder=${encodeURIComponent(folderContext.id)}`}
+          >{folderPath(folderContext, projectFolders.value.items)}</a
+        >{/if}
+    </nav>
     <nav
       aria-label="Project sections"
       class="session-tabs scrollbar-on-demand -mx-1 flex gap-1 overflow-x-auto border-b border-[var(--line)] px-1"
@@ -414,14 +508,17 @@
             >
           </form>
         {:else}
-          <h1 class="mt-1 text-3xl font-semibold tracking-[-.035em]">
+          <h1
+            aria-label={projectName}
+            class="mt-1 text-3xl font-semibold tracking-[-.035em]"
+          >
             <button
               onclick={editName}
-              aria-label={`Rename project ${sourceContext.session.name}`}
+              aria-label={`Rename project ${projectName}`}
               title="Click to rename this project"
               class="group inline-flex max-w-full items-center gap-2 rounded-lg text-left hover:text-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
               ><span class="min-w-0 break-words [overflow-wrap:anywhere]"
-                >{sourceContext.session.name}</span
+                >{projectName}</span
               ><Pencil
                 size={17}
                 class="muted shrink-0 opacity-50 group-hover:opacity-100"
@@ -436,36 +533,47 @@
           class="muted mt-2 flex flex-wrap items-center gap-2 text-xs capitalize"
         >
           <span
-            >{contextState.session?.status ?? sourceContext.session.status} · {simpleMode
+            >{languageContext
+              ? projectActivity(languageContext, appState.jobs)
+              : sourceContext.session.status} · {simpleMode
               ? sourceContext.session.workflow_kind.replace('_', ' ')
               : `${sourceContext.outcome?.value?.focus ?? 'custom'} plan`}</span
           ><span
             class="rounded-full bg-[var(--accent-soft)] px-2 py-1 font-semibold uppercase text-[var(--accent)]"
-            >{sourceContext.session.source_language}</span
+            >{languageLabel(
+              workspace.source.languages.value?.project?.source_language ||
+                sourceContext.session.source_language
+            )} source</span
           >
         </div>
       </div>
       <div class="flex flex-wrap items-end gap-3">
-        {#if membership && languageVersions.length > 1 && page.url.pathname !== `/sessions/${routeSessionId}` && !sharedSections.has(page.url.pathname.slice(`/sessions/${routeSessionId}`.length))}
+        {#if membership && languageVersions.length > 1}
           <label class="text-xs font-semibold"
             >Project language
             <select
               class="mt-1 block max-w-72 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 text-sm"
-              value={routeSessionId}
+              aria-label="Project language"
+              value={languageContextId}
               onchange={(event) => switchLanguage(event.currentTarget.value)}
             >
               {#each languageVersions as version (version.id)}
                 <option value={version.id}
-                  >{version.id === sourceSessionId
-                    ? 'Source · '
-                    : ''}{languageLabel(
+                  >{languageLabel(
                     version.target_language ?? version.source_language
-                  )}</option
+                  )}{!version.target_language
+                    ? ' · Original language'
+                    : ''}</option
                 >
               {/each}
             </select>
           </label>
         {/if}
+        <button
+          class="btn btn-secondary"
+          onclick={() => (assigningFolders = true)}
+          ><Folder size={16} />Folders</button
+        >
         <div
           class="inline-flex rounded-xl border border-[var(--line)] bg-[var(--paper-strong)] p-1"
           role="group"
@@ -495,7 +603,7 @@
         This language version uses a pinned copy of the shared source. Voice
         settings, generation and outputs apply to this language. <a
           class="font-semibold underline underline-offset-4"
-          href={`/sessions/${sourceSessionId}/text`}
+          href={`/sessions/${sourceSessionId}/sources${navigationSearch(languageContextId)}`}
           >Open source &amp; corrections</a
         >
       </p>
@@ -522,13 +630,23 @@
       inert={projectInterface.pending}
       aria-busy={projectInterface.pending}
     >
-      {#if page.url.pathname === `/sessions/${routeSessionId}`}
-        {@render children()}
+      {#if contextState.session?.id === routeSessionId}
+        {#if page.url.pathname === `/sessions/${routeSessionId}`}
+          {@render children()}
+        {:else}
+          {#key routeSessionId}{@render children()}{/key}
+        {/if}
       {:else}
-        {#key routeSessionId}{@render children()}{/key}
+        <p class="muted text-sm" role="status">Loading language controls…</p>
       {/if}
     </div>
   </div>
+  {#if assigningFolders}<ProjectFolderAssignment
+      store={projectFolders}
+      projectId={sourceSessionId}
+      {projectName}
+      onclose={() => (assigningFolders = false)}
+    />{/if}
   {#if customizeOpen && WorkflowCustomizerComponent}<WorkflowCustomizerComponent
       sessionId={contextState.session?.id ?? sourceSessionId}
       onclose={() => (customizeOpen = false)}

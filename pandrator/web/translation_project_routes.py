@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from flask import jsonify, request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 from sqlalchemy.exc import IntegrityError
 
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
@@ -19,6 +19,7 @@ from .translation_projects import (
     create_project_in_session,
     get_project,
     get_session_project,
+    rename_project_in_session,
     update_project_source_in_session,
 )
 
@@ -55,6 +56,18 @@ class TranslationProjectSourceUpdateRequest(BaseModel):
     checkpoint_artifact_id: str = Field(min_length=1, max_length=80)
 
 
+class TranslationProjectRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1, strict=True)
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
 PROJECT_SCHEMAS = {
     model.__name__: model
     for model in (
@@ -62,6 +75,7 @@ PROJECT_SCHEMAS = {
         TranslationBranchTarget,
         TranslationBranchesCreateRequest,
         TranslationProjectSourceUpdateRequest,
+        TranslationProjectRenameRequest,
     )
 }
 
@@ -83,6 +97,12 @@ def translation_project_paths() -> dict:
         ),
         ("/api/v1/translation-projects/{projectId}", "get", "getTranslationProject", None),
         (
+            "/api/v1/translation-projects/{projectId}",
+            "patch",
+            "renameTranslationProject",
+            TranslationProjectRenameRequest,
+        ),
+        (
             "/api/v1/translation-projects/{projectId}/source",
             "post",
             "updateTranslationProjectSource",
@@ -96,7 +116,7 @@ def translation_project_paths() -> dict:
         ),
     )
     for path, method, operation_id, model in specifications:
-        write = method == "post"
+        write = method != "get"
         operation = {
             "operationId": operation_id,
             "security": [
@@ -273,6 +293,21 @@ def register_translation_project_routes(
             return jsonify(result if compact else enrich_project_payload(services, result))
         except (KeyError, ValueError, RevisionConflict) as error:
             return failure(error)
+
+    @app.patch("/api/v1/translation-projects/<project_id>")
+    @require_auth
+    def translation_project_rename(project_id):
+        payload = parsed(TranslationProjectRenameRequest)
+        if not isinstance(payload, dict):
+            return payload
+        return mutate(
+            project_id,
+            "renameTranslationProject",
+            payload,
+            lambda db, _directories: rename_project_in_session(
+                db, project_id, **payload
+            ),
+        )
 
     @app.post("/api/v1/translation-projects/<project_id>/branches")
     @require_auth

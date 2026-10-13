@@ -811,6 +811,10 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
 
     register_session_flow_routes(app, services, require_auth, error_response, context.guards.principal)
 
+    from .project_folder_routes import register_project_folder_routes
+
+    register_project_folder_routes(app, context)
+
     from .translation_project_routes import register_translation_project_routes
 
     register_translation_project_routes(

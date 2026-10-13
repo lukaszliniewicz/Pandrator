@@ -127,6 +127,20 @@ def _checkpoint(
     return checkpoint, canonical_language(language)
 
 
+def _validate_new_source_checkpoint_choice(
+    source: SessionRecord, checkpoint: Artifact
+) -> None:
+    """A selected correction stage must be the source of new project work."""
+    if (
+        "correct" in (source.included_stages_json or [])
+        and checkpoint.role == "transcription"
+    ):
+        raise TranslationProjectConflict(
+            "Correction is selected for this source. Choose its correction checkpoint "
+            "or disable correction before creating or updating the project source."
+        )
+
+
 def _branch_payload(session: Session, branch: TranslationProjectBranch) -> dict[str, Any]:
     record = session.get(SessionRecord, branch.session_id)
     if record is None:
@@ -238,6 +252,30 @@ def get_project(session: Session, project_id: str) -> dict[str, Any]:
     return project_payload(session, project)
 
 
+def rename_project_in_session(
+    session: Session,
+    project_id: str,
+    *,
+    expected_revision: int,
+    name: str,
+) -> dict[str, Any]:
+    """Rename project metadata without changing source or branch sessions."""
+    project = session.get(TranslationProject, project_id)
+    if project is None:
+        raise KeyError(project_id)
+    if project.revision != expected_revision:
+        raise RevisionConflict("The translation project changed in another client.")
+    normalized = str(name).strip()
+    if not normalized or len(normalized) > 255:
+        raise ValueError("A project name must contain 1 to 255 characters.")
+    if project.name != normalized:
+        project.name = normalized
+        project.revision += 1
+        project.updated_at = utcnow()
+        session.flush()
+    return get_project(session, project_id)
+
+
 def update_project_source_in_session(
     db: Session,
     project_id: str,
@@ -259,6 +297,7 @@ def update_project_source_in_session(
     if source.revision != expected_source_revision:
         raise RevisionConflict("The source session changed in another client.")
     checkpoint, language = _checkpoint(db, paths, source.id, checkpoint_artifact_id)
+    _validate_new_source_checkpoint_choice(source, checkpoint)
     assert checkpoint.content_hash is not None
     if language != project.source_language:
         raise TranslationProjectConflict("The source checkpoint language changed.")
@@ -305,9 +344,12 @@ def get_session_project(
     if setup is not None and state == "none":
         state = "awaiting_correction" if "correct" in (source.included_stages_json or []) else "awaiting_source"
         if paths is not None:
-            candidate = _selected_checkpoint(session, session_id, "correction")
-            if candidate is None:
-                candidate = _selected_checkpoint(session, session_id, "transcription")
+            required_role = (
+                "correction"
+                if "correct" in (source.included_stages_json or [])
+                else "transcription"
+            )
+            candidate = _selected_checkpoint(session, session_id, required_role)
             if candidate is not None:
                 try:
                     _, source_language = _checkpoint(session, paths, session_id, candidate.id)
@@ -364,6 +406,7 @@ def create_project_in_session(
     ):
         raise TranslationProjectConflict("A language branch cannot become a project source.")
     checkpoint, language = _checkpoint(db, paths, source_session_id, checkpoint_artifact_id)
+    _validate_new_source_checkpoint_choice(source, checkpoint)
     setup = read_setup(db, source_session_id) if create_planned_branches else None
     if create_planned_branches and setup is None:
         raise ValueError("Save multilingual setup before creating planned branches.")
@@ -421,13 +464,22 @@ def create_branches_in_session(
     if source is None or source.trashed_at is not None:
         raise TranslationProjectConflict("The source session is unavailable.")
     setup = read_setup(db, source.id)
-    _pinned_checkpoint, live_language = _checkpoint(
+    pinned_checkpoint, live_language = _checkpoint(
         db,
         paths,
         source.id,
         project.checkpoint_artifact_id,
         expected_hash=project.source_content_hash,
     )
+    if (
+        "correct" in (source.included_stages_json or [])
+        and pinned_checkpoint.role == "transcription"
+    ):
+        raise TranslationProjectConflict(
+            "Correction is selected for this source, but the project is pinned to a "
+            "transcription checkpoint. Refresh the project source to its correction "
+            "checkpoint or disable correction before adding branches."
+        )
     if live_language != project.source_language:
         raise TranslationProjectConflict("The source checkpoint language changed.")
     if _source_edit(db, source.id) != (
@@ -446,6 +498,8 @@ def create_branches_in_session(
             )
         ).all()
     )
+    if source.target_language:
+        existing.add(canonical_language(source.target_language))
     normalized: list[tuple[str, str, bool]] = []
     requested: set[str] = set()
     for target in targets:
@@ -611,7 +665,7 @@ def create_branches_in_session(
         )
         value["transformations"] = transformations
         inputs = dict(value.get("inputs") or {})
-        inputs["translation"] = "source" if _pinned_checkpoint.role == "transcription" else "correction"
+        inputs["translation"] = "source" if pinned_checkpoint.role == "transcription" else "correction"
         inputs["generation"] = "translation"
         value["inputs"] = inputs
         deliverables = dict(value.get("deliverables") or {})

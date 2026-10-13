@@ -202,6 +202,19 @@ export const appApi = {
 };
 
 export const translationProjectApi = {
+  updateName: (
+    projectId: string,
+    body: { expected_revision: number; name: string },
+    key: string
+  ) =>
+    apiJson<TranslationProjectPayload>(
+      `/translation-projects/${encodeURIComponent(projectId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        body: JSON.stringify(body)
+      }
+    ),
   updateSource: (
     projectId: string,
     body: {
