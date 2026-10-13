@@ -353,7 +353,12 @@
     },
     "qwen3_tts_0_6b_base_q8_0": {
       "recommended_for": "Smaller Qwen cloning",
-      "description": "The smaller Qwen Base variant for reference-voice narration. It still has a sizeable tokenizer and model download."
+      "description": "The smaller Qwen Base variant for reference-voice narration. It still has a sizeable tokenizer and model download.",
+      "license": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "commercial_use": "permitted"
+      }
     },
     "qwen3_tts_1_7b_customvoice_q8_0": {
       "recommended_for": "Directed speech with preset voices",

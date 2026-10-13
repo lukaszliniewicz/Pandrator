@@ -26,6 +26,14 @@ _TTS_FORBIDDEN_LEGACY_OPTIONS = {
         "stream_frames_per_event",
     },
     "dots_tts": {"use_xvector", "vocoder_merge_steps"},
+    "higgs_audio_tts": {"repetition_penalty"},
+}
+# These runtimes reject even a neutral global speed as a style condition.
+# Keep this scoped to verified contracts; other families can consume speed.
+_UNSUPPORTED_SPEED_FAMILIES = {
+    "breeze_tts": "Breeze",
+    "voxcpm2": "VoxCPM2",
+    "pocket_tts": "PocketTTS",
 }
 _MANAGED_REFERENCE_PATH_OPTIONS = {
     "voice_samples",
@@ -524,6 +532,8 @@ def _build_audio_cpp_audio_payload(
                         else value
                     )
 
+        _reject_known_unsupported_options(family, model, payload)
+
     if is_design:
         cloning_only_options = {
             "audio_sample",
@@ -606,14 +616,18 @@ def _build_audio_cpp_audio_payload(
         "irodori_tts_v4_small_f16", "irodori_tts_v4_small_q8_0",
     }:
         options["no_ref"] = not linked_reference
-    if family == "breeze_tts":
-        # Breeze rejects even a neutral speed field inherited from global defaults.
+    if family in _UNSUPPORTED_SPEED_FAMILIES:
+        # Ordinary sessions inherit speed=1 even without any delivery direction.
+        # Omit that no-op; reject an intentional unsupported speed locally.
         for request_fields in (payload, options):
             speed = request_fields.pop("speed", None)
             if speed is not None and (
                 isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed != 1
             ):
-                raise ValueError("Breeze speed is unsupported; only the neutral value 1 is allowed.")
+                raise ValueError(
+                    f"{_UNSUPPORTED_SPEED_FAMILIES[family]} speed is unsupported; "
+                    "only the neutral value 1 is allowed."
+                )
     if options:
         payload["options"] = options
     return payload

@@ -23,6 +23,7 @@
     TtsSettingsValue
   } from './api-models';
   import { jobApi } from './domain-api';
+  import { jobProgressDetail } from './job-progress';
   import {
     describeVoice,
     languagesForService,
@@ -49,7 +50,10 @@
   let language = $state('');
   let previewText = $state('The quick brown fox jumps over the lazy dog.');
   let previews = $state<
-    Record<string, { status: string; artifactId?: string; error?: string }>
+    Record<
+      string,
+      { status: string; artifactId?: string; error?: string; detail?: string }
+    >
   >({});
   let error = $state('');
   let notice = $state('');
@@ -374,12 +378,19 @@
     }
   }
 
-  async function waitJob(id: string) {
+  async function waitJob(id: string, key: string) {
     // A Qwen Base-only installation downloads the 1.7B CustomVoice model on
     // the first pre-built preview.  Keep polling while that durable job does
     // its one-time preparation rather than claiming it timed out after 2 min.
     for (let attempt = 0; attempt < 4000; attempt += 1) {
       const job = await jobApi.get(id);
+      previews = {
+        ...previews,
+        [key]: {
+          ...previews[key],
+          detail: jobProgressDetail(job, 'Generating audition…')
+        }
+      };
       if (job.status === 'succeeded') return job;
       if (['failed', 'canceled', 'interrupted'].includes(job.status))
         throw new Error(job.error_message || `Preview ${job.status}.`);
@@ -424,7 +435,7 @@
         voice: voice.id,
         language
       });
-      const complete = await waitJob(queued.id);
+      const complete = await waitJob(queued.id, key);
       const artifactId = String(complete.result_json?.artifact_id ?? '');
       if (!artifactId)
         throw new Error(
@@ -636,6 +647,12 @@
               label={`${voice.name} preview`}
             />
           </div>{/if}
+        {#if state?.status === 'generating' && state.detail}<p
+            role="status"
+            class="col-span-full text-xs muted"
+          >
+            {state.detail}
+          </p>{/if}
         {#if state?.error}<p class="col-span-full text-xs text-red-600">
             {state.error}
           </p>{/if}

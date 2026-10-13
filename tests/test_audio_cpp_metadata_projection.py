@@ -91,6 +91,27 @@ def test_runtime_capabilities_distinguish_qwen_variants():
     assert not {"voice_cloning", "prebuilt_voices"} & set(design["capabilities"])
 
 
+def test_qwen_base_license_urls_match_each_variant_in_manager_projection():
+    projection = _projection()
+    manager_models = {model.id: model for model in _audio_cpp_models()}
+    expected_licenses = {
+        "qwen3_tts_0_6b_base_q8_0": {
+            "name": "Apache-2.0",
+            "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "commercial_use": "permitted",
+        },
+        "qwen3_tts_1_7b_base_q8_0": {
+            "name": "Apache-2.0",
+            "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "commercial_use": "permitted",
+        },
+    }
+
+    for model_id, expected in expected_licenses.items():
+        assert projection["models"][model_id]["license"] == expected
+        assert manager_models[model_id].license_url == expected["url"]
+
+
 def test_expressive_profile_marks_reference_use_only_when_audio_is_required():
     base = package_metadata("qwen3_tts_1_7b_base_q8_0")
     custom = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")

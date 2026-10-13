@@ -222,6 +222,54 @@ def _runtime(root: Path, output: Path | None = None):
     )
 
 
+def _audio_cpp_service(
+    models: list[str],
+    *,
+    available: bool = True,
+    default_model: str | None = None,
+    **metadata,
+) -> dict:
+    return {
+        "id": "audio_cpp",
+        "adapter": "audio_cpp",
+        "available": available,
+        "models": models,
+        "default_model": default_model or (models[0] if models else ""),
+        "voices": [],
+        "default_voice": "",
+        **metadata,
+    }
+
+
+def _tts_catalog_payload(*services: dict) -> dict:
+    return {
+        "default_service": "audio_cpp",
+        "revision": 7,
+        "services": list(services),
+    }
+
+
+def _configure_audio_cpp(
+    runtime,
+    *,
+    model=None,
+    voice=None,
+    key="audio-cpp-test",
+    service_id="audio_cpp",
+):
+    return configure_tts(
+        runtime,
+        ConfigureTtsInput(
+            session_id="session-1",
+            service_id=service_id,
+            model=model,
+            voice=voice,
+            expected_revision=4,
+            idempotency_key=key,
+        ),
+    )
+
+
 class McpEndToEndToolTests(unittest.TestCase):
     def test_configure_tts_registered_schema_and_mcp_transport(self):
         from mcp import Client
@@ -273,6 +321,234 @@ class McpEndToEndToolTests(unittest.TestCase):
                     self.assertEqual(updates, len([name for name, _ in application.calls if name == "update_session_settings"]))
 
         asyncio.run(exercise())
+
+    def test_configure_audio_cpp_refreshes_stale_models_once_and_normalizes_service_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, application = _runtime(Path(directory))
+            stale = _audio_cpp_service(
+                ["qwen3_tts_0_6b_base_q8_0"],
+                model_voice_modes={"qwen3_tts_0_6b_base_q8_0": "cloning"},
+            )
+            refreshed = _audio_cpp_service(
+                ["kokoro_82m_q8_0"],
+                adapter="audio-cpp",
+                voice_catalogues={"kokoro_82m_q8_0": ["af_heart"]},
+                model_voice_modes={"kokoro_82m_q8_0": "prebuilt"},
+                default_voice="af_heart",
+            )
+            application.tts_catalog = mock.Mock(
+                side_effect=[_tts_catalog_payload(stale), _tts_catalog_payload(refreshed)]
+            )
+
+            outcome = _configure_audio_cpp(
+                runtime,
+                model="KOKORO_82M_Q8_0",
+                voice="AF_HEART",
+                service_id="AUDIO-CPP",
+            )
+
+            self.assertEqual(
+                [mock.call(refresh=False), mock.call(refresh=True)],
+                application.tts_catalog.call_args_list,
+            )
+            updates = [
+                kwargs
+                for name, kwargs in application.calls
+                if name == "update_session_settings"
+            ]
+            self.assertEqual(1, len(updates))
+            self.assertEqual("kokoro_82m_q8_0", updates[0]["value"]["model"])
+            self.assertEqual("af_heart", updates[0]["value"]["voice"])
+            self.assertEqual("kokoro_82m_q8_0", outcome.result["selection"]["model"])
+
+    def test_configure_audio_cpp_rejects_models_still_missing_after_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, application = _runtime(Path(directory))
+            stale = _audio_cpp_service(["qwen3_tts_0_6b_base_q8_0"])
+            refreshed = _audio_cpp_service(["kokoro_82m_q8_0"])
+            application.tts_catalog = mock.Mock(
+                side_effect=[_tts_catalog_payload(stale), _tts_catalog_payload(refreshed)]
+            )
+
+            with self.assertRaises(PandratorMcpError) as captured:
+                _configure_audio_cpp(runtime, model="not-installed")
+
+            self.assertEqual("validation_error", captured.exception.code)
+            self.assertEqual(
+                [mock.call(refresh=False), mock.call(refresh=True)],
+                application.tts_catalog.call_args_list,
+            )
+            self.assertFalse(
+                any(name == "update_session_settings" for name, _ in application.calls)
+            )
+
+    def test_configure_audio_cpp_known_case_variant_and_default_skip_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, application = _runtime(Path(directory))
+            service = _audio_cpp_service(
+                ["kokoro_82m_q8_0"],
+                model_voice_modes={"kokoro_82m_q8_0": "prebuilt"},
+                default_voice="af_heart",
+            )
+            application.tts_catalog = mock.Mock(
+                side_effect=[_tts_catalog_payload(service), _tts_catalog_payload(service)]
+            )
+
+            explicit = _configure_audio_cpp(runtime, model="KOKORO_82M_Q8_0")
+            self.assertEqual("kokoro_82m_q8_0", explicit.result["selection"]["model"])
+            self.assertEqual([mock.call(refresh=False)], application.tts_catalog.call_args_list)
+
+            application.calls.clear()
+            application.tts_catalog.reset_mock()
+            default = _configure_audio_cpp(runtime)
+            self.assertEqual("kokoro_82m_q8_0", default.result["selection"]["model"])
+            self.assertEqual([mock.call(refresh=False)], application.tts_catalog.call_args_list)
+            self.assertEqual(
+                1,
+                len([name for name, _ in application.calls if name == "update_session_settings"]),
+            )
+
+            default_only = _audio_cpp_service(
+                [],
+                default_model="kokoro_82m_q8_0",
+                default_voice="af_heart",
+            )
+            application.calls.clear()
+            application.tts_catalog = mock.Mock(
+                side_effect=[_tts_catalog_payload(default_only)]
+            )
+            explicit_default = _configure_audio_cpp(
+                runtime,
+                model="KOKORO_82M_Q8_0",
+            )
+            self.assertEqual("KOKORO_82M_Q8_0", explicit_default.result["selection"]["model"])
+            self.assertEqual([mock.call(refresh=False)], application.tts_catalog.call_args_list)
+
+    def test_configure_tts_does_not_refresh_missing_models_for_other_families(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, application = _runtime(Path(directory))
+            service = {
+                "id": "service-a",
+                "adapter": "gemini",
+                "available": True,
+                "models": ["model-a"],
+                "default_model": "model-a",
+            }
+            application.tts_catalog = mock.Mock(
+                return_value=_tts_catalog_payload(service)
+            )
+
+            with self.assertRaises(PandratorMcpError) as captured:
+                configure_tts(
+                    runtime,
+                    ConfigureTtsInput(
+                        session_id="session-1",
+                        service_id="service-a",
+                        model="missing-model",
+                        expected_revision=4,
+                        idempotency_key="non-audio-cpp",
+                    ),
+                )
+
+            self.assertEqual("validation_error", captured.exception.code)
+            self.assertEqual([mock.call(refresh=False)], application.tts_catalog.call_args_list)
+            self.assertFalse(
+                any(name == "update_session_settings" for name, _ in application.calls)
+            )
+
+    def test_configure_audio_cpp_refresh_uses_new_managed_voice_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime, application = _runtime(Path(directory))
+            stale = _audio_cpp_service(
+                ["qwen3_tts_0_6b_base_q8_0"],
+                model_voice_modes={"qwen3_tts_0_6b_base_q8_0": "cloning"},
+            )
+            refreshed = _audio_cpp_service(
+                ["qwen3_tts_1_7b_base_q8_0"],
+                model_voice_modes={"qwen3_tts_1_7b_base_q8_0": "cloning"},
+            )
+            application.tts_catalog = mock.Mock(
+                side_effect=[_tts_catalog_payload(stale), _tts_catalog_payload(refreshed)]
+            )
+            application.list_voices = mock.Mock(
+                side_effect=[
+                    {"items": []},
+                    {
+                        "items": [
+                            {
+                                "id": "managed-qwen",
+                                "name": "Narrator",
+                                "metadata_json": {
+                                    "providers": {
+                                        "audio_cpp": {
+                                            "status": "ready",
+                                            "voice_id": "fresh-reference",
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                ]
+            )
+
+            outcome = _configure_audio_cpp(
+                runtime,
+                model="qwen3_tts_1_7b_base_q8_0",
+                voice="Narrator",
+            )
+
+            self.assertEqual("fresh-reference", outcome.result["selection"]["voice"])
+            self.assertEqual(
+                [mock.call(refresh=False), mock.call(refresh=True)],
+                application.tts_catalog.call_args_list,
+            )
+            self.assertEqual(2, application.list_voices.call_count)
+            self.assertEqual(
+                1,
+                len([name for name, _ in application.calls if name == "update_session_settings"]),
+            )
+
+    def test_configure_audio_cpp_refresh_keeps_missing_and_offline_service_errors(self):
+        cases = (
+            ((), "not_found"),
+            (
+                (
+                    _audio_cpp_service(
+                        ["kokoro_82m_q8_0"],
+                        available=False,
+                        availability_reason="audio.cpp is offline",
+                    ),
+                ),
+                "source_unavailable",
+            ),
+        )
+        for refreshed_services, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                with tempfile.TemporaryDirectory() as directory:
+                    runtime, application = _runtime(Path(directory))
+                    stale = _audio_cpp_service(["qwen3_tts_0_6b_base_q8_0"])
+                    application.tts_catalog = mock.Mock(
+                        side_effect=[
+                            _tts_catalog_payload(stale),
+                            _tts_catalog_payload(*refreshed_services),
+                        ]
+                    )
+
+                    with self.assertRaises(PandratorMcpError) as captured:
+                        _configure_audio_cpp(runtime, model="kokoro_82m_q8_0")
+
+                    self.assertEqual(expected_code, captured.exception.code)
+                    self.assertEqual(
+                        [mock.call(refresh=False), mock.call(refresh=True)],
+                        application.tts_catalog.call_args_list,
+                    )
+                    self.assertFalse(
+                        any(
+                            name == "update_session_settings"
+                            for name, _ in application.calls
+                        )
+                    )
 
     def test_tts_capability_guards_and_atomic_context_settings(self):
         with tempfile.TemporaryDirectory() as directory:

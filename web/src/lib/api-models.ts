@@ -342,6 +342,11 @@ export type JobRecord = {
   status: JobStatus;
   progress: number;
   progress_detail?: string | null;
+  waiting_for_job?: {
+    id: string;
+    kind: string;
+    progress_detail?: string | null;
+  } | null;
   error_code?: string | null;
   error_message?: string | null;
   attempts?: number;

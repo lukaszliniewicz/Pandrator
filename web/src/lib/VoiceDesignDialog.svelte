@@ -17,6 +17,7 @@
     VoiceRecord
   } from './api-models';
   import { jobApi } from './domain-api';
+  import { jobProgressDetail } from './job-progress';
   import { errorMessage } from './errors';
   import { modalFocus } from './modal-focus';
   import AudioPlayer from './AudioPlayer.svelte';
@@ -284,7 +285,7 @@
       if (!alive || closing)
         throw new DOMException('Dialog closed', 'AbortError');
       const job = await jobApi.get(id);
-      progressDetail = job.progress_detail ?? '';
+      progressDetail = jobProgressDetail(job, 'Generating audition…');
       if (job.status === 'succeeded') return job;
       if (['failed', 'canceled', 'interrupted'].includes(job.status))
         throw new Error(job.error_message || `Voice design ${job.status}.`);

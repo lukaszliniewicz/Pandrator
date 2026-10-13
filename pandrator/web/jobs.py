@@ -25,6 +25,7 @@ from .models import (
     GenerationRun,
     Job,
     JobEvent,
+    QuickTranscription,
     ResourceClaim,
     SessionPurge,
     SessionRecord,
@@ -751,6 +752,72 @@ class JobQueue:
                 raise KeyError(job_id)
             session.expunge(job)
             return job
+
+    def waiting_for_jobs(
+        self, records: list[Job]
+    ) -> dict[str, dict[str, Any]]:
+        """Return the first live resource blocker for each queued record."""
+
+        waiters_by_resource: dict[str, list[str]] = {}
+        for record in records:
+            if record.status != "queued":
+                continue
+            raw_keys = record.resource_keys_json
+            if not isinstance(raw_keys, list):
+                continue
+            keys = {
+                _canonical_tts_resource_key(str(key).strip())
+                for key in raw_keys
+                if isinstance(key, str) and key.strip()
+            }
+            if not keys:
+                continue
+            for key in keys:
+                waiters_by_resource.setdefault(key, []).append(record.id)
+
+        if not waiters_by_resource:
+            return {}
+
+        requested_keys = set(waiters_by_resource)
+        resource_filter = ResourceClaim.resource_key.in_(requested_keys)
+        if any(key.startswith("service:tts:") for key in requested_keys):
+            # Older workers can still hold an alias spelling of a TTS service.
+            resource_filter = or_(
+                resource_filter,
+                ResourceClaim.resource_key.like("service:tts:%"),
+            )
+
+        now = utcnow()
+        waiting_for: dict[str, dict[str, Any]] = {}
+        with self.database.session() as session:
+            claims = session.execute(
+                select(ResourceClaim, Job)
+                .join(Job, Job.id == ResourceClaim.job_id)
+                .where(
+                    resource_filter,
+                    ResourceClaim.expires_at > now,
+                    Job.lease_expires_at > now,
+                    Job.status.in_(("running", "cancel_requested")),
+                    ResourceClaim.lease_owner == Job.lease_owner,
+                    ResourceClaim.lease_generation == Job.lease_generation,
+                    Job.kind != "transcription.quick",
+                    ~select(QuickTranscription.id)
+                    .where(QuickTranscription.job_id == Job.id)
+                    .exists(),
+                )
+                .order_by(Job.created_at.asc(), Job.id.asc(), ResourceClaim.resource_key.asc())
+            ).all()
+            for claim, blocker in claims:
+                resource_key = _canonical_tts_resource_key(claim.resource_key.strip())
+                for waiter_id in waiters_by_resource.get(resource_key, ()):
+                    if waiter_id == blocker.id or waiter_id in waiting_for:
+                        continue
+                    waiting_for[waiter_id] = {
+                        "id": blocker.id,
+                        "kind": blocker.kind,
+                        "progress_detail": blocker.progress_detail,
+                    }
+        return waiting_for
 
     def claim(self, worker_id: str, lease_seconds: int = 30) -> Job | None:
         if update_maintenance_active(self.database.path.parent):

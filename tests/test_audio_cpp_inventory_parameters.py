@@ -126,6 +126,28 @@ class AudioCppInventoryParameterTests(unittest.TestCase):
         self.assertEqual(3, parameters["native_extra"]["default"])
         self.assertIn("text_chunk_mode", fish_parameters)
 
+    def test_higgs_noop_repetition_penalty_is_hidden_and_rejected(self):
+        higgs_parameters = request_parameters_for_family("higgs_audio_tts")
+        qwen_parameters = request_parameters_for_family("qwen3_tts")
+
+        self.assertNotIn("repetition_penalty", higgs_parameters)
+        self.assertIn("temperature", higgs_parameters)
+        self.assertIn("repetition_penalty", qwen_parameters)
+        self.assertEqual(
+            {"repetition_penalty": 1.1},
+            validate_model_options(
+                "qwen3_tts",
+                {"repetition_penalty": 1.1},
+                model_id="qwen3_tts_1_7b_base_q8_0",
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown"):
+            validate_model_options(
+                "higgs_audio_tts",
+                {"repetition_penalty": 1.1},
+                model_id="higgs_audio_tts_4b_q8_0",
+            )
+
     def test_invalid_defaults_are_dropped(self):
         fixture = _metadata(
             {"name": "bad_default_int", "type": "int", "default": 1.5},

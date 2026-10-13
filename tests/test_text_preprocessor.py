@@ -8,7 +8,6 @@ from pandrator.logic.text_preprocessor import (
     _parallel_preprocess_text,
     append_short_sentences,
     find_best_split_index,
-    normalize_punctuation,
     preprocess_text,
     split_into_sentences,
 )
@@ -96,20 +95,44 @@ class TextPreprocessorTests(unittest.TestCase):
         sequential_preprocess.assert_called_once()
         parallel_preprocess.assert_not_called()
 
-    def test_normalize_punctuation_fancy_quotes(self):
-        text = "“Hello,” she said, ‘It’s a nice day.’ «Bonjour»"
-        normalized = normalize_punctuation(text)
-        self.assertEqual(normalized, '"Hello," she said, \'It\'s a nice day.\' "Bonjour"')
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_preparation_preserves_unicode_punctuation(self, split_text):
+        split_text.side_effect = lambda text: [text]
+        examples = {
+            "fr": "« L’esprit s’ouvre à l’expérience… »",
+            "en": "“It’s a test”—with a dash, and pages 2–4.",
+            "de": "„Das ist’s – wirklich!“",
+            "ja": "「意識とは何でしょうか？」",
+            "zh": "“什么是意识？”",
+        }
+        for language, text in examples.items():
+            with self.subTest(language=language):
+                result = preprocess_text(text, {
+                    "language": language,
+                    "enable_nemo_normalization": False,
+                    "enable_sentence_splitting": False,
+                    "enable_sentence_appending": False,
+                    "remove_diacritics": False,
+                    "remove_quotation_marks": False,
+                    "normalize_all_caps": False,
+                    "max_sentence_length": 200,
+                    "tts_service": "audio_cpp",
+                })
+                self.assertEqual([row["original_sentence"] for row in result], [text])
 
-    def test_normalize_punctuation_dashes(self):
-        text = "Scrooge said that he would see him—yes, indeed–he did."
-        normalized = normalize_punctuation(text)
-        self.assertEqual(normalized, "Scrooge said that he would see him, yes, indeed - he did.")
-
-    def test_normalize_punctuation_ellipsis(self):
-        text = "To be continued…"
-        normalized = normalize_punctuation(text)
-        self.assertEqual(normalized, "To be continued...")
+    @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
+    def test_explicit_quote_removal_preserves_french_apostrophes(self, split_text):
+        split_text.side_effect = lambda text: [text]
+        result = preprocess_text("« L’esprit s’ouvre à l’expérience. »", {
+            "language": "fr",
+            "enable_nemo_normalization": False,
+            "enable_sentence_splitting": False,
+            "enable_sentence_appending": False,
+            "remove_quotation_marks": True,
+            "max_sentence_length": 200,
+            "tts_service": "audio_cpp",
+        })
+        self.assertEqual(result[0]["original_sentence"], "L’esprit s’ouvre à l’expérience.")
 
     def test_terminal_punctuation_before_nested_closing_marks(self):
         text = 'He asked “Stop!』'
@@ -136,8 +159,8 @@ class TextPreprocessorTests(unittest.TestCase):
         sentences = preprocess_text(text, settings)
         
         self.assertEqual(len(sentences), 2)
-        self.assertEqual(sentences[0]["original_sentence"], "This is a test, with a dash.")
-        self.assertEqual(sentences[1]["original_sentence"], 'And "fancy quotes".')
+        self.assertEqual(sentences[0]["original_sentence"], "This is a test—with a dash.")
+        self.assertEqual(sentences[1]["original_sentence"], 'And “fancy quotes”.')
 
     @patch("pandrator.logic.text_preprocessor.nemo_normalizer.normalize_text_for_tts")
     @patch("pandrator.logic.text_preprocessor.sentence_segmenter.split_text")
@@ -278,11 +301,13 @@ class TextPreprocessorTests(unittest.TestCase):
             'with more material after the quotation so the second part should not begin with a quote.'
         )
 
-        split_index = find_best_split_index(text, "en", 160)
-
-        self.assertIsNotNone(split_index)
-        self.assertNotEqual(text[split_index], '"')
-        self.assertTrue(text[:split_index].rstrip().endswith(',"'))
+        for opening, closing in [('"', '"'), ('“', '”'), ('„', '“')]:
+            quoted = text.replace('"Never,"', f'{opening}Never,{closing}')
+            with self.subTest(closing=closing):
+                split_index = find_best_split_index(quoted, "en", 160)
+                self.assertIsNotNone(split_index)
+                self.assertNotEqual(quoted[split_index], closing)
+                self.assertTrue(quoted[:split_index].rstrip().endswith(',' + closing))
 
     def test_conjunction_fallback_chooses_balanced_split(self):
         text = (

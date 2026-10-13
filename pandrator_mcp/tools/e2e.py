@@ -728,6 +728,19 @@ def _catalog_value(values: Any, requested: str) -> str | None:
     )
 
 
+def _audio_cpp_catalog_model(service: dict[str, Any], requested: str) -> str | None:
+    models = service.get("models")
+    model = _catalog_value(models, requested)
+    if model:
+        return model
+    default_model = str(service.get("default_model") or "")
+    return (
+        requested
+        if default_model and default_model.casefold() == requested.casefold()
+        else None
+    )
+
+
 def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutcome:
     catalog = tts_catalog(
         runtime,
@@ -736,12 +749,32 @@ def configure_tts(runtime: McpRuntime, arguments: ConfigureTtsInput) -> ToolOutc
     if not catalog["services"]:
         raise PandratorMcpError("not_found", "The requested TTS service is not configured.")
     service = catalog["services"][0]
+    service_id = str(service.get("id") or arguments.service_id)
+    is_audio_cpp = _normalized_id(service.get("adapter") or service_id) == "audio_cpp"
+    if (
+        arguments.model
+        and is_audio_cpp
+        and _audio_cpp_catalog_model(service, arguments.model) is None
+    ):
+        catalog = tts_catalog(
+            runtime,
+            TtsCatalogInput(
+                service_id=arguments.service_id,
+                detail="full",
+                refresh=True,
+            ),
+        )
+        if not catalog["services"]:
+            raise PandratorMcpError(
+                "not_found", "The requested TTS service is not configured."
+            )
+        service = catalog["services"][0]
+        service_id = str(service.get("id") or arguments.service_id)
     if service.get("available") is False:
         raise PandratorMcpError(
             "source_unavailable",
             str(service.get("availability_reason") or "The requested TTS service is unavailable."),
         )
-    service_id = str(service.get("id") or arguments.service_id)
     models = service.get("models") if isinstance(service.get("models"), list) else []
     model = ""
     if arguments.model:

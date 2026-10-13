@@ -26031,10 +26031,6 @@
           "minimum": 0,
           "type": "integer"
         },
-        "repetition_penalty": {
-          "default": 1.1,
-          "type": "number"
-        },
         "seed": {
           "minimum": 0,
           "type": "integer"
@@ -26592,10 +26588,6 @@
           "default": 2048,
           "minimum": 0,
           "type": "integer"
-        },
-        "repetition_penalty": {
-          "default": 1.1,
-          "type": "number"
         },
         "seed": {
           "minimum": 0,
@@ -85992,7 +85984,7 @@
       "license": {
         "commercial_use": "permitted",
         "name": "Apache-2.0",
-        "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+        "url": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base"
       },
       "package_availability": {
         "reason": "Available through Pandrator Manager; installation and a compatible runtime are required.",
@@ -86095,7 +86087,7 @@
         }
       },
       "sources": [
-        "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         "https://github.com/0xShug0/audio.cpp/blob/v0.9.1/docs/models/qwen3.md",
         "https://github.com/0xShug0/audio.cpp/blob/v0.9.1/docs/tts.md",
         "https://github.com/0xShug0/audio.cpp/blob/v0.9.1/docs/gguf.md"

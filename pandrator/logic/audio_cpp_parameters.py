@@ -87,6 +87,9 @@ _TTS_UNSUPPORTED_NATIVE_OPTIONS = {
     # The edit operation owns this field; the speech request builder must not
     # expose it as a TTS tuning control.
     "dots_tts": {"use_xvector", "vocoder_merge_steps"},
+    # Higgs accepts this field for API compatibility, but audio-code sampling
+    # does not consume it.
+    "higgs_audio_tts": {"repetition_penalty"},
 }
 _AUK_FLASH_MODEL_IDS = frozenset(
     {"auk_flash_f16", "auk_flash_f32", "auk_flash_q8_0"}

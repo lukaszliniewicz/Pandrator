@@ -36,11 +36,11 @@ DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE = str.maketrans("", "", DOUBLE_QUOTATION
 SINGLE_QUOTATION_MARK_PATTERN = re.compile(
     rf"(?<!\w)[{re.escape(SINGLE_QUOTATION_MARKS)}]|[{re.escape(SINGLE_QUOTATION_MARKS)}](?!\w)"
 )
-CLOSING_SPLIT_PUNCTUATION = "\"')]}”’»›」』》〟〞〃）］｝〕】〉》〘〙〚〛"
+CLOSING_SPLIT_PUNCTUATION = "\"')]}“‘”’»›」』》〟〞〃）］｝〕】〉》〘〙〚〛"
 
 TERMINAL_PUNCTUATION = frozenset(".!?…。！？｡．‥⋯﹒﹖﹗")
 CLOSING_TERMINAL_PUNCTUATION = frozenset(
-    "\"'”’»›」』》〟〞〃)]}）］｝〕】〉》〘〙〚〛"
+    "\"'“‘”’»›」』》〟〞〃)]}）］｝〕】〉》〘〙〚〛"
 )
 OPENING_NARRATION_QUOTES = frozenset("‘‚‛“„‟«‹「『《〝")
 
@@ -82,31 +82,6 @@ SENTENCE_SPLITTER_LANGUAGE_ALIASES = {
 def strip_quotation_marks(text: str) -> str:
     without_double_quotes = text.translate(DOUBLE_QUOTATION_MARK_TRANSLATION_TABLE)
     return SINGLE_QUOTATION_MARK_PATTERN.sub("", without_double_quotes)
-
-def normalize_punctuation(text: str) -> str:
-    """Normalizes Unicode dashes, curly quotes, and ellipses to standard equivalents."""
-    # Translate fancy quotes
-    text = text.translate(str.maketrans({
-        '“': '"',
-        '”': '"',
-        '„': '"',
-        '‟': '"',
-        '‘': "'",
-        '’': "'",
-        '‚': "'",
-        '‛': "'",
-        '‹': "'",
-        '›': "'",
-        '«': '"',
-        '»': '"',
-    }))
-    # Normalize dashes to guide prosody/pauses
-    text = text.replace('—', ', ')
-    text = text.replace('–', ' - ')
-    # Normalize ellipsis
-    text = text.replace('…', '...')
-    return text
-
 
 def _protect_chapter_marker_lines(text: str) -> str:
     """Keep Pandrator chapter markers as standalone block boundaries."""
@@ -158,7 +133,10 @@ def _ensure_line_terminal_punctuation(text: str) -> str:
         terminal_index = len(paragraph)
         while (
             terminal_index > 0
-            and paragraph[terminal_index - 1] in CLOSING_TERMINAL_PUNCTUATION
+            and (
+                paragraph[terminal_index - 1] in CLOSING_TERMINAL_PUNCTUATION
+                or paragraph[terminal_index - 1].isspace()
+            )
         ):
             terminal_index -= 1
         if (
@@ -459,7 +437,9 @@ def _process_chunk(chunk: str, settings: dict) -> list[dict]:
 
 
     chunk = re.sub(r'\r\n?', '\n', chunk)
-    chunk = normalize_punctuation(chunk)
+    # Prepared text is also reader-facing. Preserve its typography unless an
+    # explicit processing option below requests a change; provider-specific
+    # pronunciation changes belong at the speech boundary.
     chunk = _protect_chapter_marker_lines(chunk)
 
     if not disable_paragraph_detection:

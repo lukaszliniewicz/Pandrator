@@ -766,3 +766,90 @@ test('collapsed navigation retains accessible control names', async ({
     ).violations
   ).toEqual([]);
 });
+
+test('queued auditions explain the blocking generation and update when it clears', async ({
+  page
+}, testInfo) => {
+  await mockVoices(page);
+  await login(page);
+  await page.setViewportSize({ width: 1056, height: 810 });
+  await page
+    .getByRole('checkbox', { name: 'Compare Scrooge', exact: true })
+    .check();
+  await page
+    .getByRole('checkbox', { name: 'Compare Narrator', exact: true })
+    .check();
+  await page
+    .getByRole('button', { name: 'Compare 2 voices', exact: true })
+    .click();
+  const comparison = page.getByRole('dialog', {
+    name: 'Compare voices',
+    exact: true
+  });
+  await comparison.getByLabel('Audition service').selectOption('audio_cpp');
+  await comparison.getByLabel('Audition model').selectOption('clone-model');
+  let state = 'queued';
+  let submitted = 0;
+  await page.route('**/api/v1/services/tts/audio_cpp/preview', (route) => {
+    submitted++;
+    return route.fulfill({ json: { id: 'audition-wait', status: 'queued' } });
+  });
+  await page.route('**/api/v1/jobs/audition-wait', (route) =>
+    route.fulfill({
+      json: {
+        id: 'audition-wait',
+        kind: 'tts.preview',
+        status: state,
+        progress_detail:
+          state === 'running' ? 'Synthesizing preview audio' : null,
+        waiting_for_job:
+          state === 'queued'
+            ? {
+                id: 'long-generation',
+                kind: 'generation.run',
+                progress_detail: 'Generating segment 89 of 624'
+              }
+            : null,
+        result_json:
+          state === 'succeeded' ? { artifact_id: 'audition-result' } : null
+      }
+    })
+  );
+  await comparison
+    .getByRole('button', { name: 'Generate 2 auditions' })
+    .click();
+  const waiting = comparison.getByText(
+    'Queued — waiting for audio generation: Generating segment 89 of 624',
+    { exact: true }
+  );
+  await expect(waiting).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('audition-wait.png'),
+    fullPage: false
+  });
+  expect(submitted).toBe(1);
+  state = 'running';
+  await expect(waiting).toBeHidden();
+  await expect(
+    comparison.getByText('Synthesizing preview audio', { exact: true })
+  ).toBeVisible();
+  state = 'succeeded';
+  await expect(
+    comparison.getByText('Shared passage audition', { exact: true })
+  ).toHaveCount(2);
+  expect(submitted).toBe(2);
+  // Regeneration keeps the old samples playable while explaining the new wait.
+  state = 'queued';
+  await page.route('**/api/v1/jobs/audition-wait/cancel', (route) =>
+    route.fulfill({ json: { id: 'audition-wait', status: 'canceled' } })
+  );
+  await comparison
+    .getByRole('button', { name: 'Generate 2 auditions' })
+    .click();
+  await expect(waiting).toBeVisible();
+  await expect(
+    comparison.getByText('Shared passage audition', { exact: true })
+  ).toHaveCount(2);
+  await comparison.getByRole('button', { name: 'Cancel auditions' }).click();
+  await expect(waiting).toBeHidden();
+});

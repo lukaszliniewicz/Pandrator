@@ -514,3 +514,63 @@ def test_compiler_instruction_transport_and_selected_model_precedence_remain(
     assert "instruct" not in payload["options"] or expected_key == "instruct"
     assert "instruction" not in payload["options"] or expected_key == "instruction"
     assert "instructions" not in payload
+
+
+@pytest.mark.parametrize('model', ['voxcpm2_q8_0', 'pocket_tts_english_bf16'])
+@pytest.mark.parametrize('preview', [False, True])
+@pytest.mark.parametrize('speed_settings', [
+    {'speed': 1.0},
+    {'audio_cpp_speed': 1},
+    {'audio_cpp_options': {'speed': 1.0}},
+    {'options': {'speed': None}},
+])
+def test_plain_speech_omits_inherited_neutral_style(model, preview, speed_settings):
+    settings = {
+        'generation_prompt': '',
+        'openai_audio_instructions': '',
+        'audio_cpp_seed': 123,
+        **speed_settings,
+    }
+    if preview:
+        settings['preview_service_id'] = 'audio_cpp'
+    payload = _payload(model, **settings)
+    assert 'speed' not in payload
+    assert 'speed' not in payload.get('options', {})
+    assert payload['seed'] == 123
+    assert payload['input'] == 'The quick brown fox.'
+    assert 'instructions' not in payload
+    # Resetting model options must not be necessary for ordinary speech.
+    reset = _payload(model, audio_cpp_model_settings={model: {}}, speed=1.0)
+    assert payload['input'] == reset['input']
+    assert set(payload) - set(reset) == {'seed'}
+
+
+@pytest.mark.parametrize('model', ['voxcpm2_q8_0', 'pocket_tts_english_bf16'])
+@pytest.mark.parametrize('speed_settings', [
+    {'speed': 1.2},
+    {'audio_cpp_speed': 0.8},
+    {'audio_cpp_options': {'speed': 1.2}},
+    {'speed': 1, 'options': {'speed': 0.8}},
+    {'speed': True},
+])
+def test_unsupported_speech_speed_fails_before_http(model, speed_settings):
+    with pytest.raises(ValueError, match='speed is unsupported'):
+        _payload(model, **speed_settings)
+
+
+def test_neutral_speed_filter_preserves_supported_speed_and_voxcpm_direction():
+    payload = _payload('kokoro_82m_q8_0', speed=1.2, speaker='af_heart')
+    assert payload['speed'] == 1.2
+    directed = _payload('voxcpm2_q8_0', speed=1.0, generation_prompt='Warm and clear.')
+    assert 'Warm and clear.' in directed['input']
+    assert 'speed' not in directed
+
+
+@pytest.mark.parametrize('settings', [
+    {'audio_cpp_options': {'repetition_penalty': 1.1}},
+    {'options': {'repetition_penalty': 1.1}},
+    {'audio_cpp_repetition_penalty': 1.1},
+])
+def test_higgs_no_op_cannot_be_forwarded_through_legacy_settings(settings):
+    with pytest.raises(ValueError, match='Unknown.*repetition_penalty'):
+        _payload('higgs_audio_tts_4b_q8_0', **settings)

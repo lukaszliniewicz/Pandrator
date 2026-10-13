@@ -1036,12 +1036,15 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         hidden = services.quick_transcriptions.hidden_job_ids(
             principal.subject, (item.id for item in items)
         )
+        visible_items = [item for item in items if item.id not in hidden]
+        waiting_for_jobs = jobs.waiting_for_jobs(visible_items)
         return jsonify(
             {
                 "items": [
-                    _job_payload(item)
-                    for item in items
-                    if item.id not in hidden
+                    _job_payload(
+                        item, waiting_for_job=waiting_for_jobs.get(item.id)
+                    )
+                    for item in visible_items
                 ]
             }
         )
@@ -1064,7 +1067,14 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
     @require_auth
     def job_get(job_id: str):
         try:
-            return jsonify(_job_payload(work.diagnostic_get(job_id)))
+            job = work.diagnostic_get(job_id)
+            waiting_for_jobs = jobs.waiting_for_jobs([job])
+            return jsonify(
+                _job_payload(
+                    job,
+                    waiting_for_job=waiting_for_jobs.get(job.id),
+                )
+            )
         except KeyError:
             return error_response("not_found", "Job not found.", 404)
 
@@ -1505,6 +1515,8 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         hidden = services.quick_transcriptions.hidden_job_ids(
             principal.subject, (item.id for item in items)
         )
+        visible_items = [item for item in items if item.id not in hidden]
+        waiting_for_jobs = jobs.waiting_for_jobs(visible_items)
         session_items = [_session_payload(item) for item in sessions.list()]
         memberships = session_project_memberships(
             database, [item["id"] for item in session_items]
@@ -1518,8 +1530,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                 "sessions": {"items": session_items},
                 "jobs": {
                     "items": [
-                        _job_payload(item, include_details=view != "compact")
-                        for item in items if item.id not in hidden
+                        _job_payload(
+                            item,
+                            include_details=view != "compact",
+                            waiting_for_job=waiting_for_jobs.get(item.id),
+                        )
+                        for item in visible_items
                     ]
                 },
                 "capabilities": capability_payload,

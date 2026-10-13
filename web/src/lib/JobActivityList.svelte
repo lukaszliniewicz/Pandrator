@@ -12,6 +12,7 @@
   import type { JobLogRecord as JobLog, JobRecord } from './api-models';
   import { appState } from './app-state.svelte';
   import { jobApi } from './domain-api';
+  import { jobProgressDetail } from './job-progress';
 
   let {
     jobs,
@@ -51,10 +52,7 @@
   }
 
   function currentDetail(job: JobRecord) {
-    return (
-      job.progress_detail ||
-      (job.status === 'queued' ? 'Queued; waiting to start' : '')
-    );
+    return jobProgressDetail(job);
   }
 
   async function loadLogs(id: string, force = false) {

@@ -3,6 +3,7 @@
   import { X, Play, LoaderCircle } from '@lucide/svelte';
   import { speechServiceApi } from './admin-api';
   import { jobApi } from './domain-api';
+  import { jobProgressDetail } from './job-progress';
   import type { TtsService } from './api-models';
   import { voiceLibraryApi, type CatalogVoice } from './voice-library-api';
   import { readinessLabel, setupHref } from './voice-presentation';
@@ -155,6 +156,8 @@
         let finished = false;
         for (let attempt = 0; attempt < 3600 && alive && !stop; attempt++) {
           const job = await jobApi.get(queued.id);
+          if (!alive || stop) break;
+          states[voice.key] = jobProgressDetail(job, 'Generating audition…');
           if (job.status === 'succeeded') {
             const artifact = String(job.result_json?.artifact_id ?? '');
             if (!artifact)
@@ -186,7 +189,9 @@
         states = Object.fromEntries(
           Object.entries(states).map(([key, state]) => [
             key,
-            ['Queued', 'Generating audition…'].includes(state)
+            state !== 'Audition ready' &&
+            !errors[key] &&
+            ready.some((voice) => voice.key === key)
               ? 'Canceled'
               : state
           ])
@@ -332,8 +337,11 @@
                     src={`/api/v1/artifacts/${results[voice.key].artifact}/content`}
                     label={`${voice.name} shared passage audition`}
                   />
-                </div>
-              {:else}<p class="muted text-xs" role="status">
+                </div>{/if}
+              {#if busy || results[voice.key]?.context !== context}<p
+                  class="muted text-xs"
+                  role="status"
+                >
                   {busy
                     ? states[voice.key]
                     : results[voice.key]
