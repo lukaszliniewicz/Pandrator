@@ -2,6 +2,7 @@
   import { RefreshCw } from '@lucide/svelte';
   import { appState } from '$lib/app-state.svelte';
   import JobActivityList from '$lib/JobActivityList.svelte';
+  import BackgroundWorkStatus from '$lib/BackgroundWorkStatus.svelte';
 </script>
 
 <div class="mx-auto max-w-7xl">
@@ -16,5 +17,8 @@
       ><RefreshCw size={16} /> Refresh</button
     >
   </header>
+  <section class="surface mt-7 rounded-2xl p-5">
+    <BackgroundWorkStatus jobs={appState.jobs} />
+  </section>
   <div class="mt-7"><JobActivityList jobs={appState.jobs} /></div>
 </div>

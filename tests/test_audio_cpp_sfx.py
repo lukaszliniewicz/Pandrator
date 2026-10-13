@@ -468,6 +468,64 @@ def test_generation_fingerprint_changes_with_request_or_runtime_identity():
     assert sfx.generation_fingerprint(request, changed_identity) != fingerprint
 
 
+@pytest.mark.parametrize("instrumental", (False, True))
+def test_yue2_generation_only_installs_and_passes_adapter_when_selected(tmp_path, monkeypatch, instrumental):
+    calls = []
+    base_path = tmp_path / "base-model"
+    adapter_path = tmp_path / "managed adapter.safetensors"
+    executable = _runtime_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(sfx, "require_backend", lambda *_args: None)
+    monkeypatch.setattr(sfx, "runtime_identity", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(sfx.generation_assets, "ensure_model", lambda *_args, **_kwargs: base_path)
+
+    def ensure_adapter(settings, *, cancel_event, progress):
+        calls.append((settings, cancel_event, progress))
+        return adapter_path
+
+    monkeypatch.setattr(sfx.yue2_adapter, "ensure_adapter", ensure_adapter)
+    captured = []
+
+    def runner(argv, **_kwargs):
+        captured.append(argv)
+        _write_wav(Path(argv[argv.index("--out") + 1]), frames=44100)
+
+    sfx.generate_sound(
+        {
+            "model_id": "yue2_main_q8_0", "prompt": "Solo piano", "seed": 4,
+            "duration_seconds": 8, "parameters": {"instrumental": instrumental},
+        },
+        tmp_path / "result.wav", settings={}, cancel_event=Event(), run_func=runner,
+    )
+    assert len(calls) == int(instrumental)
+    assert captured[0][0] == str(executable)
+    if instrumental:
+        assert f"yue2.ar_lora={adapter_path}" in captured[0]
+        assert "yue2.ar_lora_scale=1.0" in captured[0]
+    else:
+        assert all("ar_lora" not in arg for arg in captured[0])
+
+
+def test_yue2_adapter_failure_prevents_native_generation(tmp_path, monkeypatch):
+    _runtime_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(sfx, "require_backend", lambda *_args: None)
+    monkeypatch.setattr(sfx, "runtime_identity", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(sfx.generation_assets, "ensure_model", lambda *_args, **_kwargs: tmp_path)
+
+    def fail_adapter(*_args, **_kwargs):
+        raise assets.AudioAssetsError("Adapter SHA-256 mismatch")
+
+    monkeypatch.setattr(sfx.yue2_adapter, "ensure_adapter", fail_adapter)
+    with pytest.raises(assets.AudioAssetsError, match="SHA-256"):
+        sfx.generate_sound(
+            {
+                "model_id": "yue2_main_q8_0", "prompt": "Solo piano", "seed": 4,
+                "parameters": {"instrumental": True},
+            },
+            tmp_path / "result.wav", settings={}, cancel_event=Event(),
+            run_func=lambda *_args, **_kwargs: pytest.fail("unverified adapter reached native runtime"),
+        )
+
+
 def test_generate_sound_uses_expected_cpu_argv_and_returns_wav_properties(tmp_path, monkeypatch):
     captured = []
 

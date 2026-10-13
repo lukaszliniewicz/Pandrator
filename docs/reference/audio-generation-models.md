@@ -31,6 +31,32 @@ Unsupported settings are rejected before generation starts. Optional settings
 use the selected model's defaults. The preview and saved candidate details show
 the resolved settings, so you can see which values were used.
 
+### YuE2 instrumental mode
+
+Enable **Instrumental** on a YuE2 model to use the managed Mothersuperior AR
+adapter. The first generation downloads and verifies a 140 MB BF16 adapter;
+the same cached adapter is reused across the BF16, Q8, and Q4 base models.
+The adapter uses full score planning and the `[instrumental]` lyrics marker.
+Turning the option off restores the ordinary lyrics field.
+
+For MCP or HTTP generation, set `parameters.instrumental` to `true`, omit
+`lyrics` (or supply `[instrumental]`), and leave `cot` at `full`. Other lyrics
+and planning modes are rejected while instrumental mode is active. The saved
+request and runtime identity retain the mode, adapter revision, and checksum.
+Ordinary YuE2 requests retain their existing behavior.
+
+The [adapter](https://huggingface.co/Mothersuperior/YuE2-instrumental-cot-full-loras)
+is licensed CC BY-NC 4.0 for noncommercial use. BF16 is closest to the original
+base weights; Q8/Q4 merges are requantized and can produce different results.
+Adapter loading and musical quality still require a short trial on your backend.
+
+### Downloading clips
+
+Use **Download** beside a ready candidate to save its audio without adding it
+to the library. Open a saved clip to download any of its variants. Downloads
+preserve the stored file and its format: generated clips are WAV, while imported
+clips retain their original audio format.
+
 ## Seeds and alternatives
 
 Leaving the seed blank chooses a random seed when the request is accepted.

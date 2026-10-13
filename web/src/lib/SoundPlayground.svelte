@@ -74,6 +74,16 @@
   const selectedModel = $derived(
     availableModels.find((model) => model.id === modelId)
   );
+  const instrumental = $derived(
+    selectedModel?.family === 'yue2' && parameters.instrumental === true
+  );
+  const advancedControls = $derived(
+    Object.fromEntries(
+      Object.entries(selectedModel?.parameters ?? {}).filter(
+        ([key]) => key !== 'instrumental' && !(instrumental && key === 'cot')
+      )
+    )
+  );
   const candidateRows = $derived(
     candidate && !recent.some((item) => item.id === candidate?.id)
       ? [candidate, ...recent]
@@ -166,6 +176,11 @@
       ) ??
       choices[0];
     selectModel(preferred?.id ?? '');
+  }
+  function setInstrumental(enabled: boolean) {
+    parameters = { ...parameters, instrumental: enabled };
+    if (enabled) parameters.cot = 'full';
+    else if (lyrics === '[instrumental]') lyrics = '';
   }
   function restoreRequest(result: SoundCandidate, reuseSeed = false) {
     const provenance = result.provenance;
@@ -345,7 +360,9 @@
           model_id: modelId,
           kind,
           backend,
-          ...(selectedModel?.supports_lyrics ? { lyrics } : {}),
+          ...(selectedModel?.supports_lyrics
+            ? { lyrics: instrumental ? '[instrumental]' : lyrics }
+            : {}),
           parameters,
           ...(count === 1 ? {} : { candidate_count: count }),
           ...(seed === undefined ? {} : { seed }),
@@ -599,11 +616,13 @@
       {/if}
       {#if selectedModel}
         <p class="muted text-sm">
-          {selectedModel.requires_lyrics
-            ? 'This model needs both a music description and lyrics.'
-            : selectedModel.supports_lyrics
-              ? 'Use a music description, with optional lyrics for vocals.'
-              : 'This model generates audio from your description.'}
+          {instrumental
+            ? 'Describe the instruments, style and mood for an instrumental.'
+            : selectedModel.requires_lyrics
+              ? 'This model needs both a music description and lyrics.'
+              : selectedModel.supports_lyrics
+                ? 'Use a music description, with optional lyrics for vocals.'
+                : 'This model generates audio from your description.'}
         </p>
         {#if selectedModel.notes}
           <p class="muted text-xs">{selectedModel.notes}</p>
@@ -637,7 +656,32 @@
             : 'A kettle boiling, bubbling water and a rising hiss of steam. No speech or music.'}
         ></textarea>
       </label>
-      {#if selectedModel?.supports_lyrics}
+      {#if selectedModel?.instrumental_adapter}
+        <div class="rounded-lg border border-[var(--line)] p-3">
+          <label class="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={instrumental}
+              onchange={(event) => setInstrumental(event.currentTarget.checked)}
+              aria-describedby="yue2-instrumental-help"
+            />
+            Instrumental
+          </label>
+          <p id="yue2-instrumental-help" class="muted mt-2 text-xs">
+            Uses the instrumental adapter with full score planning. First use
+            downloads about {Math.ceil(
+              selectedModel.instrumental_adapter.size_bytes / 1_000_000
+            )} MB, shared across YuE2 models.
+            <a
+              class="text-[var(--accent)] underline"
+              href={selectedModel.instrumental_adapter.source_url}
+              target="_blank"
+              rel="noreferrer">Adapter licence: CC BY-NC 4.0 (noncommercial).</a
+            >
+          </p>
+        </div>
+      {/if}
+      {#if selectedModel?.supports_lyrics && !instrumental}
         <label class="block text-sm font-medium"
           >Lyrics {#if !selectedModel.requires_lyrics}<span
               class="muted font-normal">(optional)</span
@@ -755,10 +799,10 @@
             /></label
           >
         </div>
-        {#if selectedModel && Object.keys(selectedModel.parameters).length}
+        {#if Object.keys(advancedControls).length}
           <div class="mt-4 border-t border-[var(--line)] pt-4">
             <SoundModelControls
-              controls={selectedModel.parameters}
+              controls={advancedControls}
               bind:values={parameters}
             />
           </div>

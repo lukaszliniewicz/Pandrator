@@ -255,6 +255,17 @@ def validate_request(
                 name, descriptor["default"], descriptor
             )
 
+    if spec.family == "yue2":
+        if parameters.get("instrumental"):
+            if parameters["cot"] != "full":
+                raise ValueError("YuE2 instrumental mode requires parameters.cot=full.")
+            if lyrics and lyrics != "[instrumental]":
+                raise ValueError("YuE2 instrumental mode accepts empty lyrics or [instrumental].")
+            lyrics = "[instrumental]"
+        else:
+            # Preserve the canonical form of existing requests and queued jobs.
+            parameters.pop("instrumental", None)
+
     return {
         "model_id": model_id,
         "prompt": prompt,
@@ -309,12 +320,19 @@ def build_argv(
     request: Mapping[str, Any],
     model_path: str | Path,
     output_path: str | Path,
+    *,
+    instrumental_adapter_path: str | Path | None = None,
 ) -> list[str]:
     """Compile a canonical request into argv; never invokes a shell."""
     canonical = validate_request(dict(request))
     model_id = canonical["model_id"]
     spec = get_model(model_id)
     parameters = canonical.get("parameters", {})
+    instrumental = spec.family == "yue2" and parameters.get("instrumental") is True
+    if instrumental and instrumental_adapter_path is None:
+        raise ValueError("YuE2 instrumental mode requires its verified managed adapter.")
+    if not instrumental and instrumental_adapter_path is not None:
+        raise ValueError("An instrumental adapter is only valid for YuE2 instrumental mode.")
     command = [
         str(executable),
         "--task",
@@ -408,6 +426,15 @@ def build_argv(
             )
         )
     elif spec.family == "yue2":
+        if instrumental:
+            command.extend(
+                (
+                    "--session-option",
+                    f"yue2.ar_lora={instrumental_adapter_path}",
+                    "--session-option",
+                    "yue2.ar_lora_scale=1.0",
+                )
+            )
         if canonical["lyrics"]:
             command.extend(("--lyrics", canonical["lyrics"]))
         _request_option(command, "style", canonical["prompt"])

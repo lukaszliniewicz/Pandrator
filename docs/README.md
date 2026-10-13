@@ -37,6 +37,7 @@ covers assistant connections, access permissions, and workflow operations.
 - [Subtitle-to-speech pipeline and parameters](reference/subtitle-pipeline.md)
 - [Speech directions, dialogue, and character voices](reference/generation-controls.md)
 - [Model identities and speech controls](reference/model-capabilities.md)
+- [Provider model lifecycle and migrations](reference/provider-lifecycle.md)
 - [Sounds, music, project placement, and mixing](reference/sounds-and-mixing.md)
 - [Choosing a sound or music model](reference/sound-and-music-models.md)
 - [Sound and music generation requests](reference/audio-generation-models.md)
@@ -52,6 +53,7 @@ covers assistant connections, access permissions, and workflow operations.
 [GitHub Releases](https://github.com/lukaszliniewicz/Pandrator/releases) has the
 latest downloads, checksums, and release notes. Read the
 [0.12.0 release notes](release-notes-0.12.0.md) for the current release.
+The [next release notes](release-notes-next.md) describe development changes.
 Earlier changes are described in the [0.11.0](release-notes-0.11.0.md),
 [0.10.1](release-notes-0.10.1.md), and
 [0.10.0](release-notes-0.10.0.md) notes.

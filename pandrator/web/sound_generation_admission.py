@@ -76,18 +76,12 @@ def prepare_generation(
     if request.seed is None:
         canonical.pop("seed")
     audio_cpp_sfx.require_backend(settings, canonical["backend"])
-    identity = _runtime_identity(settings, canonical["model_id"])
+    identity = audio_cpp_sfx.request_runtime_identity(settings, canonical)
     return PreparedSoundGeneration(
         request_template=deepcopy(canonical),
         runtime_identity=deepcopy(identity),
         candidate_count=request.candidate_count,
     )
-
-
-def _runtime_identity(settings: dict[str, Any], model_id: str) -> dict[str, Any]:
-    if model_id == DEFAULT_SOUND_MODEL_ID:
-        return audio_cpp_sfx.runtime_identity(settings)
-    return audio_cpp_sfx.runtime_identity(settings, model_id=model_id)
 
 
 def _public_request_payload(request: SoundGenerate) -> dict[str, Any]:

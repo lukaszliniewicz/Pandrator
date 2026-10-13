@@ -524,6 +524,7 @@ def package_metadata(model_id: str) -> dict[str, Any]:
         family=package["family"],
         voice_mode=result["voice_mode"],
         backend_version=inventory()["runtime_version"],
+        reference_audio=result["reference_audio"] == "required",
     )
     result["expressive_capabilities"] = copy.deepcopy(controls)
     from .audio_cpp_parameters import request_parameters_for_model

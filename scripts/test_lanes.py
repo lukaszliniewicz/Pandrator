@@ -19,6 +19,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
     FAST_LANE: (
         "tests/test_audio_cpp_assets.py",
         "tests/test_audio_cpp_generation_assets.py",
+        "tests/test_audio_cpp_yue2_adapter.py",
         "tests/test_audio_cpp_generation_metadata.py",
         "tests/test_audio_cpp_generation_models.py",
         "tests/test_audio_cpp_generation_payload.py",
@@ -46,6 +47,7 @@ TEST_LANES: dict[str, tuple[str, ...]] = {
         "tests/test_check_docs.py",
         "tests/test_caption_alignment.py",
         "tests/test_cjk_text_pipeline.py",
+        "tests/test_cjk_word_boundaries.py",
         "tests/test_audiobook_chunking.py",
         "tests/test_book_timing.py",
         "tests/test_book_cues.py",

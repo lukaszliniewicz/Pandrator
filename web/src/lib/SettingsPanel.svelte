@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProviderModelLifecycleNotice from './ProviderModelLifecycleNotice.svelte';
   import { errorMessage } from './errors';
   import {
     ChevronDown,
@@ -1117,6 +1118,9 @@
         {/if}
       </section>
       {@render modelDetailStatus()}
+      {#if section === 'tts'}<ProviderModelLifecycleNotice
+          lifecycle={modelMetadata?.model_lifecycle}
+        />{/if}
       {#if section === 'tts' && audioCpp && modelMetadata?.catalogue_info}
         <div class="mt-4 rounded-xl border border-[var(--line)] p-3">
           <AudioCppModelDetails model={modelMetadata.catalogue_info} />
@@ -1259,6 +1263,9 @@
         {/each}
       </div>
       {@render modelDetailStatus()}
+      {#if section === 'tts'}<ProviderModelLifecycleNotice
+          lifecycle={modelMetadata?.model_lifecycle}
+        />{/if}
       {#if section === 'tts' && audioCpp && modelMetadata?.catalogue_info}
         <div class="mt-4 rounded-xl border border-[var(--line)] p-3">
           <AudioCppModelDetails model={modelMetadata.catalogue_info} />

@@ -1,3 +1,5 @@
+import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -10,7 +12,7 @@ from unittest import mock
 
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
-from mutagen.mp4 import MP4
+from mutagen.mp4 import MP4, MP4Cover
 from mutagen.oggopus import OggOpus
 from PIL import Image
 from pydub import AudioSegment
@@ -115,6 +117,97 @@ class AudioCompositionTests(unittest.TestCase):
                             self.assertTrue(tags["metadata_block_picture"])
                         else:
                             self.assertTrue(tags.pictures)
+
+    def test_m4b_cover_format_tracks_decoded_content_without_changing_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            jpeg_buffer = io.BytesIO()
+            Image.new("RGB", (3, 2), color=(92, 52, 35)).save(
+                jpeg_buffer, format="JPEG"
+            )
+            jpeg_bytes = jpeg_buffer.getvalue()
+
+            png_buffer = io.BytesIO()
+            Image.new("RGBA", (3, 2), color=(11, 72, 134, 201)).save(
+                png_buffer, format="PNG"
+            )
+            png_bytes = png_buffer.getvalue()
+
+            webp_image = Image.new("RGBA", (3, 2))
+            webp_image.putdata(
+                [(255, 0, 0, 0), (0, 255, 0, 64), (0, 0, 255, 128),
+                 (255, 255, 0, 192), (0, 255, 255, 255), (20, 30, 40, 17)]
+            )
+            webp_buffer = io.BytesIO()
+            webp_image.save(webp_buffer, format="WEBP", lossless=True)
+            webp_bytes = webp_buffer.getvalue()
+
+            covers = (
+                ("genuine.jpg", jpeg_bytes, MP4Cover.FORMAT_JPEG, jpeg_bytes),
+                ("genuine.png", png_bytes, MP4Cover.FORMAT_PNG, png_bytes),
+                ("png-content.jpg", png_bytes, MP4Cover.FORMAT_PNG, png_bytes),
+                ("jpeg-content.png", jpeg_bytes, MP4Cover.FORMAT_JPEG, jpeg_bytes),
+                ("transparent.webp", webp_bytes, MP4Cover.FORMAT_PNG, None),
+            )
+
+            for filename, source_bytes, expected_marker, expected_embedded_bytes in covers:
+                with self.subTest(filename=filename):
+                    source = root / filename
+                    source.write_bytes(source_bytes)
+                    original_hash = hashlib.sha256(source_bytes).hexdigest()
+                    destination = root / f"{Path(filename).stem}.m4b"
+                    export_audio(
+                        Sine(440).to_audio_segment(duration=120),
+                        destination,
+                        "m4b",
+                        "128k",
+                    )
+
+                    self.assertTrue(
+                        _save_metadata_and_cover(
+                            str(destination), "m4b", {}, str(source), raise_on_error=True
+                        )
+                    )
+
+                    embedded = MP4(destination)["covr"][0]
+                    self.assertEqual(expected_marker, embedded.imageformat)
+                    with Image.open(io.BytesIO(embedded)) as embedded_image:
+                        embedded_format = embedded_image.format
+                        embedded_image.load()
+                        self.assertEqual(
+                            MP4Cover.FORMAT_JPEG
+                            if embedded_format == "JPEG"
+                            else MP4Cover.FORMAT_PNG,
+                            embedded.imageformat,
+                        )
+                        if expected_embedded_bytes is not None:
+                            self.assertEqual(expected_embedded_bytes, bytes(embedded))
+
+                    if filename == "transparent.webp":
+                        with Image.open(io.BytesIO(webp_bytes)) as original_webp:
+                            original_webp.load()
+                            with Image.open(io.BytesIO(embedded)) as embedded_png:
+                                embedded_png.load()
+                                self.assertEqual(original_webp.size, embedded_png.size)
+                                self.assertEqual("PNG", embedded_png.format)
+                                self.assertEqual(
+                                    original_webp.convert("RGBA").tobytes(),
+                                    embedded_png.convert("RGBA").tobytes(),
+                                )
+                                self.assertEqual(
+                                    original_webp.convert("RGBA")
+                                    .getchannel("A")
+                                    .tobytes(),
+                                    embedded_png.convert("RGBA")
+                                    .getchannel("A")
+                                    .tobytes(),
+                                )
+
+                    self.assertEqual(
+                        original_hash,
+                        hashlib.sha256(source.read_bytes()).hexdigest(),
+                    )
 
 
 class DurableOutputAssemblyTests(unittest.TestCase):

@@ -108,6 +108,16 @@ for (const provider of ['gemini', 'vertex_ai']) {
       });
       for (const [index, model] of models.entries()) {
         await card.getByRole('button', { name: 'Settings' }).click();
+        if (index === 0) {
+          // Custom voices have one native language. Confirm that German
+          // excludes this Polish voice, then use it with Polish speech.
+          await expect(
+            voice.locator(`option[value="${customVoice}"]`)
+          ).toHaveCount(0);
+          await dialog
+            .getByRole('combobox', { name: 'Speech language', exact: true })
+            .selectOption('pl');
+        }
         await dialog
           .getByLabel('TTS model', { exact: true })
           .selectOption(model);
@@ -164,7 +174,7 @@ for (const provider of ['gemini', 'vertex_ai']) {
           service: provider,
           model,
           voice: customVoice,
-          language: 'de',
+          language: 'pl',
           generation_prompt: 'Warm narration with measured pacing.',
           tts_context_mode: index === 0 ? 'both' : 'before',
           performance_context_before: 3,

@@ -236,6 +236,7 @@ test('Create export saves the visible burned-subtitle selection before submittin
   expect(savedSettings.override.burn_video_resolution).toBe('720p');
   expect(exportPayload).toEqual({
     output: {
+      subtitle_text_source: 'current',
       export_mode: 'media',
       audio_mode: 'preserve'
     }
@@ -421,21 +422,26 @@ test('Create export keeps the selected audio version when saved effective defaul
   );
 
   await page.goto(`/sessions/${session.id}/output`);
-  await expect(page.getByLabel('Audio version')).toBeVisible({
+  await expect(
+    page.getByRole('combobox', { name: 'Audio version', exact: true })
+  ).toBeVisible({
     timeout: 20_000
   });
-  await expect(page.getByLabel('Audio version').locator('option')).toHaveCount(
-    2
-  );
-  await expect(page.getByLabel('Audio version')).toHaveValue(
-    'selected-completed-run'
-  );
+  await expect(
+    page
+      .getByRole('combobox', { name: 'Audio version', exact: true })
+      .locator('option')
+  ).toHaveCount(2);
+  await expect(
+    page.getByRole('combobox', { name: 'Audio version', exact: true })
+  ).toHaveValue('selected-completed-run');
   await page.getByLabel('Audio result').selectOption('mixed');
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(page.getByText(/Export selected was submitted/)).toBeVisible();
 
   expect(exportPayload).toEqual({
     output: {
+      subtitle_text_source: 'current',
       export_mode: 'media',
       audio_mode: 'mixed',
       video_tail_extension_policy: 'ask'
@@ -544,9 +550,9 @@ test('soundtrack mix preview uses the selected version and current unsaved contr
   });
 
   await page.goto(`/sessions/${session.id}/output`);
-  await expect(page.getByLabel('Audio version')).toHaveValue(
-    'preview-completed-run'
-  );
+  await expect(
+    page.getByRole('combobox', { name: 'Audio version', exact: true })
+  ).toHaveValue('preview-completed-run');
   await page
     .locator('select:has(option[value="very_strong"])')
     .selectOption('very_strong');
@@ -667,6 +673,7 @@ test('Create export sends an explicit voiceover-only contract when no source is 
 
   expect(exportPayload).toEqual({
     output: {
+      subtitle_text_source: 'current',
       export_mode: 'media',
       audio_mode: 'dubbing_only'
     },
@@ -752,7 +759,9 @@ test('Create export submits ONE durable export request with the pinned run', asy
   );
 
   await page.goto(`/sessions/${session.id}/output`);
-  await expect(page.getByLabel('Audio version')).toHaveValue('completed-run');
+  await expect(
+    page.getByRole('combobox', { name: 'Audio version', exact: true })
+  ).toHaveValue('completed-run');
   await page.getByLabel('Audio result').selectOption('mixed');
   await page.getByLabel('Maximum speed-up').fill('1.25');
   await page.getByRole('button', { name: 'Create export' }).click();
@@ -766,6 +775,7 @@ test('Create export submits ONE durable export request with the pinned run', asy
   expect(assemblyCalls).toBe(0);
   expect(exportPayload).toEqual({
     output: {
+      subtitle_text_source: 'current',
       export_mode: 'media',
       audio_mode: 'mixed',
       video_tail_extension_policy: 'ask'
@@ -848,7 +858,9 @@ test('Navigation after an accepted export job does not resubmit the export', asy
   );
 
   await page.goto(`/sessions/${session.id}/output`);
-  await expect(page.getByLabel('Audio version')).toHaveValue('completed-run');
+  await expect(
+    page.getByRole('combobox', { name: 'Audio version', exact: true })
+  ).toHaveValue('completed-run');
   await page.getByLabel('Audio result').selectOption('mixed');
   await page.getByRole('button', { name: 'Create export' }).click();
   await expect(page.getByText(/Export durable- was submitted/)).toBeVisible({
@@ -1230,4 +1242,120 @@ for (const action of ['stop', 'extend'] as const) {
     expect(decisions).toBe(1);
     expect(newExportRequests).toBe(0);
   });
+}
+
+for (const target of ['media', 'subtitles']) {
+  for (const textSource of ['current', 'generation_run']) {
+    test(`subtitle text ${textSource} is independent of audio for ${target} exports`, async ({
+      page
+    }) => {
+      await signIn(page);
+      const { session, headers } = await createSession(page, 'voiceover');
+      const uploaded = await page.request.post('/api/v1/uploads', {
+        headers,
+        multipart: {
+          session_id: session.id,
+          purpose: 'source',
+          file: {
+            name: 'source-video.mp4',
+            mimeType: 'video/mp4',
+            buffer: Buffer.from('media fixture')
+          }
+        }
+      });
+      expect(uploaded.ok()).toBeTruthy();
+      await page.route(
+        `**/api/v1/sessions/${session.id}/generation-runs*`,
+        (route) =>
+          route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({
+              items: [
+                {
+                  id: 'old-audio-run',
+                  status: 'completed',
+                  label: 'Run 1: Historical audio'
+                }
+              ]
+            })
+          })
+      );
+      let payload: Record<string, unknown> | null = null;
+      await page.route(
+        `**/api/v1/sessions/${session.id}/stages/export/run`,
+        (route) => {
+          payload = route.request().postDataJSON();
+          return route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({
+              id: 'subtitle-source-export',
+              kind: 'export.create',
+              session_id: session.id,
+              status: 'queued',
+              progress: 0,
+              created_at: new Date().toISOString()
+            })
+          });
+        }
+      );
+      await page.goto(`/sessions/${session.id}/output`);
+      await expect(
+        page.getByRole('combobox', { name: 'Audio version', exact: true })
+      ).toHaveValue('old-audio-run');
+      await page.getByLabel('Export target').selectOption(target);
+      if (target === 'media') {
+        await page.getByLabel('Audio result').selectOption('mixed');
+        await page
+          .getByRole('combobox', { name: 'Subtitles', exact: true })
+          .selectOption('burned');
+      }
+      await expect(
+        page.getByRole('combobox', { name: 'Subtitle text', exact: true })
+      ).toHaveValue('current');
+      await page
+        .getByRole('combobox', { name: 'Subtitle text', exact: true })
+        .selectOption(textSource);
+      await page
+        .getByRole('button', { name: 'Create export', exact: true })
+        .click();
+      await expect(
+        page.getByText(/Export subtitle was submitted/)
+      ).toBeVisible();
+      expect(payload).toMatchObject({
+        output: { export_mode: target, subtitle_text_source: textSource }
+      });
+      if (target === 'media' || textSource === 'generation_run') {
+        expect(payload).toMatchObject({ generation_run_id: 'old-audio-run' });
+      } else {
+        expect(payload).not.toHaveProperty('generation_run_id');
+      }
+      await page.reload();
+      await expect(
+        page.getByRole('combobox', { name: 'Subtitle text', exact: true })
+      ).toHaveValue(textSource);
+      if (textSource === 'generation_run') {
+        await page
+          .getByRole('combobox', { name: 'Audio version', exact: true })
+          .selectOption('');
+        await page
+          .getByRole('button', { name: 'Create export', exact: true })
+          .click();
+        await expect(
+          page.getByText(
+            'Select an Audio version to use its historical subtitle text.'
+          )
+        ).toBeVisible();
+      }
+      await page.setViewportSize({ width: 390, height: 844 });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth - innerWidth
+        )
+      ).toBeLessThanOrEqual(1);
+      await page.screenshot({
+        path: test.info().outputPath('subtitle-text-mobile.png'),
+        fullPage: true
+      });
+    });
+  }
 }

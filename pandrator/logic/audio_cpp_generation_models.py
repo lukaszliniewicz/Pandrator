@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import audio_cpp_yue2_adapter as yue2_adapter
 from .audio_cpp_generation_parameters import parameters_for_model
 
 DEFAULT_MODEL_ID = "stable_audio_3_small_sfx_q8_0"
@@ -181,6 +182,11 @@ class ModelSpec:
             descriptor["duration"]["description"] = self.duration_description
         if self.notes is not None:
             descriptor["notes"] = self.notes
+        if self.family == "yue2":
+            descriptor["instrumental_adapter"] = {
+                **yue2_adapter.identity(),
+                "source_url": yue2_adapter.SOURCE_URL,
+            }
         return descriptor
 
 
@@ -472,7 +478,8 @@ def build_registry(
         elif family == "yue2":
             notes = (
                 "Empty lyrics are accepted by the native engine, but do not guarantee an instrumental. "
-                "The optional instrumental adapter is not included in this package. "
+                "Instrumental mode downloads a separate managed adapter. "
+                "The BF16 base is closest to the original weights; Q8/Q4 adapter merges are requantized. "
                 "CPU and Vulkan inference have not been locally verified."
             )
         elif family == "minimax_h3":

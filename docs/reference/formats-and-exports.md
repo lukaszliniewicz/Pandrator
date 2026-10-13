@@ -37,8 +37,21 @@ artifact boundaries, cleanup settings, and narration parameters, see
 
 The durable editing pipeline normalizes subtitle sources to timed display
 cues. SRT is the primary working interchange. Export uses the selected
-transcription, correction, or translation revision—not speech blocks generated
-later for TTS.
+transcription, correction, or translation track, with current display edits applied
+to its matching cues. In subtitle and voiceover projects, **Subtitle text** defaults
+to **Current display text**, independently of **Audio version**. Choose
+**Historical text from selected audio version** to export the wording saved with
+that run. Both choices use display wording; speech-only pronunciation changes stay
+in the audio. The display revision is frozen when an export is queued.
+
+Japanese and Chinese subtitle layout recognises words before selecting line and
+card breaks. Sentence boundaries and clause punctuation guide the choice, while
+the project's width and timing limits still apply. Traditional Chinese stays in
+its original script. The local dictionaries load only when these languages need
+layout; other languages keep their existing rules. If a dictionary is unavailable,
+Pandrator logs a warning and retains the existing Unicode-safe layout fallback.
+An exceptionally long word may still need a finer break to fit the selected width.
+This display analysis does not rewrite reviewed passages or split speech blocks.
 
 SRT and WebVTT differ in syntax and player support. Open the final file in the
 target player or editor and check cue order, overlaps, line wrapping, encoding,

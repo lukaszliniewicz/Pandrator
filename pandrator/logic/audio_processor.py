@@ -170,7 +170,22 @@ def _save_metadata_and_cover(output_path: str, output_format: str, metadata: dic
             if cover_image_path and os.path.exists(cover_image_path):
                 with open(cover_image_path, "rb") as f:
                     cover_data = f.read()
-                fmt = MP4Cover.FORMAT_JPEG if cover_image_path.lower().endswith(('.jpg', '.jpeg')) else MP4Cover.FORMAT_PNG
+                with Image.open(io.BytesIO(cover_data)) as image:
+                    decoded_format = image.format
+                    image.load()
+                    if decoded_format == "JPEG":
+                        fmt = MP4Cover.FORMAT_JPEG
+                    elif decoded_format == "PNG":
+                        fmt = MP4Cover.FORMAT_PNG
+                    elif decoded_format == "WEBP":
+                        png_buffer = io.BytesIO()
+                        image.convert("RGBA").save(png_buffer, format="PNG")
+                        cover_data = png_buffer.getvalue()
+                        fmt = MP4Cover.FORMAT_PNG
+                    else:
+                        raise ValueError(
+                            f"Unsupported M4B cover image format: {decoded_format}"
+                        )
                 audio["covr"] = [MP4Cover(cover_data, imageformat=fmt)]
             audio.save()
 

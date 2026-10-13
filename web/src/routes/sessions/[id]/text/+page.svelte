@@ -16,6 +16,7 @@
   import SubtitleReview from '$lib/SubtitleReview.svelte';
   import { artifactFilename, formatBytes } from '$lib/artifact-display';
   import { errorMessage } from '$lib/errors';
+  import { selectedDisplayArtifact } from '$lib/subtitle-review-selection';
 
   const sessionId = $derived(String(page.params.id));
   let documents = $state<DocumentRecord[]>([]);
@@ -25,13 +26,19 @@
   let error = $state('');
   let request = 0;
   let openedReviewRequest = $state('');
+  let selectedArtifactId = $state('');
+  let openingReview = $state(false);
 
   async function load(id = sessionId) {
     const current = ++request;
     try {
-      const result = await sessionApi.documents(id);
+      const [result, workflow] = await Promise.all([
+        sessionApi.documents(id),
+        sessionApi.workflow(id)
+      ]);
       if (current === request && id === sessionId) {
         documents = result.items;
+        selectedArtifactId = selectedDisplayArtifact(documents, workflow);
         error = '';
       }
     } catch (caught) {
@@ -46,28 +53,17 @@
     return `${minutes}:${String(total % 60).padStart(2, '0')}`;
   }
 
-  function openReview() {
-    const stageRank = new Map([
-      ['transcription', 1],
-      ['correction', 2],
-      ['translation', 3],
-      ['tts_optimization', 4]
-    ]);
-    reviewArtifactId =
-      documents
-        .flatMap((document) =>
-          document.revisions.map((revision) => ({
-            stage: document.stage,
-            revision
-          }))
-        )
-        .filter((item) => item.revision.artifact)
-        .sort(
-          (left, right) =>
-            (stageRank.get(right.stage) ?? 0) -
-              (stageRank.get(left.stage) ?? 0) ||
-            right.revision.revision_number - left.revision.revision_number
-        )[0]?.revision.artifact?.id ?? '';
+  async function openReview() {
+    if (openingReview) return;
+    const id = sessionId;
+    openingReview = true;
+    await load(id);
+    if (id === sessionId && !error) {
+      reviewArtifactId = selectedArtifactId;
+      if (!reviewArtifactId)
+        error = 'No selected written subtitle revision is available.';
+    }
+    openingReview = false;
   }
 
   function previewRevision(artifact: ArtifactRecord) {
@@ -90,6 +86,7 @@
     preview = null;
     activeTab = 'settings';
     openedReviewRequest = '';
+    selectedArtifactId = '';
     void load(id);
   });
   $effect(() => {
@@ -126,11 +123,13 @@
     </div>
     <button
       onclick={openReview}
-      disabled={!documents.some((item) =>
-        ['transcription', 'correction', 'translation'].includes(item.stage)
-      )}
+      disabled={openingReview ||
+        !documents.some((item) =>
+          ['transcription', 'correction', 'translation'].includes(item.stage)
+        )}
       class="flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
-      ><Columns3 size={16} /> Compare subtitles</button
+      ><Columns3 size={16} />
+      {openingReview ? 'Opening…' : 'Compare subtitles'}</button
     >
   </div>
 
@@ -276,6 +275,7 @@
 {#if reviewArtifactId}<SubtitleReview
     {sessionId}
     primaryArtifactId={reviewArtifactId}
+    {selectedArtifactId}
     onclose={() => (reviewArtifactId = '')}
     onsaved={() => void load()}
   />{/if}

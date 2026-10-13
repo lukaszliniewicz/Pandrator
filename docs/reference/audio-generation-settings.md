@@ -121,6 +121,7 @@ guidance value. Neither route is established as a universal quality winner here.
 
 | Control | Meaning and starting point |
 | --- | --- |
+| `instrumental` | Optional managed AR adapter, off by default. Requires `cot=full` and empty lyrics or `[instrumental]`. First use downloads about 140 MB. CC BY-NC 4.0 (noncommercial). |
 | `num_inference_steps` | Acoustic-flow ODE iterations. **8**, app **1–100**. |
 | `guidance_scale` | Semantic conditioning. App **1.0** for full planning; off reference **1.01**. App **0–20**. |
 | `cot` | ABC score planning. **`full`** app default; `off` skips it; `melody` uses melody planning. Quickstart uses `off`. |

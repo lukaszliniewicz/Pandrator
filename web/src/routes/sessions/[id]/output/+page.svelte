@@ -215,6 +215,21 @@
       const audioMode = String(
         effective.audio_mode ?? (hasSourceAudio ? 'mixed' : 'dubbing_only')
       );
+      const subtitleTextSource = String(
+        effective.subtitle_text_source ?? 'current'
+      );
+      const usesHistoricalText =
+        session?.workflow_kind !== 'audiobook' &&
+        (['subtitles', 'text'].includes(exportMode) ||
+          (exportMode === 'media' &&
+            hasSourceVideo &&
+            effective.subtitle_mode !== 'none' &&
+            effective.subtitle_mode != null)) &&
+        subtitleTextSource === 'generation_run';
+      if (usesHistoricalText && !exportRunId)
+        throw new Error(
+          'Select an Audio version to use its historical subtitle text.'
+        );
       // Pin the export intent at click time. The single runStage POST below is
       // the whole request: the export stage routes to the durable
       // export.variant job server-side and assembles from this same pinned
@@ -224,6 +239,13 @@
       const runOverride = {
         output: {
           export_mode: exportMode,
+          ...(session?.workflow_kind !== 'audiobook'
+            ? {
+                subtitle_text_source: usesHistoricalText
+                  ? 'generation_run'
+                  : 'current'
+              }
+            : {}),
           ...(exportMode === 'media' &&
           hasSourceVideo &&
           audioMode !== 'preserve'
@@ -245,7 +267,7 @@
       const label = selected?.label ?? 'the selected version';
       const job = await sessionApi.runStage(sessionId, 'export', {
         ...runOverride,
-        ...(needsAssembly
+        ...(needsAssembly || usesHistoricalText
           ? { generation_run_id: exportRunId, audio_version_side: exportSide }
           : {})
       });

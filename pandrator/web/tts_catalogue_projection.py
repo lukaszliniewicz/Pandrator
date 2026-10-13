@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from pandrator.logic.tts_language_support import tts_language_support
+from pandrator.logic.tts_model_lifecycle import model_lifecycle
 from pandrator.logic.tts_provider_profiles import AUDIO_CPP_MODEL_CATALOG
 from pandrator.logic.tts_service_identity import normalize_service_id as normalize_service_id
 
@@ -148,6 +149,16 @@ SLIM_LANGUAGE_SUPPORT_FIELDS = (
     "source_revision",
     "source_ids",
 )
+SLIM_MODEL_LIFECYCLE_FIELDS = (
+    "provider_id",
+    "model_id",
+    "status",
+    "reviewed_on",
+    "source_url",
+    "shutdown_date",
+    "replacement_model_ids",
+    "migration_kind",
+)
 _SENSITIVE_SUPPORT_TEXT_MARKERS = (
     "api_key",
     "api key",
@@ -190,6 +201,7 @@ def _slim_model_catalog(service: Mapping[str, Any]) -> list[dict[str, Any]]:
     detail) stay on the full/detail views and are hydrated per chosen model.
     """
     records: dict[str, Mapping[str, Any]] = {}
+    provider_id, _service_id = _language_provider_id(service)
     raw_catalog = service.get("model_catalog")
     if isinstance(raw_catalog, list):
         for item in raw_catalog:
@@ -225,6 +237,13 @@ def _slim_model_catalog(service: Mapping[str, Any]) -> list[dict[str, Any]]:
         mode = voice_modes.get(model_id)
         if isinstance(mode, str) and mode.strip() and "voice_mode" not in summary:
             summary["voice_mode"] = mode.strip()
+        lifecycle = model_lifecycle(provider_id, model_id)
+        if lifecycle is not None:
+            summary["model_lifecycle"] = {
+                key: lifecycle[key]
+                for key in SLIM_MODEL_LIFECYCLE_FIELDS
+                if key in lifecycle
+            }
         summaries.append(summary)
     return summaries
 
@@ -411,6 +430,10 @@ def _decorate_model_language_support(service: dict[str, Any]) -> None:
                 support["service_id"] = service_id
             item["language_support"] = support
             item["supported_languages"] = supported_languages
+            item.pop("model_lifecycle", None)
+            lifecycle = model_lifecycle(provider_id, model_id)
+            if lifecycle is not None:
+                item["model_lifecycle"] = lifecycle
 
     if catalog is not None or model_ids:
         service["model_catalog"] = rows
@@ -554,9 +577,12 @@ def _filter_service_models(
     if default_model:
         known.add(default_model)
     metadata_models = _classify_voice_metadata_models(service, known)
-    for associated_models in metadata_models.values():
-        if associated_models is not None:
-            known.update(associated_models)
+    # Explicit model declarations take precedence over ambiguous voice keys.
+    # Only legacy metadata-only catalogues may infer their model identities.
+    if not known:
+        for associated_models in metadata_models.values():
+            if associated_models is not None:
+                known.update(associated_models)
     missing = [model_id for model_id in selected if model_id not in known]
     if missing:
         raise TtsCatalogueModelNotFoundError(service_id, missing)

@@ -56,11 +56,13 @@
   let {
     sessionId,
     primaryArtifactId,
+    selectedArtifactId = '',
     onclose,
     onsaved
   }: {
     sessionId: string;
     primaryArtifactId: string;
+    selectedArtifactId?: string;
     onclose: () => void;
     onsaved: () => void;
   } = $props();
@@ -1175,6 +1177,14 @@
         >
           <Columns3 size={20} /> Compare and refine
         </h2>
+        {#if editColumn}<p class="muted mt-2 text-sm">
+            Editing {columnLabel(editColumn)}
+            {#if selectedArtifactId}
+              · {editArtifactId === selectedArtifactId
+                ? 'Selected project captions'
+                : 'Different from selected project captions'}
+            {/if}
+          </p>{/if}
       </div>
       <div class="flex min-w-0 flex-wrap items-center justify-end gap-2">
         <span class="muted text-xs" role="status"
@@ -1253,6 +1263,10 @@
                   >{columnLabel(column)}</option
                 >{/each}</select
             >
+            <span class="muted mt-1 block max-w-80 font-normal">
+              This chooses what you edit. Project output selection stays
+              unchanged.
+            </span>
           </label>
           <button
             onclick={toggleChangedOnly}

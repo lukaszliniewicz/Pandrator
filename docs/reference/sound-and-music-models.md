@@ -21,7 +21,7 @@ shows the limits and available controls for the installed runtime.
 | ACE-Step 1.5, including XL | Songs and instrumental music | 10–600 seconds | Supply a style description and optional lyrics. Ask explicitly for an instrumental when you want no vocals. |
 | HeartMuLa | Songs | 1–240 seconds | Supply a style description or tags and optional lyrics. Leaving lyrics blank does not reliably prevent vocals. |
 | MiniMax Music 3 | Songs | 1–300 seconds | Supply both a description and lyrics. Its documented `[Instrumental]` section can describe instrumental passages. |
-| YuE2 | Songs and instrumental music | 8–360 seconds | Supply a style description and optional lyrics. Empty lyrics do not guarantee an instrumental. |
+| YuE2 | Songs and instrumental music | 8–360 seconds | Supply a style description and optional lyrics. Enable Instrumental to use the separate 140 MB adapter with full score planning. The adapter is CC BY-NC 4.0 (noncommercial). Empty lyrics alone do not guarantee an instrumental. |
 | MiniMax-H3 | Experimental effects and music | 4–10 seconds | Supply a description. Audio output still uses a joint audio/video model; the INT8 variant requires CUDA. |
 
 For songs, keep the description of the musical style separate from the words

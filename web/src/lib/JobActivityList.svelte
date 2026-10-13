@@ -53,7 +53,7 @@
   function currentDetail(job: JobRecord) {
     return (
       job.progress_detail ||
-      (job.status === 'queued' ? 'Waiting for an available worker' : '')
+      (job.status === 'queued' ? 'Queued; waiting to start' : '')
     );
   }
 

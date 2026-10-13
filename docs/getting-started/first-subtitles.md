@@ -11,6 +11,12 @@ Create a **Subtitles** session. You can upload an SRT file or common audio and
 video formats. WebVTT, ASS, and SSA are recognized as subtitle sources, while
 the current editing pipeline uses SRT as its working subtitle representation.
 
+SRT and VTT imports create a timed subtitle revision without transcription.
+An older attached subtitle source may first need **Register existing subtitles**
+to adopt it into the project. Through MCP, use `pandrator_adopt_subtitle_source`
+when readiness reports `source_adoption_required`. Adoption keeps the original
+file and creates a canonical SRT revision for correction and translation.
+
 If you already have reliable source-language subtitles, start from them. For
 media, install CrispASR and choose a transcription engine appropriate for the
 language and hardware.
@@ -56,7 +62,13 @@ the same target language.
 
 ## 5. Review and select
 
-Compare the source, correction, and translation tracks side by side. Selecting
+Compare the source, correction, and translation tracks side by side.
+**Compare subtitles** opens the selected written revision. **Editable revision**
+chooses the column you edit; adding a comparison or changing that column leaves
+the project's output selection unchanged. Choose the intended result in the
+workflow's version selector before exporting.
+
+Selecting
 an older upstream revision may invalidate downstream selections because those
 results were derived from another source. Treat the reported impact as a real
 lineage change rather than assuming a later translation is still current.

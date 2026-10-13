@@ -212,9 +212,30 @@ def test_export_variant_forwards_explicit_and_default_version_side(side):
         "session-1", target_stage="export", overrides={"output": {
             "generation_run_id": "run-1", "audio_version_side": side or "after",
             "export_mode": "media", "audio_mode": "mixed", "subtitle_mode": "none",
+            "subtitle_text_source": "current",
             "subtitle_selection": "translation", "subtitle_format": "srt",
         }}, expires_in_minutes=30, continuation=False,
     )
+
+
+def test_export_variant_forwards_and_validates_subtitle_text_source():
+    application = Mock()
+    application.create_workflow_plan.return_value = {"id": "plan-1"}
+    runtime = SimpleNamespace(require_application=lambda: application)
+    arguments = PlanExportVariantInput(
+        session_id="session-1", subtitle_text_source="generation_run"
+    )
+
+    plan_export_variant(runtime, arguments)
+
+    output = application.create_workflow_plan.call_args.kwargs["overrides"]["output"]
+    assert output["subtitle_text_source"] == "generation_run"
+    assert PlanExportVariantInput(session_id="session-1").subtitle_text_source == "current"
+    for invalid in (None, "history"):
+        with pytest.raises(ValidationError):
+            PlanExportVariantInput(
+                session_id="session-1", subtitle_text_source=invalid
+            )
 
 
 def test_native_transport_exposes_flat_schemas_preserves_nulls_and_forwards_sides():
@@ -262,6 +283,17 @@ def test_native_transport_exposes_flat_schemas_preserves_nulls_and_forwards_side
             export_schema = tools["pandrator_plan_export_variant"].input_schema["properties"]
             assert export_schema["audio_version_side"]["enum"] == ["before", "after"]
             assert export_schema["audio_version_side"]["default"] == "after"
+            assert export_schema["subtitle_text_source"]["enum"] == [
+                "current", "generation_run"
+            ]
+            assert export_schema["subtitle_text_source"]["default"] == "current"
+            orchestrated_schema = tools[
+                "pandrator_plan_orchestrated_workflow"
+            ].input_schema["properties"]
+            assert orchestrated_schema["subtitle_text_source"]["enum"] == [
+                "current", "generation_run"
+            ]
+            assert orchestrated_schema["subtitle_text_source"]["default"] == "current"
             for side in ("before", "after", None):
                 args = {"session_id": "session/a", "generation_run_id": "run-1"}
                 if side is not None:
@@ -271,5 +303,6 @@ def test_native_transport_exposes_flat_schemas_preserves_nulls_and_forwards_side
                 output = application.create_workflow_plan.call_args.kwargs["overrides"]["output"]
                 assert output["generation_run_id"] == "run-1"
                 assert output["audio_version_side"] == (side or "after")
+                assert output["subtitle_text_source"] == "current"
 
     asyncio.run(exercise())

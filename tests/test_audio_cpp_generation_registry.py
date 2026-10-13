@@ -122,6 +122,11 @@ def test_verified_yue2_and_h3_manifests_are_complete_and_variant_exact():
         assert model.duration_maximum == 360
         assert model.duration_default == 30
         assert "Maximum length budget" in model.descriptor()["duration"]["description"]
+        assert model.descriptor()["parameters"]["instrumental"]["default"] is False
+        adapter = model.descriptor()["instrumental_adapter"]
+        assert adapter["license"] == "CC-BY-NC-4.0"
+        assert adapter["size_bytes"] == 139502088
+        assert adapter["sha256"] == "e408fd3148b75b1165f7ddbf63db575d83bb6402a0b5f876fcb767dbcb2c5414"
 
     normal = registry.get_model("minimax_h3_q4_k")
     int8 = registry.get_model("minimax_h3_q4_k_int8_dit")

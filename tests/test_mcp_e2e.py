@@ -26,6 +26,7 @@ from pandrator_mcp.schemas import (
 from pandrator_mcp.targets import LocalSourceRoot, TargetProfile
 from pandrator_mcp.tools.e2e import (
     _open_contained_file,
+    _safe_tts_service,
     browse_local_sources,
     configure_tts,
     create_text_source,
@@ -35,6 +36,28 @@ from pandrator_mcp.tools.e2e import (
     plan_export_variant,
     tts_catalog,
 )
+
+
+def test_audio_cpp_model_selectability_preserves_unknown_health_and_advertisement():
+    for availability, expected, reason in (
+        (None, None, "health_unknown"),
+        (False, False, "service_unavailable"),
+        (True, True, "available"),
+    ):
+        service = {
+            "id": "audio_cpp", "adapter": "audio_cpp", "available": availability,
+            "models": ["listed-model"],
+            "model_catalog": [{"id": "listed-model"}, {"id": "other-model"}],
+        }
+        rows = _safe_tts_service(service, detail="summary")["model_states"]
+        assert rows[0] == {
+            "id": "listed-model", "listed": True, "selectable": expected,
+            "selectability_reason": reason, "loaded": None,
+        }
+        assert rows[1] == {
+            "id": "other-model", "listed": False, "selectable": False,
+            "selectability_reason": "not_advertised", "loaded": None,
+        }
 
 
 class _Application:

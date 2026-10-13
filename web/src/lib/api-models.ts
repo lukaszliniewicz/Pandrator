@@ -1015,7 +1015,19 @@ export type TtsRequestParameter = {
   enum?: string[];
 };
 
+export type ProviderModelLifecycle = {
+  provider_id: string;
+  model_id: string;
+  status: 'deprecated';
+  reviewed_on: string;
+  source_url: string;
+  shutdown_date?: string | null;
+  replacement_model_ids: string[];
+  migration_kind: 'tts_model' | 'different_api';
+};
+
 type TtsModel = {
+  model_lifecycle?: ProviderModelLifecycle;
   language_support?: LanguageSupport;
   catalogue_info?: AudioCppModelInfo;
   family?: string;

@@ -18,6 +18,7 @@ from . import audio_cpp_generation_assets as generation_assets
 from . import audio_cpp_generation_models as generation_models
 from . import audio_cpp_generation_payload as generation_payload
 from . import audio_cpp_processing as processing
+from . import audio_cpp_yue2_adapter as yue2_adapter
 
 PROVIDER = "audio_cpp"
 OPERATION = "gen"
@@ -342,6 +343,33 @@ def generation_fingerprint(request: Mapping[str, Any], identity: Mapping[str, An
     return hashlib.sha256(canonical).hexdigest()
 
 
+def request_runtime_identity(settings: dict, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Identify the runtime, base model, and any selected immutable adapter."""
+    canonical = validate_request(dict(request), resolved_seed=0)
+    model_id = canonical["model_id"]
+    identity = (
+        runtime_identity(settings)
+        if model_id == MODEL_ID
+        else runtime_identity(settings, model_id=model_id)
+    )
+    if canonical.get("parameters", {}).get("instrumental") is True:
+        adapter = yue2_adapter.identity()
+        identity = {
+            **identity,
+            "adapters": [adapter],
+            "model_assets": [
+                *identity.get("model_assets", []),
+                {
+                    "path": adapter["filename"],
+                    "size_bytes": adapter["size_bytes"],
+                    "sha256": adapter["sha256"],
+                    "revision": adapter["revision"],
+                },
+            ],
+        }
+    return identity
+
+
 def _validate_output_wav(
     path: Path, duration_seconds: float, model_id: str = MODEL_ID
 ) -> dict[str, int | float]:
@@ -444,8 +472,13 @@ def generate_sound(
     executable = assets.resolve_executable(settings)
     processing.check_cancelled(cancel_event)
 
+    adapter_options: dict[str, Path] = {}
+    if canonical_request.get("parameters", {}).get("instrumental") is True:
+        adapter_options["instrumental_adapter_path"] = yue2_adapter.ensure_adapter(
+            dict(settings), cancel_event=cancel_event, progress=progress
+        )
     command = generation_payload.build_argv(
-        executable, canonical_request, model_path, target
+        executable, canonical_request, model_path, target, **adapter_options
     )
     if progress is not None:
         progress("generate", 0, 1)
@@ -477,6 +510,7 @@ __all__ = [
     "generate_sound",
     "generation_fingerprint",
     "runtime_identity",
+    "request_runtime_identity",
     "runtime_backends",
     "require_backend",
     "seed_maximum",

@@ -504,6 +504,7 @@ def plan_orchestrated_workflow(
                 "export_mode": arguments.export_mode,
                 "audio_mode": arguments.audio_mode,
                 "subtitle_mode": arguments.subtitle_mode,
+                "subtitle_text_source": arguments.subtitle_text_source,
                 "subtitle_selection": arguments.subtitle_selection,
                 "subtitle_format": arguments.subtitle_format,
             }

@@ -347,6 +347,7 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "include_sounds": True,
         "video_tail_extension_policy": "ask",
         "subtitle_mode": "none",
+        "subtitle_text_source": "current",
         "subtitle_selection": "translation",
         "subtitle_format": "srt",
         "video_transcode": False,
@@ -834,12 +835,20 @@ def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:
     validate_regroup_settings(value)
 
 
+def validate_subtitle_text_source(value: object) -> str:
+    if not isinstance(value, str) or value not in ("current", "generation_run"):
+        raise ValueError("subtitle_text_source must be current or generation_run.")
+    return value
+
+
 def validate_output_settings(value: dict[str, Any]) -> None:
     """Validate stored output overrides without touching unrelated keys."""
     if "include_sounds" in value and type(value["include_sounds"]) is not bool:
         raise ValueError("include_sounds must be a boolean.")
     if value.get("video_tail_extension_policy", "ask") not in ("ask", "extend"):
         raise ValueError("video_tail_extension_policy must be ask or extend.")
+    if "subtitle_text_source" in value:
+        validate_subtitle_text_source(value["subtitle_text_source"])
     from pandrator.logic.book_settings import validate_book_settings
 
     validate_book_settings(value)

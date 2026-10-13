@@ -25,6 +25,7 @@ from pandrator.web.models import (
     GenerationSegment,
 )
 from pandrator.web.sessions import SessionService
+from pandrator.web.settings_policy import validate_output_settings
 from pandrator.web.workflow_handlers import WorkflowHandlers
 from pandrator.web.workflows import WorkflowService
 from pandrator.web.workspace_settings import WorkspaceSettingsService
@@ -193,6 +194,16 @@ class SnapshotAndExportTests(unittest.TestCase):
                 session, self.record.id, settings or {}
             )
 
+    def _run(self, revision_id):
+        with self.database.session() as session:
+            run = GenerationRun(
+                session_id=self.record.id, plan_revision_id=revision_id,
+                sequence_number=1, status="completed", settings_snapshot_json={},
+            )
+            session.add(run)
+            session.flush()
+            return run.id
+
     def test_optimized_source_uses_display_parent_and_excludes_speech_text(self):
         optimized = self._artifact(
             "optimized.srt", SOURCE_SRT.replace("First cue", "Wrong speech wording"),
@@ -242,20 +253,134 @@ class SnapshotAndExportTests(unittest.TestCase):
 
     def test_selected_old_run_and_queued_snapshot_ignore_later_edits(self):
         old_id = self._revision("Old reviewed")
+        run_id = self._run(old_id)
+        snapshot = self._snapshot({
+            "generation_run_id": run_id,
+            "subtitle_text_source": "generation_run",
+        })
+        self._revision("New reviewed")
+        self.assertEqual(snapshot["revision_id"], old_id)
+        self.assertEqual(snapshot["segments"][0]["text"], "Old reviewed")
+        self.assertEqual(snapshot["subtitle_text_source"], "generation_run")
+        self.assertEqual(snapshot["generation_run_id"], run_id)
+        self.assertEqual(self._snapshot({
+            "generation_run_id": run_id,
+            "subtitle_text_source": "generation_run",
+        })["revision_id"], old_id)
+        self.assertEqual(self._snapshot()["segments"][0]["text"], "New reviewed")
+
+    def test_current_text_is_default_for_run_audio_and_history_is_explicit(self):
+        old_revision_id = self._revision("thirteen oh five")
+        run_id = self._run(old_revision_id)
+        current_revision_id = self._revision("Odra 1305")
+        workflow = WorkflowService(self.database, JobQueue(self.database))
+
+        for mode, expected_revision, expected_text, expected_run_id in (
+            ("current", current_revision_id, "Odra 1305", None),
+            ("generation_run", old_revision_id, "thirteen oh five", run_id),
+        ):
+            with self.subTest(mode=mode):
+                settings = {
+                    "export_mode": "subtitles",
+                    "generation_run_id": run_id,
+                }
+                if mode == "generation_run":
+                    settings["subtitle_text_source"] = mode
+                resolved = workflow.resolve_stage(
+                    self.record.id, "export", settings
+                )
+                snapshot = resolved.payload["display_subtitle_snapshot"]
+                self.assertEqual(snapshot["revision_id"], expected_revision)
+                self.assertEqual(snapshot["subtitle_text_source"], mode)
+                self.assertEqual(snapshot["generation_run_id"], expected_run_id)
+
+                result = self.handlers.export(
+                    resolved.payload, lambda *_: None, threading.Event()
+                )
+                _artifact, path = self.artifacts.resolve(result["artifact_ids"][0])
+                exported = path.read_text(encoding="utf-8")
+                self.assertIn(expected_text, exported)
+                other_text = (
+                    "thirteen oh five" if expected_text == "Odra 1305" else "Odra 1305"
+                )
+                self.assertNotIn(other_text, exported)
+
+    def test_current_mode_validates_run_but_returns_none_without_active_revision(self):
+        other = SessionService(self.database).create(
+            "Run with no active speech plan", workflow_kind="subtitles"
+        )
         with self.database.session() as session:
+            plan = GenerationPlan(session_id=other.id)
+            session.add(plan)
+            session.flush()
+            revision = GenerationPlanRevision(
+                plan_id=plan.id, revision_number=1, settings_json={},
+                content_hash="historical-only",
+            )
+            session.add(revision)
+            session.flush()
             run = GenerationRun(
-                session_id=self.record.id, plan_revision_id=old_id,
+                session_id=other.id, plan_revision_id=revision.id,
                 sequence_number=1, status="completed", settings_snapshot_json={},
             )
             session.add(run)
             session.flush()
             run_id = run.id
-        snapshot = self._snapshot({"generation_run_id": run_id})
-        self._revision("New reviewed")
-        self.assertEqual(snapshot["revision_id"], old_id)
-        self.assertEqual(snapshot["segments"][0]["text"], "Old reviewed")
-        self.assertEqual(self._snapshot({"generation_run_id": run_id})["revision_id"], old_id)
-        self.assertEqual(self._snapshot()["segments"][0]["text"], "New reviewed")
+            self.assertIsNone(capture_display_subtitle_snapshot(
+                session, other.id, {"generation_run_id": run_id}
+            ))
+
+    def test_subtitle_text_source_validation_and_persistence(self):
+        for invalid in (None, "legacy", "run", 1):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"subtitle_text_source must be current or generation_run\.",
+                ):
+                    validate_output_settings({"subtitle_text_source": invalid})
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"subtitle_text_source must be current or generation_run\.",
+                ):
+                    self._snapshot({"subtitle_text_source": invalid})
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Select a generation run to use its historical subtitle text\.",
+        ):
+            self._snapshot({"subtitle_text_source": "generation_run"})
+
+        settings = WorkspaceSettingsService(self.database)
+        before = settings.get(self.record.id, "output")
+        self.assertEqual("current", before["builtin"]["subtitle_text_source"])
+        self.assertEqual("current", before["effective"]["subtitle_text_source"])
+        updated = settings.update(
+            self.record.id,
+            "output",
+            0,
+            {"subtitle_text_source": "generation_run"},
+        )
+        self.assertEqual(
+            {"subtitle_text_source": "generation_run"}, updated["override"]
+        )
+        self.assertEqual("generation_run", updated["effective"]["subtitle_text_source"])
+
+    def test_legacy_queued_snapshot_without_text_source_stays_frozen(self):
+        self._revision("Queued legacy display")
+        snapshot = self._snapshot()
+        del snapshot["subtitle_text_source"]
+        self._revision("Edited after legacy queue")
+        result = self.handlers.export(
+            {
+                "session_id": self.record.id,
+                "settings": {"export_mode": "subtitles"},
+                "display_subtitle_snapshot": snapshot,
+            },
+            lambda *_: None,
+            threading.Event(),
+        )
+        _artifact, path = self.artifacts.resolve(result["artifact_ids"][0])
+        self.assertIn("Queued legacy display", path.read_text(encoding="utf-8"))
+        self.assertNotIn("Edited after legacy queue", path.read_text(encoding="utf-8"))
 
     def test_queue_payload_freezes_display_revision(self):
         revision_id = self._revision("Queued display")

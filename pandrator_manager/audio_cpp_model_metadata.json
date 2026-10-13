@@ -2589,7 +2589,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -6914,7 +6914,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -7276,7 +7276,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -7638,7 +7638,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -10624,7 +10624,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -11293,7 +11293,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -11565,7 +11565,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -14824,7 +14824,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -15157,7 +15157,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -15490,7 +15490,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -15823,7 +15823,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -16392,7 +16392,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -16602,7 +16602,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -16813,7 +16813,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -17156,7 +17156,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -17499,7 +17499,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -17915,7 +17915,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -22645,7 +22645,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -23231,7 +23231,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -23446,7 +23446,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -23661,7 +23661,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -23876,7 +23876,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -24091,7 +24091,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -24306,7 +24306,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -24521,7 +24521,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -24736,7 +24736,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -25673,7 +25673,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -26235,7 +26235,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -28890,7 +28890,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -29191,7 +29191,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -29492,7 +29492,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -29793,7 +29793,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -30079,7 +30079,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -30365,7 +30365,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -30651,7 +30651,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -41100,7 +41100,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -41342,7 +41342,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -41584,7 +41584,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -85449,7 +85449,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -85812,7 +85812,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -86175,7 +86175,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -86538,7 +86538,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -86901,7 +86901,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -87264,7 +87264,7 @@
         "semantic_context_transport": "none",
         "status": "documented",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -99151,7 +99151,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -99389,7 +99389,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -110045,7 +110045,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -113740,7 +113740,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"
@@ -113967,7 +113967,7 @@
         "semantic_context_transport": "none",
         "status": "unknown",
         "timing": "not_guaranteed",
-        "uses_reference": false,
+        "uses_reference": true,
         "voice_design": false,
         "voice_design_workflow": "none",
         "voice_mode": "cloning"

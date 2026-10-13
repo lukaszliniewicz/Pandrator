@@ -88,6 +88,32 @@ class WebSecurityBoundaryTests(unittest.TestCase):
                 cover = io.BytesIO()
                 Image.new("RGB", (24, 24), color=(90, 50, 30)).save(cover, format="PNG")
                 cover.seek(0)
+                for filename, content in (
+                    ("broken.webp", b"not a readable image"),
+                    ("truncated.png", cover.getvalue()[:16]),
+                ):
+                    with self.subTest(filename=filename):
+                        rejected = client.post(
+                            "/api/v1/uploads",
+                            data={
+                                "session_id": session_id,
+                                "purpose": "cover",
+                                "file": (io.BytesIO(content), filename),
+                            },
+                            content_type="multipart/form-data",
+                            headers={"X-CSRF-Token": csrf},
+                        )
+                        self.assertEqual(rejected.status_code, 422)
+                        self.assertEqual(
+                            rejected.get_json()["error"]["code"], "invalid_cover"
+                        )
+                        with app.extensions["pandrator"]["database"].session() as session:
+                            self.assertEqual(
+                                session.scalar(select(func.count()).select_from(Artifact)), 0
+                            )
+                            self.assertEqual(
+                                session.scalar(select(func.count()).select_from(SourceAsset)), 0
+                            )
                 response = client.post(
                     "/api/v1/uploads",
                     data={"session_id": session_id, "purpose": "cover", "file": (cover, "cover.png")},

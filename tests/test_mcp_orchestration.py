@@ -99,9 +99,11 @@ class OrchestrationSchemaTests(unittest.TestCase):
             ("correction", "translation", "speech_optimization"),
             configured.passive_stages,
         )
+        self.assertEqual("current", configured.subtitle_text_source)
         for kwargs in (
             {"goal": "  "},
             {"goal": "Invalid format", "packet_format": "tiny"},
+            {"goal": "Invalid source", "subtitle_text_source": "history"},
             {"passive_stages": ("translation", "translation")},
             {"overrides": {"tts": {"api_key": "secret"}}},
             {"filename": "../course.mp4", "materialize": True},
@@ -215,6 +217,7 @@ class OrchestrationToolTests(unittest.TestCase):
             passive_stages=("translation", "correction"),
             overrides={"output": {"custom": "kept"}},
             subtitle_mode="burned",
+            subtitle_text_source="generation_run",
             audio_mode="dubbing_only",
             materialize=True,
             filename="course.mp4",
@@ -236,6 +239,7 @@ class OrchestrationToolTests(unittest.TestCase):
                 "export_mode": "media",
                 "audio_mode": "dubbing_only",
                 "subtitle_mode": "burned",
+                "subtitle_text_source": "generation_run",
                 "subtitle_selection": "translation",
                 "subtitle_format": "srt",
             },

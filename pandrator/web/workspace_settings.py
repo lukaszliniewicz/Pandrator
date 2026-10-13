@@ -711,6 +711,7 @@ class WorkspaceSettingsService:
             if session_record.workflow_kind == "subtitles":
                 allowed = {
                     "export_mode",
+                    "subtitle_text_source",
                     "subtitle_selection",
                     "subtitle_format",
                     "language",

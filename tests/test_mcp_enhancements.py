@@ -38,6 +38,7 @@ def test_selected_run_export_does_not_request_upstream_generation():
     action = outcome.next_actions[0]
     assert action.arguments["continuation"] is False
     assert action.arguments["overrides"]["output"]["generation_run_id"] == "run-1"
+    assert action.arguments["overrides"]["output"]["subtitle_text_source"] == "current"
     assert action.arguments["overrides"]["output"]["audio_version_side"] == "before"
     assert outcome.result["phases"][0]["monitor_arguments"]["include_events"] is False
     for extra in ({"passive_stages": ("translation",)}, {"final_stage": "generate_audio"}):

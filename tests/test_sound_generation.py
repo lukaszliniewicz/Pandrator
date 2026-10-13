@@ -388,6 +388,57 @@ def test_music_controls_are_frozen_and_change_the_candidate_fingerprint(domain):
         assert changed_receipt["candidate_id"] != first["candidate_id"]
 
 
+def test_instrumental_adapter_identity_survives_admission_and_public_readback(domain, monkeypatch):
+    from pandrator.logic import audio_cpp_yue2_adapter as adapter
+
+    database, _paths, _artifacts, _jobs, sounds, _identity = domain
+    request = {
+        "prompt": "A quiet piano introduction", "model_id": "yue2_main_q8_0",
+        "seed": 73, "parameters": {"instrumental": True},
+    }
+    prepared = sounds.prepare_generation(request)
+    first = _admit(database, sounds, request, prepared)
+    repeated = _admit(database, sounds, request, sounds.prepare_generation(request))
+    assert repeated["cache_hit"] is True
+    assert repeated["candidate_id"] == first["candidate_id"]
+    assert first["resolved_settings"]["lyrics"] == "[instrumental]"
+    with database.session() as session:
+        candidate = session.get(SoundVariant, first["candidate_id"])
+        assert candidate.provenance_json["runtime_identity"]["adapters"] == [adapter.identity()]
+        assert candidate.provenance_json["parameters"]["instrumental"] is True
+    detail = sounds.get_candidate(first["candidate_id"])
+    assert detail["provenance"]["parameters"]["instrumental"] is True
+    assert detail["provenance"]["runtime_identity"]["asset_manifest"][-1] == {
+        "filename": adapter.FILENAME, "sha256": adapter.SHA256,
+        "revision": adapter.REVISION, "bytes": adapter.SIZE_BYTES,
+    }
+    ordinary = {**request, "parameters": {}}
+    unadapted = _admit(database, sounds, ordinary, sounds.prepare_generation(ordinary))
+    assert unadapted["candidate_id"] != first["candidate_id"]
+    monkeypatch.setattr(adapter, "REVISION", "a" * 40)
+    changed = _admit(database, sounds, request, sounds.prepare_generation(request))
+    assert changed["candidate_id"] != first["candidate_id"]
+
+
+def test_changed_instrumental_adapter_stops_queued_work_before_generation(domain, monkeypatch):
+    from pandrator.logic import audio_cpp_yue2_adapter as adapter
+
+    database, _paths, _artifacts, _jobs, sounds, _identity = domain
+    request = {
+        "prompt": "Solo piano", "model_id": "yue2_main_q8_0",
+        "seed": 73, "parameters": {"instrumental": True},
+    }
+    receipt = _admit(database, sounds, request, sounds.prepare_generation(request))
+    payload, owner = _claim(database, receipt)
+    monkeypatch.setattr(adapter, "SHA256", "f" * 64)
+    monkeypatch.setattr(
+        "pandrator.logic.audio_cpp_sfx.generate_sound",
+        lambda *_args, **_kwargs: pytest.fail("changed adapter reached generation"),
+    )
+    with pytest.raises(RuntimeError, match="changed after admission"):
+        _run_with_lease(sounds, payload, owner)
+
+
 def test_stable_music_request_uses_model_default_duration_without_lyrics(domain):
     _database, _paths, _artifacts, _jobs, sounds, _identity = domain
     prepared = sounds.prepare_generation(

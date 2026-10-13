@@ -380,6 +380,49 @@ def test_yue2_compiles_instrumental_and_lyric_routes_without_generic_text():
     assert _option_values(vocal_argv)["style"] == ["A bright piano melody"]
 
 
+@pytest.mark.parametrize("model_id", ("yue2_main_bf16", "yue2_main_q8_0", "yue2_main_q4_0"))
+def test_yue2_managed_instrumental_requires_adapter_and_compiles_full_route(model_id):
+    request = _request(model_id, parameters={"instrumental": True})
+    canonical = payload.validate_request(request)
+    assert canonical["lyrics"] == "[instrumental]"
+    assert canonical["parameters"]["cot"] == "full"
+    assert payload.validate_request(canonical) == canonical
+    with pytest.raises(ValueError, match="verified managed adapter"):
+        payload.build_argv("cli", canonical, "/base", "/out.wav")
+    argv = payload.build_argv(
+        "cli", canonical, "/base", "/out.wav",
+        instrumental_adapter_path="/cache with spaces/adapter.safetensors",
+    )
+    assert "yue2.ar_lora=/cache with spaces/adapter.safetensors" in argv
+    assert "yue2.ar_lora_scale=1.0" in argv
+    assert argv[argv.index("--lyrics") + 1] == "[instrumental]"
+    assert _option_values(argv)["cot"] == ["full"]
+    assert "instrumental" not in _option_values(argv)
+
+
+@pytest.mark.parametrize("overrides", (
+    {"parameters": {"instrumental": "true"}},
+    {"parameters": {"instrumental": True, "cot": "off"}},
+    {"parameters": {"instrumental": True, "cot": "melody"}},
+    {"parameters": {"instrumental": True}, "lyrics": "Words to sing"},
+    {"parameters": {"instrumental": True, "ar_lora": "/unmanaged/file"}},
+))
+def test_yue2_instrumental_rejects_ambiguous_or_unmanaged_requests(overrides):
+    with pytest.raises(ValueError):
+        payload.validate_request(_request("yue2_main_q8_0", **overrides))
+
+
+def test_instrumental_false_preserves_existing_yue2_requests_and_other_models_reject_it():
+    request = _request("yue2_main_q8_0", lyrics="Words to sing")
+    original = payload.validate_request(request)
+    assert payload.validate_request({**request, "parameters": {"instrumental": False}}) == original
+    assert "instrumental" not in original["parameters"]
+    with pytest.raises(ValueError, match="only valid"):
+        payload.build_argv("cli", original, "/base", "/out.wav", instrumental_adapter_path="/unused")
+    with pytest.raises(ValueError, match="Unknown parameter"):
+        payload.validate_request(_request("ace_step_turbo_q8_0", parameters={"instrumental": True}))
+
+
 @pytest.mark.parametrize("backend", ("vulkan", "cuda"))
 def test_default_sfx_modern_requests_keep_gpu_support_while_legacy_is_cpu_only(backend):
     request = _request(registry.DEFAULT_MODEL_ID, kind="sound", backend=backend)

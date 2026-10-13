@@ -1,15 +1,20 @@
 """Subtitle-first sessions must have real, reusable timed input, not just a filename."""
 
+import hashlib
 import io
 import tempfile
 import threading
 import unittest
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import func, select
 
+from pandrator.logic.dubbing.llm_correction import CorrectionResult
+from pandrator.logic.dubbing.llm_translation import TranslationResult
 from pandrator.web.api import create_app
+from pandrator.web.artifact_selection import selected_artifacts
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import (
     Artifact,
@@ -23,10 +28,15 @@ from pandrator.web.models import (
     Segment,
     SessionSetting,
     SessionSource,
+    SessionStageSelection,
 )
 from pandrator.web.subtitle_sources import parse_subtitle_source
 
 SRT = "1\n00:00:01,000 --> 00:00:03,000\nThese meetings, these interfaith circles.\n\n2\n00:00:04,000 --> 00:00:06,000\nSomething that can help.\n"
+VTT = "WEBVTT\n\n00:01.000 --> 00:03.000\nFirst source cue.\n\n00:04.000 --> 00:06.000\nSecond source cue.\n"
+VTT_SRT = "1\n00:00:01,000 --> 00:00:03,000\nFirst source cue.\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond source cue.\n"
+CORRECTED_SRT = "1\n00:00:01,000 --> 00:00:03,000\nFirst corrected cue.\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond corrected cue.\n"
+TRANSLATED_SRT = "1\n00:00:01,000 --> 00:00:03,000\nErster korrigierter Satz.\n\n2\n00:00:04,000 --> 00:00:06,000\nZweiter korrigierter Satz.\n"
 
 
 class SubtitleFirstWorkflowTests(unittest.TestCase):
@@ -52,6 +62,232 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
         response = self.client.post("/api/v1/uploads", data={"session_id": session_id, "file": (io.BytesIO(content.encode()), filename)}, headers=self.headers)
         self.assertEqual(response.status_code, 201, response.get_json())
         return response.get_json()
+
+    def upload_legacy_subtitles(self, session_id, content, filename):
+        library = self.services["source_library"]
+        saved = library.artifacts
+        library.artifacts = None
+        try:
+            return self.upload(session_id, content, filename)
+        finally:
+            library.artifacts = saved
+
+    def assert_vtt_revision(self, session_id, uploaded, adopted, *, reused):
+        self.assertEqual(adopted["reused"], reused)
+        self.assertEqual(adopted["source_artifact_id"], uploaded["artifact_id"])
+        source, source_path = self.services["artifacts"].resolve(uploaded["artifact_id"])
+        original_bytes = VTT.encode()
+        source_digest = hashlib.sha256(original_bytes).hexdigest()
+        self.assertEqual(source_path.read_bytes(), original_bytes)
+        self.assertEqual(source.content_hash, source_digest)
+
+        canonical, canonical_path = self.services["artifacts"].resolve(adopted["artifact_id"])
+        self.assertEqual(canonical.role, "transcription")
+        self.assertEqual(canonical.kind, "srt")
+        self.assertTrue(
+            canonical.relative_path.endswith(f"imported-subtitles/{source_digest}.srt")
+        )
+        self.assertEqual(canonical_path.read_text(encoding="utf-8"), VTT_SRT)
+
+        with self.database.session() as session:
+            document = session.get(Document, adopted["document_id"])
+            revision = session.get(DocumentRevision, adopted["revision_id"])
+            rows = list(
+                session.scalars(
+                    select(Segment)
+                    .where(Segment.revision_id == adopted["revision_id"])
+                    .order_by(Segment.ordinal)
+                )
+            )
+            self.assertEqual(document.stage, "transcription")
+            self.assertEqual(document.active_revision_id, revision.id)
+            self.assertEqual(revision.document_id, document.id)
+            self.assertEqual(revision.revision_number, 1)
+            self.assertEqual(
+                [(row.start_ms, row.end_ms, row.text) for row in rows],
+                [
+                    (1000, 3000, "First source cue."),
+                    (4000, 6000, "Second source cue."),
+                ],
+            )
+            self.assertEqual(
+                (canonical.metadata_json or {}).get("imported_source_hash"),
+                source_digest,
+            )
+
+        return source_path, original_bytes, canonical
+
+    def run_vtt_transforms(self, session_id, canonical_artifact_id):
+        handlers = self.services["workflow_handlers"]
+        workflows = self.services["workflows"]
+        observed = {}
+
+        def write_result(operation_dir, filename, content):
+            path = Path(operation_dir) / filename
+            path.write_text(content, encoding="utf-8")
+            return path
+
+        def fake_correction(operation_dir, input_path, settings, **_kwargs):
+            observed["correction_input"] = Path(input_path).read_text(encoding="utf-8")
+            self.assertEqual(settings["original_language"], "en")
+            self.assertEqual(
+                [(cue.start_ms, cue.end_ms, cue.text) for cue in parse_subtitle_source(observed["correction_input"], "srt")],
+                [(1000, 3000, "First source cue."), (4000, 6000, "Second source cue.")],
+            )
+            path = write_result(operation_dir, "fixture-corrected.srt", CORRECTED_SRT)
+            return CorrectionResult(srt_content=CORRECTED_SRT, output_path=str(path))
+
+        def fake_translation(operation_dir, input_path, settings, **_kwargs):
+            observed["translation_input"] = Path(input_path).read_text(encoding="utf-8")
+            observed["translation_languages"] = (
+                settings["original_language"],
+                settings["target_language"],
+            )
+            self.assertEqual(
+                [(cue.start_ms, cue.end_ms, cue.text) for cue in parse_subtitle_source(observed["translation_input"], "srt")],
+                [(1000, 3000, "First corrected cue."), (4000, 6000, "Second corrected cue.")],
+            )
+            path = write_result(operation_dir, "fixture-translated.srt", TRANSLATED_SRT)
+            return TranslationResult(
+                srt_content=TRANSLATED_SRT,
+                block_responses=[],
+                glossary={},
+                output_path=str(path),
+            )
+
+        def fixture_llm_settings(settings, stage):
+            model_key = "correction_model" if stage == "correction" else "translation_model"
+            return {
+                **settings,
+                "llm_default_model": "fixture/model",
+                model_key: "fixture/model",
+                "request_timeout_seconds": 30,
+                "max_segments_per_batch": 1,
+            }
+
+        correction_settings = {
+            "original_language": "en",
+            "source_language": "en",
+            "target_language": "de",
+            "correction_style": "publishable",
+            "web_research_enabled": False,
+        }
+        translation_settings = {
+            "original_language": "en",
+            "source_language": "en",
+            "target_language": "de",
+            "translation_backend": "llm",
+            "web_research_enabled": False,
+        }
+
+        correction_stage = workflows.resolve_stage(
+            session_id, "correct", correction_settings
+        )
+        self.assertEqual(
+            correction_stage.payload["source_artifact_id"], canonical_artifact_id
+        )
+        with (
+            patch.object(handlers, "_with_database_llm_settings", side_effect=fixture_llm_settings),
+            patch.object(handlers, "_run_stage_web_research", return_value=None),
+            patch(
+                "pandrator.logic.dubbing.llm_correction.correct_srt_file_with_result",
+                side_effect=fake_correction,
+            ) as correction_engine,
+            patch(
+                "pandrator.logic.dubbing.llm_translation.translate_srt_file_with_result",
+                side_effect=fake_translation,
+            ) as translation_engine,
+        ):
+            corrected = handlers.correct(
+                correction_stage.payload, lambda *_args: None, threading.Event()
+            )
+            with self.database.session() as session:
+                selected_correction = selected_artifacts(session, session_id)["correct"]
+                self.assertEqual(selected_correction.id, corrected["artifact_id"])
+                correction_selection = session.get(
+                    SessionStageSelection, (session_id, "correct")
+                )
+                correction_selection_revision = correction_selection.revision
+                correction_revision = session.get(
+                    DocumentRevision,
+                    (selected_correction.metadata_json or {})["revision_id"],
+                )
+                correction_document = session.get(Document, correction_revision.document_id)
+                correction_rows = list(
+                    session.scalars(
+                        select(Segment)
+                        .where(Segment.revision_id == correction_revision.id)
+                        .order_by(Segment.ordinal)
+                    )
+                )
+                self.assertEqual(correction_document.stage, "correction")
+                self.assertEqual(correction_document.active_revision_id, correction_revision.id)
+                self.assertEqual(
+                    [(row.start_ms, row.end_ms, row.text) for row in correction_rows],
+                    [
+                        (1000, 3000, "First corrected cue."),
+                        (4000, 6000, "Second corrected cue."),
+                    ],
+                )
+
+            input_manifest = self.client.get(
+                f"/api/v1/sessions/{session_id}/workflow-inputs"
+            ).get_json()
+            selected_input = self.client.put(
+                f"/api/v1/sessions/{session_id}/workflow-inputs",
+                json={
+                    "consumer": "translation",
+                    "role": "correction",
+                    "artifact_id": corrected["artifact_id"],
+                    "expected_outcome_revision": input_manifest["outcome_revision"],
+                    "expected_selection_revision": correction_selection_revision,
+                    "expected_translation_settings_revision": input_manifest[
+                        "translation_settings_revision"
+                    ],
+                },
+                headers={
+                    **self.headers,
+                    "Idempotency-Key": f"vtt-translation-input-{session_id}",
+                },
+            )
+            self.assertEqual(selected_input.status_code, 200, selected_input.get_json())
+            self.assertEqual(
+                selected_input.get_json()["selected"]["artifact_id"],
+                corrected["artifact_id"],
+            )
+            translation_stage = workflows.resolve_stage(
+                session_id, "translate", translation_settings
+            )
+            self.assertEqual(
+                translation_stage.payload["source_artifact_id"],
+                corrected["artifact_id"],
+            )
+            translated = handlers.translate(
+                translation_stage.payload, lambda *_args: None, threading.Event()
+            )
+
+        correction_engine.assert_called_once()
+        translation_engine.assert_called_once()
+        self.assertEqual(observed["translation_languages"], ("en", "de"))
+        self.assertEqual(
+            [(cue.start_ms, cue.end_ms, cue.text) for cue in parse_subtitle_source(observed["correction_input"], "srt")],
+            [(1000, 3000, "First source cue."), (4000, 6000, "Second source cue.")],
+        )
+        self.assertEqual(
+            [(cue.start_ms, cue.end_ms, cue.text) for cue in parse_subtitle_source(observed["translation_input"], "srt")],
+            [(1000, 3000, "First corrected cue."), (4000, 6000, "Second corrected cue.")],
+        )
+        with self.database.session() as session:
+            selected_translation = selected_artifacts(session, session_id)["translate"]
+            self.assertEqual(selected_translation.id, translated["artifact_id"])
+            self.assertFalse(
+                any(
+                    "transcrib" in job.kind.casefold()
+                    for job in session.scalars(
+                        select(Job).where(Job.session_id == session_id)
+                    )
+                )
+            )
 
     def test_srt_upload_materializes_timed_revision_in_both_workflows(self):
         for kind in ("voiceover", "subtitles"):
@@ -95,6 +331,118 @@ class SubtitleFirstWorkflowTests(unittest.TestCase):
     def test_vtt_short_timestamps_and_cue_settings_are_supported(self):
         cues = parse_subtitle_source("WEBVTT\n\ncue-one\n00:01.000 --> 00:03.000 align:start\nHello, world!\n", "vtt")
         self.assertEqual([(cue.start_ms, cue.end_ms, cue.text) for cue in cues], [(1000, 3000, "Hello, world!")])
+
+    def test_two_cue_vtt_upload_is_idempotent_and_flows_through_correction_and_translation(self):
+        session_id = self.create_session("subtitles")
+        uploaded = self.upload(session_id, VTT, "source.vtt")
+
+        adoption = self.client.post(
+            f"/api/v1/sessions/{session_id}/sources/adopt-subtitles",
+            json={"source_asset_id": uploaded["source_asset_id"]},
+            headers=self.headers,
+        )
+        self.assertEqual(adoption.status_code, 200, adoption.get_json())
+        adoption_body = adoption.get_json()
+        self.assertEqual(
+            adoption_body["artifact_id"],
+            uploaded["attachment"]["subtitle_revision"]["artifact_id"],
+        )
+        source_path, original_bytes, canonical = self.assert_vtt_revision(
+            session_id, uploaded, adoption_body, reused=True
+        )
+
+        replay = self.client.post(
+            f"/api/v1/sessions/{session_id}/sources/adopt-subtitles",
+            json={"source_asset_id": uploaded["source_asset_id"]},
+            headers=self.headers,
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["reused"])
+        self.assertEqual(replay.get_json()["artifact_id"], canonical.id)
+
+        self.run_vtt_transforms(session_id, canonical.id)
+        self.assertEqual(source_path.read_bytes(), original_bytes)
+
+    def test_legacy_two_cue_vtt_adoption_is_idempotent_and_transformable(self):
+        session_id = self.create_session("subtitles")
+        uploaded = self.upload_legacy_subtitles(session_id, VTT, "legacy-source.vtt")
+        self.assertIsNone(uploaded["attachment"]["subtitle_revision"])
+
+        adoption = self.client.post(
+            f"/api/v1/sessions/{session_id}/sources/adopt-subtitles",
+            json={"source_asset_id": uploaded["source_asset_id"]},
+            headers=self.headers,
+        )
+        self.assertEqual(adoption.status_code, 201, adoption.get_json())
+        adoption_body = adoption.get_json()
+        source_path, original_bytes, canonical = self.assert_vtt_revision(
+            session_id, uploaded, adoption_body, reused=False
+        )
+
+        replay = self.client.post(
+            f"/api/v1/sessions/{session_id}/sources/adopt-subtitles",
+            json={"source_asset_id": uploaded["source_asset_id"]},
+            headers=self.headers,
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["reused"])
+        self.assertEqual(replay.get_json()["artifact_id"], canonical.id)
+
+        self.run_vtt_transforms(session_id, canonical.id)
+        self.assertEqual(source_path.read_bytes(), original_bytes)
+
+    def test_malformed_legacy_vtt_adoption_has_no_partial_publication(self):
+        session_id = self.create_session("subtitles")
+        malformed = (
+            "WEBVTT\n\n00:01.000 --> 00:03.000\nValid cue.\n\n"
+            "00:04.000 --> not-a-time\nMalformed cue.\n"
+        )
+        uploaded = self.upload_legacy_subtitles(
+            session_id, malformed, "legacy-malformed.vtt"
+        )
+        _, source_path = self.services["artifacts"].resolve(uploaded["artifact_id"])
+        source_bytes = malformed.encode()
+        source_digest = hashlib.sha256(source_bytes).hexdigest()
+        self.assertEqual(source_path.read_bytes(), source_bytes)
+
+        adoption = self.client.post(
+            f"/api/v1/sessions/{session_id}/sources/adopt-subtitles",
+            json={"source_asset_id": uploaded["source_asset_id"]},
+            headers=self.headers,
+        )
+        self.assertEqual(adoption.status_code, 422, adoption.get_json())
+        self.assertIn("invalid cue timestamp", adoption.get_json()["error"]["message"])
+        self.assertEqual(source_path.read_bytes(), source_bytes)
+        self.assertEqual(
+            list(self.services["paths"].sessions.rglob(f"{source_digest}.srt")), []
+        )
+        with self.database.session() as session:
+            self.assertEqual(
+                session.scalar(
+                    select(func.count()).select_from(Artifact).where(
+                        Artifact.session_id == session_id,
+                        Artifact.role == "transcription",
+                    )
+                ),
+                0,
+            )
+            self.assertEqual(
+                session.scalar(
+                    select(func.count()).select_from(Document).where(
+                        Document.session_id == session_id,
+                        Document.stage == "transcription",
+                    )
+                ),
+                0,
+            )
+            self.assertFalse(
+                any(
+                    "transcrib" in job.kind.casefold()
+                    for job in session.scalars(
+                        select(Job).where(Job.session_id == session_id)
+                    )
+                )
+            )
 
     def test_partial_invalid_subtitle_import_is_refused(self):
         with self.assertRaises(ValueError):

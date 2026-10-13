@@ -539,9 +539,19 @@ def _safe_tts_service(
         selected = set(model_ids if model_ids is not None else service.get("models") or [])
         model_catalog = service.get("model_catalog")
         model_catalog = model_catalog if isinstance(model_catalog, list) else []
+        availability = service.get("available")
         result["model_states"] = [
             {"id": str(item["id"]),
-             "selectable": bool(service.get("available") and item["id"] in selected),
+             "listed": item["id"] in selected,
+             "selectable": (
+                 availability if isinstance(availability, bool) else None
+             ) if item["id"] in selected else False,
+             "selectability_reason": (
+                 "not_advertised" if item["id"] not in selected
+                 else "available" if availability is True
+                 else "service_unavailable" if availability is False
+                 else "health_unknown"
+             ),
              "loaded": item.get("loaded") if isinstance(item.get("loaded"), bool) else None}
             for item in model_catalog[:64]
             if isinstance(item, dict) and item.get("id")
@@ -988,6 +998,7 @@ def plan_export_variant(
         "export_mode": arguments.export_mode,
         "audio_mode": arguments.audio_mode,
         "subtitle_mode": arguments.subtitle_mode,
+        "subtitle_text_source": arguments.subtitle_text_source,
         "subtitle_selection": arguments.subtitle_selection,
         "subtitle_format": arguments.subtitle_format,
     }

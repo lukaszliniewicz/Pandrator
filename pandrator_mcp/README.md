@@ -83,6 +83,13 @@ For an unkeyed write, such as pronunciation creation, inspect current state
 before retrying an uncertain response. Concurrent changes produce an explicit
 revision or stale-plan error instead of a silent overwrite.
 
+TTS discovery distinguishes a service's advertised model roster from the static
+package catalogue. audio.cpp `model_states` includes `listed`, `loaded`, and
+`selectability_reason`; `selectable` is null when an advertised model's service
+health is unknown. A package listed by Manager does not by itself establish
+service readiness or a prepared voice reference. Compare exact service and model
+IDs before changing a project's configuration.
+
 ### Model-orchestrated workflow procedures
 
 `pandrator_plan_orchestrated_workflow` is the single-turn intent/procedure layer
@@ -256,7 +263,7 @@ Guidance remains available even when no target can be reached.
 
 ### MCP protocol compatibility
 
-The current sidecar pins the official Python SDK 2.1.1 and supports the final
+The current sidecar pins the official Python SDK 2.2.0 and supports the final
 [MCP 2026-07-28 specification](https://modelcontextprotocol.io/specification/2026-07-28).
 Modern hosts connect through `server/discover` and attach the negotiated
 protocol metadata to requests; maintained older hosts can still use the legacy

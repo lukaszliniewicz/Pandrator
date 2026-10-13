@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import type {
   SoundCandidate,
   SoundCatalogue,
@@ -36,11 +38,13 @@ async function fixture(
   {
     musicAvailable = false,
     delayCatalogue = false,
-    candidates = []
+    candidates = [],
+    music = musicModel
   }: {
     musicAvailable?: boolean;
     delayCatalogue?: boolean;
     candidates?: SoundCandidate[];
+    music?: SoundModel;
   } = {}
 ) {
   const errors: string[] = [];
@@ -56,7 +60,7 @@ async function fixture(
   if (await tour.isVisible()) await tour.click();
   const catalogue: SoundCatalogue = {
     runtime: { available: true, version: '0.9.1' },
-    models: [soundModel, { ...musicModel, available: musicAvailable }],
+    models: [soundModel, { ...music, available: musicAvailable }],
     defaults: { model_id: soundModel.id, duration_seconds: 4, threads: 4 }
   };
   let releaseCatalogue = () => {};
@@ -244,3 +248,232 @@ test('reusing an incompatible take cannot submit until a compatible model is cho
   });
   expect(f.errors).toEqual([]);
 });
+
+const yueModel: SoundModel = {
+  ...musicModel,
+  id: 'yue2_main_q8_0',
+  label: 'YuE2 Q8',
+  family: 'yue2',
+  supports_lyrics: true,
+  duration: { minimum: 8, maximum: 360, default: 30 },
+  parameters: {
+    instrumental: { type: 'boolean', label: 'Instrumental', default: false },
+    cot: {
+      type: 'string',
+      label: 'Chain-of-thought mode',
+      default: 'full',
+      options: ['off', 'melody', 'full']
+    }
+  },
+  instrumental_adapter: {
+    id: 'yue2_instrumental_ar_v3abc_bf16',
+    repository: 'Mothersuperior/YuE2-instrumental-cot-full-loras',
+    revision: '947f2f4b28978b2b6c3e316e6a87925c76bf3c4b',
+    filename: 'ar_lora_inst_v3abc.bf16.safetensors',
+    size_bytes: 139502088,
+    sha256: 'e408fd3148b75b1165f7ddbf63db575d83bb6402a0b5f876fcb767dbcb2c5414',
+    license: 'CC-BY-NC-4.0',
+    source_url:
+      'https://huggingface.co/Mothersuperior/YuE2-instrumental-cot-full-loras'
+  }
+};
+const instrumentalCandidate: SoundCandidate = {
+  id: 'instrumental-take',
+  status: 'ready',
+  job_id: null,
+  artifact_id: 'instrumental-audio',
+  item_id: null,
+  duration_seconds: 8,
+  sample_rate: 44100,
+  channels: 2,
+  created_at: '2026-10-12T12:00:00Z',
+  provenance: {
+    model_id: yueModel.id,
+    kind: 'music',
+    prompt: 'A solo piano introduction.',
+    lyrics: '[instrumental]',
+    parameters: { instrumental: true, cot: 'full' },
+    backend: 'cpu',
+    duration_seconds: 8
+  }
+};
+
+for (const width of [1280, 390]) {
+  test(`YuE2 instrumental settings restore and preserve typed lyrics at ${width}px`, async ({
+    page
+  }, info) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const f = await fixture(page, {
+      musicAvailable: true,
+      music: yueModel,
+      candidates: [instrumentalCandidate]
+    });
+    await page
+      .getByRole('button', { name: 'Use settings', exact: true })
+      .click();
+    const toggle = page.getByRole('checkbox', {
+      name: 'Instrumental',
+      exact: true
+    });
+    await expect(toggle).toBeChecked();
+    await expect(
+      page.getByRole('link', { name: /Adapter licence: CC BY-NC 4.0/ })
+    ).toBeVisible();
+    await expect(
+      page.getByRole('textbox', { name: /Lyrics/ })
+    ).not.toBeVisible();
+    await page.screenshot({
+      path: info.outputPath('yue2-instrumental.png'),
+      fullPage: true
+    });
+    await toggle.uncheck();
+    const lyrics = page.getByRole('textbox', { name: /Lyrics/ });
+    await expect(lyrics).toHaveValue('');
+    await lyrics.fill('Lyrics I want to keep');
+    await page.getByText('Advanced settings', { exact: true }).click();
+    await page
+      .getByRole('combobox', { name: /Chain-of-thought mode/ })
+      .selectOption('off');
+    await toggle.check();
+    await expect(lyrics).not.toBeVisible();
+    await expect(
+      page.getByRole('combobox', { name: /Chain-of-thought mode/ })
+    ).not.toBeVisible();
+    await page.getByRole('button', { name: 'Generate', exact: true }).click();
+    await expect.poll(() => f.requests.length).toBe(1);
+    expect(f.requests[0]).toMatchObject({
+      model_id: yueModel.id,
+      lyrics: '[instrumental]',
+      parameters: { instrumental: true, cot: 'full' }
+    });
+    await toggle.uncheck();
+    await expect(lyrics).toHaveValue('Lyrics I want to keep');
+    await page.getByRole('button', { name: 'Generate', exact: true }).click();
+    await expect.poll(() => f.requests.length).toBe(2);
+    expect(f.requests[1].lyrics).toBe('Lyrics I want to keep');
+    expect(f.requests[1].parameters?.instrumental).toBe(false);
+    await toggle.check();
+    await page
+      .getByRole('combobox', { name: 'Create', exact: true })
+      .selectOption('sound');
+    await expect(toggle).not.toBeVisible();
+    await page.getByRole('button', { name: 'Generate', exact: true }).click();
+    await expect.poll(() => f.requests.length).toBe(3);
+    expect(f.requests[2].parameters).toEqual({});
+    await page
+      .getByRole('combobox', { name: 'Create', exact: true })
+      .selectOption('music');
+    await expect(toggle).not.toBeChecked();
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth
+      )
+    ).toBe(true);
+    const accessibility = await new AxeBuilder({ page }).analyze();
+    expect(
+      accessibility.violations.filter((v) =>
+        ['serious', 'critical'].includes(v.impact ?? '')
+      )
+    ).toEqual([]);
+    expect(f.errors).toEqual([]);
+  });
+}
+
+function sampleWav() {
+  const samples = 8000;
+  const wav = Buffer.alloc(44 + samples * 2);
+  wav.write('RIFF', 0);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24);
+  wav.writeUInt32LE(16000, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36);
+  wav.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i++)
+    wav.writeInt16LE(Math.round(5000 * Math.sin(i / 10)), 44 + i * 2);
+  return wav;
+}
+
+for (const format of ['wav', 'flac']) {
+  test(`ready candidates and saved variants download the original ${format} file`, async ({
+    page
+  }, info) => {
+    const failed = {
+      ...instrumentalCandidate,
+      id: 'failed-take',
+      status: 'failed',
+      artifact_id: null
+    };
+    const f = await fixture(page, {
+      musicAvailable: true,
+      music: yueModel,
+      candidates: [failed]
+    });
+    await expect(
+      page.getByRole('link', { name: 'Download candidate audio', exact: true })
+    ).toHaveCount(0);
+    // Exercise the authenticated file endpoint and real import/save lifecycle.
+    // Browser download requests do not use page-scoped route interception.
+    await page.unroute('**/api/v1/sounds/candidates?*');
+    await page.unroute('**/api/v1/sounds/candidates/*');
+    let original = sampleWav();
+    if (format === 'flac') {
+      const flacPath = info.outputPath('sample.flac');
+      // A seekable output lets FFmpeg finalize the FLAC duration metadata.
+      execFileSync('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-y', flacPath], {
+        input: original
+      });
+      original = await readFile(flacPath);
+    }
+    const filename = `download-sample.${format}`;
+    await page.getByLabel('Import sound audio', { exact: true }).setInputFiles({
+      name: filename,
+      mimeType: `audio/${format}`,
+      buffer: original
+    });
+    const take = page
+      .getByRole('article', { name: 'Candidate take', exact: true })
+      .filter({
+        has: page.getByRole('textbox', { name: 'Name', exact: true })
+      });
+    const link = take.getByRole('link', {
+      name: 'Download candidate audio',
+      exact: true
+    });
+    await expect(link).toBeVisible();
+    const candidateDownload = page.waitForEvent('download');
+    await link.click();
+    const download = await candidateDownload;
+    expect(download.suggestedFilename()).toMatch(new RegExp(`\\.${format}$`));
+    expect(await readFile((await download.path())!)).toEqual(original);
+    await take
+      .getByRole('textbox', { name: 'Name', exact: true })
+      .fill(`Saved piano ${format}`);
+    await take
+      .locator('form')
+      .getByRole('button', { name: 'Save', exact: true })
+      .click();
+    const savedLink = page.getByRole('link', {
+      name: `Download Saved piano ${format} variant`,
+      exact: true
+    });
+    await expect(savedLink).toBeVisible();
+    const savedDownload = page.waitForEvent('download');
+    await savedLink.click();
+    const saved = await savedDownload;
+    expect(saved.suggestedFilename()).toMatch(new RegExp(`\\.${format}$`));
+    expect(await readFile((await saved.path())!)).toEqual(original);
+    await page.screenshot({
+      path: info.outputPath(`saved-${format}-download.png`),
+      fullPage: true
+    });
+    expect(f.errors).toEqual([]);
+  });
+}

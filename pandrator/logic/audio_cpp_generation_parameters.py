@@ -1,7 +1,7 @@
 """Model-specific audio generation controls and researched setting help.
 
-Reviewed against audio.cpp v0.9.1 and upstream owner guidance on 11 October 2026.
-See docs/reference/2026-10-11-audio-generation-settings.md for evidence,
+Reviewed against audio.cpp v0.9.1 and upstream owner guidance on 12 October 2026.
+See docs/reference/audio-generation-settings.md for evidence,
 recommendations and differences between native defaults and app defaults.
 """
 
@@ -181,6 +181,11 @@ _PARAMETER_HELP: dict[str, dict[str, str]] = {
         ),
     },
     "yue2": {
+        "instrumental": (
+            "Use the managed instrumental AR adapter with full score planning. "
+            "Downloads about 140 MB on first use. Adapter licence: CC BY-NC 4.0 "
+            "(noncommercial). Omit lyrics or use [instrumental]."
+        ),
         "num_inference_steps": (
             "Acoustic-flow ODE steps in the non-autoregressive stage. "
             "Start at the native 8; more steps increase computation."
@@ -306,6 +311,7 @@ def parameters_for_model(package_id: str, family: str) -> tuple[tuple[str, dict[
         }
     elif family == "yue2":
         common = {
+            "instrumental": _parameter("boolean", "Instrumental", default=False),
             "num_inference_steps": _parameter(
                 "integer", "Inference steps", default=8, minimum=1, maximum=100
             ),

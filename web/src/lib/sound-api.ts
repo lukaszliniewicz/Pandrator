@@ -74,6 +74,16 @@ export type SoundModel = {
   available?: boolean;
   reason?: string;
   parameters: Record<string, SoundParameter>;
+  instrumental_adapter?: {
+    id: string;
+    repository: string;
+    revision: string;
+    filename: string;
+    size_bytes: number;
+    sha256: string;
+    license: string;
+    source_url: string;
+  };
 };
 export type SoundCatalogue = {
   runtime: {

@@ -16,6 +16,7 @@
   import { detectedSpeechComponentCount } from '$lib/speech-readiness';
   import NewSessionWizard from '$lib/NewSessionWizard.svelte';
   import SetupChecklist from '$lib/SetupChecklist.svelte';
+  import BackgroundWorkStatus from '$lib/BackgroundWorkStatus.svelte';
   import { onMount } from 'svelte';
   let wizard = $state(false);
   let initialKind = $state<
@@ -166,11 +167,8 @@
           <div class="readiness">
             <Activity size={18} />
             <div>
-              <strong>Background work</strong><span
-                >{appState.jobs.filter((job) =>
-                  ['queued', 'running'].includes(job.status)
-                ).length} active or queued jobs</span
-              >
+              <strong>Background work</strong>
+              <BackgroundWorkStatus jobs={appState.jobs} />
             </div>
           </div>
           <div class="readiness">

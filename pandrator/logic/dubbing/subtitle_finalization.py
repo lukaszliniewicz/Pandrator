@@ -19,6 +19,7 @@ from statistics import median
 from typing import Any
 
 from .. import sentence_segmenter
+from . import cjk_words
 from .languages import normalize_language_code
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
@@ -195,6 +196,9 @@ def _line_break_score(words: list[str], index: int) -> tuple[float, int]:
 
 
 def _layout_units(text: str, config: SubtitleFinalizationConfig) -> list[str]:
+    language = config.language.split("-")[0]
+    if language in {"ja", "zh"}:
+        return cjk_words.layout_units(text, language, config.max_chars_per_line)
     units = subtitle_units(text)
     if any(config.character_count(unit.strip()) > config.max_chars_per_line for unit in units):
         units = subtitle_units(text, split_hangul=True)
@@ -214,6 +218,9 @@ def _wrap_cjk_text(text: str, config: SubtitleFinalizationConfig) -> str:
             a, b = config.character_count(left), config.character_count(right)
             if a <= config.max_chars_per_line and b <= config.max_chars_per_line:
                 punctuation_bonus = 2 if left.endswith(tuple(_SENTENCE_END_CHARS | _CLAUSE_PUNCTUATION)) else 0
+                if config.language.split("-")[0] in {"ja", "zh"}:
+                    last = _last_syntactic_char(left)
+                    punctuation_bonus = 8 if last in _SENTENCE_END_CHARS else 6 if last in _CLAUSE_PUNCTUATION else 0
                 candidates.append((abs(a - b) + (1 if a > b else 0) - punctuation_bonus, index, left, right))
         if candidates:
             _score, _index, left, right = min(candidates)
@@ -362,6 +369,19 @@ def _split_words_to_capacity(
         return 0
 
     if cjk:
+        # Only Japanese/Chinese gain linguistic word and sentence boundaries.
+        # Keep the established Korean/mixed-script packing score unchanged.
+        sentence_scores: dict[int, float] = {}
+        word_aware = config.language.split("-")[0] in {"ja", "zh"}
+        if word_aware and target_count > 1:
+            offsets = [0]
+            for word in words:
+                offsets.append(offsets[-1] + len(word))
+            scores = _sentence_boundary_scores(
+                cleaned, [(end - 1, end + 1) for end in offsets[1:-1]],
+                config.sentence_boundary_threshold,
+            )
+            sentence_scores = dict(enumerate(scores, start=1))
         # A suffix feasibility table permits balanced, punctuation-aware
         # packing without the quadratic cue-count dimension of the word DP.
         feasible_ends: list[list[int]] = [[] for _ in words]
@@ -380,7 +400,9 @@ def _split_words_to_capacity(
             options = [end for end in feasible_ends[cursor]
                        if suffix_minimum[end] <= remaining - 1 <= word_count - end]
             boundary = min(options, key=lambda end: (
-                abs(range_length(cursor, end) - preferred_length) - 0.75 * punctuation_preference(end), end,
+                abs(range_length(cursor, end) - preferred_length)
+                - (3.0 if word_aware else 0.75) * punctuation_preference(end)
+                - (8.0 * sentence_scores.get(end, 0.0)), end,
             ))
             chunks.append(join_words(words[cursor:boundary]))
             cursor = boundary
@@ -986,6 +1008,19 @@ def _sat_boundary_probabilities(
 ) -> list[float]:
     if len(words) < 2 or not source_text:
         return []
+    return _sentence_boundary_scores(
+        source_text,
+        [(current.char_end - 1, following.char_start + 1) for current, following in pairwise(words)],
+        threshold,
+    )
+
+
+def _sentence_boundary_scores(
+    source_text: str,
+    spans: list[tuple[int, int]],
+    threshold: float,
+) -> list[float]:
+    """Shared SaT evidence at candidate boundaries; scores do not force cuts."""
     try:
         prediction = sentence_segmenter.predict_boundaries(
             source_text,
@@ -995,7 +1030,7 @@ def _sat_boundary_probabilities(
         logger.warning("SaT boundary prediction failed; using deterministic boundary evidence: %s", exc)
         prediction = None
     if not prediction:
-        return [0.0] * (len(words) - 1)
+        return [0.0] * len(spans)
 
     raw_probabilities = prediction.get("probabilities")
     probabilities = list(raw_probabilities) if isinstance(raw_probabilities, (list, tuple)) else []
@@ -1015,9 +1050,9 @@ def _sat_boundary_probabilities(
         min(0.99, predicted_threshold),
     )
     output: list[float] = []
-    for current, following in pairwise(words):
-        left = max(0, current.char_end - 1)
-        right = min(len(probabilities), max(left + 1, following.char_start + 1))
+    for start, end in spans:
+        left = max(0, start)
+        right = min(len(probabilities), max(left + 1, end))
         probability = max((float(value) for value in probabilities[left:right]), default=0.0)
         is_explicit = any(left <= boundary < right for boundary in explicit)
         if probability < effective_threshold and not is_explicit:
@@ -1170,6 +1205,10 @@ def _compose_semantic_cues(
         config.sentence_boundary_threshold,
     )
     evidence = _boundary_evidence(words, probabilities, config)
+    lexical_ends = (
+        cjk_words.word_boundaries(source_text, config.language.split("-")[0])
+        if config.language.split("-")[0] in {"ja", "zh"} else None
+    )
     word_count = len(words)
     costs = [float("inf")] * (word_count + 1)
     previous: list[int | None] = [None] * (word_count + 1)
@@ -1199,6 +1238,11 @@ def _compose_semantic_cues(
                 break
 
             candidate_cost = costs[start] + _cue_cost(words, start, end, text, evidence, config)
+            if lexical_ends is not None and end < word_count and words[end - 1].char_end not in lexical_ends:
+                # ASR may label individual characters as words. Penalize a
+                # display cut inside a lexical word without inventing acoustic
+                # subword timestamps or changing canonical word ownership.
+                candidate_cost += 120.0
             if candidate_cost < costs[end]:
                 costs[end] = candidate_cost
                 previous[end] = start

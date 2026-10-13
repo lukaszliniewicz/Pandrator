@@ -4,12 +4,15 @@ from copy import deepcopy
 
 import pytest
 
+from pandrator.logic.tts_model_lifecycle import model_lifecycle
 from pandrator.web.api import create_app
 from pandrator.web.auth import BootstrapTokenStore
 from pandrator.web.models import AppSetting
 from pandrator.web.tts_catalogue_projection import (
     TtsCatalogueModelNotFoundError,
+    _decorate_model_language_support,
     _filter_service_models,
+    _slim_model_catalog,
 )
 from tests.web_test_support import prepare_web_test_data_root
 
@@ -215,3 +218,293 @@ def test_native_model_detail_preserves_persisted_metadata(tmp_path, voice):
         services["tts_providers"].close()
         catalogue.manager_bridge.session.close()
         services["database"].dispose()
+
+
+@pytest.mark.parametrize(
+    (
+        "provider_id",
+        "model_id",
+        "source_url",
+        "shutdown_date",
+        "include_shutdown_date",
+        "replacements",
+        "kind",
+    ),
+    [
+        (
+            "openai",
+            "tts-1",
+            "https://developers.openai.com/api/docs/deprecations",
+            "2027-01-06",
+            True,
+            ["gpt-realtime-2.1-mini"],
+            "different_api",
+        ),
+        (
+            "openai",
+            "tts-1-hd",
+            "https://developers.openai.com/api/docs/deprecations",
+            "2027-01-06",
+            True,
+            ["gpt-realtime-2.1-mini"],
+            "different_api",
+        ),
+        (
+            "openai",
+            "gpt-4o-mini-tts-2025-03-20",
+            "https://developers.openai.com/api/docs/deprecations",
+            "2027-01-06",
+            True,
+            ["gpt-realtime-2.1-mini"],
+            "different_api",
+        ),
+        (
+            "openai",
+            "gpt-4o-mini-tts-2025-12-15",
+            "https://developers.openai.com/api/docs/deprecations",
+            "2027-01-06",
+            True,
+            ["gpt-realtime-2.1-mini"],
+            "different_api",
+        ),
+        (
+            "openai",
+            "gpt-4o-mini-tts",
+            "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts",
+            None,
+            True,
+            ["gpt-realtime-2.1-mini"],
+            "different_api",
+        ),
+        (
+            "gemini",
+            "gemini-2.5-flash-preview-tts",
+            "https://ai.google.dev/gemini-api/docs/deprecations",
+            "2026-11-17",
+            True,
+            ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
+            "tts_model",
+        ),
+        (
+            "gemini",
+            "gemini-2.5-pro-preview-tts",
+            "https://ai.google.dev/gemini-api/docs/deprecations",
+            "2026-11-17",
+            True,
+            ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
+            "tts_model",
+        ),
+        (
+            "gemini",
+            "gemini-3.1-flash-tts-preview",
+            "https://ai.google.dev/gemini-api/docs/deprecations",
+            "2026-11-17",
+            True,
+            ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"],
+            "tts_model",
+        ),
+        (
+            "elevenlabs",
+            "eleven_turbo_v2",
+            "https://elevenlabs.io/docs/overview/models",
+            None,
+            False,
+            ["eleven_flash_v2"],
+            "tts_model",
+        ),
+        (
+            "elevenlabs",
+            "eleven_turbo_v2_5",
+            "https://elevenlabs.io/docs/overview/models",
+            None,
+            False,
+            ["eleven_flash_v2_5"],
+            "tts_model",
+        ),
+    ],
+)
+def test_model_lifecycle_returns_exact_pinned_metadata(
+    provider_id,
+    model_id,
+    source_url,
+    shutdown_date,
+    include_shutdown_date,
+    replacements,
+    kind,
+):
+    expected = {
+        "provider_id": provider_id,
+        "model_id": model_id,
+        "status": "deprecated",
+        "reviewed_on": "2026-10-13",
+        "source_url": source_url,
+        "replacement_model_ids": replacements,
+        "migration_kind": kind,
+    }
+    if include_shutdown_date:
+        expected["shutdown_date"] = shutdown_date
+    assert model_lifecycle(provider_id, model_id) == expected
+
+
+def test_model_lifecycle_returns_fresh_nested_data_and_requires_exact_identity():
+    first = model_lifecycle("gemini", "gemini-2.5-flash-preview-tts")
+    assert first is not None
+    first["replacement_model_ids"].append("untrusted-model")
+    assert model_lifecycle("gemini", "gemini-2.5-flash-preview-tts") == {
+        "provider_id": "gemini",
+        "model_id": "gemini-2.5-flash-preview-tts",
+        "status": "deprecated",
+        "reviewed_on": "2026-10-13",
+        "source_url": "https://ai.google.dev/gemini-api/docs/deprecations",
+        "shutdown_date": "2026-11-17",
+        "replacement_model_ids": [
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts",
+        ],
+        "migration_kind": "tts_model",
+    }
+    assert model_lifecycle("OpenAI", "tts-1") is None
+    assert model_lifecycle("openai", "TTS-1") is None
+    assert model_lifecycle("vertex_ai", "gemini-2.5-flash-preview-tts") is None
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "model_id"),
+    [
+        ("openai", "tts-1"),
+        ("openai", "gpt-4o-mini-tts"),
+        ("gemini", "gemini-3.1-flash-tts-preview"),
+        ("elevenlabs", "eleven_turbo_v2_5"),
+    ],
+)
+def test_lifecycle_is_consistent_across_full_compact_and_detail_projections(
+    provider_id, model_id
+):
+    current_model = "current-model"
+    service = {
+        "id": provider_id,
+        "provider": provider_id,
+        "adapter": "elevenlabs_native" if provider_id == "elevenlabs" else provider_id,
+        "models": [model_id, current_model],
+        "default_model": model_id,
+        "voices": ["alloy"],
+        "available": False,
+        "online": False,
+        "health_checked_at": "2026-10-12T12:00:00Z",
+        "settings": {"format": "mp3"},
+        "model_catalog": [
+            {
+                "id": model_id,
+                "api_base": "https://configured.example/v1",
+                "api_key": "configured-secret",
+                "credential_reference": "credential-ref",
+                "model_lifecycle": {
+                    "provider_id": "forged",
+                    "model_id": model_id,
+                    "source_url": "https://configured.example/v1",
+                    "api_key": "configured-secret",
+                },
+            },
+            {
+                "id": current_model,
+                "model_lifecycle": {"status": "deprecated", "source_url": "fake"},
+            },
+        ],
+    }
+    original_context = {
+        key: deepcopy(service[key])
+        for key in (
+            "models",
+            "default_model",
+            "voices",
+            "available",
+            "online",
+            "health_checked_at",
+            "settings",
+        )
+    }
+
+    _decorate_model_language_support(service)
+    full_rows = {row["id"]: row for row in service["model_catalog"]}
+    expected = model_lifecycle(provider_id, model_id)
+    assert expected is not None
+    assert full_rows[model_id]["model_lifecycle"] == expected
+    assert "model_lifecycle" not in full_rows[current_model]
+    for key, value in original_context.items():
+        assert service[key] == value
+
+    compact_rows = {row["id"]: row for row in _slim_model_catalog(service)}
+    assert compact_rows[model_id]["model_lifecycle"] == expected
+    assert "model_lifecycle" not in compact_rows[current_model]
+    assert {"api_base", "api_key", "credential_reference"}.isdisjoint(
+        compact_rows[model_id]
+    )
+    assert "configured-secret" not in repr(compact_rows[model_id])
+    assert "configured.example" not in repr(compact_rows[model_id])
+    compact_lifecycle = compact_rows[model_id]["model_lifecycle"]
+    assert set(compact_lifecycle) == set(expected)
+    assert not {
+        "api_base",
+        "api_key",
+        "credential_reference",
+        "endpoint",
+        "password",
+        "secret",
+        "token",
+    }.intersection(compact_lifecycle)
+    assert compact_lifecycle["source_url"] == expected["source_url"]
+    assert "configured.example" not in compact_lifecycle["source_url"]
+
+    detail = _filter_service_models(
+        deepcopy(service), [model_id], service_id=provider_id
+    )
+    assert [row["id"] for row in detail["model_catalog"]] == [model_id]
+    assert detail["model_catalog"][0]["model_lifecycle"] == expected
+    assert detail["models"] == original_context["models"]
+    assert detail["default_model"] == original_context["default_model"]
+    assert detail["voices"] == original_context["voices"]
+
+
+@pytest.mark.parametrize(
+    ("service_id", "adapter", "provider", "model_id"),
+    [
+        ("azure-speech-mai-voice-2", "azure_speech", "azure", "tts-1"),
+        (
+            "vertex_ai",
+            "vertex_ai",
+            "vertex_ai",
+            "gemini-2.5-flash-preview-tts",
+        ),
+        (
+            "custom-openai-compatible",
+            "openai_compatible",
+            "openai",
+            "tts-1",
+        ),
+        ("openai", "openai", "openai", "custom-model"),
+    ],
+)
+def test_non_native_identity_or_unknown_model_cannot_claim_static_lifecycle(
+    service_id, adapter, provider, model_id
+):
+    service = {
+        "id": service_id,
+        "adapter": adapter,
+        "provider": provider,
+        "models": [model_id],
+        "model_catalog": [
+            {
+                "id": model_id,
+                "model_lifecycle": {
+                    "provider_id": "openai",
+                    "model_id": "tts-1",
+                    "status": "deprecated",
+                    "source_url": "https://attacker.example/fake",
+                },
+            }
+        ],
+    }
+    _decorate_model_language_support(service)
+    assert "model_lifecycle" not in service["model_catalog"][0]
+    compact = _slim_model_catalog(service)
+    assert all("model_lifecycle" not in row for row in compact)

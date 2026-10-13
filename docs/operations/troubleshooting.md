@@ -71,6 +71,13 @@ work status, progress events, and last error. Check whether the worker is
 running with the same data root as the web process. Cancel only when the job
 reports cancellation is supported.
 
+The home page and **Activity & logs** show running and queued jobs separately,
+including the kinds of running work. Transcription can share the queue with
+exports and other jobs. Worker health appears separately: unknown health does
+not mean the worker has stopped, and running/queued counts do not measure free
+capacity. Inspect the running work and worker status before treating a queued
+job as a failure.
+
 For cloud providers, distinguish a slow request from provider authentication,
 quota, timeout, and rate-limit failures. For local models, inspect service
 readiness and resource use.

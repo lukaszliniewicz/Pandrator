@@ -21,7 +21,7 @@ from .artifacts import ArtifactService
 from .database import Database
 from .jobs import JobQueue
 from .models import Artifact
-from .sound_generation_admission import SettingsProvider, _runtime_identity, runtime_settings
+from .sound_generation_admission import SettingsProvider, runtime_settings
 from .sound_generation_worker_support import (
     _artifact_is_present,
     _lease,
@@ -81,7 +81,7 @@ def run_generate(
         if candidate.state != "queued":
             raise RuntimeError("Sound candidate is no longer eligible for generation.")
 
-    current_identity = _runtime_identity(settings, canonical_request["model_id"])
+    current_identity = audio_cpp_sfx.request_runtime_identity(settings, canonical_request)
     if current_identity != identity:
         raise RuntimeError(
             "The audio.cpp runtime or model changed after admission; submit the sound request again."

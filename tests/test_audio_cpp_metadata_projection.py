@@ -91,6 +91,30 @@ def test_runtime_capabilities_distinguish_qwen_variants():
     assert not {"voice_cloning", "prebuilt_voices"} & set(design["capabilities"])
 
 
+def test_expressive_profile_marks_reference_use_only_when_audio_is_required():
+    base = package_metadata("qwen3_tts_1_7b_base_q8_0")
+    custom = package_metadata("qwen3_tts_1_7b_customvoice_q8_0")
+    design = package_metadata("qwen3_tts_1_7b_voicedesign_q8_0")
+    pocket = package_metadata("pocket_tts_english_q8_0")
+    breeze = package_metadata("breeze_tts_2_q8_0")
+
+    assert base["reference_audio"] == "required"
+    assert base["expressive_capabilities"]["uses_reference"] is True
+
+    for model in (custom, design):
+        assert model["reference_audio"] == "not_used"
+        assert model["expressive_capabilities"]["uses_reference"] is False
+
+    assert pocket["voice_mode"] == "hybrid"
+    assert pocket["reference_audio"] == "optional"
+    assert pocket["expressive_capabilities"]["uses_reference"] is False
+
+    assert breeze["voice_mode"] == "optional_cloning"
+    assert breeze["reference_audio"] == "optional"
+    assert breeze["upstream_features"]["instructions"] is True
+    assert breeze["expressive_capabilities"]["uses_reference"] is False
+
+
 def test_chatterbox_turbo_does_not_gain_emotion_or_instruction_controls():
     standard = package_metadata("chatterbox_q8_0")
     turbo = package_metadata("chatterbox_turbo_q8_0")

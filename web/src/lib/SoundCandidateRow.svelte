@@ -9,6 +9,7 @@
     Trash2
   } from '@lucide/svelte';
   import SoundPreview from './SoundPreview.svelte';
+  import SoundDownload from './SoundDownload.svelte';
   import {
     soundPending,
     type SoundCandidate,
@@ -108,6 +109,7 @@
       <div class="take-player"><SoundPreview {candidate} label={title} /></div>
     {/if}
     <div class="flex flex-wrap gap-2">
+      <SoundDownload {candidate} label="candidate audio" />
       <button
         type="button"
         class="btn btn-secondary"

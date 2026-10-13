@@ -36,6 +36,18 @@ Provider readiness shows whether a service is reachable and whether a
 credential is configured. Routine status and agent tools do not return the
 credential value.
 
+Installation, service advertisement, health, and a prepared voice reference are
+separate checks. A Manager-installed package may not be in a service's current
+model roster. Unknown health is reported as unknown, not as a stopped service.
+For audio.cpp, a required reference belongs to the selected model's request;
+Pocket's optional reference and hybrid voice mode do not mean cloning is always
+required. Keep standalone `kokoro` separate from audio.cpp `kokoro_82m_*` package
+IDs when comparing auditions and project settings.
+
+The model chooser shows dated provider deprecation information without changing
+saved settings. See [provider model lifecycle](../reference/provider-lifecycle.md)
+before moving a project to another API model.
+
 ## Local component chooser
 
 The Manager shows available compute variants, model licences, and downloads

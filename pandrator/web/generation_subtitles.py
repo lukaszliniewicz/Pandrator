@@ -22,6 +22,7 @@ from .models import (
     GenerationSegment,
     new_id,
 )
+from .settings_policy import validate_subtitle_text_source
 from .workflow_output_context import OutputWorkflowContext
 
 
@@ -29,11 +30,20 @@ def capture_display_subtitle_snapshot(
     session: Session, session_id: str, settings: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Capture the chosen revision's display layer while the export is queued."""
+    text_source = validate_subtitle_text_source(
+        settings.get("subtitle_text_source", "current")
+    )
     run_id = str(settings.get("generation_run_id") or "").strip()
+    run = None
     if run_id:
         run = session.get(GenerationRun, run_id)
         if run is None or run.session_id != session_id:
             raise ValueError("The selected generation run is unavailable in this session.")
+    if text_source == "generation_run":
+        if run is None:
+            raise ValueError(
+                "Select a generation run to use its historical subtitle text."
+            )
         revision = session.get(GenerationPlanRevision, run.plan_revision_id)
     else:
         plan = session.scalar(
@@ -45,7 +55,7 @@ def capture_display_subtitle_snapshot(
             else None
         )
     if revision is None:
-        if run_id:
+        if text_source == "generation_run":
             raise ValueError("The selected generation run's speech revision is unavailable.")
         return None
     plan = session.get(GenerationPlan, revision.plan_id)
@@ -98,8 +108,9 @@ def capture_display_subtitle_snapshot(
         logical_srt = passage_srt(passages)
     return {
         "version": 1,
+        "subtitle_text_source": text_source,
         "revision_id": revision.id,
-        "generation_run_id": run_id or None,
+        "generation_run_id": run_id if text_source == "generation_run" else None,
         "display_artifact_id": display.id,
         "display_content_hash": display.content_hash,
         "display_source_role": (display.metadata_json or {}).get("source_role") or display.role,

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { errorMessage } from './errors';
   import SoundPreview from './SoundPreview.svelte';
+  import SoundDownload from './SoundDownload.svelte';
   import {
     soundDetail,
     soundTags,
@@ -132,12 +133,18 @@
                   class="ml-2 text-[var(--accent)]">Preferred</span
                 >{/if}
             </span>
-            {#if variant.id !== detail.preferred_variant?.id}<button
-                class="btn btn-secondary"
-                disabled={busy}
-                onclick={() => change({ preferred_variant_id: variant.id })}
-                >Use by default</button
-              >{/if}
+            <div class="flex flex-wrap gap-2">
+              <SoundDownload
+                candidate={variant}
+                label={`${detail.name} variant`}
+              />
+              {#if variant.id !== detail.preferred_variant?.id}<button
+                  class="btn btn-secondary"
+                  disabled={busy}
+                  onclick={() => change({ preferred_variant_id: variant.id })}
+                  >Use by default</button
+                >{/if}
+            </div>
           </div>
           <SoundPreview candidate={variant} label={`${detail.name} variant`} />
           {#if variant.provenance.prompt}<p class="muted mt-2 text-sm">

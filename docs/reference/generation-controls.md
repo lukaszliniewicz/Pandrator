@@ -364,8 +364,11 @@ to both segment regeneration and the Generate audio dialog. Provider, model,
 voice, language and explicit TTS speed are retained; assembly slowdown remains a
 separate setting.
 
-Subtitle exports capture display text from the selected run's plan, or the active
-plan when no run is selected, when the export is queued. Only its matching source
+Subtitle and voiceover exports use **Current display text** by default, independently
+of the selected **Audio version**. To reproduce the wording saved with an older run,
+choose **Subtitle text → Historical text from selected audio version** in Output.
+The selected display revision is captured when the export is queued; later edits
+do not change that queued export. Only its matching source
 or translation track is updated. Verified cue mappings retain individual timing;
 an edited merged block with an obsolete internal mapping uses its known overall
 time window. Split pieces sharing a source cue appear once, and removed blocks

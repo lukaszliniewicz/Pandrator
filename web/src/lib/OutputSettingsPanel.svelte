@@ -115,6 +115,7 @@
   const sharedSubtitleKeys = [
     'export_mode',
     'subtitle_selection',
+    'subtitle_text_source',
     'subtitle_format',
     'language'
   ];
@@ -556,6 +557,29 @@
       {message}
     </p>{/if}
   {#if settings}
+    {#if !audiobookWorkspace && (['subtitles', 'text'].includes(exportMode) || (rendersVideo && subtitleMode !== 'none'))}
+      <div class="mt-5 max-w-xl">
+        <label
+          >Subtitle text<select
+            class="field"
+            value={String(value('subtitle_text_source', 'current'))}
+            onchange={(event) =>
+              set('subtitle_text_source', event.currentTarget.value)}
+            aria-describedby="subtitle-text-help"
+          >
+            <option value="current">Current display text</option>
+            <option value="generation_run" disabled={!generationRunId}
+              >Historical text from selected audio version</option
+            >
+          </select></label
+        >
+        <p id="subtitle-text-help" class="muted mt-2 text-xs">
+          Current display text applies your latest display edits to the matching
+          subtitle track. Historical text uses the wording saved with the
+          selected Audio version. Neither choice changes the recorded speech.
+        </p>
+      </div>
+    {/if}
     {#if !subtitleWorkspace && exportMode !== 'text'}
       <label class="mt-5 flex items-center gap-2 text-sm">
         <input
