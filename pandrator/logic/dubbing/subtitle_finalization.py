@@ -19,7 +19,8 @@ from statistics import median
 from typing import Any
 
 from .. import sentence_segmenter
-from . import cjk_words
+from .cjk_words import layout_units as cjk_layout_units
+from .cjk_words import word_boundaries as cjk_word_boundaries
 from .languages import normalize_language_code
 from .models import SubtitleSegment
 from .srt_utils import compose_srt, parse_srt
@@ -198,7 +199,7 @@ def _line_break_score(words: list[str], index: int) -> tuple[float, int]:
 def _layout_units(text: str, config: SubtitleFinalizationConfig) -> list[str]:
     language = config.language.split("-")[0]
     if language in {"ja", "zh"}:
-        return cjk_words.layout_units(text, language, config.max_chars_per_line)
+        return cjk_layout_units(text, language, config.max_chars_per_line)
     units = subtitle_units(text)
     if any(config.character_count(unit.strip()) > config.max_chars_per_line for unit in units):
         units = subtitle_units(text, split_hangul=True)
@@ -1206,7 +1207,7 @@ def _compose_semantic_cues(
     )
     evidence = _boundary_evidence(words, probabilities, config)
     lexical_ends = (
-        cjk_words.word_boundaries(source_text, config.language.split("-")[0])
+        cjk_word_boundaries(source_text, config.language.split("-")[0])
         if config.language.split("-")[0] in {"ja", "zh"} else None
     )
     word_count = len(words)

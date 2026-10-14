@@ -263,13 +263,14 @@ def _canonical_project_ids(
         if session_id not in canonical_present:
             raise KeyError(session_id)
 
-    purge_states = dict(
-        session.execute(
+    purge_states = {
+        row.session_id: row.state
+        for row in session.execute(
             select(SessionPurge.session_id, SessionPurge.state).where(
                 SessionPurge.session_id.in_(set(ordered_ids) | set(canonical_ids))
             )
         ).all()
-    )
+    }
     for session_id in ordered_ids + canonical_ids:
         if purge_states.get(session_id) in {"purging", "failed"}:
             raise ValueError("A session being purged cannot be assigned to a folder.")
