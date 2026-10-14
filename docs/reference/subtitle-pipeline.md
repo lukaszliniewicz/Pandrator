@@ -370,10 +370,15 @@ before being fitted to the shared timing window. Relevant assembly defaults:
 | `synchronization_delay_ms` | `800` | Maximum allowed start delay when fitting generated speech. |
 | `synchronization_speed` | `1.2` | Maximum speed-up factor used to fit a block. |
 | `synchronization_slowdown_enabled` | `true` | Preserve start-delay priority, then apply proportionate pitch-preserving slowdown down to 0.9× within the remaining own-cue time. Account for incoming playback delay and the next block's start; slowdown must fit both boundaries. |
-| `synchronization_sentence_gap_ms` | `100` | Minimum generated gap retained between aligned sentence blocks. |
+| `synchronization_sentence_gap_ms` | `100` | Silence inserted between sentence files inside one speech block, before alignment. |
+| `synchronization_min_block_gap_ms` | `100` | Minimum inserted silence between independent speech blocks, including during catch-up. Reserved when fitting speech; longer pauses remain. Zero disables this minimum. No extra gap follows the final block. |
 | `audio_verification_mode` | `off` | Optional signal-level checks for suspicious generated audio. |
 | `sentence_silence_ms` | `250` | Narration pause after a sentence; timed subtitle blocks normally derive timing from the source instead. |
 | `paragraph_silence_ms` | `700` | Narration pause after a paragraph. |
+
+The minimum block gap shares the timing budget with speech. If the maximum
+catch-up speed cannot fit both, Pandrator keeps the gap and carries the remaining
+delay forward. It does not add the minimum on top of an already longer pause.
 
 Assembly can preserve source audio, mix and duck it under generated speech, or
 produce dubbing only. Export then chooses subtitle-only/text/media output,

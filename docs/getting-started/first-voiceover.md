@@ -81,6 +81,13 @@ starts late can still slow down if it finishes within its own cue and before
 the next block. The existing maximum catch-up speed remains in effect.
 Slowdown is applied during assembly, leaving the generated take unchanged.
 
+**Minimum block gap (ms)** defaults to **100 ms** and remains between speech
+blocks even while catching up. Longer pauses are preserved. The fitter reserves
+this time before choosing speed, start delay and slowdown; if the maximum speed
+cannot make everything fit, the gap stays and the remaining delay carries forward.
+Set it to **0** to disable the minimum. This is separate from the sentence gap
+inside a block, and it adds no extra pause after the final block.
+
 Choose deliberately among:
 
 - original audio with generated speech mixed over it;

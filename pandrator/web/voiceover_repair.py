@@ -22,6 +22,7 @@ from pandrator.logic.dubbing.audio_sync import (
     _speed_up_wav_streaming,
     _streaming_audio_duration_ms,
     alignment_adjustment,
+    min_block_gap_ms_from_settings,
     sentence_gap_ms_from_settings,
     slowdown_enabled_from_settings,
 )
@@ -213,6 +214,7 @@ def advance_timing(
     work: Path,
     cancel_event: Any,
     *,
+    has_next_block: bool = False,
     diagnostics: dict[str, int] | None = None,
 ) -> tuple[int, int, int]:
     """Measure forward placement, including FFmpeg rounding, without a full mix.
@@ -242,6 +244,7 @@ def advance_timing(
     start = max(0, group.start_ms)
     cursor = max(cursor, start)
     slot_end = max(start + 1, slot_end)
+    effective_gap = min_block_gap_ms_from_settings(settings) if has_next_block else 0
     speed = float(settings.get("synchronization_speed") or 1.0)
     maximum = min(4.0, max(1.0, round(speed * 100 if speed <= 10 else speed) / 100))
     adjustment = alignment_adjustment(
@@ -252,6 +255,7 @@ def advance_timing(
         max_speed_factor=maximum,
         allow_slowdown=slowdown_enabled_from_settings(settings),
         speech_window_duration_ms=max(1, group.end_ms - start),
+        min_block_gap_ms=effective_gap,
     )
     processed = duration
     factor = adjustment.speed_factor
@@ -283,7 +287,7 @@ def advance_timing(
     if diagnostics is not None:
         diagnostics.update(original_audio_ms=duration, processed_audio_ms=processed)
     return (
-        max(slot_end, cursor + adjustment.start_delay_ms + processed),
+        max(slot_end, cursor + adjustment.start_delay_ms + processed + effective_gap),
         duration,
         adjustment.start_delay_ms,
     )
@@ -364,6 +368,7 @@ def repair_early_blocks(
             try:
                 baseline_cursor, duration, start_delay = advance_timing(
                     group, cursor, slot_end, audio_settings, work, stop,
+                    has_next_block=index + 1 < len(groups),
                     diagnostics=timing_details,
                 )
             except Exception:
@@ -555,10 +560,17 @@ def repair_early_blocks(
                     audio_settings,
                     work,
                     stop,
+                    has_next_block=True,
                 )
                 first_child_drift = max(0, child_cursor - replacement[1].start_ms)
                 child_cursor, _, _ = advance_timing(
-                    replacement[1], child_cursor, slot_end, audio_settings, work, stop
+                    replacement[1],
+                    child_cursor,
+                    slot_end,
+                    audio_settings,
+                    work,
+                    stop,
+                    has_next_block=index + 1 < len(groups),
                 )
                 if child_cursor > baseline_cursor:
                     # A repair must not create new delay for subsequent original blocks.

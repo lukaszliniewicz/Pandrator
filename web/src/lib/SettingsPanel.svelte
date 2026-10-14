@@ -204,7 +204,8 @@
       'synchronization_delay_ms',
       'synchronization_speed',
       'synchronization_slowdown_enabled',
-      'synchronization_sentence_gap_ms'
+      'synchronization_sentence_gap_ms',
+      'synchronization_min_block_gap_ms'
     ],
     rvc: [
       'enabled',

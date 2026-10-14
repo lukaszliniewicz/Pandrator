@@ -41,6 +41,43 @@ def test_pause_validation_accepts_bounds_and_preserves_unrelated(value):
     assert settings["unrelated"] == "kept"
 
 
+@pytest.mark.parametrize("value", [True, False, "100", 1.5, -1, 5001, None])
+def test_minimum_block_gap_rejects_non_integer_or_out_of_range(value):
+    with pytest.raises(ValueError, match="synchronization_min_block_gap_ms.*0 to 5000"):
+        validate_audio_pause_settings({"synchronization_min_block_gap_ms": value})
+
+
+@pytest.mark.parametrize("value", [0, 100, 5000])
+def test_minimum_block_gap_accepts_bounds_and_preserves_other_settings(value):
+    settings = {"synchronization_min_block_gap_ms": value, "unrelated": "kept"}
+    validate_audio_pause_settings(settings)
+    assert settings == {"synchronization_min_block_gap_ms": value, "unrelated": "kept"}
+
+
+def test_minimum_block_gap_default_validation_and_explicit_zero_round_trip(case):
+    services = case["services"]
+    workspace = services["workspace_settings"]
+    session_id = case["session_id"]
+    resolved, _ = workspace.resolve(session_id, sections=["audio"])
+    assert resolved["audio"]["synchronization_min_block_gap_ms"] == 100
+    with pytest.raises(ValueError, match="synchronization_min_block_gap_ms"):
+        workspace.update(session_id, "audio", 0, {"synchronization_min_block_gap_ms": True})
+    workspace.update(session_id, "audio", 0, {"synchronization_min_block_gap_ms": 0})
+    resolved, _ = workspace.resolve(session_id, sections=["audio"])
+    assert resolved["audio"]["synchronization_min_block_gap_ms"] == 0
+
+    globals_service = GlobalSettingsService(services["database"], services["paths"])
+    current = globals_service.defaults("audio")
+    revision = "*" if current["revision"] == 0 else str(current["revision"])
+    with pytest.raises(ValueError, match="synchronization_min_block_gap_ms"):
+        globals_service.replace(
+            "defaults.audio", {"synchronization_min_block_gap_ms": 5001}, revision
+        )
+    assert globals_service.defaults("audio") == current
+    globals_service.replace("defaults.audio", {"synchronization_min_block_gap_ms": 0}, revision)
+    assert globals_service.defaults("audio")["value"]["synchronization_min_block_gap_ms"] == 0
+
+
 def test_pause_validation_runs_on_session_and_global_saves(case):
     services = case["services"]
     resolved, _ = services["workspace_settings"].resolve(case["session_id"], sections=["audio"])

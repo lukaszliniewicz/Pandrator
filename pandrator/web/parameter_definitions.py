@@ -369,6 +369,7 @@ _DESCRIPTIONS: dict[str, dict[str, str]] = {
         "synchronization_speed": "Sets the maximum synchronization catch-up speed: values at or below 10 are interpreted as a multiplier and values above 10 as a percentage; alignment caps the effective speed at 1x through 4x.",
         "synchronization_slowdown_enabled": "Enabled by default. Preserves the voiceover start delay first, then applies proportionate pitch-preserving slowdown down to 0.9x using the remaining room in the block's own cue span. Playback that starts late can still slow down if it finishes within that cue and before the next block. Explicitly saved off settings remain off.",
         "synchronization_sentence_gap_ms": "Adds this many milliseconds between sentence files inside one subtitle-timed speech block before alignment computes catch-up speed.",
+        "synchronization_min_block_gap_ms": "Keeps at least this much inserted silence between speech blocks, including while catching up. Alignment reserves the gap when calculating speed, start delay and slowdown. Longer source pauses remain; if the maximum speed cannot fit speech and the gap, the remaining delay carries forward. Zero disables the minimum. No extra gap is added after the final block.",
     },
     "rvc": {
         "enabled": "Enables applying the selected RVC voice-conversion model to generated or explicitly converted audio; a model is still required for conversion.",
@@ -1037,6 +1038,12 @@ _METADATA: dict[str, dict[str, dict[str, object]]] = {
             "minimum": 0,
             "maximum": 5000,
             "unit": "milliseconds",
+        },
+        "synchronization_min_block_gap_ms": {
+            "minimum": 0,
+            "maximum": 5000,
+            "unit": "milliseconds",
+            "applicability": "Subtitle-timed voiceover assembly and timing repair.",
         },
     },
     "rvc": {

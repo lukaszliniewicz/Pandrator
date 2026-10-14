@@ -43,6 +43,7 @@ def assemble_generation_output(
 
     from pandrator.logic.dubbing.audio_sync import (
         align_audio_blocks,
+        min_block_gap_ms_from_settings,
         sentence_gap_ms_from_settings,
         slowdown_enabled_from_settings,
     )
@@ -478,7 +479,7 @@ def assemble_generation_output(
                     raw_speed * 100 if raw_speed <= 10 else raw_speed
                 )
                 logger.info(
-                    "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms slowdown=%s",
+                    "Assembling %s with subtitle timing: blocks=%d max_speed=%.3fx max_delay=%dms sentence_gap=%dms min_block_gap=%dms slowdown=%s",
                     assembly_id,
                     len(alignment_blocks),
                     max(1.0, speed_up_percent / 100.0),
@@ -487,6 +488,7 @@ def assemble_generation_output(
                         int(audio_settings.get("synchronization_delay_ms") or 0),
                     ),
                     sentence_gap_ms_from_settings(audio_settings),
+                    min_block_gap_ms_from_settings(audio_settings),
                     slowdown_enabled_from_settings(audio_settings),
                 )
                 progress(
@@ -506,6 +508,7 @@ def assemble_generation_output(
                         speed_up_percent=max(100, speed_up_percent),
                         allow_slowdown=slowdown_enabled_from_settings(audio_settings),
                         sentence_gap_ms=sentence_gap_ms_from_settings(audio_settings),
+                        min_block_gap_ms=min_block_gap_ms_from_settings(audio_settings),
                         output_path=temporary_path / "aligned.wav",
                         diagnostics=alignment_diagnostics,
                         backend=backend,

@@ -561,7 +561,13 @@ class VoiceoverRepairTests(unittest.TestCase):
                         else group.end_ms
                     )
                     cursor, duration, delay = advance_timing(
-                        group, cursor, end, settings, root, threading.Event()
+                        group,
+                        cursor,
+                        end,
+                        settings,
+                        root,
+                        threading.Event(),
+                        has_next_block=index + 1 < len(groups),
                     )
                     actual = diagnostics["blocks"][index]
                     self.assertEqual(actual["original_audio_ms"], duration)

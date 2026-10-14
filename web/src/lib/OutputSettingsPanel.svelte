@@ -142,7 +142,8 @@
   const audioSyncKeys = [
     'synchronization_delay_ms',
     'synchronization_speed',
-    'synchronization_sentence_gap_ms'
+    'synchronization_sentence_gap_ms',
+    'synchronization_min_block_gap_ms'
   ];
   function applicableOutputKeys(mode = exportMode) {
     if (audiobookWorkspace)
@@ -1029,7 +1030,7 @@
               Timing is recalculated against each remaining subtitle window so
               long lines cannot silently compound drift.
             </p>
-            <div class="mt-4 grid gap-4 sm:grid-cols-3">
+            <div class="mt-4 grid gap-4 sm:grid-cols-2">
               <label
                 >Maximum start delay (ms)<input
                   type="number"
@@ -1061,7 +1062,7 @@
                 /></label
               >
               <label
-                >Sentence gap (ms)<input
+                >Sentence gap within a block (ms)<input
                   type="number"
                   min="0"
                   max="5000"
@@ -1077,7 +1078,28 @@
                   class="field"
                 /></label
               >
+              <label
+                >Minimum block gap (ms)<input
+                  type="number"
+                  min="0"
+                  max="5000"
+                  step="10"
+                  value={Number(
+                    audioValue('synchronization_min_block_gap_ms', 100)
+                  )}
+                  oninput={(event) =>
+                    setAudio(
+                      'synchronization_min_block_gap_ms',
+                      Number(event.currentTarget.value)
+                    )}
+                  class="field"
+                /></label
+              >
             </div>
+            <p class="muted mt-3 text-xs">
+              The minimum block gap remains during catch-up. Longer pauses are
+              preserved; set it to 0 to disable the minimum.
+            </p>
           </fieldset>
         {/if}
 

@@ -799,6 +799,10 @@ class DurableOutputAssemblyTests(unittest.TestCase):
             800,
             snapshot["sections"]["audio"]["synchronization_delay_ms"],
         )
+        self.assertEqual(
+            100,
+            snapshot["sections"]["audio"]["synchronization_min_block_gap_ms"],
+        )
         self.assertEqual(64, len(snapshot["settings_hash"]))
 
         with self.database.session() as session:
@@ -1048,7 +1052,11 @@ class DurableOutputAssemblyTests(unittest.TestCase):
 
         self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
         self.assertEqual(1, result["synchronization"]["block_count"])
+        self.assertEqual(100, result["synchronization"]["configured_min_block_gap_ms"])
         artifact, _output_path = artifacts.resolve(result["artifact_id"])
+        self.assertEqual(
+            0, artifact.metadata_json["synchronization"]["blocks"][0]["min_block_gap_ms"]
+        )
         self.assertEqual(
             ["a0001", "a0001"],
             [item["alignment_group"] for item in artifact.metadata_json["takes"]],
@@ -1137,6 +1145,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
                 **audio_profile["override"],
                 "synchronization_speed": 3.0,
                 "synchronization_delay_ms": 0,
+                "synchronization_min_block_gap_ms": 250,
             },
         )
 
@@ -1149,6 +1158,7 @@ class DurableOutputAssemblyTests(unittest.TestCase):
 
         self.assertEqual("subtitle_timed", result["synchronization"]["mode"])
         self.assertEqual(3.0, result["synchronization"]["configured_max_speed_factor"])
+        self.assertEqual(250, result["synchronization"]["configured_min_block_gap_ms"])
         self.assertEqual(1, result["synchronization"]["speed_adjusted_block_count"])
 
     def test_selected_run_assembles_its_cumulative_take_snapshot(self):

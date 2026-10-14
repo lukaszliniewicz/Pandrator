@@ -439,7 +439,8 @@ const SETTING_ORDER: Record<string, string[]> = {
     'synchronization_delay_ms',
     'synchronization_speed',
     'synchronization_slowdown_enabled',
-    'synchronization_sentence_gap_ms'
+    'synchronization_sentence_gap_ms',
+    'synchronization_min_block_gap_ms'
   ],
   rvc: [
     'enabled',
@@ -857,6 +858,7 @@ export function numberPresentation(key: string): NumberPresentation {
     synchronization_delay_ms: { min: 0, max: 10000, step: 50 },
     synchronization_speed: { min: 1, max: 4, step: 0.01 },
     synchronization_sentence_gap_ms: { min: 0, max: 5000, step: 10 },
+    synchronization_min_block_gap_ms: { min: 0, max: 5000, step: 10 },
     mix_source_gain_db: { min: -60, max: 12, step: 0.5 },
     mix_voice_gain_db: { min: -30, max: 12, step: 0.5 },
     mix_voice_lufs: { min: -30, max: -8, step: 0.5 },
@@ -980,6 +982,7 @@ export function settingLabel(key: string): string {
     synchronization_slowdown_enabled:
       'Allow gentle voiceover slowdown (down to 0.9×)',
     synchronization_sentence_gap_ms: 'Generated sentence gap',
+    synchronization_min_block_gap_ms: 'Minimum gap between speech blocks (ms)',
     mix_source_gain_db: 'Source soundtrack level (dB)',
     mix_voice_gain_db: 'Voiceover level (dB)',
     mix_voice_lufs: 'Voiceover loudness target (LUFS)',

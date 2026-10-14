@@ -35,6 +35,30 @@ def test_gap_is_still_available_for_natural_overrun_without_speedup():
     assert decision.start_delay_ms == 0
 
 
+def test_reserved_inter_block_gap_changes_reserved_speech_budget_and_catchup():
+    baseline = alignment_adjustment(
+        2030, 2000, 0, delay_start_ms=0, max_speed_factor=1.2,
+        speech_window_duration_ms=2000,
+    )
+    reserved = alignment_adjustment(
+        2030, 2000, 0, delay_start_ms=0, max_speed_factor=1.2,
+        speech_window_duration_ms=2000, min_block_gap_ms=100,
+    )
+    assert baseline.speed_factor == 1.0
+    assert reserved.available_ms == 1900
+    assert reserved.speed_factor > 1.0
+
+
+def test_minimum_block_gap_is_reserved_before_delay_and_slowdown():
+    decision = alignment_adjustment(
+        1800, 2000, 0, delay_start_ms=800, max_speed_factor=1.2,
+        speech_window_duration_ms=2000, min_block_gap_ms=100,
+    )
+    assert decision.start_delay_ms == 70
+    assert 0.9 < decision.speed_factor < 1.0
+    assert decision.start_delay_ms + math.ceil(1800 / decision.speed_factor) + 100 <= 2000
+
+
 def test_small_overruns_are_bounded_across_a_sequence_not_reset_each_block():
     drift = 0
     saw_catchup = False
@@ -98,6 +122,7 @@ def test_real_assembly_and_repair_preview_share_cue_local_placement(backend):
             preview_diagnostics = {}
             cursor, duration, delay = advance_timing(
                 group, cursor, slot_end, settings, root, threading.Event(),
+                has_next_block=index < len(blocks) - 1,
                 diagnostics=preview_diagnostics,
             )
             detail = diagnostics["blocks"][index]
@@ -132,8 +157,8 @@ def test_carried_drift_slowdown_fits_own_cue_and_repair_preview(backend):
         )
 
         first, second, third = diagnostics["blocks"]
-        assert first["drift_after_ms"] == 200
-        assert second["drift_before_ms"] == 200
+        assert first["drift_after_ms"] == 300
+        assert second["drift_before_ms"] == 300
         assert second["effective_speed_factor"] < 1.0
         assert second["processed_audio_ms"] + second["drift_before_ms"] <= 2000
         assert second["drift_after_ms"] == 0
@@ -150,6 +175,7 @@ def test_carried_drift_slowdown_fits_own_cue_and_repair_preview(backend):
             preview_diagnostics = {}
             cursor, duration, delay = advance_timing(
                 group, cursor, slot_end, settings, root, threading.Event(),
+                has_next_block=index < len(blocks) - 1,
                 diagnostics=preview_diagnostics,
             )
             detail = diagnostics["blocks"][index]
@@ -184,6 +210,7 @@ def test_repair_preview_rejects_candidate_past_drift_adjusted_own_cue(monkeypatc
         )
         cursor, _, _ = advance_timing(
             first, 0, 1000, settings, root, threading.Event(),
+            has_next_block=True,
         )
         preview_diagnostics = {}
         cursor, duration, delay = advance_timing(
@@ -195,3 +222,163 @@ def test_repair_preview_rejects_candidate_past_drift_adjusted_own_cue(monkeypatc
         assert delay == 0
         assert preview_diagnostics["processed_audio_ms"] == 1000
         assert cursor == 5000
+
+
+@pytest.mark.parametrize("backend", ["streaming", "pydub"])
+@pytest.mark.parametrize("configured_gap,expected_gap", [(None, 100), (0, 0), (250, 250)])
+def test_inter_block_floor_and_preview_carry_uncatchable_overrun(
+    backend, configured_gap, expected_gap
+):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        paths = [root / "overrun.wav", root / "last.wav"]
+        for path, duration in zip(paths, [1200, 200], strict=True):
+            Sine(440).to_audio_segment(duration=duration).export(path, format="wav")
+        blocks = [
+            AudioAlignmentBlock("1", "Overrun", 0, 1000, [paths[0]], [1]),
+            AudioAlignmentBlock("2", "Last", 1000, 2000, [paths[1]], [2]),
+        ]
+        align_kwargs = {}
+        settings = {
+            "synchronization_delay_ms": 0,
+            "synchronization_speed": 1.0,
+            "synchronization_slowdown_enabled": False,
+        }
+        if configured_gap is not None:
+            align_kwargs["min_block_gap_ms"] = configured_gap
+            settings["synchronization_min_block_gap_ms"] = configured_gap
+        diagnostics = {}
+        output = align_audio_blocks(
+            blocks,
+            root,
+            output_path=root / f"floor-{backend}-{configured_gap}.wav",
+            backend=backend,
+            delay_start_ms=0,
+            speed_up_percent=100,
+            sentence_gap_ms=0,
+            allow_slowdown=False,
+            diagnostics=diagnostics,
+            **align_kwargs,
+        )
+
+        first, last = diagnostics["blocks"]
+        assert diagnostics["configured_min_block_gap_ms"] == expected_gap
+        assert first["min_block_gap_ms"] == expected_gap
+        assert first["silence_after_ms"] == expected_gap
+        assert first["drift_after_ms"] == 200 + expected_gap
+        assert last["min_block_gap_ms"] == 0
+        assert last["silence_after_ms"] == 600 - expected_gap
+        assert last["drift_before_ms"] == 200 + expected_gap
+        rendered = AudioSegment.from_wav(output)
+        assert len(rendered) == 2000
+        if expected_gap:
+            assert rendered[1202:1200 + expected_gap - 2].rms == 0
+        assert rendered[1200 + expected_gap + 2:1200 + expected_gap + 20].rms > 0
+
+        cursor = 0
+        for index, block in enumerate(blocks):
+            group = TimingGroup(
+                segments=[], paths=block.audio_files, start_ms=block.start_ms,
+                end_ms=block.end_ms, references=block.subtitles,
+            )
+            slot_end = blocks[index + 1].start_ms if index == 0 else block.end_ms
+            preview_diagnostics = {}
+            cursor, duration, delay = advance_timing(
+                group,
+                cursor,
+                slot_end,
+                settings,
+                root,
+                threading.Event(),
+                has_next_block=index == 0,
+                diagnostics=preview_diagnostics,
+            )
+            detail = diagnostics["blocks"][index]
+            assert duration == detail["original_audio_ms"]
+            assert delay == detail["start_delay_ms"] == 0
+            assert preview_diagnostics["processed_audio_ms"] == detail["processed_audio_ms"]
+            assert cursor == slot_end + detail["drift_after_ms"]
+
+
+@pytest.mark.parametrize("backend", ["streaming", "pydub"])
+def test_existing_large_pause_and_final_padding_are_not_double_counted(backend):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        first_path = root / "first.wav"
+        last_path = root / "last.wav"
+        Sine(440).to_audio_segment(duration=300).export(first_path, format="wav")
+        Sine(440).to_audio_segment(duration=200).export(last_path, format="wav")
+        diagnostics = {}
+        output = align_audio_blocks(
+            [
+                AudioAlignmentBlock("1", "First", 0, 300, [first_path], [1]),
+                AudioAlignmentBlock("2", "Last", 1000, 1500, [last_path], [2]),
+            ],
+            root,
+            output_path=root / f"pause-{backend}.wav",
+            backend=backend,
+            delay_start_ms=0,
+            speed_up_percent=100,
+            sentence_gap_ms=0,
+            allow_slowdown=False,
+            diagnostics=diagnostics,
+        )
+        first, last = diagnostics["blocks"]
+        assert first["silence_after_ms"] == 700
+        assert first["drift_after_ms"] == 0
+        assert first["min_block_gap_ms"] == 100
+        assert last["min_block_gap_ms"] == 0
+        assert last["silence_after_ms"] == 300
+        assert len(AudioSegment.from_wav(output)) == 1500
+
+        single_diagnostics = {}
+        single_output = align_audio_blocks(
+            [AudioAlignmentBlock("single", "Single", 0, 100, [last_path], [1])],
+            root,
+            output_path=root / f"single-{backend}.wav",
+            backend=backend,
+            delay_start_ms=0,
+            speed_up_percent=100,
+            sentence_gap_ms=0,
+            allow_slowdown=False,
+            diagnostics=single_diagnostics,
+        )
+        single = single_diagnostics["blocks"][0]
+        rendered = AudioSegment.from_wav(single_output)
+        assert single_diagnostics["configured_min_block_gap_ms"] == 100
+        assert single["min_block_gap_ms"] == 0
+        assert single["silence_after_ms"] == 0
+        assert len(rendered) == 200
+        assert rendered[:100].max_dBFS > float("-inf")
+
+
+@pytest.mark.parametrize("backend", ["streaming", "pydub"])
+def test_sentence_file_gap_is_separate_from_inter_block_floor(backend):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        first_paths = [root / "first-a.wav", root / "first-b.wav"]
+        next_path = root / "next.wav"
+        for path in first_paths:
+            Sine(440).to_audio_segment(duration=100).export(path, format="wav")
+        Sine(440).to_audio_segment(duration=100).export(next_path, format="wav")
+        diagnostics = {}
+        align_audio_blocks(
+            [
+                AudioAlignmentBlock("1", "Combined", 0, 250, first_paths, [1, 2]),
+                AudioAlignmentBlock("2", "Next", 250, 1000, [next_path], [3]),
+            ],
+            root,
+            output_path=root / f"sentence-{backend}.wav",
+            backend=backend,
+            delay_start_ms=0,
+            speed_up_percent=100,
+            sentence_gap_ms=50,
+            allow_slowdown=False,
+            diagnostics=diagnostics,
+        )
+        first = diagnostics["blocks"][0]
+        assert diagnostics["configured_sentence_gap_ms"] == 50
+        assert diagnostics["configured_min_block_gap_ms"] == 100
+        assert first["original_audio_ms"] == 250
+        assert first["min_block_gap_ms"] == 100
+        assert first["silence_after_ms"] == 100

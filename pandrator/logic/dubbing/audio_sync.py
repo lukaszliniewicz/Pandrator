@@ -64,6 +64,8 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 SLOWDOWN_FLOOR = 0.9
 #: Fallback gap between sentence files inside one speech block.
 DEFAULT_SENTENCE_GAP_MS = 100
+#: Minimum silence between separately aligned speech blocks.
+DEFAULT_MIN_BLOCK_GAP_MS = 100
 #: Do not process an entire take to remove an inaudible timing discrepancy.
 #: The relative limit also protects very short cues; carried drift counts too.
 NATURAL_OVERRUN_TOLERANCE_MS = 150
@@ -105,6 +107,28 @@ def sentence_gap_ms_from_settings(settings: Any, default: int = DEFAULT_SENTENCE
             raw = default
         else:
             raw = settings.get("synchronization_sentence_gap_ms")
+            if raw is None or raw == "":
+                raw = default
+    try:
+        return max(0, min(5000, int(raw)))
+    except (TypeError, ValueError):
+        return max(0, min(5000, int(default)))
+
+
+def min_block_gap_ms_from_settings(
+    settings: Any, default: int = DEFAULT_MIN_BLOCK_GAP_MS
+) -> int:
+    """Return the clamped minimum gap between ordered speech blocks.
+
+    Missing, ``None``, empty and invalid values use the default. An explicit
+    zero disables the inter-block floor.
+    """
+    raw: Any = default
+    if isinstance(settings, dict):
+        if "synchronization_min_block_gap_ms" not in settings:
+            raw = default
+        else:
+            raw = settings.get("synchronization_min_block_gap_ms")
             if raw is None or raw == "":
                 raw = default
     try:
@@ -305,6 +329,7 @@ def alignment_adjustment(
     max_speed_factor: float,
     allow_slowdown: bool = True,
     speech_window_duration_ms: int | None = None,
+    min_block_gap_ms: int = 0,
 ) -> AudioAlignmentAdjustment:
     """Plan speed and placement against the *remaining* timing window.
 
@@ -321,7 +346,8 @@ def alignment_adjustment(
     duration = max(0, int(audio_duration_ms))
     window = max(1, int(window_duration_ms))
     drift = max(0, int(drift_ms))
-    available = max(1, window - drift)
+    outgoing_gap = max(0, min(5000, int(min_block_gap_ms)))
+    available = max(1, window - drift - outgoing_gap)
     maximum = min(4.0, max(1.0, float(max_speed_factor)))
     # Tolerate a small *total* overrun rather than resampling for a few
     # milliseconds. Once carried delay consumes this budget, catch up against
@@ -330,7 +356,7 @@ def alignment_adjustment(
         NATURAL_OVERRUN_TOLERANCE_MS,
         int(window * NATURAL_OVERRUN_TOLERANCE_RATIO),
     )
-    total_overrun = drift + duration - window
+    total_overrun = drift + duration + outgoing_gap - window
     target_duration = max(1, available - 1)
     needed = duration / target_duration if total_overrun > tolerance else 1.0
     speed_factor = min(maximum, max(1.0, needed))
@@ -435,6 +461,7 @@ def _align_audio_blocks_streaming(
     diagnostics: dict[str, Any] | None,
     cancel_event: threading.Event | None,
     allow_slowdown: bool = True,
+    min_block_gap_ms: int = DEFAULT_MIN_BLOCK_GAP_MS,
 ) -> str:
     from pandrator.web.audio_assembly import (
         AudioAssemblyPart,
@@ -463,6 +490,7 @@ def _align_audio_blocks_streaming(
     )
     maximum_speed = min(4.0, max(1.0, float(speed_up_percent) / 100.0))
     sentence_gap = max(0, min(5000, int(sentence_gap_ms)))
+    block_gap = max(0, min(5000, int(min_block_gap_ms)))
     current_time = 0
     alignment_details: list[dict[str, Any]] = []
     destination = Path(output_path) if output_path else session_path / "aligned_audio.wav"
@@ -514,6 +542,7 @@ def _align_audio_blocks_streaming(
             else:
                 slot_end_ms = max(block_start_ms + 1, int(block.end_ms))
             window_duration = slot_end_ms - block_start_ms
+            effective_gap = block_gap if index < len(ordered_blocks) - 1 else 0
             speech_window_duration = max(1, int(block.end_ms) - int(block.start_ms))
             initial_silence_ms = max(0, block_start_ms - current_time)
             current_time += initial_silence_ms
@@ -526,6 +555,7 @@ def _align_audio_blocks_streaming(
                 max_speed_factor=maximum_speed,
                 allow_slowdown=allow_slowdown,
                 speech_window_duration_ms=speech_window_duration,
+                min_block_gap_ms=effective_gap,
             )
             processed_path = block_path
             processed_duration = original_audio_duration
@@ -587,7 +617,7 @@ def _align_audio_blocks_streaming(
 
             silence_before_ms = initial_silence_ms + adjustment.start_delay_ms
             current_time += adjustment.start_delay_ms + processed_duration
-            silence_after_ms = max(0, slot_end_ms - current_time)
+            silence_after_ms = max(effective_gap, slot_end_ms - current_time)
             current_time += silence_after_ms
             drift_after_ms = max(0, current_time - slot_end_ms)
             effective_speed = original_audio_duration / max(1, processed_duration)
@@ -613,6 +643,8 @@ def _align_audio_blocks_streaming(
                     "start_delay_ms": adjustment.start_delay_ms,
                     "drift_before_ms": drift_at_start,
                     "drift_after_ms": drift_after_ms,
+                    "min_block_gap_ms": effective_gap,
+                    "silence_after_ms": silence_after_ms,
                 }
             )
             logger.info(
@@ -652,6 +684,7 @@ def _align_audio_blocks_streaming(
                 "configured_min_speed_factor": SLOWDOWN_FLOOR if allow_slowdown else 1.0,
                 "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
                 "configured_sentence_gap_ms": sentence_gap,
+                "configured_min_block_gap_ms": block_gap,
                 "block_count": len(alignment_details),
                 "speed_adjusted_block_count": len(adjusted),
                 "slowed_block_count": len(slowed),
@@ -693,6 +726,7 @@ def align_audio_blocks(
     delay_start_ms: int = 2000,
     speed_up_percent: int = 115,
     sentence_gap_ms: int = 100,
+    min_block_gap_ms: int = DEFAULT_MIN_BLOCK_GAP_MS,
     ffmpeg_executable: str = "ffmpeg",
     run_func: Callable[..., Any] = subprocess.run,
     output_path: str | os.PathLike[str] | None = None,
@@ -713,6 +747,7 @@ def align_audio_blocks(
             delay_start_ms=delay_start_ms,
             speed_up_percent=speed_up_percent,
             sentence_gap_ms=sentence_gap_ms,
+            min_block_gap_ms=min_block_gap_ms,
             ffmpeg_executable=ffmpeg_executable,
             output_path=output_path,
             diagnostics=diagnostics,
@@ -730,6 +765,7 @@ def align_audio_blocks(
     current_time = 0
     maximum_speed = min(4.0, max(1.0, float(speed_up_percent) / 100.0))
     sentence_gap = max(0, min(5000, int(sentence_gap_ms)))
+    block_gap = max(0, min(5000, int(min_block_gap_ms)))
     alignment_details: list[dict[str, Any]] = []
 
     for index, block in enumerate(ordered_blocks):
@@ -739,6 +775,7 @@ def align_audio_blocks(
         else:
             slot_end_ms = max(block_start_ms + 1, int(block.end_ms))
         window_duration = slot_end_ms - block_start_ms
+        effective_gap = block_gap if index < len(ordered_blocks) - 1 else 0
         speech_window_duration = max(1, int(block.end_ms) - int(block.start_ms))
 
         if current_time < block_start_ms:
@@ -763,6 +800,7 @@ def align_audio_blocks(
             max_speed_factor=maximum_speed,
             allow_slowdown=allow_slowdown,
             speech_window_duration_ms=speech_window_duration,
+            min_block_gap_ms=effective_gap,
         )
         processed_audio = block_audio
         applied_speed = adjustment.speed_factor
@@ -810,9 +848,10 @@ def align_audio_blocks(
             current_time += adjustment.start_delay_ms
         final_audio += processed_audio
         current_time += len(processed_audio)
-        if current_time < slot_end_ms:
-            final_audio += AudioSegment.silent(duration=slot_end_ms - current_time)
-            current_time = slot_end_ms
+        silence_after_ms = max(effective_gap, slot_end_ms - current_time)
+        if silence_after_ms:
+            final_audio += AudioSegment.silent(duration=silence_after_ms)
+            current_time += silence_after_ms
         drift_after_ms = max(0, current_time - slot_end_ms)
         effective_speed = original_audio_duration / max(1, len(processed_audio))
         alignment_details.append(
@@ -829,6 +868,8 @@ def align_audio_blocks(
                 "start_delay_ms": adjustment.start_delay_ms,
                 "drift_before_ms": drift_at_start,
                 "drift_after_ms": drift_after_ms,
+                "min_block_gap_ms": effective_gap,
+                "silence_after_ms": silence_after_ms,
             }
         )
         logger.info(
@@ -856,6 +897,7 @@ def align_audio_blocks(
                 "configured_min_speed_factor": SLOWDOWN_FLOOR if allow_slowdown else 1.0,
                 "configured_max_start_delay_ms": max(0, int(delay_start_ms)),
                 "configured_sentence_gap_ms": sentence_gap,
+                "configured_min_block_gap_ms": block_gap,
                 "block_count": len(alignment_details),
                 "speed_adjusted_block_count": len(adjusted),
                 "slowed_block_count": len(slowed),
@@ -1390,6 +1432,7 @@ def synchronize_audio_video_with_result(
     delay_start_ms: int = 2000,
     speed_up_percent: int = 115,
     sentence_gap_ms: int = 100,
+    min_block_gap_ms: int = DEFAULT_MIN_BLOCK_GAP_MS,
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
@@ -1412,6 +1455,7 @@ def synchronize_audio_video_with_result(
         delay_start_ms=delay_start_ms,
         speed_up_percent=speed_up_percent,
         sentence_gap_ms=sentence_gap_ms,
+        min_block_gap_ms=min_block_gap_ms,
         ffmpeg_executable=ffmpeg_executable,
     )
     mix_result = mix_func(
@@ -1450,6 +1494,7 @@ def synchronize_audio_video(
     delay_start_ms: int = 2000,
     speed_up_percent: int = 115,
     sentence_gap_ms: int = 100,
+    min_block_gap_ms: int = DEFAULT_MIN_BLOCK_GAP_MS,
     source_gain_db: float = 0.0,
     voice_gain_db: float = 0.0,
     voice_lufs: float = -16.0,
@@ -1469,6 +1514,7 @@ def synchronize_audio_video(
         delay_start_ms=delay_start_ms,
         speed_up_percent=speed_up_percent,
         sentence_gap_ms=sentence_gap_ms,
+        min_block_gap_ms=min_block_gap_ms,
         source_gain_db=source_gain_db,
         voice_gain_db=voice_gain_db,
         voice_lufs=voice_lufs,

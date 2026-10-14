@@ -515,6 +515,7 @@ Wrong.
                             delay_start_ms=0,
                             speed_up_percent=100,
                             sentence_gap_ms=0,
+                            min_block_gap_ms=0,
                             output_path=Path(temp_dir, f"rejected-{backend}.wav"),
                             diagnostics=diagnostics,
                             backend=backend,
@@ -899,6 +900,7 @@ Wrong.
                 sentence_wavs_dir=wavs_dir,
                 delay_start_ms=1234,
                 speed_up_percent=130,
+                min_block_gap_ms=275,
                 align_func=fake_align,
                 mix_func=fake_mix,
             )
@@ -906,13 +908,15 @@ Wrong.
             self.assertTrue(output_path.endswith("final_output.mp4"))
             self.assertEqual(calls["align_kwargs"]["delay_start_ms"], 1234)
             self.assertEqual(calls["align_kwargs"]["speed_up_percent"], 130)
+            self.assertEqual(calls["align_kwargs"]["min_block_gap_ms"], 275)
             self.assertEqual(len(calls["blocks"]), 2)
             self.assertEqual(calls["mix"][0], video_path)
 
     def test_synchronize_audio_video_with_result_reports_sync_artifacts(self):
         calls = {}
 
-        def fake_align(_blocks, session_dir, **_kwargs):
+        def fake_align(_blocks, session_dir, **kwargs):
+            calls["align_kwargs"] = kwargs
             aligned_path = os.path.join(session_dir, "aligned_audio.wav")
             Path(aligned_path).write_bytes(b"aligned")
             return aligned_path
@@ -937,6 +941,7 @@ Wrong.
                 srt_path,
                 speech_blocks_path,
                 sentence_wavs_dir=wavs_dir,
+                min_block_gap_ms=350,
                 align_func=fake_align,
                 mix_func=fake_mix,
             )
@@ -950,6 +955,7 @@ Wrong.
             )
             self.assertEqual(result.mixed_audio_path, os.path.join(temp_dir, "mixed_audio.wav"))
             self.assertEqual(calls["mix"][1], result.aligned_audio_path)
+            self.assertEqual(calls["align_kwargs"]["min_block_gap_ms"], 350)
 
     def test_dubbing_handler_sync_delegates_to_native_sync(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1168,6 +1174,36 @@ class DubbingSlowdownDefaultTests(unittest.TestCase):
             100,
             audio_sync.sentence_gap_ms_from_settings(
                 {"synchronization_sentence_gap_ms": None}
+            ),
+        )
+
+    def test_minimum_block_gap_settings_default_clamp_and_explicit_zero(self):
+        self.assertEqual(100, audio_sync.DEFAULT_MIN_BLOCK_GAP_MS)
+        self.assertEqual(100, audio_sync.min_block_gap_ms_from_settings({}))
+        for value in (None, "", "invalid"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    100,
+                    audio_sync.min_block_gap_ms_from_settings(
+                        {"synchronization_min_block_gap_ms": value}
+                    ),
+                )
+        self.assertEqual(
+            0,
+            audio_sync.min_block_gap_ms_from_settings(
+                {"synchronization_min_block_gap_ms": 0}
+            ),
+        )
+        self.assertEqual(
+            5000,
+            audio_sync.min_block_gap_ms_from_settings(
+                {"synchronization_min_block_gap_ms": 6000}
+            ),
+        )
+        self.assertEqual(
+            0,
+            audio_sync.min_block_gap_ms_from_settings(
+                {"synchronization_min_block_gap_ms": -25}
             ),
         )
 

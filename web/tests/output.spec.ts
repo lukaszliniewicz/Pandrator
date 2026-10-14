@@ -27,6 +27,44 @@ async function createSession(page: Page, workflowKind: string) {
   return { session: await response.json(), headers };
 }
 
+test('voiceover minimum block gap defaults to 100 ms and saves custom values and zero', async ({
+  page
+}) => {
+  await signIn(page);
+  const { session } = await createSession(page, 'voiceover');
+  await page.goto(`/sessions/${session.id}/output`);
+  const gap = page.getByRole('spinbutton', {
+    name: 'Minimum block gap (ms)',
+    exact: true
+  });
+  await expect(gap).toHaveValue('100');
+
+  for (const value of ['250', '0']) {
+    await gap.fill(value);
+    await page.getByRole('button', { name: 'Save output profile' }).click();
+    await expect(
+      page.getByText('Output settings saved for this project.')
+    ).toBeVisible();
+    const response = await page.request.get(
+      `/api/v1/sessions/${session.id}/settings/audio`
+    );
+    expect(response.ok()).toBeTruthy();
+    const saved = await response.json();
+    expect(saved.override.synchronization_min_block_gap_ms).toBe(Number(value));
+    expect(saved.effective.synchronization_min_block_gap_ms).toBe(
+      Number(value)
+    );
+    await page.reload();
+    await expect(gap).toHaveValue(value);
+    await expect(
+      page.getByRole('spinbutton', {
+        name: 'Sentence gap within a block (ms)',
+        exact: true
+      })
+    ).toHaveValue('100');
+  }
+});
+
 for (const kind of ['export.create', 'export.variant']) {
   test(`output retains ${kind} status and progress after reload`, async ({
     page
