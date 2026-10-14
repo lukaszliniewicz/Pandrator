@@ -598,51 +598,81 @@ test('a paused run stays distinct from starting a new run', async ({
   await expect(note).toContainText('may be regenerated');
 });
 
-test('failed generation offers the safe continuation action', async ({
-  page
-}) => {
-  const { sessionId, revisionId } = await setupSession(page);
-  await mockPreview(page, sessionId, () => previewsFor(revisionId).missing);
-  let startCount = 0;
-  await page.route(
-    `**/api/v1/sessions/${sessionId}/generation-runs*`,
-    async (route) => {
-      if (route.request().method() === 'POST') {
-        startCount += 1;
+for (const history of [false, true]) {
+  test(`failed generation offers safe continuation from ${history ? 'history' : 'the active mix'}`, async ({
+    page
+  }) => {
+    const { sessionId, revisionId } = await setupSession(page);
+    await mockPreview(page, sessionId, () => previewsFor(revisionId).missing);
+    let startCount = 0;
+    await page.route(
+      `**/api/v1/sessions/${sessionId}/generation-runs*`,
+      async (route) => {
+        if (route.request().method() === 'POST') {
+          startCount += 1;
+          return route.fulfill({
+            status: 409,
+            json: { error: { message: 'Unexpected start' } }
+          });
+        }
         return route.fulfill({
-          status: 409,
-          json: { error: { message: 'Unexpected start' } }
+          json: {
+            items: [
+              {
+                ...startedRun(sessionId, revisionId),
+                id: 'failed-original-run',
+                status: 'failed',
+                error_message: 'A block needs correction.'
+              }
+            ]
+          }
         });
       }
-      return route.fulfill({
+    );
+    await page.route('**/api/v1/generation-runs/failed-original-run', (route) =>
+      route.fulfill({
         json: {
-          items: [
-            {
-              ...startedRun(sessionId, revisionId),
-              id: 'failed-original-run',
-              status: 'failed',
-              error_message: 'A block needs correction.'
-            }
-          ]
+          ...startedRun(sessionId, revisionId),
+          id: 'failed-original-run',
+          status: 'failed',
+          error_message: 'A block needs correction.'
         }
-      });
+      })
+    );
+    await page.goto(`/sessions/${sessionId}`);
+    await page.getByRole('link', { name: 'Generation', exact: true }).click();
+    if (history) {
+      await page.getByRole('button', { name: 'advanced', exact: true }).click();
+      await page.route(
+        `**/api/v1/sessions/${sessionId}/generation-segments?**`,
+        async (route) => {
+          const url = new URL(route.request().url());
+          url.searchParams.delete('generation_run_id');
+          const response = await route.fetch({ url: url.toString() });
+          await route.fulfill({ response });
+        }
+      );
+      await page
+        .getByRole('combobox', { name: 'Audio view', exact: true })
+        .selectOption('failed-original-run');
+      await expect(
+        page.getByRole('combobox', { name: 'Audio view', exact: true })
+      ).toHaveValue('failed-original-run');
     }
-  );
-  await page.goto(`/sessions/${sessionId}`);
-  await page.getByRole('link', { name: 'Generation', exact: true }).click();
-  const recovery = page.getByTestId('generation-recovery-continue');
-  await expect(recovery).toBeVisible();
-  await recovery.click();
-  const dialog = page.getByTestId('generation-start-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(
-    dialog.getByTestId('generation-start-mode-continue')
-  ).toBeChecked();
-  await expect(dialog.getByTestId('generation-start-counts')).toContainText(
-    '4 kept'
-  );
-  expect(startCount).toBe(0);
-});
+    const recovery = page.getByTestId('generation-recovery-continue');
+    await expect(recovery).toBeVisible();
+    await recovery.click();
+    const dialog = page.getByTestId('generation-start-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByTestId('generation-start-mode-continue')
+    ).toBeChecked();
+    await expect(dialog.getByTestId('generation-start-counts')).toContainText(
+      '4 kept'
+    );
+    expect(startCount).toBe(0);
+  });
+}
 
 test('an incomplete preview cannot bypass the confirmation guard', async ({
   page

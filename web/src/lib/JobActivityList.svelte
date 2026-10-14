@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { errorMessage } from './errors';
   import {
     Ban,
@@ -7,12 +9,14 @@
     CircleAlert,
     FileText,
     LoaderCircle,
+    Play,
     RefreshCw
   } from '@lucide/svelte';
   import type { JobLogRecord as JobLog, JobRecord } from './api-models';
   import { appState } from './app-state.svelte';
-  import { jobApi } from './domain-api';
+  import { generationApi, jobApi } from './domain-api';
   import { jobProgressDetail } from './job-progress';
+  import GenerationStartDialog from './GenerationStartDialog.svelte';
 
   let {
     jobs,
@@ -23,6 +27,113 @@
   let loading = $state<Record<string, boolean>>({});
   let errors = $state<Record<string, string>>({});
   let canceling = $state<Record<string, boolean>>({});
+  let recovering = $state('');
+  let recovery = $state<{
+    sessionId: string;
+    planRevisionId: string;
+    runId: string;
+    projectName: string;
+    pausedRunLabel: string | null;
+  } | null>(null);
+  let recoveryController: AbortController | undefined;
+  onMount(() => () => recoveryController?.abort());
+  const projects = $derived(
+    new Map(appState.sessions.map((item) => [item.id, item]))
+  );
+
+  function projectFor(job: JobRecord) {
+    if (job.project) return job.project;
+    const id = job.session_id || job.payload_json?.session_id;
+    if (typeof id !== 'string' || !id) return null;
+    const project = projects.get(id);
+    return {
+      id,
+      name: project?.name ?? null,
+      available:
+        Boolean(project) &&
+        !project?.trashed_at &&
+        project?.status !== 'purging',
+      trashed: Boolean(project?.trashed_at)
+    };
+  }
+
+  function continuationRun(job: JobRecord) {
+    const project = projectFor(job);
+    const runId = job.generation_run_id || job.payload_json?.generation_run_id;
+    if (
+      job.kind !== 'generation.run' ||
+      job.status !== 'failed' ||
+      !project?.available ||
+      typeof runId !== 'string' ||
+      !runId
+    )
+      return null;
+    return runId;
+  }
+
+  async function openContinuation(job: JobRecord) {
+    const project = projectFor(job);
+    const runId = continuationRun(job);
+    if (!project || !runId || recovering || recovery) return;
+    recovering = job.id;
+    errors[job.id] = '';
+    recoveryController?.abort();
+    const controller = new AbortController();
+    recoveryController = controller;
+    try {
+      const [source, summary] = await Promise.all([
+        generationApi.run(runId, controller.signal),
+        generationApi.summary(project.id, controller.signal)
+      ]);
+      if (controller.signal.aborted) return;
+      if (source.session_id !== project.id || source.status !== 'failed')
+        throw new Error(
+          'This generation is no longer a failed run in this project. Open the project to check its current state.'
+        );
+      if (
+        summary.active_run &&
+        [
+          'queued',
+          'running',
+          'pausing',
+          'pause_requested',
+          'cancel_requested'
+        ].includes(summary.active_run.status)
+      )
+        throw new Error(
+          'This project already has generation in progress. Open the project to follow it.'
+        );
+      if (!summary.plan_revision_id)
+        throw new Error(
+          'No active speech plan is available. Open the project to prepare its speech plan.'
+        );
+      recovery = {
+        sessionId: project.id,
+        planRevisionId: summary.plan_revision_id,
+        runId: source.id,
+        projectName: project.name || 'this project',
+        pausedRunLabel:
+          summary.active_run?.status === 'paused' ? 'the paused run' : null
+      };
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        errors[job.id] = errorMessage(caught);
+        expanded[job.id] = true;
+      }
+    } finally {
+      if (recoveryController === controller) recovering = '';
+    }
+  }
+
+  async function continuationStarted() {
+    const sessionId = recovery?.sessionId;
+    recovery = null;
+    if (sessionId)
+      await goto(
+        `/sessions/${encodeURIComponent(sessionId)}/generation?view=active`
+      );
+    void appState.refresh().catch(() => undefined);
+  }
 
   function eventLabel(event: JobLog) {
     if (event.event_type === 'job.log')
@@ -95,8 +206,10 @@
 
 <div class="surface overflow-hidden rounded-2xl">
   {#each jobs as job (job.id)}
+    {@const project = projectFor(job)}
+    {@const continuation = continuationRun(job)}
     <article class="border-b border-[var(--line)] last:border-0">
-      <div class="flex flex-wrap items-center gap-4 p-4">
+      <div class="flex flex-wrap items-start gap-4 p-4 lg:items-center">
         {#if ['running', 'queued', 'cancel_requested'].includes(job.status)}
           <LoaderCircle class="animate-spin text-[var(--accent)]" size={19} />
         {:else if job.status === 'succeeded'}
@@ -104,64 +217,112 @@
         {:else}
           <CircleAlert class="text-red-500" size={19} />
         {/if}
-        <button
-          onclick={() => toggle(job.id)}
-          class="min-w-0 flex-1 text-left"
-          aria-expanded={Boolean(expanded[job.id])}
-        >
-          <div class="flex items-center gap-2">
-            <span class="truncate font-semibold">{job.kind}</span><ChevronDown
-              class={`muted transition-transform ${expanded[job.id] ? 'rotate-180' : ''}`}
-              size={15}
-            />
-          </div>
-          <div class="muted mt-1 text-xs">
-            {job.status} - {new Date(job.created_at).toLocaleString()}
-          </div>
-          {#if currentDetail(job) && ['running', 'queued', 'cancel_requested'].includes(job.status)}<p
-              class="muted mt-1 truncate text-xs"
-              title={currentDetail(job)}
-            >
-              {currentDetail(job)}
-            </p>{/if}
-          {#if job.error_message}<p class="mt-1 text-xs text-red-500">
-              {job.error_message}
-            </p>{/if}
-        </button>
-        <div
-          class="w-32"
-          role="progressbar"
-          aria-label={`${job.kind} progress`}
-          aria-valuemin="0"
-          aria-valuemax="100"
-          aria-valuenow={progressPercent(job)}
-        >
-          <div class="h-1.5 overflow-hidden rounded-full bg-[var(--line)]">
-            <div
-              class="h-full bg-[var(--accent)] transition-[width]"
-              style={`width:${progressPercent(job)}%`}
-            ></div>
-          </div>
-          <div class="muted mt-1 text-right text-[.65rem]">
-            {progressPercent(job)}%
-          </div>
-        </div>
-        <button
-          onclick={() => {
-            expanded[job.id] = true;
-            loadLogs(job.id, true);
-          }}
-          class="btn btn-sm btn-secondary"><FileText size={14} /> Logs</button
-        >
-        {#if allowCancel && ['running', 'queued', 'cancel_requested'].includes(job.status)}
+        <div class="min-w-0 flex-1">
           <button
-            onclick={() => cancel(job)}
-            disabled={canceling[job.id]}
-            class="btn btn-sm border-red-400/40 text-red-500"
-            ><Ban size={14} />
-            {canceling[job.id] ? 'Canceling...' : 'Cancel'}</button
+            onclick={() => toggle(job.id)}
+            class="w-full text-left"
+            aria-expanded={Boolean(expanded[job.id])}
           >
-        {/if}
+            <div class="flex items-center gap-2">
+              <span class="truncate font-semibold"
+                >{job.kind === 'generation.run'
+                  ? 'Audio generation'
+                  : job.kind}</span
+              ><ChevronDown
+                class={`muted transition-transform ${expanded[job.id] ? 'rotate-180' : ''}`}
+                size={15}
+              />
+            </div>
+            <div class="muted mt-1 text-xs">
+              {job.status} - {new Date(job.created_at).toLocaleString()}
+            </div>
+            {#if currentDetail(job)}<p
+                class="muted mt-1 truncate text-xs"
+                title={currentDetail(job)}
+              >
+                {currentDetail(job)}
+              </p>{/if}
+            {#if job.error_message}<p
+                class="mt-1 break-words text-xs text-red-500 [overflow-wrap:anywhere]"
+              >
+                {job.error_message}
+              </p>{/if}
+          </button>
+          {#if project}
+            <div
+              class="muted mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
+            >
+              <span
+                class="break-words [overflow-wrap:anywhere] lg:truncate"
+                title={project.name || project.id}
+              >
+                {project.name || `Project ${project.id.slice(0, 8)}`}
+              </span>
+              {#if project.available}
+                <a
+                  class="font-semibold text-[var(--accent)]"
+                  href={`/sessions/${encodeURIComponent(project.id)}`}
+                  >Open project</a
+                >
+              {:else if project.trashed}
+                <span>In Trash — restore the project to continue.</span>
+                <a class="font-semibold text-[var(--accent)]" href="/sessions"
+                  >Open projects</a
+                >
+              {:else}
+                <span>Project unavailable</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+        <div class="flex w-full flex-wrap items-center gap-3 lg:contents">
+          <div
+            class="min-w-24 flex-1 lg:w-32 lg:flex-none"
+            role="progressbar"
+            aria-label={`${job.kind} progress`}
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={progressPercent(job)}
+          >
+            <div class="h-1.5 overflow-hidden rounded-full bg-[var(--line)]">
+              <div
+                class="h-full bg-[var(--accent)] transition-[width]"
+                style={`width:${progressPercent(job)}%`}
+              ></div>
+            </div>
+            <div class="muted mt-1 text-right text-[.65rem]">
+              {progressPercent(job)}%
+            </div>
+          </div>
+          <button
+            onclick={() => {
+              expanded[job.id] = true;
+              loadLogs(job.id, true);
+            }}
+            class="btn btn-sm btn-secondary"><FileText size={14} /> Logs</button
+          >
+          {#if continuation}
+            <button
+              onclick={() => openContinuation(job)}
+              disabled={Boolean(recovering) || Boolean(recovery)}
+              class="btn btn-sm btn-secondary"
+              aria-label={`Continue unfinished audio for ${project?.name || 'this project'}`}
+              ><Play size={14} />
+              {recovering === job.id
+                ? 'Loading continuation…'
+                : 'Continue unfinished audio…'}</button
+            >
+          {/if}
+          {#if allowCancel && ['running', 'queued', 'cancel_requested'].includes(job.status)}
+            <button
+              onclick={() => cancel(job)}
+              disabled={canceling[job.id]}
+              class="btn btn-sm border-red-400/40 text-red-500"
+              ><Ban size={14} />
+              {canceling[job.id] ? 'Canceling...' : 'Cancel'}</button
+            >
+          {/if}
+        </div>
       </div>
       {#if expanded[job.id]}
         <div
@@ -179,7 +340,7 @@
               /> Refresh</button
             >
           </div>
-          {#if errors[job.id]}<p class="text-xs text-red-500">
+          {#if errors[job.id]}<p class="text-xs text-red-500" role="alert">
               {errors[job.id]}
             </p>
           {:else if loading[job.id] && !logs[job.id]}<p
@@ -219,6 +380,19 @@
     <div class="muted p-10 text-center">No jobs recorded.</div>
   {/each}
 </div>
+
+{#if recovery}
+  <GenerationStartDialog
+    sessionId={recovery.sessionId}
+    planRevisionId={recovery.planRevisionId}
+    planLabel={recovery.projectName}
+    settingsSourceRunId={recovery.runId}
+    initialMode="continue"
+    pausedRunLabel={recovery.pausedRunLabel}
+    onclose={() => (recovery = null)}
+    onstarted={continuationStarted}
+  />
+{/if}
 
 <style>
   .error-line {

@@ -25,6 +25,7 @@ from pandrator.logic.dubbing.srt_utils import (
     split_speaker_label,
 )
 from pandrator.logic.dubbing.transcript_normalization import load_transcript
+from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
 from pandrator.runtime import DataPaths
 
 from .artifact_selection import canonical_stage_key, selected_artifacts
@@ -694,7 +695,9 @@ class WorkflowHandlers(WorkflowPrerequisiteService):
         audio = self.tts_providers.synthesize(
             text,
             settings,
-            max_attempts=int(settings.get("max_attempts") or 5),
+            max_attempts=int(
+                settings.get("max_attempts") or DEFAULT_TTS_MAX_ATTEMPTS
+            ),
             cancel_event=cancel_event,
             retry_callback=lambda attempt, total, delay: progress(
                 0.1,

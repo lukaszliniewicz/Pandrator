@@ -194,6 +194,15 @@ export class TtsSettingsSelection {
         this.draft.ttsConcurrentRequests < 1 ||
         this.draft.ttsConcurrentRequests > 8)
   );
+  invalidTtsRetries = $derived.by(() =>
+    [
+      [this.draft.ttsMaxAttempts, 20],
+      [this.draft.ttsRetryTimeoutSeconds, 3600]
+    ].some(
+      ([value, maximum]) =>
+        !Number.isInteger(value) || value < 1 || value > maximum
+    )
+  );
   supportsBatchSynthesis = $derived.by(() =>
     Boolean(
       this.selectedTtsService?.supports_batch_synthesis &&

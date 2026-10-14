@@ -8,6 +8,43 @@ Dialogue recognition lives in **Optimize text for speech → Timing & settings**
 It can annotate the document without rewriting any spoken words. Emotional
 directions and multiple voices are independent options.
 
+## Provider retries and unfinished generation
+
+Generation settings expose **Maximum attempts per request** (`tts.max_attempts`,
+default **10**, range **1–20**, including the first call) and **Retry time limit
+(seconds)** (`tts.retry_timeout_seconds`, default **900**, range **1–3600**).
+One attempt disables normal provider retries. Local Qwen infrastructure recovery
+retains its separate bounded allowance within the same time limit.
+These limits apply to each synthesis item, which can be a voice part within a
+block, rather than to the entire audiobook.
+Local Qwen streaming batches retain their existing stream timeout and
+cancellation behavior; these request retry limits apply to ordinary item calls.
+Explicit saved values remain unchanged; changing the default does not rewrite
+historical run settings. Changing these limits does not invalidate completed
+recordings.
+
+Transient failures use exponential backoff with jitter. A provider's
+`Retry-After` remains a minimum wait even when it exceeds the local backoff cap.
+Requests in the same worker process sharing a provider, account, endpoint, and
+model coordinate a 429 cooldown and stagger their first requests afterward. A successful request from
+that recovery period restores normal parallel generation. A required wait that
+cannot fit the remaining time limit ends generation instead of retrying early.
+Cancellation interrupts retry waits; a request already in progress finishes or
+hits its network timeout.
+
+**Activity & logs** identifies the project and offers **Open project**. A failed
+generation also offers **Continue unfinished audio…**. This opens a preview for
+the project's active speech plan using the failed run's saved voice and
+settings. Completed recordings stay selected; only missing, edited, or failed
+blocks are generated after confirmation. The continuation is recorded as a new
+run, preserving the failed attempt in history. Restore a project from Trash
+before continuing its work.
+
+The same continuation action in **Generation** always starts with the
+preserving choice, including when viewing history. **Regenerate everything**
+remains a separate explicit selection. **Resume previous run** is reserved for
+paused runs and retains their frozen settings.
+
 ## Character identity and casting
 
 A character has a stable ID, display name, aliases, notes, voice category

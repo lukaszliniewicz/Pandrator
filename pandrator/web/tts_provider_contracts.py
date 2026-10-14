@@ -8,6 +8,12 @@ from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 from pydub import AudioSegment
 
+from pandrator.logic.tts_retry import (
+    DEFAULT_TTS_MAX_ATTEMPTS,
+    DEFAULT_TTS_RETRY_TIMEOUT_SECONDS,
+    normalize_retry_timeout_seconds,
+)
+
 from .tts_catalogue_projection import normalize_service_id
 
 
@@ -74,8 +80,9 @@ class TtsBatchResult:
 
 @dataclass(frozen=True, slots=True)
 class TtsRetryPolicy:
-    max_attempts: int = 5
+    max_attempts: int = DEFAULT_TTS_MAX_ATTEMPTS
     maximum_delay_seconds: float = 90.0
+    maximum_elapsed_seconds: int = DEFAULT_TTS_RETRY_TIMEOUT_SECONDS
 
     @classmethod
     def from_settings(
@@ -88,17 +95,21 @@ class TtsRetryPolicy:
             attempts = int(
                 max_attempts
                 if max_attempts is not None
-                else settings.get("max_attempts") or 5
+                else settings.get("max_attempts") or DEFAULT_TTS_MAX_ATTEMPTS
             )
         except (TypeError, ValueError):
-            attempts = 5
+            attempts = DEFAULT_TTS_MAX_ATTEMPTS
         try:
             maximum_delay = float(settings.get("retry_max_delay_seconds") or 90.0)
         except (TypeError, ValueError):
             maximum_delay = 90.0
+        maximum_elapsed = normalize_retry_timeout_seconds(
+            settings.get("retry_timeout_seconds", DEFAULT_TTS_RETRY_TIMEOUT_SECONDS)
+        )
         return cls(
             max_attempts=max(1, min(20, attempts)),
             maximum_delay_seconds=max(1.0, min(300.0, maximum_delay)),
+            maximum_elapsed_seconds=maximum_elapsed,
         )
 
 

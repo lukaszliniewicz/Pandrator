@@ -21,6 +21,7 @@ from .tts_openai_http_policy import (
     _openai_models_urls,
     _should_try_next_openai_candidate,
 )
+from .tts_retry import request_timeout
 from .tts_service_catalogue import (
     KOBOLD_QWEN_API_BASE_URL as KOBOLD_QWEN_API_BASE_URL,
 )
@@ -45,7 +46,7 @@ def _kobold_qwen_is_ready(
         response = requests.get(
             f"{normalized_base_url}/readyz",
             headers=headers,
-            timeout=2,
+            timeout=request_timeout(2),
         )
         if response.status_code < 400:
             return True
@@ -59,7 +60,7 @@ def _kobold_qwen_is_ready(
         response = requests.get(
             f"{normalized_base_url}/health",
             headers=headers,
-            timeout=2,
+            timeout=request_timeout(2),
         )
         if response.status_code >= 400:
             return False
@@ -91,7 +92,7 @@ def _request_kobold_qwen_audio(
             speech_url,
             headers=_openai_auth_headers(api_key),
             json=payload,
-            timeout=KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS,
+            timeout=request_timeout(KOBOLD_QWEN_MODEL_PREPARATION_TIMEOUT_SECONDS),
         )
 
         if _should_try_next_openai_candidate(response.status_code):

@@ -269,7 +269,8 @@ export const GLOBAL_TTS_KEYS = new Set([
   'service',
   'language',
   'speed',
-  'max_attempts'
+  'max_attempts',
+  'retry_timeout_seconds'
 ]);
 
 const SETTING_ORDER: Record<string, string[]> = {
@@ -425,7 +426,13 @@ const SETTING_ORDER: Record<string, string[]> = {
     'web_research_source_chars',
     'web_research_result_chars'
   ],
-  tts: ['service', 'language', 'speed', 'max_attempts'],
+  tts: [
+    'service',
+    'language',
+    'speed',
+    'max_attempts',
+    'retry_timeout_seconds'
+  ],
   audio: [
     'audio_verification_mode',
     'sentence_silence_ms',
@@ -836,6 +843,7 @@ export function numberPresentation(key: string): NumberPresentation {
     speech_plan_min_retention: { min: 0.75, max: 1, step: 0.01, range: true },
     pitch: { min: -24, max: 24, step: 1 },
     max_attempts: { min: 1, max: 20, step: 1 },
+    retry_timeout_seconds: { min: 1, max: 3600, step: 1, suffix: 's' },
     burn_video_quality: { min: 0, max: 51, step: 1 },
     stt_compute_device: { min: 0, step: 1 },
     stt_threads: { min: 0, step: 1 },
@@ -908,6 +916,8 @@ const ACRONYMS: Record<string, string> = {
 
 export function settingLabel(key: string): string {
   const labels: Record<string, string> = {
+    max_attempts: 'Maximum attempts per request',
+    retry_timeout_seconds: 'Retry time limit (seconds)',
     language_defaults: 'Automatic language limits',
     max_chars_per_line: 'Display units per line',
     max_cps: 'Reading-speed target (units/second)',

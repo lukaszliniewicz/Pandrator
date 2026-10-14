@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, update
 
+from pandrator.logic.tts_retry import DEFAULT_TTS_MAX_ATTEMPTS
+
 from .jobs import JobQueue
 from .models import Artifact, AudioTake, GenerationRun, GenerationSegment, new_id, utcnow
 from .tts_provider_contracts import TtsSynthesisResult, synthesize_with_optional_timing
@@ -781,7 +783,8 @@ def run_generation(
                         text_to_synthesize,
                         settings_for_segment,
                         max_attempts=int(
-                            settings_for_segment.get("max_attempts") or 5
+                            settings_for_segment.get("max_attempts")
+                            or DEFAULT_TTS_MAX_ATTEMPTS
                         ),
                         cancel_event=cancel_event,
                         retry_callback=lambda attempt, total, delay: progress(

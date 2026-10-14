@@ -12,6 +12,7 @@ import wave
 from collections.abc import Callable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from contextlib import ExitStack, contextmanager
+from functools import wraps
 from threading import Event, Lock, RLock, Thread
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
@@ -171,6 +172,16 @@ from .tts_provider_profiles import (
 )
 from .tts_provider_profiles import (
     AZURE_SPEECH_VOICE_CATALOGUES as AZURE_SPEECH_VOICE_CATALOGUES,
+)
+from .tts_retry import (
+    DEFAULT_TTS_MAX_ATTEMPTS,
+    DEFAULT_TTS_RETRY_TIMEOUT_SECONDS,
+    TtsRetryBudgetExceeded,
+    TtsRetryGate,
+    current_retry_budget,
+    make_retry_scope_key,
+    request_timeout,
+    retry_budget_scope,
 )
 from .tts_service_catalogue import (
     _CATALOGUE_INPUT_KEYS as _CATALOGUE_INPUT_KEYS,
@@ -621,6 +632,7 @@ def _get_litellm_speech_client():
 
     return _litellm_speech
 TTS_GENERATION_TIMEOUT_SECONDS = 300
+_TTS_RETRY_GATE = TtsRetryGate()
 
 XTTS_UPLOAD_FILE_PURPOSE = "user_data"
 XTTS_DISCOVERABLE_FILE_PURPOSES = ("user_data", "assistants")
@@ -2103,7 +2115,7 @@ def _request_azure_speech_audio(
                 "Ocp-Apim-Subscription-Key": api_key,
             },
             "data": ssml,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
     )
 
@@ -2243,7 +2255,7 @@ def _request_elevenlabs_audio(
             "output_format": output_format,
             "language_code": language_code,
             "voice_settings": voice_settings,
-            "timeout_seconds": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout_seconds": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         }
         if model_id == _ELEVENLABS_V4_HTTP_MODEL:
             return _elevenlabs_v4_audio.post_dialogue_audio(
@@ -2266,7 +2278,7 @@ def _request_elevenlabs_audio(
             "headers": _elevenlabs_auth_headers(api_key, audio=_timing_sink is None),
             "params": {"output_format": output_format},
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
     )
 
@@ -2652,7 +2664,7 @@ def _request_magpie_audio(
         _openai_audio_speech_urls(normalized_base_url),
         request_options=lambda: {
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
@@ -3100,7 +3112,7 @@ def _request_xtts_audio(
         request_options=lambda: {
             "headers": _openai_auth_headers(),
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
@@ -3147,7 +3159,7 @@ def _request_voxcpm_audio(
         request_options=lambda current_payload: {
             "headers": _openai_auth_headers(api_key),
             "json": current_payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         prompt_pairing_error=lambda response: _is_voxcpm_prompt_pairing_error(response),
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
@@ -3192,7 +3204,7 @@ def _request_fishs2_audio(
         request_options=lambda: {
             "headers": _openai_auth_headers(api_key),
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
@@ -3257,7 +3269,7 @@ def _request_voxtral_audio(
         request_options=lambda: {
             "headers": _openai_auth_headers(api_key),
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
@@ -3278,7 +3290,7 @@ def _request_kokoro_audio(
         request_options=lambda: {
             "headers": _openai_auth_headers(api_key),
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
@@ -3484,7 +3496,7 @@ def _request_litellm_audio(
         request_kwargs["response_format"] = str(payload.get("response_format") or "wav")
         # Keep the SDK timeout aligned with direct HTTP and avoid multiplying
         # Pandrator's caller retry budget with another SDK retry loop.
-        request_kwargs["timeout"] = TTS_GENERATION_TIMEOUT_SECONDS
+        request_kwargs["timeout"] = request_timeout(TTS_GENERATION_TIMEOUT_SECONDS)
         request_kwargs["max_retries"] = 0
 
     logging.info(
@@ -3516,7 +3528,7 @@ def _request_openai_compatible_audio(
             request_options=lambda: {
                 "headers": _configured_endpoint_auth_headers(endpoint),
                 "json": payload,
-                "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+                "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
             },
             request_session=request_session,
         )
@@ -3570,7 +3582,7 @@ def _request_openai_compatible_audio(
             request_options=lambda: {
                 "headers": _configured_endpoint_auth_headers(endpoint),
                 "json": payload,
-                "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+                "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
             },
         )
 
@@ -3621,7 +3633,7 @@ def _request_openai_compatible_audio(
         request_options=lambda: {
             "headers": _configured_endpoint_auth_headers(endpoint),
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=f"No speech endpoint could be resolved for '{endpoint['name']}'.",
@@ -3760,7 +3772,7 @@ def _request_gemini_native_audio(
                     "Content-Type": "application/json",
                 },
                 "json": body,
-                "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+                "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
             },
             request_session=request_session,
         )
@@ -3790,7 +3802,7 @@ def _request_gemini_native_audio(
                 "Content-Type": "application/json",
             },
             "json": body,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         request_session=request_session,
     )
@@ -3853,7 +3865,7 @@ def _request_vertex_ai_audio(text: str, tts_settings: dict) -> requests.Response
                 "Content-Type": "application/json",
             },
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
     )
     if structured_tts:
@@ -4010,7 +4022,7 @@ def _request_chatterbox_audio(
         request_options=lambda: {
             "headers": _openai_auth_headers(XTTS_OPENAI_PLACEHOLDER_API_KEY),
             "json": payload,
-            "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+            "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
         },
         should_try_next=lambda status: _should_try_next_openai_candidate(status),
         no_endpoint_message=(
@@ -4095,7 +4107,13 @@ def _wait_for_kobold_qwen_recovery(
     cancel_event=None,
 ) -> bool:
     """Wait for Qwen readiness; service downtime does not consume TTS attempts."""
-    timeout_seconds = max(1.0, min(300.0, float(timeout_seconds or 90.0)))
+    try:
+        timeout_seconds = float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        timeout_seconds = 90.0
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        return False
+    timeout_seconds = min(300.0, timeout_seconds)
     deadline = time.monotonic() + timeout_seconds
     initial_delay = min(timeout_seconds, max(0.0, float(retry_after or 0.0)))
     if initial_delay and not wait_for_retry(initial_delay, cancel_event):
@@ -4236,7 +4254,181 @@ def iter_kobold_qwen_batch_audio(
     )
 
 
+def _credential_material_for_retry_scope(
+    service: Mapping[str, object], *, vertex: bool = False
+) -> tuple[str, str, str]:
+    """Return account identity and Vertex project hints without refreshing auth."""
+    key_env = str(service.get("api_key_env") or "").strip()
+    credential = os.getenv(key_env, "").strip() if key_env else ""
+    if not credential:
+        credential = str(service.get("api_key") or "").strip()
+
+    credential_info: dict[str, object] = {}
+    if vertex and credential:
+        try:
+            parsed = json.loads(credential)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            credential_info = parsed
+
+    adc_path = ""
+    if vertex and not credential_info:
+        adc_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+        if adc_path:
+            try:
+                with open(adc_path, encoding="utf-8") as credential_file:
+                    parsed = json.load(credential_file)
+                if isinstance(parsed, dict):
+                    credential_info = parsed
+            except (OSError, UnicodeError, ValueError):
+                credential_info = {}
+
+    account = (
+        str(credential_info.get("client_email") or "").strip()
+        if vertex
+        else credential
+    )
+    if vertex and not account:
+        account = credential or adc_path
+    if not account:
+        account = str(service.get("secret_ref") or "").strip()
+
+    project = ""
+    location = ""
+    if vertex:
+        project = str(
+            service.get("vertex_project")
+            or credential_info.get("project_id")
+            or os.getenv("GOOGLE_CLOUD_PROJECT", "")
+            or os.getenv("GCLOUD_PROJECT", "")
+            or os.getenv("CLOUDSDK_CORE_PROJECT", "")
+        ).strip()
+        location = str(
+            service.get("vertex_location") or VERTEX_AUDIO_DEFAULT_LOCATION
+        ).strip()
+    return account, project, location
+
+
+def _tts_retry_scope_key(
+    tts_settings: Mapping[str, object],
+    service: object,
+    *,
+    endpoint_overrides: Mapping[str, str],
+) -> str:
+    """Resolve the request's quota identity using the active service profile."""
+    service_hint = _normalize_service_id(str(service or ""))
+    endpoint: Mapping[str, object] | None = None
+    if service_hint in {
+        AUDIO_CPP_ADAPTER,
+        OPENAI_SERVICE.lower(),
+        GEMINI_SERVICE.lower(),
+        LEGACY_GEMINI_SERVICE.lower(),
+        ELEVENLABS_SERVICE.lower(),
+        OPENAI_COMPAT_SERVICE.lower(),
+        LEGACY_OPENAI_COMPAT_SERVICE.lower(),
+    }:
+        resolved_endpoint, _error = resolve_openai_audio_endpoint(dict(tts_settings))
+        endpoint = resolved_endpoint
+
+    local_service_ids = {
+        "xtts": "xtts",
+        "voxcpm": "voxcpm",
+        "fishs2": "fishs2",
+        "voxtral": "voxtral",
+        "kokoro": "kokoro",
+        "chatterbox": "chatterbox",
+        "kobold_qwen": "kobold_qwen",
+        "magpie": "magpie",
+        "silero": "silero",
+    }
+    service_id = local_service_ids.get(service_hint, service_hint)
+    vertex = service_id == VERTEX_PROVIDER
+    profile = (
+        dict(endpoint)
+        if endpoint is not None
+        else get_service_config(dict(tts_settings), service_id)
+        or get_service_config({}, service_id)
+        or {}
+    )
+
+    provider = str(profile.get("provider") or profile.get("id") or service_id)
+    if endpoint is not None:
+        endpoint_url = str(
+            endpoint.get("base_url") or endpoint.get("api_base") or ""
+        )
+    else:
+        endpoint_url = str(
+            endpoint_overrides.get(service_hint)
+            or profile.get("api_base")
+            or ""
+        )
+
+    service_model = (
+        tts_settings.get("silero_model") if service_hint == "silero" else ""
+    )
+    model = str(
+        tts_settings.get("elevenlabs_model")
+        if service_hint in {ELEVENLABS_SERVICE.lower(), ELEVENLABS_PROVIDER}
+        else ""
+    ).strip() or str(
+        service_model
+        or tts_settings.get("xtts_model")
+        or tts_settings.get("model")
+        or profile.get("default_model")
+        or ""
+    ).strip()
+    account, project, location = _credential_material_for_retry_scope(
+        profile, vertex=vertex
+    )
+    return make_retry_scope_key(
+        provider=provider,
+        endpoint=endpoint_url,
+        model=model,
+        account=account,
+        project=project,
+        location=location,
+    )
+
+
+def _with_tts_retry_budget(function):
+    """Preserve one lazy budget through the audio.cpp recursive lock wrapper."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        settings = kwargs.get("tts_settings")
+        if settings is None and len(args) > 1:
+            settings = args[1]
+        timeout = (
+            settings.get("retry_timeout_seconds", DEFAULT_TTS_RETRY_TIMEOUT_SECONDS)
+            if isinstance(settings, Mapping)
+            else DEFAULT_TTS_RETRY_TIMEOUT_SECONDS
+        )
+        with retry_budget_scope(timeout):
+            return function(*args, **kwargs)
+
+    return wrapped
+
+
+def _retry_budget_failure(
+    error: TtsRetryBudgetExceeded,
+    previous_error: BaseException | None,
+) -> TtsRetryBudgetExceeded:
+    """Retain the last provider status and exception chain at budget expiry."""
+    status = error.status_code or (
+        status_code_from_error(previous_error) if previous_error is not None else 0
+    )
+    message = str(error)
+    if status and "HTTP" not in message:
+        message += f" The last provider response was HTTP {status}."
+    failure = TtsRetryBudgetExceeded(message, status_code=status)
+    if previous_error is not None:
+        failure.__cause__ = previous_error
+    return failure
+
+
 # Audio Generation
+@_with_tts_retry_budget
 def text_to_audio(
     text: str,
     tts_settings: dict,
@@ -4249,7 +4441,7 @@ def text_to_audio(
     chatterbox_base_url: str = CHATTERBOX_API_BASE_URL,
     kobold_qwen_base_url: str = KOBOLD_QWEN_API_BASE_URL,
     magpie_base_url: str = MAGPIE_API_BASE_URL,
-    max_attempts: int = 5,
+    max_attempts: int = DEFAULT_TTS_MAX_ATTEMPTS,
     cancel_event=None,
     retry_callback=None,
     recovery_callback=None,
@@ -4307,6 +4499,25 @@ def text_to_audio(
     from .tts_language_preflight import validate_tts_language
 
     language_preflight = validate_tts_language(tts_settings)
+    retry_scope_key = _tts_retry_scope_key(
+        tts_settings,
+        service,
+        endpoint_overrides={
+            "xtts": xtts_base_url,
+            "voxcpm": voxcpm_base_url,
+            "fishs2": fishs2_base_url,
+            "voxtral": voxtral_base_url,
+            "kokoro": kokoro_base_url,
+            "silero": normalized_silero_base_url,
+            "chatterbox": chatterbox_base_url,
+            "kobold_qwen": kobold_qwen_base_url,
+            "magpie": magpie_base_url,
+            "audio_cpp": audio_cpp_base_url,
+        },
+    )
+    budget = current_retry_budget()
+    if budget is None:  # The public wrapper always installs the lazy scope.
+        raise RuntimeError("TTS retry budget context was not initialized.")
 
     max_attempts = max(1, min(20, int(max_attempts or 1)))
     try:
@@ -4321,6 +4532,7 @@ def text_to_audio(
     except (TypeError, ValueError):
         maximum_recovery_cycles = 3
     attempt = 0
+    provider_attempts = 0
     recovery_cycles = 0
     last_error: Exception | None = None
     last_retryable = False
@@ -4332,8 +4544,21 @@ def text_to_audio(
                 max_attempts,
             )
             return None
-        attempt += 1
         try:
+            budget.start()
+            admission = _TTS_RETRY_GATE.wait_for_admission(
+                retry_scope_key,
+                cancel_event=cancel_event,
+                budget=budget,
+            )
+            if admission is None:
+                logging.info("TTS generation canceled before provider admission.")
+                return None
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            budget.ensure_time_remaining("start a provider request")
+            attempt += 1
+            provider_attempts += 1
             if service == "XTTS":
                 response = _request_xtts_audio(text, tts_settings, xtts_base_url)
             elif service == "VoxCPM":
@@ -4424,7 +4649,7 @@ def text_to_audio(
                     lambda: f"{normalized_silero_base_url}/v1/audio/speech",
                     request_options=lambda data=data: {
                         "json": data,
-                        "timeout": TTS_GENERATION_TIMEOUT_SECONDS,
+                        "timeout": request_timeout(TTS_GENERATION_TIMEOUT_SECONDS),
                     },
                 )
             else:
@@ -4449,8 +4674,13 @@ def text_to_audio(
                 )
             else:
                 audio = _decode_audio_response(response)
+            _TTS_RETRY_GATE.record_success(admission)
             return audio
 
+        except TtsRetryBudgetExceeded as e:
+            last_error = _retry_budget_failure(e, last_error)
+            last_retryable = True
+            break
         except ValueError as e:
             # Invalid service, model, voice, or configuration will not improve
             # with another identical request.
@@ -4464,7 +4694,7 @@ def text_to_audio(
             detail = _tts_error_detail(e)
             logging.warning(
                 "TTS generation attempt %d/%d failed%s: %s",
-                attempt,
+                provider_attempts,
                 max_attempts,
                 f" (HTTP {status})" if status else "",
                 detail,
@@ -4482,6 +4712,49 @@ def text_to_audio(
                 break
             retry_after = retry_after_seconds(e)
 
+            try:
+                maximum_retry_delay = max(
+                    1.0,
+                    min(
+                        300.0,
+                        float(tts_settings.get("retry_max_delay_seconds") or 90),
+                    ),
+                )
+            except (TypeError, ValueError):
+                maximum_retry_delay = 90.0
+            # Google documents Vertex 429s as transient shared-capacity pressure
+            # and recommends truncated exponential backoff with jitter. A 0.5 s
+            # base exhausted the earlier five-attempt runs too quickly to recover.
+            google_rate_limit = status == 429 and service in {
+                VERTEX_SERVICE,
+                GEMINI_SERVICE,
+                LEGACY_GEMINI_SERVICE,
+            }
+            try:
+                configured_base_delay = float(
+                    tts_settings.get("rate_limit_retry_base_delay_seconds")
+                    or (5.0 if google_rate_limit else 0.5)
+                )
+            except (TypeError, ValueError):
+                configured_base_delay = 5.0 if google_rate_limit else 0.5
+            delay = retry_delay_seconds(
+                attempt,
+                retry_after=retry_after,
+                base_delay=max(0.1, min(60.0, configured_base_delay)),
+                maximum_delay=maximum_retry_delay,
+            )
+            if status == 429:
+                _TTS_RETRY_GATE.publish_429(retry_scope_key, delay)
+
+            if budget.remaining_seconds() <= 0:
+                exhausted = TtsRetryBudgetExceeded(
+                    "The TTS retry budget expired during a provider request.",
+                    status_code=status,
+                )
+                last_error = _retry_budget_failure(exhausted, e)
+                last_retryable = retryable_error(e)
+                break
+
             if service == "Qwen3 TTS" and recovery_cycles < maximum_recovery_cycles:
                 recovery_cycles += 1
                 try:
@@ -4497,85 +4770,104 @@ def text_to_audio(
                     )
                 except (TypeError, ValueError):
                     recovery_timeout = 90.0
+                remaining = budget.remaining_seconds()
+                if retry_after > 0 and retry_after >= remaining:
+                    exhausted = TtsRetryBudgetExceeded(
+                        "The provider's required Retry-After delay cannot fit the remaining TTS retry budget.",
+                        status_code=status,
+                    )
+                    last_error = _retry_budget_failure(exhausted, e)
+                    last_retryable = True
+                    break
+                recovery_timeout = min(recovery_timeout, remaining)
+                if recovery_timeout <= 0:
+                    exhausted = TtsRetryBudgetExceeded(
+                        "The TTS retry budget expired before Qwen3 TTS recovery could be polled.",
+                        status_code=status,
+                    )
+                    last_error = _retry_budget_failure(exhausted, e)
+                    last_retryable = True
+                    break
                 logging.info(
                     "Waiting up to %.1f seconds for Qwen3 TTS recovery (%d/%d).",
                     recovery_timeout,
                     recovery_cycles,
                     maximum_recovery_cycles,
                 )
+                remaining_before_recovery = budget.remaining_seconds()
                 if recovery_callback is not None:
                     recovery_callback(
                         recovery_cycles, maximum_recovery_cycles, recovery_timeout
                     )
-                recovered = _wait_for_kobold_qwen_recovery(
-                    kobold_qwen_base_url,
-                    api_key=_resolve_kobold_qwen_api_key(tts_settings),
-                    timeout_seconds=recovery_timeout,
-                    retry_after=retry_after,
-                    cancel_event=cancel_event,
-                )
+                try:
+                    recovered = _wait_for_kobold_qwen_recovery(
+                        kobold_qwen_base_url,
+                        api_key=_resolve_kobold_qwen_api_key(tts_settings),
+                        timeout_seconds=recovery_timeout,
+                        retry_after=0.0,
+                        cancel_event=cancel_event,
+                    )
+                except TtsRetryBudgetExceeded as exhausted:
+                    last_error = _retry_budget_failure(exhausted, e)
+                    last_retryable = True
+                    break
                 if cancel_event is not None and cancel_event.is_set():
                     logging.info(
                         "TTS generation canceled while waiting for Qwen3 TTS recovery."
                     )
                     return None
+                recovery_elapsed = max(
+                    0.0,
+                    remaining_before_recovery - budget.remaining_seconds(),
+                )
+                retry_after = max(0.0, retry_after - recovery_elapsed)
+                delay = max(0.0, delay - recovery_elapsed)
                 if recovered:
                     # Infrastructure recovery is bounded separately from real
                     # synthesis attempts, so connection-refused probes during
-                    # a Manager restart cannot exhaust the five-attempt budget.
-                    attempt -= 1
-                    logging.info(
-                        "Qwen3 TTS recovered; repeating synthesis attempt %d/%d.",
-                        attempt + 1,
-                        max_attempts,
+                    # a Manager restart cannot exhaust the configured attempt budget.
+                    if status != 429:
+                        attempt -= 1
+                else:
+                    logging.warning(
+                        "Qwen3 TTS did not recover within %.1f seconds.",
+                        recovery_timeout,
                     )
-                    continue
-                logging.warning(
-                    "Qwen3 TTS did not recover within %.1f seconds.", recovery_timeout
-                )
 
         if attempt >= max_attempts:
             break
-        try:
-            maximum_retry_delay = max(
-                1.0,
-                min(300.0, float(tts_settings.get("retry_max_delay_seconds") or 90)),
+        remaining = budget.remaining_seconds()
+        if delay >= remaining:
+            exhausted = TtsRetryBudgetExceeded(
+                (
+                    "The provider's required Retry-After delay cannot fit the remaining TTS retry budget."
+                    if retry_after > remaining
+                    else "The next TTS retry delay cannot fit the remaining retry budget."
+                ),
+                status_code=status,
             )
-        except (TypeError, ValueError):
-            maximum_retry_delay = 90.0
-        # Google documents Vertex 429s as transient shared-capacity pressure
-        # and recommends truncated exponential backoff with jitter.  A 0.5 s
-        # base exhausted all five attempts in roughly eight seconds on a real
-        # German TTS run, never allowing the quota/capacity window to recover.
-        google_rate_limit = status == 429 and service in {
-            VERTEX_SERVICE,
-            GEMINI_SERVICE,
-            LEGACY_GEMINI_SERVICE,
-        }
-        try:
-            configured_base_delay = float(
-                tts_settings.get("rate_limit_retry_base_delay_seconds")
-                or (5.0 if google_rate_limit else 0.5)
-            )
-        except (TypeError, ValueError):
-            configured_base_delay = 5.0 if google_rate_limit else 0.5
-        delay = retry_delay_seconds(
-            attempt,
-            retry_after=retry_after,
-            base_delay=max(0.1, min(60.0, configured_base_delay)),
-            maximum_delay=maximum_retry_delay,
-        )
+            last_error = _retry_budget_failure(exhausted, last_error)
+            last_retryable = True
+            break
         if retry_callback is not None:
-            retry_callback(attempt + 1, max_attempts, delay)
+            retry_callback(provider_attempts + 1, max_attempts, delay)
         logging.info(
             "Retrying TTS generation in %.1f seconds (attempt %d/%d).",
             delay,
-            attempt + 1,
+            provider_attempts + 1,
             max_attempts,
         )
         if not wait_for_retry(delay, cancel_event):
             logging.info("TTS generation canceled while waiting to retry.")
             return None
+        if budget.remaining_seconds() <= 0:
+            exhausted = TtsRetryBudgetExceeded(
+                "The TTS retry budget expired while waiting to retry.",
+                status_code=status,
+            )
+            last_error = _retry_budget_failure(exhausted, last_error)
+            last_retryable = True
+            break
 
     model = str(tts_settings.get("xtts_model") or tts_settings.get("model") or "").strip()
     context = f"{service}" + (f" / {model}" if model else "")
@@ -4584,6 +4876,6 @@ def text_to_audio(
     message = (
         f"Speech generation failed ({context}"
         + (f", HTTP {status}" if status else "")
-        + f") after {attempt} attempt(s): {detail}"
+        + f") after {provider_attempts} attempt(s): {detail}"
     )
     raise TtsGenerationError(message, retryable=last_retryable) from last_error

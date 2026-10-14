@@ -51,6 +51,56 @@ class SettingsApiTests(unittest.TestCase):
         self.app.extensions["pandrator"]["database"].dispose()
         self.temporary.cleanup()
 
+    def test_tts_retry_defaults_and_explicit_overrides(self):
+        created = self.client.post(
+            "/api/v1/sessions", json={"name": "Retry settings"}, headers=self.headers,
+        ).get_json()
+        path = f'/api/v1/sessions/{created["id"]}/settings/tts'
+        current = self.client.get(path).get_json()
+        self.assertEqual(current["effective"]["max_attempts"], 10)
+        self.assertEqual(current["effective"]["retry_timeout_seconds"], 900)
+        headers = {**self.headers, "If-Match": f'"{current["revision"]}"'}
+        updated = self.client.put(path, headers=headers, json={
+            "value": {"max_attempts": 1, "retry_timeout_seconds": 300},
+        })
+        self.assertEqual(200, updated.status_code, updated.get_json())
+        self.assertEqual(updated.get_json()["effective"]["max_attempts"], 1)
+        self.assertEqual(updated.get_json()["effective"]["retry_timeout_seconds"], 300)
+        global_update = self.client.put("/api/v1/settings/defaults.tts", headers={
+            **self.headers, "If-Match": '"0"',
+        }, json={"value": {"max_attempts": 12, "retry_timeout_seconds": 600}})
+        self.assertEqual(200, global_update.status_code, global_update.get_json())
+        inherited = self.client.post(
+            "/api/v1/sessions", json={"name": "Inherited retry defaults"}, headers=self.headers,
+        ).get_json()
+        effective = self.client.get(
+            f'/api/v1/sessions/{inherited["id"]}/settings/tts',
+        ).get_json()["effective"]
+        self.assertEqual(effective["max_attempts"], 12)
+        self.assertEqual(effective["retry_timeout_seconds"], 600)
+        self.assertEqual(self.client.get(path).get_json()["effective"]["max_attempts"], 1)
+
+    def test_tts_retry_settings_reject_invalid_limits(self):
+        created = self.client.post(
+            "/api/v1/sessions", json={"name": "Invalid retry settings"}, headers=self.headers,
+        ).get_json()
+        path = f'/api/v1/sessions/{created["id"]}/settings/tts'
+        current = self.client.get(path).get_json()
+        for endpoint in (path, "/api/v1/settings/defaults.tts"):
+            for value in (
+                {"max_attempts": 0}, {"max_attempts": 21}, {"max_attempts": True},
+                {"retry_timeout_seconds": 0}, {"retry_timeout_seconds": 3601},
+                {"retry_timeout_seconds": 1.5},
+            ):
+                with self.subTest(endpoint=endpoint, value=value):
+                    response = self.client.put(endpoint, headers={
+                        **self.headers, "If-Match": f'"{current["revision"]}"',
+                    }, json={
+                        "value": value,
+                    })
+                    self.assertEqual(422, response.status_code, response.get_json())
+                    self.assertIn(next(iter(value)), response.get_json()["error"]["message"])
+
     def _assert_settings_reply_matches_committed_revision(self, method):
         session_id = self.client.post(
             "/api/v1/sessions", json={"name": "Settings handoff"}, headers=self.headers,

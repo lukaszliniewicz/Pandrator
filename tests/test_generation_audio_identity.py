@@ -32,6 +32,16 @@ from pandrator.web.tts_providers import TtsBatchResult, TtsCapabilities
 
 
 class GenerationAudioIdentityTests(unittest.TestCase):
+    def test_retry_policy_changes_preserve_audio_compatibility(self):
+        from pandrator.web.generation_audio_identity import _material_settings
+
+        tts = {"service": "Silero", "model": "v3_en", "voice": "en_0", "language": "en"}
+        original = _material_settings({"tts": {**tts, "max_attempts": 5}})
+        changed = _material_settings({"tts": {
+            **tts, "max_attempts": 10, "retry_timeout_seconds": 600,
+        }})
+        self.assertEqual(original, changed)
+
     def test_transient_identity_copy_policy_preserves_frozen_and_unfrozen_identity_bytes(self):
         from copy import deepcopy
 

@@ -74,6 +74,7 @@ def _material_settings(snapshot: dict[str, Any], _service_config_cache=None) -> 
     unrelated.update(
         {
             "max_attempts",
+            "retry_timeout_seconds",
             "tts_batch_size",
             "tts_concurrent_requests",
             "provider_configs",

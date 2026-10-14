@@ -1255,6 +1255,7 @@ class TtsProviderRegistry:
             "retry_max_delay_seconds",
             policy.maximum_delay_seconds,
         )
+        prepared_settings["retry_timeout_seconds"] = policy.maximum_elapsed_seconds
         try:
             return adapter.synthesize(
                 text,

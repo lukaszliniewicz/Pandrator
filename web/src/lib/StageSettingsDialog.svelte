@@ -690,6 +690,8 @@
     );
     draft.ttsBatchSize = Number(saved.tts_batch_size ?? 10);
     draft.ttsConcurrentRequests = Number(saved.tts_concurrent_requests ?? 1);
+    draft.ttsMaxAttempts = Number(saved.max_attempts ?? 10);
+    draft.ttsRetryTimeoutSeconds = Number(saved.retry_timeout_seconds ?? 900);
     draft.subtitleMode = String(saved.subtitle_mode ?? 'soft');
     draft.subtitleSelection = String(saved.subtitle_selection ?? 'dual');
     draft.audioMode = String(
@@ -1830,6 +1832,8 @@
           : {}),
         tts_batch_size: draft.ttsBatchSize,
         tts_concurrent_requests: draft.ttsConcurrentRequests,
+        max_attempts: draft.ttsMaxAttempts,
+        retry_timeout_seconds: draft.ttsRetryTimeoutSeconds,
         language: draft.targetLanguage,
         target_language: draft.targetLanguage
       };
@@ -1926,6 +1930,11 @@
     if (key === 'generate_audio' && ttsSelection.invalidTextContext) {
       error =
         'Use 0–20 context blocks and a context budget of 0–16,000 characters.';
+      return;
+    }
+    if (key === 'generate_audio' && ttsSelection.invalidTtsRetries) {
+      error =
+        'Use 1–20 speech attempts and a retry time limit of 1–3600 seconds.';
       return;
     }
     if (key === 'generate_audio' && ttsSelection.elevenVoiceSettingsError) {
@@ -2950,6 +2959,7 @@
                 (!ttsSelection.selectedTtsServiceAvailable ||
                   ttsSelection.selectedVoiceLanguageMismatch ||
                   ttsSelection.invalidTtsConcurrency ||
+                  ttsSelection.invalidTtsRetries ||
                   ttsSelection.invalidTextContext ||
                   Boolean(ttsSelection.elevenVoiceSettingsError) ||
                   (Boolean(ttsSelection.ttsSwitchSource) &&
@@ -2982,6 +2992,7 @@
                 (!ttsSelection.selectedTtsServiceAvailable ||
                   ttsSelection.selectedVoiceLanguageMismatch ||
                   ttsSelection.invalidTtsConcurrency ||
+                  ttsSelection.invalidTtsRetries ||
                   ttsSelection.invalidTextContext ||
                   Boolean(ttsSelection.elevenVoiceSettingsError) ||
                   (Boolean(ttsSelection.ttsSwitchSource) &&

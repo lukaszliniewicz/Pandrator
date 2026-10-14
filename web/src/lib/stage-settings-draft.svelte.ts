@@ -93,6 +93,8 @@ export class StageSettingsDraft {
   performanceContextMaxChars = $state(4000);
   ttsBatchSize = $state(10);
   ttsConcurrentRequests = $state(1);
+  ttsMaxAttempts = $state(10);
+  ttsRetryTimeoutSeconds = $state(900);
   subtitleMode = $state('soft');
   subtitleSelection = $state('dual');
   audioMode = $state('mixed');

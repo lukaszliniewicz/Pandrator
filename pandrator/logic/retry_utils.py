@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 import time
 from datetime import datetime, timezone
@@ -37,7 +38,9 @@ def _response_from_error(error: BaseException) -> Any | None:
         response = getattr(current, "response", None)
         if response is not None:
             return response
-        next_error = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        next_error = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
         current = next_error if isinstance(next_error, BaseException) else None
     return None
 
@@ -62,7 +65,9 @@ def retryable_error(error: BaseException) -> bool:
     if status:
         return status in RETRYABLE_HTTP_STATUSES or status >= 500
     name = type(error).__name__.lower()
-    if name in NON_RETRYABLE_EXCEPTION_NAMES or isinstance(error, (TypeError, ValueError)):
+    if name in NON_RETRYABLE_EXCEPTION_NAMES or isinstance(
+        error, (TypeError, ValueError)
+    ):
         return False
     if name in RETRYABLE_EXCEPTION_NAMES:
         return True
@@ -85,8 +90,9 @@ def _retry_after_value(value: Any, *, now: datetime) -> float:
     if not raw:
         return 0.0
     try:
-        return max(0.0, float(raw))
-    except (TypeError, ValueError):
+        numeric = float(raw)
+        return max(0.0, numeric) if math.isfinite(numeric) else 0.0
+    except (TypeError, ValueError, OverflowError):
         pass
     try:
         parsed = parsedate_to_datetime(raw)
@@ -94,7 +100,10 @@ def _retry_after_value(value: Any, *, now: datetime) -> float:
         return 0.0
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return max(0.0, (parsed.astimezone(timezone.utc) - now.astimezone(timezone.utc)).total_seconds())
+    delay = (
+        parsed.astimezone(timezone.utc) - now.astimezone(timezone.utc)
+    ).total_seconds()
+    return max(0.0, delay) if math.isfinite(delay) else 0.0
 
 
 def retry_after_seconds(error: BaseException, *, now: datetime | None = None) -> float:
@@ -103,19 +112,31 @@ def retry_after_seconds(error: BaseException, *, now: datetime | None = None) ->
     current = now or datetime.now(timezone.utc)
     delay = _retry_after_value(headers.get("retry-after"), now=current)
     try:
-        delay = max(delay, float(headers.get("retry-after-ms") or 0) / 1000.0)
-    except (TypeError, ValueError):
+        milliseconds = float(headers.get("retry-after-ms") or 0)
+        if math.isfinite(milliseconds):
+            delay = max(delay, milliseconds / 1000.0)
+    except (TypeError, ValueError, OverflowError):
         pass
     for key in ("x-ratelimit-reset", "x-rate-limit-reset"):
         try:
             reset = float(headers.get(key) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(reset):
             continue
         if reset > 1_000_000_000:
             delay = max(delay, reset - current.timestamp())
         elif reset > 0:
             delay = max(delay, reset)
-    return max(0.0, delay)
+    return max(0.0, delay) if math.isfinite(delay) else 0.0
+
+
+def _finite_nonnegative(value: Any, fallback: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return max(0.0, result) if math.isfinite(result) else fallback
 
 
 def retry_delay_seconds(
@@ -127,12 +148,19 @@ def retry_delay_seconds(
     jitter_ratio: float = 0.2,
 ) -> float:
     """Calculate capped exponential backoff while honoring provider guidance."""
-    attempt = max(1, int(failed_attempt))
-    ceiling = max(0.0, float(maximum_delay))
-    exponential = min(ceiling, max(0.0, float(base_delay)) * (2 ** (attempt - 1)))
-    jitter = exponential * max(0.0, float(jitter_ratio))
+    try:
+        attempt = max(1, int(failed_attempt))
+    except (TypeError, ValueError, OverflowError):
+        attempt = 1
+    ceiling = _finite_nonnegative(maximum_delay, 90.0)
+    base = _finite_nonnegative(base_delay, 1.0)
+    ratio = _finite_nonnegative(jitter_ratio, 0.2)
+    retry_guidance = _finite_nonnegative(retry_after)
+    exponential = min(ceiling, base * (2 ** (attempt - 1)))
+    jitter = exponential * ratio
     randomized = exponential + (random.uniform(-jitter, jitter) if jitter else 0.0)
-    return min(ceiling, max(0.0, float(retry_after), randomized))
+    local_backoff = min(ceiling, _finite_nonnegative(randomized))
+    return max(retry_guidance, local_backoff)
 
 
 def wait_for_retry(delay: float, cancel_event: Any | None = None) -> bool:

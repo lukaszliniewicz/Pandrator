@@ -182,6 +182,7 @@
       'language',
       'speed',
       'max_attempts',
+      'retry_timeout_seconds',
       'tts_batch_size',
       'tts_concurrent_requests',
       'generation_prompt',
@@ -533,6 +534,7 @@
             'voice',
             'language',
             'max_attempts',
+            'retry_timeout_seconds',
             'generation_prompt'
           ].includes(key) &&
           (key !== 'voice' || voiceMode !== 'design') &&

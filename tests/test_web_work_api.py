@@ -41,6 +41,49 @@ class WorkApiTests(unittest.TestCase):
         self.app.extensions["pandrator"]["database"].dispose()
         self.temporary.cleanup()
 
+    def test_job_activity_projects_and_recovery_survive_compact_snapshots(self):
+        project = self.client.post(
+            "/api/v1/sessions", json={"name": "A recoverable project"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).get_json()
+        queue = self.app.extensions["pandrator"]["jobs"]
+        job = queue.enqueue(
+            "generation.run", {"session_id": project["id"], "generation_run_id": "failed-run"},
+            session_id=project["id"],
+        )
+        for path in ("/api/v1/jobs", "/api/v1/events/snapshot?view=compact", f"/api/v1/jobs/{job.id}"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(200, response.status_code)
+                body = response.get_json()
+                if "snapshot" in path:
+                    body = body["jobs"]
+                item = next(row for row in body["items"] if row["id"] == job.id) if "items" in body else body
+                self.assertEqual(item["project"], {
+                    "id": project["id"], "name": "A recoverable project",
+                    "available": True, "trashed": False,
+                })
+                self.assertEqual(item["generation_run_id"], "failed-run")
+                if "compact" in path:
+                    self.assertNotIn("payload_json", item)
+
+    def test_job_project_metadata_identifies_trash_without_offering_recovery(self):
+        project = self.client.post(
+            "/api/v1/sessions", json={"name": "Retained project name"},
+            headers={"X-CSRF-Token": self.csrf_token},
+        ).get_json()
+        services = self.app.extensions["pandrator"]
+        job = services["jobs"].enqueue("noop", {}, session_id=project["id"])
+        with services["database"].session() as session:
+            record = session.get(SessionRecord, project["id"])
+            record.trashed_at = utcnow()
+        item = self.client.get(f"/api/v1/jobs/{job.id}").get_json()
+        self.assertEqual(item["project"], {
+            "id": project["id"], "name": "Retained project name",
+            "available": False, "trashed": True,
+        })
+        self.assertIsNone(item["generation_run_id"])
+
     def test_work_projection_omits_payload_and_preserves_legacy_job_contract(self):
         queue = self.app.extensions["pandrator"]["jobs"]
         job = queue.enqueue(

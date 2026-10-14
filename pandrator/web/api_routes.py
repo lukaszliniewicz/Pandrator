@@ -48,6 +48,7 @@ from .global_settings import SettingPreconditionError
 from .google_voice_design_routes import register_google_voice_design_routes
 from .http_idempotency import MutationIdempotency
 from .http_serialization import job_payload as _job_payload
+from .http_serialization import job_projects
 from .http_serialization import model_payload as _model_dict
 from .idempotency import IdempotencyConflict, IdempotencyInProgress
 from .knowledge import KnowledgeLedgerStore, KnowledgeValidationError
@@ -1042,11 +1043,13 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
         visible_items = [item for item in items if item.id not in hidden]
         waiting_for_jobs = jobs.waiting_for_jobs(visible_items)
+        projects = job_projects(database, visible_items)
         return jsonify(
             {
                 "items": [
                     _job_payload(
-                        item, waiting_for_job=waiting_for_jobs.get(item.id)
+                        item, waiting_for_job=waiting_for_jobs.get(item.id),
+                        project=projects.get(item.id),
                     )
                     for item in visible_items
                 ]
@@ -1073,10 +1076,12 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         try:
             job = work.diagnostic_get(job_id)
             waiting_for_jobs = jobs.waiting_for_jobs([job])
+            projects = job_projects(database, [job])
             return jsonify(
                 _job_payload(
                     job,
                     waiting_for_job=waiting_for_jobs.get(job.id),
+                    project=projects.get(job.id),
                 )
             )
         except KeyError:
@@ -1521,6 +1526,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
         )
         visible_items = [item for item in items if item.id not in hidden]
         waiting_for_jobs = jobs.waiting_for_jobs(visible_items)
+        projects = job_projects(database, visible_items)
         session_items = [_session_payload(item) for item in sessions.list()]
         memberships = session_project_memberships(
             database, [item["id"] for item in session_items]
@@ -1538,6 +1544,7 @@ def register_routes(flask_app: Flask, context: RouteContext) -> None:
                             item,
                             include_details=view != "compact",
                             waiting_for_job=waiting_for_jobs.get(item.id),
+                            project=projects.get(item.id),
                         )
                         for item in visible_items
                     ]

@@ -19,6 +19,7 @@ from pandrator.logic import (
     tts_provider_profiles,
     tts_service_catalogue,
 )
+from pandrator.logic.tts_retry import TtsRetryGate
 
 
 def test_configuration_catalogue_and_compiler_import_without_provider_execution():
@@ -77,6 +78,21 @@ assert 'in-place-fixture-model' in gemini['models']
 class TTSHandlerTests(unittest.TestCase):
     def setUp(self):
         super().setUp()
+        retry_clock = [0.0]
+
+        def advance_gate_wait(delay, cancel_event=None):
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            retry_clock[0] += delay
+            return True
+
+        retry_gate = TtsRetryGate(
+            clock=lambda: retry_clock[0],
+            waiter=advance_gate_wait,
+        )
+        retry_gate_patch = patch.object(tts_handler, "_TTS_RETRY_GATE", retry_gate)
+        retry_gate_patch.start()
+        self.addCleanup(retry_gate_patch.stop)
         lock_dir = tempfile.TemporaryDirectory(prefix="pandrator-tts-test-lock-")
         self.addCleanup(lock_dir.cleanup)
         lock_patch = patch.object(

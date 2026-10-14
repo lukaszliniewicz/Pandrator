@@ -41,6 +41,7 @@ from .settings_policy import (
     validate_output_settings,
     validate_stt_replacement,
     validate_stt_settings,
+    validate_tts_retry_settings,
     validate_voiceover_repair_settings,
 )
 from .source_resolution import classify_source, resolve_media_source
@@ -662,6 +663,7 @@ class WorkspaceSettingsService:
                 session, {**previous_subtitles, **incoming_subtitles}, session_id=session_id,
             )
         if section == "tts":
+            validate_tts_retry_settings(value)
             validate_voiceover_repair_settings(value)
             previous = self.get_in_session(session, session_id, section)["effective"]
             if "voice_mode_version" not in value and previous.get("voice_mode_version", 0):

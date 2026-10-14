@@ -13,6 +13,10 @@ from pandrator.logic.dubbing.source_passage_settings import (
     SOURCE_PASSAGE_DEFAULTS as _SOURCE_PASSAGE_DEFAULTS,
 )
 from pandrator.logic.tts_provider_policy import DEFAULT_TTS_SERVICE_ID
+from pandrator.logic.tts_retry import (
+    DEFAULT_TTS_MAX_ATTEMPTS,
+    DEFAULT_TTS_RETRY_TIMEOUT_SECONDS,
+)
 
 from .tts_optimization import (
     DEFAULT_FIRST_PROMPT,
@@ -197,7 +201,8 @@ BUILTIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "language": "en",
         "voice": "",
         "speed": 1.0,
-        "max_attempts": 5,
+        "max_attempts": DEFAULT_TTS_MAX_ATTEMPTS,
+        "retry_timeout_seconds": DEFAULT_TTS_RETRY_TIMEOUT_SECONDS,
         "tts_batch_size": 10,
         "tts_concurrent_requests": 1,
         "temperature": 0.75,
@@ -792,6 +797,12 @@ def validate_stt_settings(value: dict[str, Any]) -> None:
     clamp = value.get("qwen_asr_clamp_timestamps")
     if clamp is not None and not isinstance(clamp, bool):
         raise ValueError("qwen_asr_clamp_timestamps must be a boolean.")
+
+
+def validate_tts_retry_settings(value: dict[str, Any]) -> None:
+    for key, maximum in (("max_attempts", 20), ("retry_timeout_seconds", 3600)):
+        if key in value and (type(value[key]) is not int or not 1 <= value[key] <= maximum):
+            raise ValueError(f"{key} must be an integer from 1 to {maximum}.")
 
 
 def validate_voiceover_repair_settings(value: dict[str, Any]) -> None:

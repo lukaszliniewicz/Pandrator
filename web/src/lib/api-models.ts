@@ -336,6 +336,13 @@ export type JobRecord = {
   id: string;
   kind: string;
   session_id?: string | null;
+  project?: {
+    id: string;
+    name: string | null;
+    available: boolean;
+    trashed: boolean;
+  } | null;
+  generation_run_id?: string | null;
   workflow_run_id?: string | null;
   payload_json?: Record<string, unknown>;
   result_json?: Record<string, unknown> | null;

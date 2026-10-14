@@ -728,6 +728,57 @@
     {/if}
   </div>
 {/if}
+<div class="grid gap-3 sm:grid-cols-2">
+  <label class="text-sm font-semibold">
+    <ParameterLabel
+      section="tts"
+      name="max_attempts"
+      label="Maximum attempts per request"
+      compact
+    />
+    <input
+      type="number"
+      min="1"
+      max="20"
+      step="1"
+      bind:value={draft.ttsMaxAttempts}
+      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+    />
+    <span class="muted mt-2 block text-xs font-normal"
+      >Includes the first call. Use 1 to disable provider retries.</span
+    >
+    {#if ttsSelection.selectedTtsService?.id === 'kobold_qwen'}
+      <span class="muted mt-1 block text-xs font-normal"
+        >Local Qwen service recovery has a separate, bounded allowance within
+        the same time limit.</span
+      >
+    {/if}
+  </label>
+  <label class="text-sm font-semibold">
+    <ParameterLabel
+      section="tts"
+      name="retry_timeout_seconds"
+      label="Retry time limit (seconds)"
+      compact
+    />
+    <input
+      type="number"
+      min="1"
+      max="3600"
+      step="1"
+      bind:value={draft.ttsRetryTimeoutSeconds}
+      class="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 font-normal"
+    />
+    <span class="muted mt-2 block text-xs font-normal"
+      >Includes retry waits. The default is 15 minutes per request.</span
+    >
+  </label>
+</div>
+{#if ttsSelection.invalidTtsRetries}
+  <p class="text-xs text-red-500" role="status">
+    Use 1–20 speech attempts and a retry time limit of 1–3600 seconds.
+  </p>
+{/if}
 {#if ttsSelection.selectedTtsService?.supports_parallel_synthesis}
   <label class="text-sm font-semibold">
     Concurrent TTS requests

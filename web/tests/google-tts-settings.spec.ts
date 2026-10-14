@@ -157,6 +157,18 @@ for (const provider of ['gemini', 'vertex_ai']) {
         await budget.fill('16001');
         await expect(save).toBeDisabled();
         await budget.fill('1200');
+        const attempts = dialog.getByRole('spinbutton', {
+          name: 'Maximum attempts per request'
+        });
+        const retryTime = dialog.getByRole('spinbutton', {
+          name: 'Retry time limit (seconds)'
+        });
+        await attempts.fill('21');
+        await expect(save).toBeDisabled();
+        await attempts.fill('12');
+        await retryTime.fill('0');
+        await expect(save).toBeDisabled();
+        await retryTime.fill('600');
         await expect(save).toBeEnabled();
         await context.scrollIntoViewIfNeeded();
         await page.screenshot({
@@ -179,7 +191,9 @@ for (const provider of ['gemini', 'vertex_ai']) {
           tts_context_mode: index === 0 ? 'both' : 'before',
           performance_context_before: 3,
           performance_context_after: 2,
-          performance_context_max_chars: 1200
+          performance_context_max_chars: 1200,
+          max_attempts: 12,
+          retry_timeout_seconds: 600
         });
       }
       await card.getByRole('button', { name: 'Settings' }).click();

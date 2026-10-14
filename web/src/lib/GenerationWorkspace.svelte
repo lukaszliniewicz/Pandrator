@@ -125,6 +125,9 @@
       page.url.searchParams.get('mode') === 'editing' ||
       page.url.searchParams.get('inspect') === 'speech'
   );
+  const activeEntry = untrack(
+    () => page.url.searchParams.get('view') === 'active'
+  );
   let showAudioColumns = $state(preferences?.showAudioColumns ?? true);
   let showDirectionDetails = $state(preferences?.showDirectionDetails ?? false);
   let helpOpen = $state(false);
@@ -183,18 +186,24 @@
     return latest;
   });
   let selectedRunId = $state(
-    untrack(() => (editingEntry ? '' : (preferences?.selectedRunId ?? '')))
+    untrack(() =>
+      editingEntry || activeEntry ? '' : (preferences?.selectedRunId ?? '')
+    )
   );
   let selectedRunVersionId = $state(
     untrack(() =>
-      editingEntry ? '' : (preferences?.selectedRunVersionId ?? '')
+      editingEntry || activeEntry
+        ? ''
+        : (preferences?.selectedRunVersionId ?? '')
     )
   );
   let audioVersionSide = $state<'before' | 'after'>(
     preferences?.audioVersionSide ?? 'after'
   );
   // Editing creates a new plan; its settings source survives leaving history.
-  let settingsSourceRunId = $state(preferences?.settingsSourceRunId ?? '');
+  let settingsSourceRunId = $state(
+    activeEntry ? '' : (preferences?.settingsSourceRunId ?? '')
+  );
   const settingsSourceRun = $derived(
     generationStore.runs.find((item) => item.id === settingsSourceRunId) ?? null
   );
@@ -3607,8 +3616,7 @@
             type="button"
             class="action mt-2"
             disabled={loading || topologyBusy || pendingSegmentUpdates > 0}
-            onclick={() =>
-              openGenerationStart(selectedRun ? 'all' : 'continue')}
+            onclick={() => openGenerationStart('continue')}
             data-testid="generation-recovery-continue"
             >Continue unfinished audio…</button
           >

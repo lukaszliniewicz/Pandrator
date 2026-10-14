@@ -24,6 +24,7 @@ from .settings_policy import (
     split_legacy_stt_settings,
     validate_audio_pause_settings,
     validate_stt_replacement,
+    validate_tts_retry_settings,
     validate_voiceover_repair_settings,
 )
 from .workspace_settings import migrate_legacy_subtitle_settings
@@ -152,6 +153,7 @@ class GlobalSettingsService:
             if setting_key == "defaults.audio":
                 validate_audio_pause_settings(prepared_value)
             if setting_key == "defaults.tts":
+                validate_tts_retry_settings(prepared_value)
                 validate_voiceover_repair_settings(prepared_value)
                 previous = {
                     **BUILTIN_DEFAULTS["tts"],
